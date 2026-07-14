@@ -1,0 +1,13 @@
+/target/
+/data/
+/web/node_modules/
+/web/dist/
+/web/.npm-cache/
+/web/src-tauri/target/
+*.db
+*.db-shm
+*.db-wal
+password.txt
+.env
+.env.*
+!.env.example

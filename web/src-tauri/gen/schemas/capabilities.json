@@ -1,0 +1,1 @@
+{"main":{"identifier":"main","description":"Minimum local capability set for the Mine Mail main window.","local":true,"windows":["main"],"permissions":["core:default"]}}

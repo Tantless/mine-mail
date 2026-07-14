@@ -1,0 +1,29 @@
+[package]
+name = "mine-mail-desktop"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+description = "Tauri desktop shell for Mine Mail"
+license = "MIT"
+
+[lib]
+name = "mine_mail_desktop_lib"
+crate-type = ["rlib"]
+
+[[bin]]
+name = "mine-mail-desktop"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+mine-mail = { path = "../.." }
+serde = { version = "1", features = ["derive"] }
+tauri = { version = "2", features = [] }
+
+# Tauri's Windows dependency graph can otherwise produce multi-gigabyte debug
+# symbol and incremental caches, which is disproportionate for this thin shell.
+[profile.dev]
+debug = 1
+incremental = false
