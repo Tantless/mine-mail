@@ -9,7 +9,8 @@
   --reader-min-width: 480px;
   --panel-gap: clamp(8px, 0.75vw, 13px);
   --window-edge: clamp(12px, 1vw, 18px);
-  --content-top: 30px;
+  --titlebar-height: 38px;
+  --content-top: calc(var(--titlebar-height) + 14px);
   --window-radius: 14px;
   --panel-radius: 12px;
   --control-radius: 9px;
@@ -41,6 +42,11 @@
   --sidebar-selected: rgba(249, 253, 255, 0.7);
   --sidebar-scrim-top: rgba(241, 249, 252, 0.44);
   --sidebar-scrim-bottom: rgba(216, 231, 232, 0.42);
+  --titlebar-text: #17303f;
+  --titlebar-muted: rgba(23, 48, 63, 0.72);
+  --titlebar-surface: rgba(235, 245, 247, 0.28);
+  --titlebar-border: rgba(23, 48, 63, 0.16);
+  --titlebar-hover: rgba(251, 254, 255, 0.38);
   --overlay: rgba(13, 20, 28, 0.36);
   --panel-border: rgba(42, 55, 69, 0.18);
   --panel-shadow: 0 14px 34px rgba(18, 35, 52, 0.16),
@@ -72,6 +78,11 @@
   --sidebar-selected: rgba(238, 245, 255, 0.16);
   --sidebar-scrim-top: rgba(4, 9, 17, 0.22);
   --sidebar-scrim-bottom: rgba(2, 8, 13, 0.64);
+  --titlebar-text: #f3f6fa;
+  --titlebar-muted: rgba(229, 236, 244, 0.72);
+  --titlebar-surface: rgba(6, 12, 21, 0.34);
+  --titlebar-border: rgba(223, 233, 244, 0.12);
+  --titlebar-hover: rgba(240, 246, 255, 0.12);
   --panel-border: rgba(202, 216, 232, 0.14);
   --panel-shadow: 0 16px 40px rgba(0, 0, 0, 0.36), 0 2px 8px rgba(0, 0, 0, 0.22);
 }
@@ -100,6 +111,11 @@
   --sidebar-selected: rgba(255, 248, 242, 0.22);
   --sidebar-scrim-top: rgba(61, 36, 49, 0.16);
   --sidebar-scrim-bottom: rgba(46, 26, 36, 0.58);
+  --titlebar-text: #fff8f2;
+  --titlebar-muted: rgba(255, 244, 235, 0.75);
+  --titlebar-surface: rgba(55, 31, 42, 0.3);
+  --titlebar-border: rgba(255, 235, 222, 0.14);
+  --titlebar-hover: rgba(255, 248, 242, 0.13);
   --panel-border: rgba(90, 58, 58, 0.18);
   --panel-shadow: 0 16px 38px rgba(75, 42, 42, 0.2), 0 2px 8px rgba(75, 42, 42, 0.1);
 }
@@ -128,6 +144,11 @@
   --sidebar-selected: rgba(239, 248, 240, 0.2);
   --sidebar-scrim-top: rgba(13, 40, 27, 0.18);
   --sidebar-scrim-bottom: rgba(8, 31, 20, 0.62);
+  --titlebar-text: #f1f7f2;
+  --titlebar-muted: rgba(229, 240, 231, 0.74);
+  --titlebar-surface: rgba(8, 31, 20, 0.3);
+  --titlebar-border: rgba(228, 241, 231, 0.13);
+  --titlebar-hover: rgba(239, 248, 240, 0.13);
   --panel-border: rgba(38, 67, 50, 0.18);
   --panel-shadow: 0 16px 38px rgba(17, 48, 32, 0.25), 0 2px 8px rgba(17, 48, 32, 0.12);
 }
@@ -195,10 +216,6 @@ kbd {
   overflow: hidden;
 }
 
-.app-shell[data-runtime="tauri"] {
-  --content-top: 14px;
-}
-
 .app-wallpaper {
   position: absolute;
   inset: 0;
@@ -211,46 +228,136 @@ kbd {
   transition: background-image 280ms ease;
 }
 
-.web-window-chrome {
+.app-titlebar {
   position: absolute;
   inset: 0 0 auto;
-  z-index: 10;
-  height: 29px;
-  color: var(--sidebar-text);
+  z-index: 50;
+  display: flex;
+  height: var(--titlebar-height);
+  align-items: center;
+  border-bottom: 1px solid var(--titlebar-border);
+  background: var(--titlebar-surface);
+  color: var(--titlebar-text);
+  backdrop-filter: blur(12px) saturate(0.96);
+  -webkit-backdrop-filter: blur(12px) saturate(0.96);
   user-select: none;
+  -webkit-user-select: none;
 }
 
-.window-controls {
+.titlebar-brand {
+  position: absolute;
+  left: 13px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--titlebar-muted);
+  font-size: 12px;
+  font-weight: 620;
+  letter-spacing: -0.01em;
+  pointer-events: none;
+}
+
+.titlebar-brand svg {
+  opacity: 0.9;
+}
+
+.titlebar-controls {
   position: absolute;
   top: 0;
-  right: 3px;
   display: flex;
-  height: 28px;
+  height: 100%;
 }
 
-.window-controls span {
+.titlebar-controls--windows {
+  right: 0;
+}
+
+.titlebar-control {
   display: grid;
-  width: 43px;
+  width: 46px;
+  height: 100%;
   place-items: center;
-  opacity: 0.78;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--titlebar-text);
+  opacity: 0.84;
+  transition: background var(--motion-fast), color var(--motion-fast), opacity var(--motion-fast);
 }
 
-.traffic-lights {
-  display: flex;
-  gap: 8px;
-  padding: 11px 0 0 14px;
+.titlebar-control:hover {
+  background: var(--titlebar-hover);
+  opacity: 1;
 }
 
-.traffic-lights span {
-  width: 12px;
-  height: 12px;
-  border: 1px solid rgba(0, 0, 0, 0.15);
+.titlebar-control:active {
+  background: color-mix(in srgb, var(--titlebar-hover) 72%, transparent);
+}
+
+.titlebar-control--windows-close:hover,
+.titlebar-control--windows-close:active {
+  background: #c42b1c;
+  color: #fff;
+}
+
+.titlebar-controls--mac {
+  left: 12px;
+  align-items: center;
+}
+
+.titlebar-controls--mac .titlebar-control {
+  width: 24px;
+  height: 100%;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.titlebar-controls--mac .titlebar-control:hover,
+.titlebar-controls--mac .titlebar-control:active {
+  background: transparent;
+}
+
+.titlebar-control__mac-face {
+  display: grid;
+  width: 13px;
+  height: 13px;
+  place-items: center;
+  border: 1px solid rgba(0, 0, 0, 0.16);
   border-radius: 50%;
+  color: rgba(23, 24, 26, 0.8);
 }
 
-.traffic-lights span:nth-child(1) { background: #ff5f57; }
-.traffic-lights span:nth-child(2) { background: #febc2e; }
-.traffic-lights span:nth-child(3) { background: #28c840; }
+.titlebar-control__mac-face svg {
+  opacity: 0;
+}
+
+.titlebar-controls--mac:hover .titlebar-control__mac-face svg,
+.titlebar-controls--mac:focus-within .titlebar-control__mac-face svg {
+  opacity: 1;
+}
+
+.titlebar-control--close .titlebar-control__mac-face {
+  background: #ff5f57;
+}
+
+.titlebar-control--minimize .titlebar-control__mac-face {
+  background: #febc2e;
+}
+
+.titlebar-control--maximize .titlebar-control__mac-face {
+  background: #28c840;
+}
+
+.titlebar-control[aria-disabled="true"] {
+  cursor: default;
+}
+
+.platform-mac .titlebar-brand {
+  left: 50%;
+  transform: translateX(-50%);
+}
 
 .mail-layout {
   display: grid;

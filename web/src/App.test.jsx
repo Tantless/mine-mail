@@ -22,6 +22,25 @@ describe("Mine Mail MVP", () => {
     expect(screen.getByText(/我们希望它是一间安静的邮件工作室/)).toBeTruthy();
   });
 
+  it("renders an integrated draggable titlebar with window controls", () => {
+    render(<App />);
+
+    const titlebar = screen.getByTestId("window-titlebar");
+    expect(titlebar.getAttribute("data-tauri-drag-region")).toBe("deep");
+    const minimizeButton = screen.getByRole("button", { name: "最小化窗口" });
+    expect(
+      minimizeButton
+        .closest(".titlebar-controls")
+        .getAttribute("data-tauri-drag-region"),
+    ).toBe("false");
+    expect(minimizeButton.getAttribute("aria-disabled")).toBe("true");
+    expect(minimizeButton.tabIndex).toBe(-1);
+    expect(
+      screen.getByRole("button", { name: "最大化或还原窗口" }),
+    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: "关闭窗口" })).toBeTruthy();
+  });
+
   it("switches and persists an MVP theme", async () => {
     const user = userEvent.setup();
     render(<App />);

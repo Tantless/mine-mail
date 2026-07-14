@@ -20,7 +20,8 @@
         "minHeight": 680,
         "center": true,
         "resizable": true,
-        "decorations": true,
+        "decorations": false,
+        "shadow": true,
         "transparent": false
       }
     ],

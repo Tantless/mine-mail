@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Minus, Square, X } from "@phosphor-icons/react";
 import { emptyCompose } from "./data/mockMail.js";
 import { mailApi, isTauriRuntime } from "./services/mailApi.js";
+import { WindowTitlebar } from "./components/WindowTitlebar.jsx";
 import { Sidebar } from "./components/Sidebar.jsx";
 import { MailList } from "./components/MailList.jsx";
 import { MessageView } from "./components/MessageView.jsx";
@@ -343,24 +343,7 @@ export function App() {
       data-runtime={isTauriRuntime ? "tauri" : "web"}
     >
       <div className="app-wallpaper" aria-hidden="true" />
-
-      {!isTauriRuntime ? (
-        <div className="web-window-chrome" aria-hidden="true">
-          {platform === "mac" ? (
-            <div className="traffic-lights">
-              <span />
-              <span />
-              <span />
-            </div>
-          ) : (
-            <div className="window-controls">
-              <span><Minus size={14} /></span>
-              <span><Square size={12} /></span>
-              <span><X size={14} /></span>
-            </div>
-          )}
-        </div>
-      ) : null}
+      <WindowTitlebar platform={platform} isDesktop={isTauriRuntime} />
 
       <div className="mail-layout">
         <Sidebar
