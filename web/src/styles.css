@@ -1432,6 +1432,49 @@ kbd {
   margin: 0 0 18px;
 }
 
+.message-body--html {
+  max-width: none;
+}
+
+.html-message {
+  display: grid;
+  gap: 12px;
+  width: 100%;
+}
+
+.html-message__remote-notice {
+  position: sticky;
+  top: 12px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--color-divider);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--color-control) 78%, transparent);
+  color: var(--color-text-muted);
+  font-size: 11px;
+}
+
+.html-message__remote-notice .secondary-button {
+  flex: 0 0 auto;
+  min-height: 30px;
+  padding: 5px 10px;
+  font-size: 11px;
+}
+
+.html-message__frame {
+  display: block;
+  width: 100%;
+  min-height: 220px;
+  border: 0;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.96);
+  color-scheme: light;
+}
+
 .body-skeleton {
   display: grid;
   gap: 12px;
@@ -1773,31 +1816,55 @@ kbd {
 
 .compose-field {
   display: grid;
-  grid-template-columns: 58px minmax(0, 1fr) auto;
-  min-height: 46px;
+  grid-template-columns: 58px minmax(0, 1fr) 40px;
+  min-height: 48px;
   align-items: center;
+  column-gap: 5px;
   padding: 0 4px;
   border-bottom: 1px solid var(--compose-divider);
-  transition: background var(--motion-fast), box-shadow var(--motion-fast);
 }
 
-.compose-field:last-child {
+.compose-fields > .compose-field:last-child {
   border-bottom: 0;
 }
 
-.compose-field:focus-within {
-  background: color-mix(in srgb, var(--compose-control-hover) 68%, transparent);
-  box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--color-primary) 54%, transparent);
+.compose-copy-fields {
+  display: contents;
 }
 
-.compose-field > span {
+.compose-field > label {
   color: var(--color-text-muted);
   font-size: 11px;
   font-weight: 620;
 }
 
-.compose-field input {
+.compose-input-shell {
+  display: flex;
+  min-width: 0;
+  min-height: 34px;
+  align-items: center;
+  margin: 5px 0;
+  padding: 0 9px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  transition: border-color var(--motion-fast), background var(--motion-fast),
+    box-shadow var(--motion-fast);
+}
+
+.compose-input-shell:hover {
+  background: color-mix(in srgb, var(--compose-control-hover) 42%, transparent);
+}
+
+.compose-input-shell:focus-within {
+  border-color: color-mix(in srgb, var(--color-primary) 48%, var(--compose-divider));
+  background: color-mix(in srgb, var(--compose-control-hover) 64%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 11%, transparent);
+}
+
+.compose-input-shell input {
   width: 100%;
+  min-width: 0;
   border: 0;
   outline: 0;
   background: transparent;
@@ -1805,20 +1872,45 @@ kbd {
   font-size: 13px;
 }
 
-.compose-field > button {
-  padding: 5px 8px;
-  border: 1px solid var(--compose-divider);
-  border-radius: 6px;
-  background: var(--compose-control-surface);
+.compose-input-shell input:focus,
+.compose-input-shell input:focus-visible {
+  border: 0;
+  outline: none;
+  box-shadow: none;
+}
+
+.compose-field .compose-copy-toggle {
+  display: inline-flex;
+  width: 34px;
+  height: 32px;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  border-color: color-mix(in srgb, var(--compose-divider) 72%, transparent);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--compose-control-surface) 58%, transparent);
   color: var(--color-text-muted);
-  font-size: 10px;
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
 }
 
-.compose-field > button:hover:not(:disabled) {
+.compose-field .compose-copy-toggle:hover:not(:disabled),
+.compose-field .compose-copy-toggle[data-expanded="true"] {
+  border-color: color-mix(in srgb, var(--color-primary) 30%, var(--compose-divider));
   background: var(--compose-control-hover);
   color: var(--color-text);
+}
+
+.compose-copy-toggle__caret {
+  transition: transform var(--motion-fast);
+}
+
+.compose-copy-toggle[data-expanded="true"] .compose-copy-toggle__caret {
+  transform: rotate(180deg);
+}
+
+.compose-field--subject {
+  grid-template-columns: 58px minmax(0, 1fr);
 }
 
 .compose-body {
@@ -2123,6 +2215,63 @@ kbd {
   display: grid;
   gap: 4px;
   margin-bottom: 13px;
+}
+
+.settings-section__title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.settings-help {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.settings-help__button {
+  display: grid;
+  width: 19px;
+  height: 19px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-panel-subtle);
+  color: var(--color-text-muted);
+}
+
+.settings-help__button:hover,
+.settings-help__button:focus-visible {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+  outline: none;
+}
+
+.settings-help__tooltip {
+  position: absolute;
+  z-index: 4;
+  top: calc(100% + 8px);
+  left: 0;
+  width: min(310px, calc(100vw - 80px));
+  padding: 10px 11px;
+  border: 1px solid var(--color-border);
+  border-radius: 9px;
+  background: var(--color-panel);
+  color: var(--color-text-secondary) !important;
+  box-shadow: var(--panel-shadow);
+  font-size: 11px !important;
+  line-height: 1.55;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-3px);
+  transition: opacity var(--motion-fast), transform var(--motion-fast);
+}
+
+.settings-help:hover .settings-help__tooltip,
+.settings-help:focus-within .settings-help__tooltip {
+  opacity: 1;
+  transform: translateY(0);
 }
 
 .settings-section__heading strong,

@@ -8,6 +8,9 @@
 - Full before/after comparison: `web/design/qa/comparison-compose-refined-before-after.png`
 - Normal/minimized state comparison: `web/design/qa/comparison-compose-refined-states.png`
 - Focused chrome/control comparison: `web/design/qa/comparison-compose-refined-focused.png`
+- Collapsed copy-recipient focus: `web/design/qa/implementation-compose-copy-focus-collapsed.png`
+- Expanded CC focus: `web/design/qa/implementation-compose-copy-focus-expanded.png`
+- Rounded-only input focus: `web/design/qa/implementation-compose-focus-rounded-only.png`
 - Source and implementation viewport: 3098 × 1850 physical pixels (1549 × 925 logical pixels at 2× capture scale).
 - State: Windows Tauri/WebView2, Daylight theme, configured local mailbox, empty new-message composer.
 
@@ -22,6 +25,8 @@ The implementation evidence comes from the rebuilt Tauri debug executable. The f
 - The compose overlay becomes fully transparent and drops its backdrop filter while minimized, so the mailbox below remains sharp and readable.
 - Empty subjects render as **新邮件**. A non-empty subject is truncated to one centered line when necessary.
 - Drag and resize changes persist as a bounded `{x, y, width, height}` UI preference. New compose sessions and later app launches reuse it; minimize/restore does not overwrite the saved normal geometry.
+- Recipient, CC, BCC, and subject focus now sits inside a rounded inset surface rather than highlighting the full rectangular row. The copy-recipient icon remains outside that focus surface and toggles both optional rows without discarding their values.
+- Compose inputs suppress the global native-element focus shadow, leaving one rounded focus surface instead of a nested rectangular ring.
 
 ## Required fidelity surfaces
 
@@ -36,6 +41,7 @@ The implementation evidence comes from the rebuilt Tauri debug executable. The f
 
 - Real Tauri UI Automation invoked the compose action, minimize action, and subject-bar restore action successfully.
 - React coverage exercises drag, southeast resize, geometry persistence, close/reopen restoration, subject and empty-subject minimized labels, compact geometry, and restore-to-previous geometry.
+- React coverage also exercises CC/BCC expansion, collapse, repeated expansion, and retained address values.
 - The minimized layer exposes the sharp mailbox and permits pointer interaction outside the compact bar.
 - Mail send, local draft save, remote draft synchronization, discard, and recipient confirmation logic were not changed.
 
@@ -51,12 +57,12 @@ The implementation evidence comes from the rebuilt Tauri debug executable. The f
 
 ## Verification
 
-- Core Rust: 49 tests passed.
-- React: 36 tests across 4 files passed.
-- Tauri: 13 Rust tests and `cargo check` passed.
+- Core Rust: 51 tests passed (49 library + 2 send-confirmation).
+- React: 41 tests across 5 files passed.
+- Tauri: 15 Rust tests and `cargo check` passed.
 - Production frontend build: passed.
 - Embedded-assets Tauri debug build: passed.
-- Real Tauri normal/minimized visual capture: passed.
+- Real Tauri normal/minimized and collapsed/expanded recipient visual capture: passed.
 - No SMTP action was triggered during visual QA.
 
 final result: passed

@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  CaretDown,
   DotsSix,
   FloppyDisk,
   Minus,
   Paperclip,
   PaperPlaneTilt,
   Trash,
+  UserPlus,
   X,
 } from "@phosphor-icons/react";
 import { IconButton } from "./IconButton.jsx";
@@ -391,60 +393,79 @@ export function ComposePanel({
             ) : null}
 
             <div className="compose-fields">
-              <label className="compose-field">
-                <span>收件人</span>
-                <input
-                  autoFocus
-                  disabled={controlsDisabled}
-                  aria-label="收件人"
-                  value={value.to.join(", ")}
-                  onChange={(event) => setAddressField("to", event.target.value)}
-                  placeholder="name@example.com"
-                />
-                {!showCopies ? (
-                  <button
-                    type="button"
-                    onClick={() => setShowCopies(true)}
+              <div className="compose-field">
+                <label htmlFor="compose-to">收件人</label>
+                <div className="compose-input-shell">
+                  <input
+                    id="compose-to"
+                    autoFocus
                     disabled={controlsDisabled}
-                  >
-                    抄送 / 密送
-                  </button>
-                ) : null}
-              </label>
-              {showCopies ? (
-                <>
-                  <label className="compose-field">
-                    <span>抄送</span>
-                    <input
-                      aria-label="抄送"
-                      disabled={controlsDisabled}
-                      value={value.cc.join(", ")}
-                      onChange={(event) => setAddressField("cc", event.target.value)}
-                    />
-                  </label>
-                  <label className="compose-field">
-                    <span>密送</span>
-                    <input
-                      aria-label="密送"
-                      disabled={controlsDisabled}
-                      value={value.bcc.join(", ")}
-                      onChange={(event) => setAddressField("bcc", event.target.value)}
-                    />
-                  </label>
-                </>
-              ) : null}
-              <label className="compose-field compose-field--subject">
-                <span>主题</span>
-                <input
-                  aria-label="主题"
+                    aria-label="收件人"
+                    value={value.to.join(", ")}
+                    onChange={(event) => setAddressField("to", event.target.value)}
+                    placeholder="name@example.com"
+                  />
+                </div>
+                <IconButton
+                  className="compose-copy-toggle"
+                  label={showCopies ? "收起抄送和密送" : "展开抄送和密送"}
+                  aria-expanded={showCopies}
+                  aria-controls="compose-copy-fields"
+                  data-expanded={showCopies}
+                  onClick={() => setShowCopies((current) => !current)}
                   disabled={controlsDisabled}
-                  value={value.subject}
-                  onChange={(event) =>
-                    onChange((current) => ({ ...current, subject: event.target.value }))
-                  }
-                  placeholder="写一个简洁的主题"
-                />
-              </label>
+                >
+                  <UserPlus size={15} />
+                  <CaretDown
+                    className="compose-copy-toggle__caret"
+                    size={11}
+                    weight="bold"
+                  />
+                </IconButton>
+              </div>
+              {showCopies ? (
+                <div id="compose-copy-fields" className="compose-copy-fields">
+                  <div className="compose-field">
+                    <label htmlFor="compose-cc">抄送</label>
+                    <div className="compose-input-shell">
+                      <input
+                        id="compose-cc"
+                        aria-label="抄送"
+                        disabled={controlsDisabled}
+                        value={value.cc.join(", ")}
+                        onChange={(event) => setAddressField("cc", event.target.value)}
+                      />
+                    </div>
+                  </div>
+                  <div className="compose-field">
+                    <label htmlFor="compose-bcc">密送</label>
+                    <div className="compose-input-shell">
+                      <input
+                        id="compose-bcc"
+                        aria-label="密送"
+                        disabled={controlsDisabled}
+                        value={value.bcc.join(", ")}
+                        onChange={(event) => setAddressField("bcc", event.target.value)}
+                      />
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+              <div className="compose-field compose-field--subject">
+                <label htmlFor="compose-subject">主题</label>
+                <div className="compose-input-shell">
+                  <input
+                    id="compose-subject"
+                    aria-label="主题"
+                    disabled={controlsDisabled}
+                    value={value.subject}
+                    onChange={(event) =>
+                      onChange((current) => ({ ...current, subject: event.target.value }))
+                    }
+                    placeholder="写一个简洁的主题"
+                  />
+                </div>
+              </div>
             </div>
 
             <textarea

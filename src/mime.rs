@@ -1,3 +1,4 @@
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use lettre::{
     Address, Message,
     address::Envelope,
@@ -324,6 +325,92 @@ pub(crate) struct IncomingMetadata<'a> {
     pub body_fetched: bool,
 }
 
+const MAX_INLINE_IMAGE_BYTES: usize = 4 * 1024 * 1024;
+const MAX_TOTAL_INLINE_IMAGE_BYTES: usize = 12 * 1024 * 1024;
+
+/// Returns only a real text/html MIME leaf. `mail-parser::body_html` also
+/// synthesizes HTML for text/plain-only messages, which is useful for generic
+/// callers but would make the desktop reader treat every message as rich mail.
+fn extract_renderable_html(message: &mail_parser::Message<'_>) -> Option<String> {
+    let mut html = match &message.html_part(0)?.body {
+        PartType::Html(html) => html.as_ref().to_owned(),
+        _ => return None,
+    };
+    let mut total_inline_bytes = 0usize;
+
+    for part in &message.parts {
+        let Some(content_id) = part.content_id().map(normalize_content_id) else {
+            continue;
+        };
+        let Some(media_type) = safe_inline_image_media_type(part) else {
+            continue;
+        };
+        let contents = part.contents();
+        if contents.is_empty()
+            || contents.len() > MAX_INLINE_IMAGE_BYTES
+            || total_inline_bytes.saturating_add(contents.len()) > MAX_TOTAL_INLINE_IMAGE_BYTES
+        {
+            continue;
+        }
+
+        total_inline_bytes += contents.len();
+        let data_url = format!("data:{media_type};base64,{}", BASE64.encode(contents));
+        html = replace_ascii_case_insensitive(&html, &format!("cid:{content_id}"), &data_url);
+        html = replace_ascii_case_insensitive(&html, &format!("cid:<{content_id}>"), &data_url);
+    }
+
+    Some(html)
+}
+
+fn normalize_content_id(value: &str) -> &str {
+    value.trim().trim_start_matches('<').trim_end_matches('>')
+}
+
+fn safe_inline_image_media_type(part: &mail_parser::MessagePart<'_>) -> Option<&'static str> {
+    let content_type = part.content_type()?;
+    if !content_type.c_type.eq_ignore_ascii_case("image") {
+        return None;
+    }
+    match content_type.c_subtype.as_deref()? {
+        subtype if subtype.eq_ignore_ascii_case("png") => Some("image/png"),
+        subtype if subtype.eq_ignore_ascii_case("jpeg") || subtype.eq_ignore_ascii_case("jpg") => {
+            Some("image/jpeg")
+        }
+        subtype if subtype.eq_ignore_ascii_case("gif") => Some("image/gif"),
+        subtype if subtype.eq_ignore_ascii_case("webp") => Some("image/webp"),
+        _ => None,
+    }
+}
+
+fn replace_ascii_case_insensitive(input: &str, needle: &str, replacement: &str) -> String {
+    if needle.is_empty() {
+        return input.to_owned();
+    }
+    let lower_input = input.to_ascii_lowercase();
+    let lower_needle = needle.to_ascii_lowercase();
+    let mut output = String::with_capacity(input.len());
+    let mut offset = 0;
+
+    while let Some(relative) = lower_input[offset..].find(&lower_needle) {
+        let start = offset + relative;
+        output.push_str(&input[offset..start]);
+        output.push_str(replacement);
+        offset = start + needle.len();
+    }
+    output.push_str(&input[offset..]);
+    output
+}
+
+pub(crate) fn render_message_html(message: &InboxMessage) -> Option<String> {
+    if message.raw_rfc822.is_empty() {
+        return message.body_html.clone();
+    }
+    match MessageParser::default().parse(&message.raw_rfc822) {
+        Some(parsed) => extract_renderable_html(&parsed),
+        None => message.body_html.clone(),
+    }
+}
+
 pub(crate) fn parse_incoming_message(
     raw: &[u8],
     metadata: IncomingMetadata<'_>,
@@ -342,6 +429,8 @@ pub(crate) fn parse_incoming_message(
         .attachments()
         .filter_map(|attachment| attachment.attachment_name().map(str::to_owned))
         .collect();
+
+    let body_html = extract_renderable_html(&message);
 
     Ok(InboxMessage {
         id: 0,
@@ -362,7 +451,7 @@ pub(crate) fn parse_incoming_message(
             .map(|preview| preview.into_owned())
             .unwrap_or_default(),
         body_text: message.body_text(0).map(|body| body.into_owned()),
-        body_html: message.body_html(0).map(|body| body.into_owned()),
+        body_html,
         attachment_names,
         body_fetched: metadata.body_fetched,
         raw_rfc822: raw.to_vec(),
@@ -423,7 +512,7 @@ mod tests {
     use super::{
         IncomingMetadata, build_draft_message_revision, build_outgoing_message,
         draft_has_unsupported_content, parse_draft_message, parse_incoming_message,
-        parse_incoming_summary_or_fallback, restore_outbox_envelope,
+        parse_incoming_summary_or_fallback, render_message_html, restore_outbox_envelope,
     };
     use crate::ComposeRequest;
 
@@ -534,6 +623,55 @@ mod tests {
         assert_eq!(parsed.request.subject, "Foreign");
         assert_eq!(parsed.request.body_text, "Body");
         assert!(!parsed.has_unsupported_content);
+    }
+
+    #[test]
+    fn incoming_multipart_prefers_real_html_and_resolves_safe_cid_images() {
+        let raw = b"From: sender@example.com\r\nTo: receiver@example.com\r\nSubject: Rich message\r\nContent-Type: multipart/related; boundary=outer\r\n\r\n--outer\r\nContent-Type: multipart/alternative; boundary=inner\r\n\r\n--inner\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nPlain fallback\r\n--inner\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<html><body><strong>Rich body</strong><img src=\"CID:logo@example.com\"></body></html>\r\n--inner--\r\n--outer\r\nContent-Type: image/png\r\nContent-Transfer-Encoding: base64\r\nContent-ID: <logo@example.com>\r\nContent-Disposition: inline\r\n\r\nAQID\r\n--outer--\r\n";
+        let parsed = parse_incoming_message(
+            raw,
+            IncomingMetadata {
+                account_id: "primary",
+                mailbox: "INBOX",
+                uid: 43,
+                flags: Vec::new(),
+                internal_date: None,
+                size_bytes: raw.len() as u32,
+                synced_at: "2026-07-15T00:00:00Z".to_owned(),
+                body_fetched: true,
+            },
+        )
+        .expect("parse rich message");
+
+        assert_eq!(parsed.body_text.as_deref(), Some("Plain fallback"));
+        let html = parsed.body_html.as_deref().expect("real HTML body");
+        assert!(html.contains("<strong>Rich body</strong>"));
+        assert!(html.contains("data:image/png;base64,AQID"));
+        assert!(!html.to_ascii_lowercase().contains("cid:logo@example.com"));
+        assert_eq!(render_message_html(&parsed).as_deref(), Some(html));
+    }
+
+    #[test]
+    fn incoming_plain_text_does_not_claim_to_have_a_real_html_part() {
+        let raw = b"From: sender@example.com\r\nSubject: Plain\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nOnly text";
+        let parsed = parse_incoming_message(
+            raw,
+            IncomingMetadata {
+                account_id: "primary",
+                mailbox: "INBOX",
+                uid: 44,
+                flags: Vec::new(),
+                internal_date: None,
+                size_bytes: raw.len() as u32,
+                synced_at: "2026-07-15T00:00:00Z".to_owned(),
+                body_fetched: true,
+            },
+        )
+        .expect("parse plain message");
+
+        assert_eq!(parsed.body_text.as_deref(), Some("Only text"));
+        assert_eq!(parsed.body_html, None);
+        assert_eq!(render_message_html(&parsed), None);
     }
 
     #[test]

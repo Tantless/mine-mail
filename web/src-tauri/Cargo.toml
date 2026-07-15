@@ -18,6 +18,7 @@ path = "src/main.rs"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+ammonia = "4"
 keyring = "4.1.4"
 mine-mail = { path = "../.." }
 rusqlite = { version = "0.40.1", features = ["bundled"] }
@@ -31,8 +32,10 @@ tokio = { version = "1", features = ["sync", "time"] }
 zeroize = { version = "1.8", features = ["alloc"] }
 
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
+open = "5"
 tauri-plugin-autostart = "2"
 tauri-plugin-single-instance = "2"
+url = "2"
 
 # Tauri's Windows dependency graph can otherwise produce multi-gigabyte debug
 # symbol and incremental caches, which is disproportionate for this thin shell.

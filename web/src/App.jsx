@@ -31,6 +31,7 @@ const validThemes = new Set(["daylight", "night", "dusk", "forest"]);
 const defaultSettings = {
   pollingIntervalMinutes: 5,
   autostartEnabled: false,
+  remoteImageMode: "automatic",
 };
 const localDraftDebounceMs = 900;
 
@@ -243,12 +244,17 @@ export function App() {
       setSelectedMessage(message);
       setMessageError(null);
 
-      if (message.kind === "outbox" || (!forceFetch && message.body_fetched)) {
+      const needsHtmlHydration =
+        message.body_html_available === true && message.body_html_loaded !== true;
+      if (
+        message.kind === "outbox" ||
+        (!forceFetch && message.body_fetched && !needsHtmlHydration)
+      ) {
         setIsMessageLoading(false);
         return;
       }
 
-      if (!networkActionsAvailableRef.current) {
+      if (!networkActionsAvailableRef.current && !message.body_fetched) {
         setIsMessageLoading(false);
         setMessageError(
           "这封邮件尚未缓存正文。重新连接账户后才能从服务器获取。",
@@ -300,6 +306,10 @@ export function App() {
               ? {
                   ...current,
                   body_text: previous.body_text,
+                  body_html: previous.body_html,
+                  body_html_available: previous.body_html_available,
+                  body_html_loaded: previous.body_html_loaded,
+                  has_remote_images: previous.has_remote_images,
                   body_fetched: true,
                 }
               : current,
@@ -1042,7 +1052,7 @@ export function App() {
       setSettings(updated);
       setSettingsSaveStatus("saved");
       setIsSettingsOpen(false);
-      showToast(`自动同步间隔已设为 ${updated.pollingIntervalMinutes} 分钟`);
+      showToast("桌面设置已保存");
     } catch (error) {
       setSettingsSaveStatus("error");
       showToast(describeError(error, "桌面设置保存失败"), "error");
@@ -1088,6 +1098,18 @@ export function App() {
       setConnectionState("error");
     }
   };
+
+  const handleOpenExternalLink = useCallback(
+    async (url) => {
+      if (!url) return;
+      try {
+        await mailApi.openExternalUrl(url);
+      } catch (error) {
+        showToast(describeError(error, "无法打开邮件中的链接"), "error");
+      }
+    },
+    [showToast],
+  );
 
   const openReply = () => {
     if (!selectedMessage) return;
@@ -1232,6 +1254,8 @@ export function App() {
           onNext={() => navigateRelative(1)}
           canPrevious={selectedIndex > 0}
           canNext={selectedIndex >= 0 && selectedIndex < visibleMessages.length - 1}
+          remoteImageMode={settings.remoteImageMode}
+          onOpenExternalLink={(url) => void handleOpenExternalLink(url)}
         />
       </div>
 

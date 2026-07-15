@@ -9,6 +9,7 @@ const desktop = vi.hoisted(() => {
     mailApi: {
       listInbox: vi.fn(),
       fetchMessage: vi.fn(),
+      openExternalUrl: vi.fn(),
       listDrafts: vi.fn(),
       saveDraft: vi.fn(),
       deleteDraft: vi.fn(),
@@ -120,6 +121,7 @@ describe("Mine Mail desktop state bridge", () => {
     desktop.mailApi.getDesktopSettings.mockResolvedValue({
       pollingIntervalMinutes: 5,
       autostartEnabled: false,
+      remoteImageMode: "automatic",
     });
     desktop.mailApi.listAccountPresets.mockResolvedValue([]);
     desktop.mailApi.getAccountStatus.mockResolvedValue({
@@ -140,6 +142,7 @@ describe("Mine Mail desktop state bridge", () => {
       body_text: "Loaded body",
       body_fetched: true,
     }));
+    desktop.mailApi.openExternalUrl.mockResolvedValue(true);
     desktop.mailApi.syncAll.mockResolvedValue({ inbox: { fetched: 0 } });
     desktop.mailApi.completeExit.mockResolvedValue(true);
     desktop.mailApi.cancelExit.mockResolvedValue(true);
@@ -216,6 +219,46 @@ describe("Mine Mail desktop state bridge", () => {
 
     expect(screen.getByRole("heading", { name: "Second mail" })).toBeTruthy();
     expect(screen.queryByText("Stale first body")).toBeNull();
+  });
+
+  it("hydrates cached HTML on selection and preserves it across summary refreshes", async () => {
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 600 });
+    const richSummary = {
+      ...summary(7, "Rich mail"),
+      body_text: "Flattened duplicate copy",
+      body_fetched: true,
+      body_html_available: true,
+      body_html_loaded: false,
+    };
+    desktop.mailApi.listInbox.mockResolvedValue([richSummary]);
+    desktop.mailApi.fetchMessage.mockResolvedValue({
+      ...richSummary,
+      body_html: '<table><tbody><tr><td class="desktop">Rich layout</td></tr></tbody></table>',
+      body_html_loaded: true,
+      has_remote_images: false,
+    });
+    const user = userEvent.setup();
+
+    render(<App />);
+    await user.click(await screen.findByText("Rich mail"));
+
+    const frame = await screen.findByTitle("Rich mail HTML 正文");
+    expect(desktop.mailApi.fetchMessage).toHaveBeenCalledWith(7);
+    expect(frame.getAttribute("sandbox")).toBe("allow-same-origin");
+    expect(frame.getAttribute("srcdoc")).toContain("Rich layout");
+    expect(screen.queryByText("Flattened duplicate copy")).toBeNull();
+
+    await waitFor(() =>
+      expect(desktop.listeners.has("mail:inbox-updated")).toBe(true),
+    );
+    await act(async () => {
+      desktop.listeners.get("mail:inbox-updated")?.({ payload: {} });
+    });
+    await waitFor(() => {
+      expect(screen.getByTitle("Rich mail HTML 正文").getAttribute("srcdoc")).toContain(
+        "Rich layout",
+      );
+    });
   });
 
   it("flushes the final composer revision before completing desktop exit", async () => {

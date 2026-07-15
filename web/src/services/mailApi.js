@@ -33,6 +33,7 @@ let webOutbox = [];
 let webSettings = {
   pollingIntervalMinutes: 5,
   autostartEnabled: false,
+  remoteImageMode: "automatic",
 };
 let webAccountStatus = {
   configured: true,
@@ -90,11 +91,16 @@ function normalizeSettings(settings = {}) {
       settings.polling_interval_minutes ??
       5,
   );
+  const remoteImageMode =
+    settings.remoteImageMode ?? settings.remote_image_mode ?? "automatic";
   return {
     pollingIntervalMinutes: [1, 3, 5].includes(interval) ? interval : 5,
     autostartEnabled: Boolean(
       settings.autostartEnabled ?? settings.autostart_enabled ?? false,
     ),
+    remoteImageMode: ["automatic", "ask", "blocked"].includes(remoteImageMode)
+      ? remoteImageMode
+      : "automatic",
     startupError: settings.startupError ?? settings.startup_error ?? null,
   };
 }
@@ -104,6 +110,7 @@ function settingsDto(settings) {
   return {
     poll_interval_minutes: normalized.pollingIntervalMinutes,
     autostart_enabled: normalized.autostartEnabled,
+    remote_image_mode: normalized.remoteImageMode,
   };
 }
 
@@ -176,6 +183,18 @@ export const mailApi = {
     return webOnly(() =>
       structuredClone(webMessages.find((mail) => mail.uid === uid)),
     )();
+  },
+
+  async openExternalUrl(url) {
+    if (isTauri) return desktopInvoke("open_external_url", { url });
+    return webOnly(() => {
+      const parsed = new URL(url);
+      if (!["http:", "https:", "mailto:"].includes(parsed.protocol)) {
+        throw new Error("不支持打开这种链接");
+      }
+      window.open(parsed.href, "_blank", "noopener,noreferrer");
+      return true;
+    })();
   },
 
   async listDrafts() {

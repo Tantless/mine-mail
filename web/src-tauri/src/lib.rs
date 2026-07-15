@@ -1,5 +1,6 @@
 mod account;
 mod desktop;
+mod mail_html;
 
 use std::{env, path::PathBuf};
 
@@ -10,11 +11,13 @@ use mine_mail::{
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WindowEvent};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt as AutostartManagerExt};
+use url::Url;
 
 use account::{
     AccountPresetDto, AccountRuntime, AccountStatusDto, BackendState, ConfigureAccountRequest,
 };
 use desktop::{DesktopRuntime, DesktopSettingsDto, DesktopSettingsUpdate};
+use mail_html::sanitize_mail_html;
 
 const INBOX_SYNC_LIMIT: usize = 100;
 const INBOX_LIST_LIMIT: usize = 250;
@@ -36,8 +39,9 @@ impl From<MailAddress> for MailAddressDto {
     }
 }
 
-/// The desktop boundary intentionally has no HTML or raw RFC822 fields.
-/// React receives plain text and attachment names only.
+/// The desktop boundary never exposes raw RFC822 or untrusted HTML. Full-body
+/// responses may include a Rust-sanitized HTML fragment for the sandboxed
+/// reader; list responses only advertise that such a body is available.
 #[derive(Clone, Debug, Serialize)]
 struct InboxMessageDto {
     id: i64,
@@ -54,13 +58,45 @@ struct InboxMessageDto {
     size_bytes: u32,
     preview: String,
     body_text: Option<String>,
+    body_html: Option<String>,
+    body_html_available: bool,
+    body_html_loaded: bool,
+    has_remote_images: bool,
     attachment_names: Vec<String>,
     body_fetched: bool,
     synced_at: String,
 }
 
-impl From<InboxMessage> for InboxMessageDto {
-    fn from(value: InboxMessage) -> Self {
+impl InboxMessageDto {
+    fn summary(value: InboxMessage) -> Self {
+        let body_html_available = value.body_html.is_some();
+        Self::from_parts(value, None, body_html_available, false, false)
+    }
+
+    fn full(value: InboxMessage) -> Self {
+        let rendered_html = mine_mail::render_message_html(&value);
+        let body_html_available = rendered_html.is_some();
+        let sanitized = rendered_html.as_deref().map(sanitize_mail_html);
+        let has_remote_images = sanitized
+            .as_ref()
+            .is_some_and(|html| html.has_remote_images);
+        let body_html = sanitized.map(|html| html.fragment);
+        Self::from_parts(
+            value,
+            body_html,
+            body_html_available,
+            true,
+            has_remote_images,
+        )
+    }
+
+    fn from_parts(
+        value: InboxMessage,
+        body_html: Option<String>,
+        body_html_available: bool,
+        body_html_loaded: bool,
+        has_remote_images: bool,
+    ) -> Self {
         Self {
             id: value.id,
             mailbox: value.mailbox,
@@ -76,10 +112,20 @@ impl From<InboxMessage> for InboxMessageDto {
             size_bytes: value.size_bytes,
             preview: value.preview,
             body_text: value.body_text,
+            body_html,
+            body_html_available,
+            body_html_loaded,
+            has_remote_images,
             attachment_names: value.attachment_names,
             body_fetched: value.body_fetched,
             synced_at: value.synced_at,
         }
+    }
+}
+
+impl From<InboxMessage> for InboxMessageDto {
+    fn from(value: InboxMessage) -> Self {
+        Self::full(value)
     }
 }
 
@@ -189,8 +235,33 @@ fn list_inbox(
     let limit = limit.unwrap_or(INBOX_LIST_LIMIT).clamp(1, INBOX_LIST_LIMIT);
     backend
         .list_inbox(limit)
-        .map(|messages| messages.into_iter().map(Into::into).collect())
+        .map(|messages| messages.into_iter().map(InboxMessageDto::summary).collect())
         .map_err(safe_mail_error)
+}
+
+#[tauri::command]
+fn open_external_url(url: String) -> CommandResult<()> {
+    let url = validate_external_url(&url)?;
+    open::that(url.as_str())
+        .map_err(|_| "The link could not be opened in the system browser.".to_owned())
+}
+
+fn validate_external_url(value: &str) -> CommandResult<Url> {
+    let url = Url::parse(value.trim()).map_err(|_| "The link is invalid.".to_owned())?;
+    match url.scheme() {
+        "http" | "https" => {
+            if url.host_str().is_none() || !url.username().is_empty() || url.password().is_some() {
+                return Err("The link is not safe to open.".to_owned());
+            }
+        }
+        "mailto" => {
+            if url.path().trim().is_empty() {
+                return Err("The email link has no recipient.".to_owned());
+            }
+        }
+        _ => return Err("This link type is not supported.".to_owned()),
+    }
+    Ok(url)
 }
 
 #[tauri::command]
@@ -556,6 +627,7 @@ pub fn run() {
             sync_all,
             list_inbox,
             fetch_message,
+            open_external_url,
             save_draft,
             list_drafts,
             delete_draft,
@@ -593,4 +665,73 @@ pub fn run() {
         }
         _ => {}
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use mine_mail::InboxMessage;
+
+    use super::{InboxMessageDto, validate_external_url};
+
+    fn rich_message() -> InboxMessage {
+        InboxMessage {
+            id: 1,
+            account_id: "primary".to_owned(),
+            mailbox: "INBOX".to_owned(),
+            uid: 7,
+            message_id: None,
+            subject: "Rich".to_owned(),
+            sender: None,
+            to: Vec::new(),
+            cc: Vec::new(),
+            sent_at: None,
+            internal_date: None,
+            flags: Vec::new(),
+            size_bytes: 100,
+            preview: "Preview".to_owned(),
+            body_text: Some("Fallback".to_owned()),
+            body_html: Some(
+                r#"<style>.desktop{display:block}</style><div onclick="alert(1)">Rich</div><script>alert(2)</script>"#
+                    .to_owned(),
+            ),
+            attachment_names: Vec::new(),
+            body_fetched: true,
+            raw_rfc822: Vec::new(),
+            synced_at: "2026-07-15T00:00:00Z".to_owned(),
+        }
+    }
+
+    #[test]
+    fn summaries_advertise_html_without_crossing_the_body_boundary() {
+        let dto = InboxMessageDto::summary(rich_message());
+        let json = serde_json::to_value(dto).expect("serialize summary");
+
+        assert_eq!(json["body_html_available"], true);
+        assert_eq!(json["body_html_loaded"], false);
+        assert!(json["body_html"].is_null());
+        assert!(json.get("raw_rfc822").is_none());
+    }
+
+    #[test]
+    fn full_bodies_cross_the_boundary_only_after_sanitization() {
+        let dto = InboxMessageDto::full(rich_message());
+        let json = serde_json::to_value(dto).expect("serialize full body");
+        let html = json["body_html"].as_str().expect("safe HTML");
+
+        assert!(html.contains("<style>"));
+        assert!(html.contains("Rich"));
+        assert!(!html.contains("onclick"));
+        assert!(!html.contains("<script"));
+        assert_eq!(json["body_html_loaded"], true);
+        assert!(json.get("raw_rfc822").is_none());
+    }
+
+    #[test]
+    fn external_links_accept_only_explicit_safe_schemes() {
+        assert!(validate_external_url("https://example.com/mail").is_ok());
+        assert!(validate_external_url("mailto:friend@example.com").is_ok());
+        assert!(validate_external_url("javascript:alert(1)").is_err());
+        assert!(validate_external_url("file:///C:/Windows/system.ini").is_err());
+        assert!(validate_external_url("https://user:pass@example.com/").is_err());
+    }
 }

@@ -17,6 +17,7 @@ path = "src/main.rs"
 [dependencies]
 async-imap = { version = "0.11.2", default-features = false, features = ["runtime-tokio"] }
 async-native-tls = { version = "0.6.0", default-features = false, features = ["runtime-tokio"] }
+base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4.6", features = ["derive"] }
 futures = "0.3"
@@ -37,4 +38,3 @@ tempfile = "3"
 lto = "thin"
 codegen-units = 1
 strip = true
-

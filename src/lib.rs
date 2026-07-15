@@ -20,3 +20,11 @@ pub use models::{
     ComposeRequest, ConnectionReport, Draft, DraftDeleteKind, DraftSaveKind, DraftSaveOutcome,
     DraftSyncReport, InboxMessage, MailAddress, OutboxItem, OutboxStatus, SyncReport,
 };
+
+/// Rebuilds the preferred HTML body from the locally cached RFC822 message and
+/// resolves safe inline image Content-IDs. The returned HTML is still
+/// untrusted mail content and must be sanitized before it crosses a UI
+/// boundary.
+pub fn render_message_html(message: &InboxMessage) -> Option<String> {
+    mime::render_message_html(message)
+}

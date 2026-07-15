@@ -97,6 +97,38 @@ describe("Mine Mail MVP", () => {
     expect(screen.queryByRole("alertdialog")).toBeNull();
   });
 
+  it("toggles copy recipients without losing their values", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findAllByText("欢迎来到 Mine Mail");
+
+    await user.click(screen.getByRole("button", { name: /写信/ }));
+    const recipient = screen.getByLabelText("收件人");
+    const expandCopies = screen.getByRole("button", { name: "展开抄送和密送" });
+
+    expect(recipient.closest(".compose-input-shell")).toBeTruthy();
+    expect(expandCopies.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByLabelText("抄送")).toBeNull();
+    expect(screen.queryByLabelText("密送")).toBeNull();
+
+    await user.click(expandCopies);
+    const cc = screen.getByLabelText("抄送");
+    const bcc = screen.getByLabelText("密送");
+    expect(screen.getByRole("button", { name: "收起抄送和密送" })).toBeTruthy();
+    expect(cc.closest(".compose-input-shell")).toBeTruthy();
+    expect(bcc.closest(".compose-input-shell")).toBeTruthy();
+
+    await user.type(cc, "copy@example.com");
+    await user.type(bcc, "private@example.com");
+    await user.click(screen.getByRole("button", { name: "收起抄送和密送" }));
+    expect(screen.queryByLabelText("抄送")).toBeNull();
+    expect(screen.queryByLabelText("密送")).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "展开抄送和密送" }));
+    expect(screen.getByLabelText("抄送").value).toBe("copy@example.com");
+    expect(screen.getByLabelText("密送").value).toBe("private@example.com");
+  });
+
   it("moves, resizes, persists, minimizes, and restores the compose surface", async () => {
     const user = userEvent.setup();
     render(<App />);
@@ -343,7 +375,12 @@ describe("Mine Mail MVP", () => {
     await screen.findAllByText("欢迎来到 Mine Mail");
 
     await user.click(screen.getByRole("button", { name: "设置" }));
+    expect(
+      screen.getByRole("button", { name: "了解自动加载远程图片的隐私风险" }),
+    ).toBeTruthy();
+    expect(screen.getByRole("tooltip").textContent).toContain("邮件打开时间");
     await user.click(screen.getByRole("radio", { name: "3 分钟" }));
+    await user.click(screen.getByRole("radio", { name: "每次询问" }));
     await user.click(screen.getByRole("checkbox", { name: /开机启动/ }));
     await user.click(screen.getByRole("button", { name: "保存设置" }));
 
@@ -351,6 +388,7 @@ describe("Mine Mail MVP", () => {
       expect(updateSettings).toHaveBeenCalledWith({
         pollingIntervalMinutes: 3,
         autostartEnabled: true,
+        remoteImageMode: "ask",
       }),
     );
   });

@@ -1,9 +1,16 @@
 import { useEffect, useState } from "react";
-import { Check, GearSix, X } from "@phosphor-icons/react";
+import { Check, GearSix, Question, X } from "@phosphor-icons/react";
 import { IconButton } from "./IconButton.jsx";
 import { AccountSetupForm } from "./AccountSetup.jsx";
 
 const intervalOptions = [1, 3, 5];
+const remoteImageOptions = [
+  { id: "automatic", label: "自动加载" },
+  { id: "ask", label: "每次询问" },
+  { id: "blocked", label: "始终阻止" },
+];
+const remoteImageRisk =
+  "自动加载会连接发件人的图片服务器，可能暴露邮件打开时间、IP 地址和设备信息，并让追踪像素确认邮箱处于活跃状态。";
 
 export function SettingsPanel({
   settings,
@@ -87,6 +94,52 @@ export function SettingsPanel({
               </button>
             ))}
           </div>
+          </div>
+
+          <div className="settings-section">
+            <div className="settings-section__heading">
+              <div className="settings-section__title-row">
+                <strong>远程图片</strong>
+                <span className="settings-help">
+                  <button
+                    type="button"
+                    className="settings-help__button"
+                    aria-label="了解自动加载远程图片的隐私风险"
+                    aria-describedby="remote-image-risk"
+                  >
+                    <Question size={13} weight="bold" />
+                  </button>
+                  <span
+                    id="remote-image-risk"
+                    className="settings-help__tooltip"
+                    role="tooltip"
+                  >
+                    {remoteImageRisk}
+                  </span>
+                </span>
+              </div>
+              <span>控制 HTML 邮件是否连接外部图片服务器。</span>
+            </div>
+            <div className="settings-options" role="radiogroup" aria-label="远程图片加载方式">
+              {remoteImageOptions.map((option) => (
+                <button
+                  key={option.id}
+                  type="button"
+                  role="radio"
+                  aria-checked={value.remoteImageMode === option.id}
+                  data-selected={value.remoteImageMode === option.id}
+                  onClick={() =>
+                    setValue((current) => ({
+                      ...current,
+                      remoteImageMode: option.id,
+                    }))
+                  }
+                >
+                  {option.label}
+                  {value.remoteImageMode === option.id ? <Check size={15} weight="bold" /> : null}
+                </button>
+              ))}
+            </div>
           </div>
 
           <label className="settings-toggle">

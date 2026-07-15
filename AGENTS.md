@@ -15,6 +15,7 @@ Cross-platform desktop mail client. Product decisions in this file are durable; 
 - First historical import establishes a notification baseline. Later unread arrivals notify with sender + subject, never body text.
 - Closing the window hides it to the tray while background mode is active. Tray labels are exactly **打开 / 刷新 / 退出**.
 - Login autostart is a setting and defaults off.
+- Remote images are user-selectable as automatic/ask/blocked and default to automatic loading. The setting includes a nearby help affordance explaining the privacy risk of automatic remote requests.
 - Drafts synchronize both ways. Editing reuses one stable draft ID; save locally during editing and upload remotely every five minutes.
 - Draft editor writes must carry the SQLite `local_version`; stale edits become conflict copies and stale deletes never remove the newer canonical draft. HTML/attachment drafts remain read-only until that MIME is supported.
 - Sending binds exact-recipient confirmation and Outbox state to one draft `local_version`. Preserve newer edits, supersede safe older retry items, and never automatically retry `delivery_unknown` items.
@@ -24,6 +25,7 @@ Cross-platform desktop mail client. Product decisions in this file are durable; 
 
 - The approved MVP material is the layered frosted treatment in `web/design/references/mine-mail-frosted-material-reference.png`: one continuous painterly wallpaper, quieter glass for the message list, more atmospheric glass for the reader, and a theme-tinted compose control. All themes inherit the shared material structure and only tune semantic tokens.
 - The compose window uses that same layered glass system for its shell, fields, editor, footer, and controls. It has no visible title bar; only minimize and close remain at the top-right. The floating surface can be dragged and resized from every edge/corner, remembers the user's last normal position and size across messages and app restarts, and stays within the visible app bounds.
+- Compose address and subject inputs use inset rounded focus surfaces with visible spacing from the grouped field shell. The icon-only copy-recipient toggle expands and collapses CC/BCC without clearing their values.
 - A minimized composer is a 340 × 44 subject-only glass bar at the bottom center. It removes the compose backdrop blur and all status/action chrome; clicking the bar restores the exact pre-minimize geometry. An empty subject is shown as **新邮件**.
 
 ## Verification

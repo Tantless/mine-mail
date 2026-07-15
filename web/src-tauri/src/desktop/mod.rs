@@ -132,6 +132,7 @@ impl DesktopRuntime {
             background_enabled: settings.background_enabled,
             poll_interval_minutes: settings.poll_interval_minutes,
             notifications_enabled: settings.notifications_enabled,
+            remote_image_mode: settings.remote_image_mode,
             autostart_enabled,
             startup_error: self
                 .startup_error
@@ -155,6 +156,9 @@ impl DesktopRuntime {
         if let Some(value) = update.notifications_enabled {
             settings.notifications_enabled = value;
         }
+        if let Some(value) = update.remote_image_mode {
+            settings.remote_image_mode = value;
+        }
 
         self.persist_settings(settings, "Desktop settings could not be saved.")?;
         *self
@@ -171,6 +175,7 @@ impl DesktopRuntime {
             background_enabled: Some(settings.background_enabled),
             poll_interval_minutes: Some(settings.poll_interval_minutes),
             notifications_enabled: Some(settings.notifications_enabled),
+            remote_image_mode: Some(settings.remote_image_mode),
             autostart_enabled: None,
         })
     }

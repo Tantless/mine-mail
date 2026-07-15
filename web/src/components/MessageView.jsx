@@ -14,6 +14,7 @@ import {
   Trash,
 } from "@phosphor-icons/react";
 import { IconButton } from "./IconButton.jsx";
+import { HtmlMessageBody } from "./HtmlMessageBody.jsx";
 import { formatFullDate, initials, senderLabel } from "../utils/formatters.js";
 
 function fileSizeLabel(bytes) {
@@ -37,6 +38,8 @@ export function MessageView({
   onNext,
   canPrevious,
   canNext,
+  remoteImageMode = "automatic",
+  onOpenExternalLink,
 }) {
   if (!message) {
     return (
@@ -106,7 +109,10 @@ export function MessageView({
           </div>
         </div>
 
-        <article className="message-body" aria-busy={isLoading}>
+        <article
+          className={`message-body${message.body_html ? " message-body--html" : ""}`}
+          aria-busy={isLoading}
+        >
           {isLoading ? (
             <div className="body-skeleton" aria-label="正在加载正文">
               <span />
@@ -122,6 +128,15 @@ export function MessageView({
                 重新加载
               </button>
             </div>
+          ) : message.body_html ? (
+            <HtmlMessageBody
+              key={message.uid}
+              html={message.body_html}
+              hasRemoteImages={message.has_remote_images}
+              remoteImageMode={remoteImageMode}
+              title={message.subject}
+              onOpenLink={onOpenExternalLink}
+            />
           ) : (
             body.split(/\n{2,}/).map((paragraph, index) => (
               <p key={`${index}-${paragraph.slice(0, 12)}`}>

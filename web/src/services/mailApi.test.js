@@ -57,8 +57,16 @@ describe("mailApi desktop IPC contract", () => {
 
   it("maps desktop settings and account commands without persisting a secret", async () => {
     ipc.invoke
-      .mockResolvedValueOnce({ poll_interval_minutes: 3, autostart_enabled: true })
-      .mockResolvedValueOnce({ poll_interval_minutes: 1, autostart_enabled: false })
+      .mockResolvedValueOnce({
+        poll_interval_minutes: 3,
+        autostart_enabled: true,
+        remote_image_mode: "ask",
+      })
+      .mockResolvedValueOnce({
+        poll_interval_minutes: 1,
+        autostart_enabled: false,
+        remote_image_mode: "blocked",
+      })
       .mockResolvedValueOnce({
         configured: true,
         provider: "163",
@@ -73,11 +81,13 @@ describe("mailApi desktop IPC contract", () => {
     expect(await mailApi.getDesktopSettings()).toEqual({
       pollingIntervalMinutes: 3,
       autostartEnabled: true,
+      remoteImageMode: "ask",
       startupError: null,
     });
     await mailApi.updateDesktopSettings({
       pollingIntervalMinutes: 1,
       autostartEnabled: false,
+      remoteImageMode: "blocked",
     });
     expect(await mailApi.getAccountStatus()).toMatchObject({
       configured: true,
@@ -92,7 +102,11 @@ describe("mailApi desktop IPC contract", () => {
     await mailApi.configureAccount(accountRequest);
 
     expect(ipc.invoke).toHaveBeenNthCalledWith(2, "update_desktop_settings", {
-      settings: { poll_interval_minutes: 1, autostart_enabled: false },
+      settings: {
+        poll_interval_minutes: 1,
+        autostart_enabled: false,
+        remote_image_mode: "blocked",
+      },
     });
     expect(ipc.invoke).toHaveBeenNthCalledWith(4, "configure_account", {
       request: accountRequest,
@@ -146,6 +160,17 @@ describe("mailApi desktop IPC contract", () => {
     await expect(mailApi.syncAll()).rejects.toThrow(
       "Recipient confirmation did not match",
     );
+  });
+
+  it("opens mail links through the narrow desktop command", async () => {
+    ipc.invoke.mockResolvedValue(undefined);
+    const { mailApi } = await import("./mailApi.js");
+
+    await mailApi.openExternalUrl("https://example.com/message");
+
+    expect(ipc.invoke).toHaveBeenCalledWith("open_external_url", {
+      url: "https://example.com/message",
+    });
   });
 
   it("rejects stale complete and cancel exit handshakes returned as false", async () => {
