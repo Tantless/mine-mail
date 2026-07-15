@@ -190,6 +190,7 @@ button:not(:disabled) {
 
 button:focus-visible,
 input:focus-visible,
+select:focus-visible,
 textarea:focus-visible,
 [tabindex="0"]:focus-visible {
   outline: none;
@@ -214,6 +215,62 @@ kbd {
   min-height: 620px;
   isolation: isolate;
   overflow: hidden;
+}
+
+.unsupported-runtime {
+  display: grid;
+  width: 100vw;
+  height: 100vh;
+  place-items: center;
+  padding: 32px;
+  background:
+    radial-gradient(circle at 20% 10%, rgba(112, 143, 181, 0.24), transparent 36%),
+    #111820;
+  color: #eef3f7;
+}
+
+.unsupported-runtime > div {
+  width: min(560px, 100%);
+  padding: 30px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.06);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.34);
+}
+
+.unsupported-runtime h1 {
+  margin: 8px 0 12px;
+  font-size: clamp(24px, 5vw, 38px);
+}
+
+.unsupported-runtime p {
+  color: rgba(238, 243, 247, 0.72);
+  line-height: 1.7;
+}
+
+.unsupported-runtime code {
+  margin-left: 5px;
+  color: #fff;
+}
+
+.account-repair-banner {
+  position: fixed;
+  z-index: 20;
+  top: calc(var(--titlebar-height) + 8px);
+  left: 50%;
+  display: flex;
+  width: min(680px, calc(100vw - 32px));
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 9px 10px 9px 14px;
+  border: 1px solid color-mix(in srgb, #b47316 34%, var(--color-border));
+  border-radius: 11px;
+  background: color-mix(in srgb, #fff3d7 88%, var(--color-panel));
+  box-shadow: var(--panel-shadow);
+  color: #70470d;
+  font-size: 12px;
+  transform: translateX(-50%);
 }
 
 .app-wallpaper {
@@ -547,6 +604,20 @@ kbd {
   border: 2px solid rgba(255, 255, 255, 0.6);
   border-radius: 50%;
   background: var(--color-success);
+}
+
+.account-card[data-connection="checking"] .account-card__status {
+  background: var(--color-primary);
+  animation: pulse 1s ease-in-out infinite;
+}
+
+.account-card[data-connection="degraded"] .account-card__status {
+  background: #e9a23b;
+}
+
+.account-card[data-connection="offline"] .account-card__status,
+.account-card[data-connection="error"] .account-card__status {
+  background: var(--color-danger);
 }
 
 .theme-control {
@@ -1156,6 +1227,26 @@ kbd {
 .body-skeleton span:nth-child(3) { width: 84%; }
 .body-skeleton span:nth-child(4) { width: 51%; }
 
+.message-error {
+  display: grid;
+  justify-items: start;
+  gap: 8px;
+  padding: 18px;
+  border: 1px solid color-mix(in srgb, var(--color-danger) 35%, var(--color-border));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--color-danger) 7%, var(--color-panel));
+}
+
+.message-error strong {
+  color: var(--color-danger);
+  font-size: 13px;
+}
+
+.message-error span {
+  color: var(--color-text-muted);
+  font-size: 12px;
+}
+
 .attachments {
   max-width: 760px;
   padding: 18px 0 24px;
@@ -1316,6 +1407,36 @@ kbd {
   font-weight: 680;
 }
 
+.compose-save-state {
+  margin-left: 8px;
+  color: var(--color-text-muted);
+  font-size: 10px;
+}
+
+.compose-save-state[data-state="saving"],
+.compose-save-state[data-state="syncing"] {
+  color: var(--color-primary);
+}
+
+.compose-save-state[data-state="error"] {
+  color: var(--color-danger);
+}
+
+.compose-save-state[data-state="readonly"] {
+  color: var(--color-warning, #a66a20);
+}
+
+.compose-unsupported-notice {
+  margin: 12px 20px 4px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--color-primary) 22%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--color-panel) 86%, var(--color-primary) 14%);
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .compose-header .icon-button {
   width: 34px;
   height: 34px;
@@ -1462,10 +1583,29 @@ kbd {
 }
 
 .recipient-review {
+  display: grid;
+  gap: 10px;
+  margin: 16px 0;
+}
+
+.recipient-review__group {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+}
+
+.recipient-review__group > strong {
+  padding-top: 6px;
+  color: var(--color-text-muted);
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.recipient-review__group > div {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  margin: 16px 0;
 }
 
 .recipient-review span {
@@ -1499,6 +1639,277 @@ kbd {
   justify-content: flex-end;
   gap: 9px;
   margin-top: 20px;
+}
+
+.settings-layer,
+.account-onboarding-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 45;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: var(--overlay);
+  backdrop-filter: blur(5px);
+}
+
+.settings-panel {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  width: min(650px, calc(100vw - 34px));
+  max-height: min(820px, calc(100vh - 42px));
+  overflow: hidden;
+  border: 1px solid var(--panel-border);
+  border-radius: 15px;
+  background: var(--color-panel);
+  color: var(--color-text);
+  box-shadow: 0 28px 80px rgba(8, 17, 25, 0.36), var(--panel-shadow);
+  animation: dialog-in var(--motion-normal) ease-out;
+}
+
+.settings-header {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr) 36px;
+  gap: 11px;
+  align-items: center;
+  padding: 17px 18px;
+  border-bottom: 1px solid var(--color-divider);
+}
+
+.settings-header__icon,
+.account-onboarding__mark {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--color-primary) 12%, var(--color-control));
+  color: var(--color-primary);
+}
+
+.settings-header h2,
+.account-onboarding h1 {
+  margin: 2px 0 0;
+  letter-spacing: -0.03em;
+}
+
+.settings-header h2 {
+  font-size: 17px;
+}
+
+.settings-scroll {
+  min-height: 0;
+  overflow: auto;
+  padding: 2px 20px 18px;
+}
+
+.settings-section {
+  padding: 20px 0;
+  border-bottom: 1px solid var(--color-divider);
+}
+
+.settings-section__heading {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 13px;
+}
+
+.settings-section__heading strong,
+.settings-toggle strong {
+  font-size: 13px;
+  font-weight: 680;
+}
+
+.settings-section__heading span,
+.settings-toggle small {
+  color: var(--color-text-muted);
+  font-size: 11px;
+}
+
+.settings-options,
+.account-provider-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.settings-options button,
+.account-provider-grid button {
+  display: flex;
+  min-height: 40px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 0 11px;
+  border: 1px solid var(--color-border);
+  border-radius: 9px;
+  background: var(--color-panel-subtle);
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  font-weight: 620;
+}
+
+.settings-options button[data-selected="true"],
+.account-provider-grid button[data-selected="true"] {
+  border-color: var(--color-primary);
+  background: var(--color-selection);
+  color: var(--color-primary);
+}
+
+.account-provider-grid button[data-disabled="true"] {
+  border-style: dashed;
+  color: var(--color-text-muted);
+}
+
+.settings-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 0 3px;
+}
+
+.settings-toggle > span {
+  display: grid;
+  gap: 4px;
+}
+
+.settings-toggle input {
+  width: 38px;
+  height: 22px;
+  accent-color: var(--color-primary);
+}
+
+.settings-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 9px;
+  padding: 14px 18px;
+  border-top: 1px solid var(--color-divider);
+  background: var(--color-panel-subtle);
+}
+
+.settings-error {
+  margin: 12px 0 0;
+  color: var(--color-danger);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.account-onboarding-layer {
+  z-index: 75;
+  background:
+    linear-gradient(rgba(8, 18, 26, 0.2), rgba(8, 18, 26, 0.35)),
+    var(--wallpaper) center / cover no-repeat;
+}
+
+.account-onboarding {
+  width: min(700px, calc(100vw - 34px));
+  max-height: min(860px, calc(100vh - 36px));
+  overflow: auto;
+  padding: 28px;
+  border: 1px solid var(--panel-border);
+  border-radius: 16px;
+  background: var(--color-panel);
+  color: var(--color-text);
+  box-shadow: 0 30px 90px rgba(7, 16, 23, 0.4), var(--panel-shadow);
+}
+
+.account-onboarding h1 {
+  margin-top: 8px;
+  font-size: 25px;
+}
+
+.account-onboarding__lead {
+  margin: 7px 0 22px;
+  color: var(--color-text-muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.account-setup-form {
+  display: grid;
+  gap: 13px;
+}
+
+.account-provider-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.settings-field {
+  display: grid;
+  gap: 6px;
+}
+
+.settings-field > span {
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  font-weight: 640;
+}
+
+.settings-field input,
+.settings-field select {
+  width: 100%;
+  min-height: 40px;
+  padding: 0 11px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  outline: 0;
+  background: var(--color-panel-subtle);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 12px;
+}
+
+.settings-field small,
+.account-preset-note {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.custom-server-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 118px;
+  gap: 11px;
+  padding: 13px;
+  border: 1px solid var(--color-divider);
+  border-radius: 10px;
+  background: var(--color-panel-subtle);
+}
+
+.settings-field--wide {
+  grid-column: 1 / -1;
+}
+
+.account-auth-notice {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  padding: 13px;
+  border: 1px solid color-mix(in srgb, #e9a23b 45%, var(--color-border));
+  border-radius: 10px;
+  background: color-mix(in srgb, #e9a23b 9%, var(--color-panel));
+  color: #b56d10;
+}
+
+.account-auth-notice span {
+  display: grid;
+  gap: 4px;
+  color: var(--color-text-muted);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.account-auth-notice strong {
+  color: var(--color-text);
+}
+
+.account-submit {
+  justify-self: start;
+  margin-top: 2px;
 }
 
 .toast {
@@ -1782,6 +2193,30 @@ kbd {
 
   .compose-footer {
     padding: 0 10px;
+  }
+
+  .settings-layer,
+  .account-onboarding-layer {
+    padding: 8px;
+  }
+
+  .settings-panel,
+  .account-onboarding {
+    width: 100%;
+    max-height: calc(100vh - 16px);
+  }
+
+  .account-onboarding {
+    padding: 20px;
+  }
+
+  .account-provider-grid,
+  .settings-options {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .custom-server-grid {
+    grid-template-columns: minmax(0, 1fr) 96px;
   }
 
   .draft-button,

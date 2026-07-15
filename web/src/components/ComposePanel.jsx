@@ -11,47 +11,66 @@ import { IconButton } from "./IconButton.jsx";
 import { splitAddresses } from "../utils/formatters.js";
 
 export function ComposePanel({
-  initialValue,
+  value,
+  draftId,
+  saveStatus,
   isSending,
+  locked = false,
+  readOnly = false,
+  networkAvailable = true,
   onClose,
+  onDiscard,
+  onChange,
   onSaveDraft,
   onRequestSend,
   sendShortcut,
 }) {
-  const [form, setForm] = useState(initialValue);
   const [showCopies, setShowCopies] = useState(
-    Boolean(initialValue.cc?.length || initialValue.bcc?.length),
+    Boolean(value.cc?.length || value.bcc?.length),
   );
 
   useEffect(() => {
-    setForm(initialValue);
-  }, [initialValue]);
+    if (value.cc?.length || value.bcc?.length) setShowCopies(true);
+  }, [value.bcc, value.cc]);
 
   const canSend = useMemo(() => {
-    const recipients = [...form.to, ...form.cc, ...form.bcc];
+    const recipients = [...value.to, ...value.cc, ...value.bcc];
     return recipients.length > 0 && recipients.every(Boolean);
-  }, [form.bcc, form.cc, form.to]);
+  }, [value.bcc, value.cc, value.to]);
+  const isBusy = locked || isSending;
+  const controlsDisabled = isBusy || readOnly;
 
   useEffect(() => {
     const onKeyDown = (event) => {
-      if (event.key === "Escape" && !isSending) onClose();
+      if (event.key === "Escape" && !isBusy) onClose();
       if (
         (event.metaKey || event.ctrlKey) &&
         event.key === "Enter" &&
         canSend &&
-        !isSending
+        networkAvailable &&
+        !controlsDisabled
       ) {
         event.preventDefault();
-        onRequestSend(form);
+        onRequestSend();
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [canSend, form, isSending, onClose, onRequestSend]);
+  }, [canSend, controlsDisabled, isBusy, networkAvailable, onClose, onRequestSend]);
 
   const setAddressField = (field, value) => {
-    setForm((current) => ({ ...current, [field]: splitAddresses(value) }));
+    onChange((current) => ({ ...current, [field]: splitAddresses(value) }));
   };
+
+  const saveCopy = {
+    idle: draftId ? "已保存" : "新草稿",
+    dirty: "有未保存更改",
+    saving: "正在保存…",
+    syncing: "正在同步…",
+    saved: "已保存",
+    readonly: "只读",
+    error: "保存失败",
+  }[saveStatus] || "新草稿";
 
   return (
     <div className="compose-layer" role="presentation">
@@ -64,33 +83,49 @@ export function ComposePanel({
         <header className="compose-header">
           <div>
             <span className="compose-header__indicator" />
-            <h2 id="compose-title">新邮件</h2>
+            <h2 id="compose-title">
+              {readOnly ? "查看草稿" : draftId ? "编辑草稿" : "新邮件"}
+            </h2>
+            <span className="compose-save-state" data-state={saveStatus} aria-live="polite">
+              {saveCopy}
+            </span>
           </div>
           <div className="compose-header__actions">
-            <IconButton label="最小化写信窗口">
+            <IconButton label="最小化写信窗口（尚未实现）" disabled>
               <Minus size={17} />
             </IconButton>
-            <IconButton label="展开写信窗口">
+            <IconButton label="展开写信窗口（尚未实现）" disabled>
               <ArrowsOutSimple size={17} />
             </IconButton>
-            <IconButton label="关闭写信窗口" onClick={onClose}>
+            <IconButton label="关闭写信窗口" onClick={onClose} disabled={isBusy}>
               <X size={18} />
             </IconButton>
           </div>
         </header>
+
+        {readOnly ? (
+          <div className="compose-unsupported-notice" role="status">
+            含当前不支持的HTML/附件，未作修改
+          </div>
+        ) : null}
 
         <div className="compose-fields">
           <label className="compose-field">
             <span>收件人</span>
             <input
               autoFocus
+              disabled={controlsDisabled}
               aria-label="收件人"
-              value={form.to.join(", ")}
+              value={value.to.join(", ")}
               onChange={(event) => setAddressField("to", event.target.value)}
               placeholder="name@example.com"
             />
             {!showCopies ? (
-              <button type="button" onClick={() => setShowCopies(true)}>
+              <button
+                type="button"
+                onClick={() => setShowCopies(true)}
+                disabled={controlsDisabled}
+              >
                 抄送 / 密送
               </button>
             ) : null}
@@ -101,7 +136,8 @@ export function ComposePanel({
                 <span>抄送</span>
                 <input
                   aria-label="抄送"
-                  value={form.cc.join(", ")}
+                  disabled={controlsDisabled}
+                  value={value.cc.join(", ")}
                   onChange={(event) => setAddressField("cc", event.target.value)}
                 />
               </label>
@@ -109,7 +145,8 @@ export function ComposePanel({
                 <span>密送</span>
                 <input
                   aria-label="密送"
-                  value={form.bcc.join(", ")}
+                  disabled={controlsDisabled}
+                  value={value.bcc.join(", ")}
                   onChange={(event) => setAddressField("bcc", event.target.value)}
                 />
               </label>
@@ -119,9 +156,10 @@ export function ComposePanel({
             <span>主题</span>
             <input
               aria-label="主题"
-              value={form.subject}
+              disabled={controlsDisabled}
+              value={value.subject}
               onChange={(event) =>
-                setForm((current) => ({ ...current, subject: event.target.value }))
+                onChange((current) => ({ ...current, subject: event.target.value }))
               }
               placeholder="写一个简洁的主题"
             />
@@ -130,12 +168,13 @@ export function ComposePanel({
 
         <textarea
           className="compose-body"
-          value={form.body_text}
+          value={value.body_text}
           onChange={(event) =>
-            setForm((current) => ({ ...current, body_text: event.target.value }))
+            onChange((current) => ({ ...current, body_text: event.target.value }))
           }
           placeholder="开始写邮件…"
           aria-label="邮件正文"
+          disabled={controlsDisabled}
         />
 
         <footer className="compose-footer">
@@ -144,22 +183,34 @@ export function ComposePanel({
               className="send-button"
               type="button"
               aria-label="发送邮件"
-              disabled={!canSend || isSending}
-              onClick={() => onRequestSend(form)}
+              disabled={!canSend || !networkAvailable || controlsDisabled}
+              onClick={onRequestSend}
             >
               <PaperPlaneTilt size={18} weight="fill" />
-              {isSending ? "正在发送…" : "发送"}
+              {isSending ? "正在发送…" : locked ? "正在准备…" : readOnly ? "只读" : "发送"}
               <kbd>{sendShortcut}</kbd>
             </button>
-            <IconButton label="添加附件">
+            <IconButton label="添加附件（尚未实现）" disabled>
               <Paperclip size={19} />
             </IconButton>
           </div>
           <div className="compose-footer__right">
-            <button type="button" className="draft-button" onClick={() => onSaveDraft(form)}>
-              保存草稿
+            <button
+              type="button"
+              className="draft-button"
+              onClick={onSaveDraft}
+              disabled={controlsDisabled || saveStatus === "saving" || saveStatus === "syncing"}
+            >
+              {saveStatus === "saving" || saveStatus === "syncing"
+                ? saveCopy
+                : "保存并关闭"}
             </button>
-            <IconButton label="丢弃草稿" tone="danger" onClick={onClose}>
+            <IconButton
+              label="丢弃草稿"
+              tone="danger"
+              onClick={onDiscard}
+              disabled={controlsDisabled}
+            >
               <Trash size={18} />
             </IconButton>
           </div>

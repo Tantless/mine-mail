@@ -1,102 +1,96 @@
 # Mine Mail
 
-Mine Mail 是一个本地优先的跨平台邮件客户端 MVP。项目由 Rust 邮件核心、SQLite 持久化、React 界面与 Tauri 2 桌面壳组成；当前目标是验证 163 单账户的收信、写信、发信、草稿和同步闭环，以及一套可继续迭代的桌面视觉方向。
+Mine Mail 是一个本地优先的跨平台桌面邮件客户端 MVP，技术栈为 **Rust + React + Tauri 2 + SQLite**。当前版本已经打通 163 邮箱的收件箱增量同步、双向草稿同步、SMTP 发信、后台轮询、系统通知、托盘和系统密钥环。
 
-> 当前版本仅供本地开发与产品验证，不是可对外分发的生产版本。
+> 当前版本用于本机产品验证，尚未达到可公开分发的生产质量。
 
-## MVP 界面能力
+## 当前 MVP
 
-- 三栏邮件布局：左侧导航、中间邮件列表、右侧阅读区，共享一张连续的非写实风景背景；内容面板保留窄边距露出背景。
-- 四套可切换主题：`Daylight`、`Night`、`Dusk`、`Forest`，选择会保存在浏览器本地存储中。
-- Tauri 使用可拖动的无边框主题标题栏，背景与当前壁纸连续，并保留最小化、最大化/还原和关闭窗口操作。
-- 收件箱列表、关键词搜索、全部/未读/星标筛选、邮件选择与纯文本正文阅读。
-- 手动同步收件箱；桌面模式会调用真实 163 IMAP，Web 模式使用内置模拟数据。
-- 写信、回复、转发、收件人/抄送/密送输入、本地保存草稿。
-- 发信前显示收件人确认；桌面端还会在 Rust 边界再次校验确认集合，只有与 To/Cc/Bcc 完全一致时才允许 SMTP 发送。
-- 响应式窄屏布局、键盘快捷键（`N` 写信、`Ctrl/Command + K` 聚焦搜索）。
+### 收件箱与后台运行
 
-## MVP 架构与运行模式
+- 启动时先从 SQLite 显示缓存，再在 Rust 后台立即同步。
+- 后续按 UID 增量同步 INBOX，并更新 Flags、处理 UIDVALIDITY 变化和远端删除。
+- 单封畸形邮件头会保存安全占位摘要，不会阻断后续邮件；按需下载正文前会再次校验 UIDVALIDITY，防止 UID 被复用后读错邮件。
+- 用户可选择 `1 / 3 / 5` 分钟轮询，默认 `5` 分钟。
+- 启动、托盘“刷新”、手动刷新、窗口重新唤起时立即同步。
+- 第一次历史导入只建立通知基线，不弹出大量旧邮件通知。
+- 后续后台收到新未读邮件时发送系统通知，只显示发件人和主题，不显示正文。
+- 关闭窗口时隐藏到托盘；托盘菜单固定为 **打开 / 刷新 / 退出**。
+- 开机自启是用户设置，默认关闭。
+
+### 草稿与发信
+
+- 编辑内容先保存到本地 SQLite，React 停止输入约 900 ms 后执行本地保存。
+- Rust 每五分钟将草稿与服务器 Drafts 文件夹双向同步。
+- 本地和远端草稿使用稳定 ID；支持远端草稿导入、删除同步及确定性的冲突副本。
+- 编辑器通过独立的 SQLite `local_version` 做乐观并发控制；远端变化不会静默覆盖正在编辑的内容，过期编辑会保留为冲突副本，过期删除不会误删新版本。
+- 含 HTML、附件、inline 内容或无法可靠解析的远端草稿会保守显示为只读，当前版本不会用纯文本内容覆盖它们。
+- 手动保存会立即尝试远端同步。
+- 发信前要求确认完整的 To/Cc/Bcc 收件人集合。
+- 完整 MIME 邮件先进入本地 Outbox，再通过 SMTP 发送。
+- 发送状态区分 `queued`、`sending`、`sent`、`retryable`、`rejected` 和 `delivery_unknown`；不自动重试结果不确定的邮件。
+- `retryable` 可由用户在发件队列中明确点击重试；重试复用已经落盘的原始 MIME 和完整 SMTP envelope，不读取后来变化的草稿。
+- 收件人确认、邮件内容和 Outbox 绑定同一个草稿版本；发送期间产生的新编辑会保留。旧的安全重试版本被新版发送取代后不可再次投递，`delivery_unknown` 会阻止任何隐式重发。
+
+### 账户与凭据
+
+- 授权密码只保存在按账户身份隔离的操作系统密钥环条目中，不写入 SQLite、React 状态、本地存储或账户配置文件。
+- 密钥环临时不可用时仍可读取本地收件箱、草稿与发件队列；同步、未缓存正文、发送和重试会保持禁用并提示修复账户。
+- 内置 163、Gmail、Outlook 和自定义 IMAP/SMTP 入口。
+- 163 和 Gmail 预填服务器地址；用户只需填写邮箱账号和授权密码/应用专用密码。
+- 自定义账户可填写 IMAP、SMTP 主机/端口，并选择 SMTP 隐式 TLS 或 STARTTLS。
+- Outlook 入口目前会说明并阻止配置，因为正式支持需要 OAuth 2.0 / Modern Auth，不能安全地只依赖账号密码。
+- 当前只支持一个活动账户；重新配置会先验证 IMAP 和 SMTP，验证成功后才原子切换账户。
+
+### 界面
+
+- 三栏桌面布局，共享一张连续的非写实风景背景。
+- Daylight、Night、Dusk、Forest 四套主题。
+- 无边框标题栏融入主题，保留最小化、最大化和关闭操作。
+- 本地搜索/筛选、纯文本正文阅读、写信、回复、转发、草稿与 Outbox 状态。
+
+## 架构
 
 ```text
 React UI
    |
-   |-- Web 开发模式 --> 内置模拟邮件/草稿（不连接邮箱）
+   | narrow Tauri commands / desktop events
+   v
+Tauri desktop runtime
    |
-   `-- Tauri 桌面模式 --> 窄范围 Tauri Commands
-                              |
-                          MailBackend
-                         /     |      \
-                      IMAP    SMTP   Repository
-                         \     |       /
-                        MIME 解析与生成   SQLite
+   +-- background scheduler / tray / notifications / autostart
+   +-- OS keyring and non-secret account metadata
+   v
+Rust MailBackend
+   |
+   +-- IMAP sync and MIME parsing
+   +-- SMTP and Outbox
+   +-- bidirectional Drafts sync
+   `-- SQLite repository
 ```
 
-- React 不直接访问 IMAP、SMTP、凭据文件或 SQLite。
-- Web 模式用于快速确认界面与交互，数据仅为进程内模拟数据，刷新后会重置。
-- Tauri 模式复用根目录 Rust crate 的 `MailBackend`，通过命令完成连接检查、收件箱同步/读取、正文按需获取、草稿保存与发送。
-- CLI 默认使用 `data/mine-mail.db`；Tauri 桌面端将独立数据库放在操作系统的应用本地数据目录中。
-- Tauri 只向 React 返回纯文本正文与附件名称，不向界面暴露 HTML 或原始 RFC822 内容。
+- Rust 与 SQLite 是邮件状态的唯一事实来源；React 不直接访问 IMAP、SMTP、凭据文件或数据库。
+- UI 启动不等待网络，网络错误不会阻止读取已有缓存。
+- 邮件摘要优先同步，正文打开时按需获取并缓存。
+- Tauri 只向 React 返回界面需要的数据，不返回授权密码或完整原始 RFC822 邮件。
+- Web/Vite 仅用于前端构建和自动化测试，不再维护一套可连接邮箱的 Web 运行时。
 
-## 本地优先与后端安全边界
+## 本地开发账户迁移
 
-- 启动先读取 SQLite；网络同步在后端进行，界面层不持有邮箱连接。
-- 收件箱先同步邮件摘要、Flags 和 UID，正文仅在打开邮件时按需获取；单封正文缓存上限为 50 MiB。
-- 草稿先写入本地数据库，再显式同步到服务器草稿箱。远端草稿带稳定私有标识，降低重复追加风险。
-- 发信前先写入本地 Outbox，再调用 SMTP；状态区分 `queued`、`sending`、`sent`、`retryable`、`rejected` 和 `delivery_unknown`。结果不确定时不会盲目重复发送。
-- 授权密码不会写入 SQLite、源码或命令输出，仅从本地凭据文件读取，并在内存中使用可清零字符串保存。
-- 当前 SQLite 会明文保存邮件正文、草稿和 Outbox 原文；它防止授权码落库，但不防御能够读取本机用户文件的攻击者。
-- CLI 的 `--body` 会进入终端历史，不适合输入敏感正文；桌面界面通过进程内调用传递内容。
-
-## 配置 163 邮箱
-
-在项目根目录创建 `password.txt`，严格使用两行格式（不要加标签或引号）：
+仓库已有的 `password.txt` 使用两行格式：
 
 ```text
 your-account@163.com
 your-163-authorization-code
 ```
 
-第二行应是 163 邮箱开启 IMAP/SMTP 后生成的**客户端授权密码**，不是示例文本，也不建议使用网页登录密码。默认连接 `imap.163.com:993` 与 `smtp.163.com:465`。
+首次启动桌面应用且尚无账户配置时，开发版本会读取该文件，验证账户并把授权密码导入系统密钥环；后续运行从密钥环读取。文件不会被程序自动删除。确认迁移成功后可自行移走该明文文件。
 
-如需改用其他位置，可给 CLI 增加 `--credentials`：
+`password.txt`、SQLite 数据库、WAL 文件和构建产物均应保持在 Git 之外。不要把授权密码写进源码、前端环境变量、日志、截图或 issue。
 
-```powershell
-cargo run -- --credentials "D:\private\mail-credentials.txt" check
-```
+## 运行桌面应用
 
-桌面调试也可通过环境变量指定凭据文件：
-
-```powershell
-$env:MINE_MAIL_CREDENTIALS_FILE = "D:\private\mail-credentials.txt"
-cd Z:\mine-mail\web
-npm run tauri:dev
-```
-
-未设置该变量时，Tauri 的 debug 构建会读取项目根目录的 `password.txt`。
-
-## 凭据与发布安全
-
-- `password.txt`、数据库及 WAL 文件已加入 `.gitignore`；不要提交、上传、截图或分享这些文件，也不要把授权码写进前端环境变量。
-- 请限制凭据文件的系统访问权限。当前文件凭据方式只适用于本机 debug 开发。
-- release 构建不会回退读取仓库内的 `password.txt`，当前只能通过 `MINE_MAIL_CREDENTIALS_FILE` 显式指定文件；这仍是开发桥接方案。
-- **任何打包分发之前，必须接入 Windows Credential Manager、macOS Keychain 与 Linux Secret Service 等系统密钥环**，并完成凭据迁移、删除与错误恢复流程。
-- 当前代码不应被视为已经完成生产级凭据保护或发布安全审计。
-
-## Web 与桌面开发运行
-
-### React Web（安全的界面模拟模式）
-
-此模式不读取 `password.txt`，不会连接真实邮箱，也不会发送真实邮件。
-
-```powershell
-cd Z:\mine-mail\web
-npm install
-npm run dev
-```
-
-然后打开 Vite 输出的本地地址（默认 `http://localhost:1420`）。
-
-### Tauri 桌面（连接真实开发邮箱）
+需要 Rust、Node.js 和 Tauri 对应平台的系统依赖。
 
 ```powershell
 cd Z:\mine-mail\web
@@ -104,117 +98,101 @@ npm install
 npm run tauri:dev
 ```
 
-桌面模式会使用真实 IMAP/SMTP 和独立的应用数据目录。同步、打开未缓存正文与确认发信都会访问真实邮箱服务；发信前请再次核对所有 To/Cc/Bcc 地址。
+桌面端账户配置保存在操作系统应用数据目录；公开账户元数据与密钥环凭据分离，每个账户使用不含明文邮箱地址的哈希数据库文件名。根目录 CLI 的 `data/mine-mail.db` 与桌面数据库相互独立。
 
-## 数据库
-
-CLI 默认数据库位置为：
-
-```text
-data/mine-mail.db
-```
-
-SQLite 使用 WAL、外键约束和事务，保存账户公开配置、邮箱同步状态、邮件缓存、草稿与 Outbox；不保存授权密码。可通过 CLI 全局参数覆盖位置：
+本地构建：
 
 ```powershell
-cargo run -- --database "D:\mail-data\mine-mail.db" init
+cd Z:\mine-mail\web
+npm run tauri:build
 ```
 
-Tauri 桌面端不会使用这个 CLI 默认文件，而是在操作系统的应用本地数据目录创建 `mine-mail.sqlite3`。
+构建成功不代表安装包已经完成 Windows 签名、macOS 签名/公证或 Linux 发行版兼容验收。
 
-## CLI 快速验收
+## 后端 CLI 验收
 
-所有命令返回结构化 JSON。以下示例均使用虚构地址，不代表真实收件人。
+CLI 使用根目录 `password.txt` 和 `data/mine-mail.db`，所有常规输出都会省略凭据、正文和原始邮件。
 
 ```powershell
-# 初始化或迁移数据库
-cargo run -- init
+cd Z:\mine-mail
 
 # 验证 IMAP 与 SMTP 登录
 cargo run -- check
 
-# 查看服务器邮箱文件夹
-cargo run -- folders
-
-# 首次最多同步最近 50 封摘要；后续执行为增量同步
+# 增量同步收件箱
 cargo run -- sync-inbox --initial-limit 50
 
-# 查看本地缓存摘要（不输出正文）
+# 只查看本地缓存摘要
 cargo run -- list-inbox --limit 20
 
-# 按 IMAP UID 获取并缓存一封正文，输出仍只显示元数据与正文长度
+# 按 IMAP UID 获取并缓存正文
 cargo run -- fetch-message 123
 
-# 保存本地草稿
-cargo run -- draft-save --to recipient@example.com --subject "示例草稿" --body "示例正文"
-
-# 查看草稿，再使用返回的 ID 同步到服务器草稿箱
-cargo run -- draft-list
+# 本地保存并同步一封草稿
+cargo run -- draft-save --to recipient@example.com --subject "测试草稿" --body "测试正文"
 cargo run -- draft-sync <DRAFT_ID>
 
-# 发信：确认地址必须与 To/Cc/Bcc 的完整集合完全一致
-cargo run -- send --to recipient@example.com --subject "示例邮件" --body "示例正文" --confirm-recipient recipient@example.com
+# 发信时确认集合必须与 To/Cc/Bcc 完全一致
+cargo run -- send --to recipient@example.com --subject "测试邮件" --body "测试正文" --confirm-recipient recipient@example.com
 
-# 发送已有草稿
-cargo run -- send-draft <DRAFT_ID> --confirm-recipient recipient@example.com
-
-# 查看本地发送结果与安全状态（不输出原始邮件）
+# 查看安全的 Outbox 状态摘要
 cargo run -- outbox
+
+# 仅人工重试状态为 retryable 的已落盘邮件
+cargo run -- retry-outbox <OUTBOX_ID>
 ```
 
-## 测试与构建
+命令行 `--body` 参数可能进入终端历史，不应用于敏感正文。桌面端通过进程内命令传递正文。
 
-后端检查：
+## 验证命令
+
+Rust 邮件核心：
 
 ```powershell
 cd Z:\mine-mail
 cargo fmt --check
-cargo check --all-targets
 cargo test --all-targets
 cargo clippy --all-targets -- -D warnings
 ```
 
-React 检查与 Web 构建：
+React：
 
 ```powershell
 cd Z:\mine-mail\web
-npm install
-npm test
+npm test -- --run
 npm run build
 ```
 
-Tauri 桌面编译检查与本地打包：
+Tauri runtime：
 
 ```powershell
-cd Z:\mine-mail\web
-cargo check --manifest-path src-tauri\Cargo.toml
-npm run tauri:build
+cd Z:\mine-mail\web\src-tauri
+cargo fmt --check
+cargo test
+cargo clippy --all-targets -- -D warnings
 ```
 
-自动化测试使用临时数据库或模拟前端数据，不会自行向真实地址发信。只有显式执行 CLI 发信命令，或在 Tauri 界面确认收件人并点击发送时，才会调用 SMTP。`tauri:build` 产物仍是开发阶段构建，不代表具备分发条件。
+自动化测试不会自行向真实地址发信。真实 SMTP 验收必须使用明确的测试主题，并仅发送到用户授权的地址。
 
-## 当前已实现
+## 已完成的真实验收
 
-- 163 邮箱 IMAP/SMTP TLS 登录与连接探测。
-- 远端文件夹发现、INBOX 增量同步、UIDVALIDITY 重置、Flags 更新与本地删除对账。
-- 邮件摘要优先、正文按需获取、MIME 解析及 SQLite 缓存。
-- 本地草稿保存、草稿列表和远端 Drafts 同步。
-- 纯文本写信、发信、精确收件人确认，以及本地 Outbox 状态记录。
-- React 三栏 MVP、四主题、搜索/筛选/阅读、写信与草稿交互。
-- Tauri 2 桌面壳及连接 `MailBackend` 的窄范围命令边界。
-- 不暴露密码、原始邮件和正文内容的 JSON 验收 CLI。
+- 163 IMAP 与 SMTP 鉴权均成功。
+- 当前服务器 INBOX 为 761 封，本地缓存 103 封摘要；连续两次同步均获取 0 封新摘要且 UIDVALIDITY 未变化，证明增量同步幂等。
+- 一封带唯一时间戳主题的草稿已成功上传服务器 Drafts，随后发送成功并从草稿同步状态中清理。
+- Tauri 桌面运行时成功读取系统密钥环；非秘密账户配置中未出现授权密码。
+- 关闭窗口后进程继续存活且窗口隐藏；启动第二实例会唤起已有窗口。
+- 开机自启默认关闭；默认轮询为 5 分钟；通知历史基线已经建立。
+- 自动化回归当前为 Rust 49 项、React 35 项、Tauri 13 项；生产前端构建以及两套 Rust 严格 Clippy 均通过。
 
-## 当前 MVP 限制
+## 当前限制
 
-- 只支持一个 163 IMAP/SMTP 账户；尚无多账户、OAuth、POP3 或通用邮箱配置向导。
-- 邮件只以纯文本显示和撰写；尚无安全 HTML 渲染、远程图片控制、富文本或附件上传/下载。
-- 收件箱同步与按需正文读取已接入；星标、已读、归档、垃圾箱、已发送等部分文件夹操作仍以界面原型或本地状态为主，未完整回写服务器。
-- 草稿可本地保存；服务器草稿同步仍主要通过后端 CLI 能力验收，前端尚未覆盖完整生命周期。
-- 没有后台 IMAP IDLE、定时自动同步、系统通知、自动重试调度或后台常驻策略；同步需要用户手动触发。
-- Web 模式完全使用模拟数据；只有 Tauri 模式会连接真实后端与 SQLite。
-- 尚未完成系统密钥环、安装包签名/公证、自动更新、发布渠道与跨平台真实设备测试。
-- 当前 UI 是第一版视觉 MVP，尚未完成完整无障碍审计、国际化和大规模邮件性能验证。
-
-## 里程碑状态
-
-项目已进入 **React + Tauri MVP 集成阶段**：后端与 SQLite 邮件闭环可用，Web 模式用于界面验证，Tauri 模式用于真实本地联调。下一阶段应优先完成真实设备验收、服务器状态回写、HTML/附件安全方案与系统密钥环，再讨论可分发版本。
+- 只支持一个活动账户；尚无多账户统一收件箱。
+- Outlook OAuth 2.0 / Modern Auth 尚未实现；Gmail 当前需要应用专用密码。
+- 首次同步当前只缓存最近 100 封摘要，尚无向更早邮件翻页/回填的界面。
+- 邮件仅支持纯文本显示和撰写；尚无安全 HTML 渲染、远程图片控制、富文本、附件上传/下载。含这些内容的远端草稿会只读保护。
+- 已读、星标、归档、垃圾箱、已发送等服务器文件夹操作尚未形成完整闭环。
+- 当前使用定时轮询而非 IMAP IDLE。
+- `retryable` 只支持用户明确触发的人工重试，尚无自动重试 worker；`delivery_unknown` 按设计永不自动重试。
+- 后台新邮件通知的代码路径、权限、基线和窗口生命周期已有测试；本轮没有为了触发通知而额外向 163 测试账户发送一封入站邮件。
+- 当前只在 Windows 11 上完成实机联调；macOS 与 Linux 尚需真实设备、密钥环、通知、托盘和安装包验收。
+- 当前 SQLite 明文保存邮件正文、草稿和 Outbox MIME；它防止授权密码落库，但不防御能够读取本机用户文件的攻击者。

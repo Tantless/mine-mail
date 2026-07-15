@@ -6,7 +6,7 @@ use lettre::{
     transport::smtp::{Error as SmtpError, authentication::Credentials},
 };
 
-use crate::{AccountConfig, MailError, OutboxStatus, Result};
+use crate::{AccountConfig, MailError, OutboxStatus, Result, SmtpSecurity};
 
 const SMTP_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -26,12 +26,19 @@ impl SmtpClient {
             config.email.clone(),
             config.authorization_password().to_owned(),
         );
-        let transport = AsyncSmtpTransport::<Tokio1Executor>::relay(&config.smtp.host)
-            .map_err(|error| MailError::Smtp(format!("cannot configure TLS: {error}")))?
-            .port(config.smtp.port)
-            .credentials(credentials)
-            .timeout(Some(SMTP_TIMEOUT))
-            .build();
+        let transport = match config.smtp_security {
+            SmtpSecurity::ImplicitTls => {
+                AsyncSmtpTransport::<Tokio1Executor>::relay(&config.smtp.host)
+            }
+            SmtpSecurity::StartTls => {
+                AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&config.smtp.host)
+            }
+        }
+        .map_err(|error| MailError::Smtp(format!("cannot configure TLS: {error}")))?
+        .port(config.smtp.port)
+        .credentials(credentials)
+        .timeout(Some(SMTP_TIMEOUT))
+        .build();
         Ok(Self { transport })
     }
 

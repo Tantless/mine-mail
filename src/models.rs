@@ -73,6 +73,13 @@ pub struct InboxMessage {
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub struct Draft {
     pub id: String,
+    /// Monotonic SQLite row token used for optimistic editor saves. It is
+    /// intentionally independent from the IMAP `X-Mine-Mail-Draft-Revision`.
+    pub local_version: u64,
+    /// True when the original MIME contains content the MVP plain-text editor
+    /// cannot round-trip safely (HTML, multipart, inline data, attachments, or
+    /// an unparseable body). Such drafts are exposed read-only.
+    pub has_unsupported_content: bool,
     pub account_id: String,
     pub to: Vec<String>,
     pub cc: Vec<String>,
@@ -86,6 +93,30 @@ pub struct Draft {
     pub updated_at: String,
     #[serde(skip_serializing, skip_deserializing, default)]
     pub raw_rfc822: Vec<u8>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DraftSaveKind {
+    Saved,
+    ConflictCopy,
+}
+
+/// Typed result of an optimistic local draft save. A conflict never mutates
+/// the canonical row: `draft` is a newly inserted local conflict copy and
+/// `canonical` is the newest visible canonical draft, when it still exists.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct DraftSaveOutcome {
+    pub kind: DraftSaveKind,
+    pub draft: Draft,
+    pub canonical: Option<Draft>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DraftDeleteKind {
+    Deleted,
+    Stale,
 }
 
 impl Draft {
@@ -143,6 +174,11 @@ pub struct OutboxItem {
     pub id: String,
     pub account_id: String,
     pub draft_id: Option<String>,
+    /// Mail protocol revision embedded in the draft MIME at send time.
+    pub draft_revision: Option<u64>,
+    /// Monotonic local row token bound to the UI confirmation and send. Unlike
+    /// the protocol revision, external draft content cannot reuse this token.
+    pub draft_local_version: Option<u64>,
     pub recipients: Vec<String>,
     pub status: OutboxStatus,
     pub attempts: u32,
@@ -168,4 +204,29 @@ pub struct SyncReport {
 pub struct ConnectionReport {
     pub imap_ok: bool,
     pub smtp_ok: bool,
+}
+
+/// Result of reconciling the local draft store with the remote IMAP Drafts
+/// mailbox.
+///
+/// Conflict policy is deliberately deterministic and data preserving:
+///
+/// - a remote-only edit replaces an unchanged local draft;
+/// - a local-only edit replaces the remote copy;
+/// - concurrent edits keep the remote version as the canonical draft and save
+///   the local edit as a new local-only conflict copy;
+/// - a remote deletion removes an unchanged local draft, but a locally edited
+///   draft is recreated remotely;
+/// - a local deletion removes an unchanged remote draft, while a concurrently
+///   edited remote draft wins and is restored locally.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+pub struct DraftSyncReport {
+    pub mailbox: String,
+    pub pulled: usize,
+    pub pushed: usize,
+    pub deleted_local: usize,
+    pub deleted_remote: usize,
+    pub conflicts: usize,
+    pub skipped: usize,
+    pub local_total: usize,
 }

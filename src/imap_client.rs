@@ -39,8 +39,16 @@ pub(crate) struct RemoteMailbox {
     pub is_drafts: bool,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct RemoteDraftSnapshot {
+    pub mailbox: String,
+    pub uid_validity: Option<u32>,
+    pub messages: Vec<RemoteMessage>,
+}
+
 pub(crate) struct ImapConnection {
     session: ImapSession,
+    supports_uidplus: bool,
 }
 
 impl ImapConnection {
@@ -111,7 +119,11 @@ impl ImapConnection {
             .map_err(|error| MailError::Imap(error.to_string()))?;
         }
 
-        Ok(Self { session })
+        let supports_uidplus = capabilities.has_str("UIDPLUS");
+        Ok(Self {
+            session,
+            supports_uidplus,
+        })
     }
 
     pub async fn probe(mut self) -> Result<()> {
@@ -285,41 +297,127 @@ impl ImapConnection {
             .collect()
     }
 
-    pub async fn append_draft(
+    /// Fetch all drafts from the selected Drafts mailbox. Draft synchronization
+    /// needs full RFC822 data because another client may have created the draft
+    /// without Mine Mail's private identity headers.
+    pub async fn fetch_draft_snapshot(
         &mut self,
-        draft_id: &str,
-        raw_rfc822: &[u8],
         mailbox_override: Option<&str>,
-    ) -> Result<(String, Option<u32>)> {
+    ) -> Result<RemoteDraftSnapshot> {
         let mailbox = match mailbox_override {
             Some(mailbox) => mailbox.to_owned(),
             None => self.discover_drafts_mailbox().await?,
         };
-
-        timeout(COMMAND_TIMEOUT, self.session.select(&mailbox))
+        let selected = timeout(COMMAND_TIMEOUT, self.session.select(&mailbox))
             .await
             .map_err(|_| MailError::Timeout {
                 operation: "IMAP SELECT drafts",
             })?
             .map_err(|error| MailError::Imap(error.to_string()))?;
+        let mut uids: Vec<u32> = timeout(COMMAND_TIMEOUT, self.session.uid_search("UNDELETED"))
+            .await
+            .map_err(|_| MailError::Timeout {
+                operation: "IMAP draft UID SEARCH",
+            })?
+            .map_err(|error| MailError::Imap(error.to_string()))?
+            .into_iter()
+            .collect();
+        uids.sort_unstable();
 
-        if let Some(uid) = self.find_draft_uid(draft_id).await? {
-            return Ok((mailbox, Some(uid)));
+        let mut messages = Vec::with_capacity(uids.len());
+        for batch in uids.chunks(100) {
+            messages.extend(
+                self.fetch_messages(
+                    batch,
+                    "(UID FLAGS INTERNALDATE RFC822.SIZE BODY.PEEK[])",
+                    true,
+                )
+                .await?,
+            );
         }
+        Ok(RemoteDraftSnapshot {
+            mailbox,
+            uid_validity: selected.uid_validity,
+            messages,
+        })
+    }
 
+    /// Append the new canonical revision before retiring old copies. If the
+    /// server does not expose APPENDUID and its header index is delayed, the old
+    /// copy is intentionally retained; a later reconciliation will recognize
+    /// the higher revision and remove duplicates safely.
+    pub async fn append_and_replace_draft(
+        &mut self,
+        mailbox: &str,
+        draft_id: &str,
+        raw_rfc822: &[u8],
+        old_uids: &[u32],
+    ) -> Result<(Option<u32>, usize)> {
         timeout(
             COMMAND_TIMEOUT,
             self.session
-                .append(&mailbox, Some("(\\Draft)"), None, raw_rfc822),
+                .append(mailbox, Some("(\\Draft)"), None, raw_rfc822),
         )
         .await
         .map_err(|_| MailError::Timeout {
-            operation: "IMAP APPEND draft",
+            operation: "IMAP APPEND draft revision",
         })?
         .map_err(|error| MailError::Imap(error.to_string()))?;
 
-        let remote_uid = self.find_draft_uid(draft_id).await?;
-        Ok((mailbox, remote_uid))
+        let new_uid = self.find_draft_uids(draft_id).await?.into_iter().max();
+        let Some(new_uid) = new_uid else {
+            return Ok((None, 0));
+        };
+        let obsolete: Vec<u32> = old_uids
+            .iter()
+            .copied()
+            .filter(|uid| *uid != new_uid)
+            .collect();
+        let removed = self.delete_draft_uids(&obsolete).await?;
+        Ok((Some(new_uid), removed))
+    }
+
+    /// Mark only the requested UIDs deleted. UIDPLUS servers are expunged with
+    /// UID EXPUNGE; other servers retain the hidden `\\Deleted` records until
+    /// their normal expunge cycle rather than risking deletion of unrelated
+    /// messages with a global EXPUNGE.
+    pub async fn delete_draft_uids(&mut self, uids: &[u32]) -> Result<usize> {
+        if uids.is_empty() {
+            return Ok(0);
+        }
+        let sequence_set = compress_uid_set(uids);
+        let stream = timeout(
+            COMMAND_TIMEOUT,
+            self.session
+                .uid_store(&sequence_set, "+FLAGS.SILENT (\\Deleted)"),
+        )
+        .await
+        .map_err(|_| MailError::Timeout {
+            operation: "IMAP mark draft deleted",
+        })?
+        .map_err(|error| MailError::Imap(error.to_string()))?;
+        timeout(COMMAND_TIMEOUT, stream.try_collect::<Vec<_>>())
+            .await
+            .map_err(|_| MailError::Timeout {
+                operation: "IMAP draft delete response",
+            })?
+            .map_err(|error| MailError::Imap(error.to_string()))?;
+
+        if self.supports_uidplus {
+            let stream = timeout(COMMAND_TIMEOUT, self.session.uid_expunge(&sequence_set))
+                .await
+                .map_err(|_| MailError::Timeout {
+                    operation: "IMAP UID EXPUNGE draft",
+                })?
+                .map_err(|error| MailError::Imap(error.to_string()))?;
+            timeout(COMMAND_TIMEOUT, stream.try_collect::<Vec<_>>())
+                .await
+                .map_err(|_| MailError::Timeout {
+                    operation: "IMAP UID EXPUNGE response",
+                })?
+                .map_err(|error| MailError::Imap(error.to_string()))?;
+        }
+        Ok(uids.iter().copied().collect::<BTreeSet<_>>().len())
     }
 
     async fn discover_drafts_mailbox(&mut self) -> Result<String> {
@@ -339,21 +437,23 @@ impl ImapConnection {
         ))
     }
 
-    async fn find_draft_uid(&mut self, draft_id: &str) -> Result<Option<u32>> {
+    async fn find_draft_uids(&mut self, draft_id: &str) -> Result<Vec<u32>> {
         if !draft_id
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
         {
             return Err(MailError::Validation("invalid draft id".to_owned()));
         }
-        let query = format!("HEADER X-Mine-Mail-Draft-Id \"{draft_id}\"");
+        let query = format!("UNDELETED HEADER X-Mine-Mail-Draft-Id \"{draft_id}\"");
         let uids = timeout(COMMAND_TIMEOUT, self.session.uid_search(query))
             .await
             .map_err(|_| MailError::Timeout {
                 operation: "IMAP draft search",
             })?
             .map_err(|error| MailError::Imap(error.to_string()))?;
-        Ok(uids.into_iter().max())
+        let mut uids: Vec<u32> = uids.into_iter().collect();
+        uids.sort_unstable();
+        Ok(uids)
     }
 
     pub async fn logout(&mut self) -> Result<()> {

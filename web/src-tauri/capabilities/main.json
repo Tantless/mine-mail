@@ -4,6 +4,8 @@
   "description": "Minimum local capability set for the Mine Mail main window.",
   "windows": ["main"],
   "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
     "core:window:allow-close",
     "core:window:allow-internal-toggle-maximize",
     "core:window:allow-minimize",

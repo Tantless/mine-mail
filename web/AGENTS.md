@@ -15,3 +15,8 @@ When implementing from a selected generated mock, treat that image as the source
 - Backgrounds are original, non-photorealistic, low-detail landscape paintings rather than photographs.
 - The MVP ships four selectable themes: Daylight, Night, Dusk, and Forest.
 - Email text is always rendered on an opaque or near-opaque surface; decorative wallpaper must never reduce readability.
+
+## Desktop integration decisions
+
+- After the visual MVP, functional mail updates target the Tauri desktop application only. Do not maintain a parallel Web-mode implementation of new mail sync, notification, draft-sync, background, autostart, or SMTP behavior.
+- The desktop app must use the Rust mail core and SQLite as its source of truth; React must not connect directly to IMAP, SMTP, or credential files.

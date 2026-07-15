@@ -24,13 +24,13 @@ export function MailList({
   messages,
   selectedUid,
   onSelect,
-  onToggleStar,
   query,
   onQueryChange,
   filter,
   onFilterChange,
   onSync,
   syncState,
+  canSync = true,
   onOpenMobileNav,
   searchShortcut,
 }) {
@@ -68,7 +68,7 @@ export function MailList({
         <IconButton
           label={syncState === "syncing" ? "正在同步" : "同步收件箱"}
           onClick={onSync}
-          disabled={syncState === "syncing"}
+          disabled={syncState === "syncing" || !canSync}
           className={syncState === "syncing" ? "is-spinning" : ""}
         >
           <ArrowClockwise size={19} />
@@ -136,11 +136,9 @@ export function MailList({
                   type="button"
                   className="star-button"
                   data-active={starred}
-                  aria-label={starred ? "取消星标" : "添加星标"}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onToggleStar(message.uid);
-                  }}
+                  aria-label="星标（尚未实现）"
+                  title="星标操作尚未实现"
+                  disabled
                 >
                   <Star size={17} weight={starred ? "fill" : "regular"} />
                 </button>
@@ -160,7 +158,7 @@ export function MailList({
         <span className={`sync-dot sync-dot--${syncState}`} />
         <span>
           {syncState === "syncing"
-            ? "正在连接 163 邮箱…"
+            ? "正在同步邮箱…"
             : syncState === "error"
               ? "同步失败，请重试"
               : syncState === "done"

@@ -191,6 +191,8 @@ export const mockMessages = [
 export const mockDrafts = [
   {
     id: "draft-welcome",
+    local_version: 1,
+    has_unsupported_content: false,
     to: ["linxia@example.com"],
     cc: [],
     bcc: [],

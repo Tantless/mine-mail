@@ -12,10 +12,11 @@ import {
 } from "@phosphor-icons/react";
 
 const folders = [
-  { id: "inbox", label: "收件箱", icon: Tray, count: 4 },
+  { id: "inbox", label: "收件箱", icon: Tray },
   { id: "starred", label: "已加星标", icon: Star },
   { id: "sent", label: "已发送", icon: PaperPlaneTilt },
-  { id: "drafts", label: "草稿", icon: FileText, count: 1 },
+  { id: "drafts", label: "草稿", icon: FileText },
+  { id: "outbox", label: "发件队列", icon: PaperPlaneTilt },
   { id: "archive", label: "归档", icon: Archive },
   { id: "trash", label: "垃圾箱", icon: Trash },
 ];
@@ -35,7 +36,25 @@ export function Sidebar({
   onThemeChange,
   isThemeMenuOpen,
   onThemeMenuToggle,
+  counts = {},
+  connectionState = "checking",
+  accountStatus,
+  onOpenSettings,
 }) {
+  const connectionCopy = {
+    checking: { label: "正在检查连接", aria: "正在检查邮箱连接" },
+    connected: { label: "已连接", aria: "IMAP 与 SMTP 已连接" },
+    degraded: { label: "部分服务不可用", aria: "邮箱部分服务不可用" },
+    offline: { label: "离线", aria: "邮箱当前离线" },
+    error: { label: "连接异常", aria: "邮箱连接异常" },
+  }[connectionState] || { label: "状态未知", aria: "邮箱连接状态未知" };
+  const accountLabel = {
+    "163": "163 邮箱",
+    gmail: "Gmail",
+    outlook: "Outlook",
+    custom: "自定义邮箱",
+  }[accountStatus?.provider] || "邮箱账户";
+
   return (
     <aside className="sidebar" aria-label="邮箱导航">
       <div className="sidebar__scrim" aria-hidden="true" />
@@ -68,7 +87,9 @@ export function Sidebar({
               >
                 <FolderIcon size={19} weight={selected ? "fill" : "regular"} />
                 <span>{folder.label}</span>
-                {folder.count ? <span className="folder-nav__count">{folder.count}</span> : null}
+                {counts[folder.id] ? (
+                  <span className="folder-nav__count">{counts[folder.id]}</span>
+                ) : null}
               </button>
             );
           })}
@@ -76,13 +97,15 @@ export function Sidebar({
 
         <div className="sidebar__spacer" />
 
-        <div className="account-card">
-          <span className="account-card__avatar">M</span>
-          <span className="account-card__copy">
-            <strong>163 邮箱</strong>
-            <small>已连接</small>
+        <div className="account-card" data-connection={connectionState}>
+          <span className="account-card__avatar">
+            {(accountStatus?.email || accountLabel).slice(0, 1).toUpperCase()}
           </span>
-          <span className="account-card__status" aria-label="已连接" />
+          <span className="account-card__copy">
+            <strong>{accountLabel}</strong>
+            <small>{connectionCopy.label}</small>
+          </span>
+          <span className="account-card__status" aria-label={connectionCopy.aria} />
         </div>
 
         <div className="theme-control">
@@ -116,7 +139,7 @@ export function Sidebar({
             <Palette size={19} />
             <span>主题外观</span>
           </button>
-          <button type="button" className="sidebar-action">
+          <button type="button" className="sidebar-action" onClick={onOpenSettings}>
             <GearSix size={19} />
             <span>设置</span>
           </button>

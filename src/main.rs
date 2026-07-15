@@ -114,6 +114,10 @@ enum Command {
 
     /// List local outbox delivery state (raw messages are omitted).
     Outbox,
+
+    /// Manually retry one item whose current state is exactly `retryable`.
+    /// The persisted message and envelope are reused byte-for-byte.
+    RetryOutbox { id: String },
 }
 
 #[derive(Clone, Debug, Args)]
@@ -317,8 +321,11 @@ async fn run(cli: Cli) -> Result<Value> {
                     entity: "draft",
                     id: id.clone(),
                 })?;
-            require_exact_recipient_confirmation(&draft.compose_request(), &confirm_recipient)?;
-            Ok(json!(safe_outbox(backend.send_draft(&id).await?)))
+            Ok(json!(safe_outbox(
+                backend
+                    .send_draft(&id, draft.local_version, &confirm_recipient)
+                    .await?
+            )))
         }
         Command::Outbox => {
             let items = backend
@@ -328,6 +335,7 @@ async fn run(cli: Cli) -> Result<Value> {
                 .collect::<Vec<_>>();
             Ok(json!(items))
         }
+        Command::RetryOutbox { id } => Ok(json!(safe_outbox(backend.retry_outbox(&id).await?))),
     }
 }
 

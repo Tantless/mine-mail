@@ -25,9 +25,14 @@ function fileSizeLabel(bytes) {
 export function MessageView({
   message,
   isLoading,
+  error,
+  onRetry,
   onClose,
   onReply,
   onForward,
+  onRetryDelivery,
+  isRetryingDelivery = false,
+  canRetryDelivery = false,
   onPrevious,
   onNext,
   canPrevious,
@@ -46,7 +51,9 @@ export function MessageView({
   }
 
   const sender = senderLabel(message);
-  const body = message.body_text || message.preview || "这封邮件没有纯文本正文。";
+  const body = message.body_fetched
+    ? message.body_text || "这封邮件没有纯文本正文。"
+    : message.preview || "这封邮件没有纯文本正文。";
 
   return (
     <section className="reader-panel" aria-label="邮件阅读区">
@@ -55,17 +62,17 @@ export function MessageView({
           <IconButton label="返回邮件列表" className="reader-back" onClick={onClose}>
             <ArrowLeft size={20} />
           </IconButton>
-          <IconButton label="归档">
+          <IconButton label="归档（尚未实现）" disabled>
             <Archive size={19} />
           </IconButton>
-          <IconButton label="删除">
+          <IconButton label="删除（尚未实现）" disabled>
             <Trash size={19} />
           </IconButton>
           <span className="toolbar-divider" />
-          <IconButton label="标记为未读">
+          <IconButton label="标记为未读（尚未实现）" disabled>
             <EnvelopeOpen size={19} />
           </IconButton>
-          <IconButton label="更多操作">
+          <IconButton label="更多操作（尚未实现）" disabled>
             <DotsThree size={22} weight="bold" />
           </IconButton>
         </div>
@@ -81,7 +88,7 @@ export function MessageView({
 
       <div className="reader-scroll">
         <div className="message-header">
-          <p className="eyebrow">INBOX</p>
+          <p className="eyebrow">{message.kind === "outbox" ? "OUTBOX" : "INBOX"}</p>
           <h2>{message.subject || "（无主题）"}</h2>
 
           <div className="sender-card">
@@ -91,8 +98,8 @@ export function MessageView({
             <div className="sender-card__identity">
               <strong>{sender}</strong>
               <span>{message.sender?.email}</span>
-              <button type="button" className="recipient-toggle">
-                发送给我 <CaretDown size={12} />
+              <button type="button" className="recipient-toggle" disabled>
+                {message.kind === "outbox" ? "查看收件人" : "发送给我"} <CaretDown size={12} />
               </button>
             </div>
             <time dateTime={message.sent_at}>{formatFullDate(message.sent_at)}</time>
@@ -106,6 +113,14 @@ export function MessageView({
               <span />
               <span />
               <span />
+            </div>
+          ) : error ? (
+            <div className="message-error" role="alert">
+              <strong>正文加载失败</strong>
+              <span>{error}</span>
+              <button type="button" className="secondary-button" onClick={onRetry}>
+                重新加载
+              </button>
             </div>
           ) : (
             body.split(/\n{2,}/).map((paragraph, index) => (
@@ -128,8 +143,15 @@ export function MessageView({
               {message.attachment_names.length} 个附件
             </h3>
             <div className="attachment-grid">
-              {message.attachment_names.map((name) => (
-                <button className="attachment-card" type="button" key={name}>
+              {message.attachment_names.map((name, index) => (
+                <button
+                  className="attachment-card"
+                  type="button"
+                  key={`${index}-${name}`}
+                  aria-label={`${name}（附件下载尚未实现）`}
+                  title="附件下载尚未实现"
+                  disabled
+                >
                   <span className="attachment-card__icon">
                     <FilePdf size={25} weight="duotone" />
                   </span>
@@ -144,16 +166,31 @@ export function MessageView({
           </section>
         ) : null}
 
-        <div className="message-actions">
-          <button type="button" className="secondary-button" onClick={onReply}>
-            <ArrowBendUpLeft size={18} />
-            回复
-          </button>
-          <button type="button" className="secondary-button" onClick={onForward}>
-            <ArrowBendUpRight size={18} />
-            转发
-          </button>
-        </div>
+        {message.kind !== "outbox" ? (
+          <div className="message-actions">
+            <button type="button" className="secondary-button" onClick={onReply}>
+              <ArrowBendUpLeft size={18} />
+              回复
+            </button>
+            <button type="button" className="secondary-button" onClick={onForward}>
+              <ArrowBendUpRight size={18} />
+              转发
+            </button>
+          </div>
+        ) : message.outbox?.status === "retryable" ? (
+          <div className="message-actions">
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={onRetryDelivery}
+              disabled={!canRetryDelivery || isRetryingDelivery}
+              aria-busy={isRetryingDelivery}
+            >
+              {isRetryingDelivery ? "正在重试…" : "重试发送"}
+            </button>
+            {!canRetryDelivery ? <small>重新连接账户后才能重试</small> : null}
+          </div>
+        ) : null}
       </div>
     </section>
   );

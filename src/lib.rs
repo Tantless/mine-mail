@@ -14,9 +14,9 @@ mod models;
 mod smtp_client;
 
 pub use backend::MailBackend;
-pub use config::{AccountConfig, ServerConfig};
+pub use config::{AccountConfig, ServerConfig, SmtpSecurity};
 pub use error::{MailError, Result};
 pub use models::{
-    ComposeRequest, ConnectionReport, Draft, InboxMessage, MailAddress, OutboxItem, OutboxStatus,
-    SyncReport,
+    ComposeRequest, ConnectionReport, Draft, DraftDeleteKind, DraftSaveKind, DraftSaveOutcome,
+    DraftSyncReport, InboxMessage, MailAddress, OutboxItem, OutboxStatus, SyncReport,
 };
