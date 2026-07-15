@@ -18,6 +18,13 @@ use crate::{
 const MESSAGE_COLUMNS: &str = "id, account_id, mailbox, uid, message_id, subject, \
     sender_json, to_json, cc_json, sent_at, internal_date, flags_json, size_bytes, \
     preview, body_text, body_html, attachment_names_json, body_fetched, raw_rfc822, synced_at";
+// Inbox rows only need enough local body data to paint an immediate fallback.
+// The empty HTML sentinel preserves `body_html.is_some()` without reading the
+// potentially large HTML/RFC822 payload for every visible list item.
+const MESSAGE_SUMMARY_COLUMNS: &str = "id, account_id, mailbox, uid, message_id, subject, \
+    sender_json, to_json, cc_json, sent_at, internal_date, flags_json, size_bytes, \
+    preview, body_text, CASE WHEN body_html IS NULL THEN NULL ELSE '' END, \
+    attachment_names_json, body_fetched, X'', synced_at";
 const DRAFT_COLUMNS: &str = "id, account_id, to_json, cc_json, bcc_json, subject, \
     body_text, status, remote_mailbox, remote_uid, created_at, updated_at, raw_rfc822, local_version, \
     has_unsupported_content";
@@ -438,7 +445,7 @@ impl Repository {
     ) -> Result<Vec<InboxMessage>> {
         let connection = self.connection()?;
         let sql = format!(
-            "SELECT {MESSAGE_COLUMNS} FROM messages
+            "SELECT {MESSAGE_SUMMARY_COLUMNS} FROM messages
              WHERE account_id = ?1 AND mailbox = 'INBOX' COLLATE NOCASE
              ORDER BY COALESCE(internal_date, sent_at, synced_at) DESC, uid DESC
              LIMIT ?2 OFFSET ?3"
@@ -483,6 +490,31 @@ impl Repository {
                 entity: "message UID",
                 id: format!("{account_id}:{mailbox}/{uid}"),
             })
+    }
+
+    pub(crate) fn inbox_body_prefetch_candidates(
+        &self,
+        account_id: &str,
+        limit: usize,
+        max_message_bytes: u32,
+    ) -> Result<Vec<(u32, u32)>> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT uid, size_bytes FROM messages
+             WHERE account_id = ?1
+               AND mailbox = 'INBOX' COLLATE NOCASE
+               AND body_fetched = 0
+               AND size_bytes > 0
+               AND size_bytes <= ?2
+             ORDER BY COALESCE(internal_date, sent_at, synced_at) DESC, uid DESC
+             LIMIT ?3",
+        )?;
+        let rows = statement.query_map(
+            params![account_id, max_message_bytes, usize_to_i64(limit)],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
     }
 
     pub(crate) fn count_messages(&self, account_id: &str, mailbox: &str) -> Result<usize> {
@@ -1667,6 +1699,46 @@ mod tests {
         assert_eq!(
             repository.get_message(first_id).unwrap().flags,
             ["\\Flagged"]
+        );
+    }
+
+    #[test]
+    fn inbox_summary_avoids_large_payloads_but_preserves_body_availability() {
+        let (_directory, repository, account) = setup();
+        let mut full = message(&account.account_id, true);
+        full.body_html = Some("<table><tr><td>large HTML</td></tr></table>".repeat(500));
+        full.raw_rfc822 = vec![b'x'; 256 * 1024];
+        repository.upsert_message(&full).expect("full body");
+
+        let summary = repository
+            .list_inbox(&account.account_id, 10, 0)
+            .expect("inbox summary")
+            .pop()
+            .expect("message");
+
+        assert_eq!(summary.body_text.as_deref(), Some("Full body"));
+        assert_eq!(summary.body_html.as_deref(), Some(""));
+        assert!(summary.raw_rfc822.is_empty());
+        assert!(summary.body_fetched);
+    }
+
+    #[test]
+    fn body_prefetch_candidates_are_recent_unfetched_messages_within_size_limit() {
+        let (_directory, repository, account) = setup();
+        let pending = message(&account.account_id, false);
+        repository.upsert_message(&pending).expect("pending body");
+
+        assert_eq!(
+            repository
+                .inbox_body_prefetch_candidates(&account.account_id, 10, 1024)
+                .expect("candidates"),
+            vec![(42, 321)]
+        );
+        assert!(
+            repository
+                .inbox_body_prefetch_candidates(&account.account_id, 10, 100)
+                .expect("size-filtered candidates")
+                .is_empty()
         );
     }
 

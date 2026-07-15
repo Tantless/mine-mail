@@ -35,6 +35,26 @@ const defaultSettings = {
 };
 const localDraftDebounceMs = 900;
 
+const cachedBodyFields = [
+  "body_text",
+  "body_html",
+  "body_html_available",
+  "body_html_loaded",
+  "has_remote_images",
+  "attachment_names",
+  "body_fetched",
+];
+
+function messageCacheKey(message) {
+  return `${message?.mailbox || "INBOX"}:${message?.uid}`;
+}
+
+function bodySnapshot(message) {
+  return Object.fromEntries(
+    cachedBodyFields.map((field) => [field, message?.[field]]),
+  );
+}
+
 function getInitialTheme() {
   const saved = window.localStorage.getItem("mine-mail-theme");
   return validThemes.has(saved) ? saved : "daylight";
@@ -179,6 +199,7 @@ export function App() {
   const draftsRef = useRef([]);
   const selectionRequestRef = useRef(0);
   const selectedUidRef = useRef(null);
+  const messageBodyCacheRef = useRef(new Map());
   const platform = /Mac|iPhone|iPad/.test(navigator.platform) ? "mac" : "windows";
   const networkActionsAvailable = Boolean(
     accountStatus.configured &&
@@ -237,24 +258,27 @@ export function App() {
         return;
       }
 
+      const cachedBody = messageBodyCacheRef.current.get(messageCacheKey(message));
+      const displayMessage = cachedBody ? { ...message, ...cachedBody } : message;
       const requestId = selectionRequestRef.current + 1;
       selectionRequestRef.current = requestId;
       selectedUidRef.current = message.uid;
       setSelectedUid(message.uid);
-      setSelectedMessage(message);
+      setSelectedMessage(displayMessage);
       setMessageError(null);
 
       const needsHtmlHydration =
-        message.body_html_available === true && message.body_html_loaded !== true;
+        displayMessage.body_html_available === true &&
+        displayMessage.body_html_loaded !== true;
       if (
-        message.kind === "outbox" ||
-        (!forceFetch && message.body_fetched && !needsHtmlHydration)
+        displayMessage.kind === "outbox" ||
+        (!forceFetch && displayMessage.body_fetched && !needsHtmlHydration)
       ) {
         setIsMessageLoading(false);
         return;
       }
 
-      if (!networkActionsAvailableRef.current && !message.body_fetched) {
+      if (!networkActionsAvailableRef.current && !displayMessage.body_fetched) {
         setIsMessageLoading(false);
         setMessageError(
           "这封邮件尚未缓存正文。重新连接账户后才能从服务器获取。",
@@ -262,7 +286,15 @@ export function App() {
         return;
       }
 
-      setIsMessageLoading(true);
+      // The list response always contains either locally cached text or a
+      // metadata preview. Paint that immediately while the full body is
+      // hydrated in the background instead of replacing it with a skeleton.
+      const hasImmediateCopy = Boolean(
+        displayMessage.body_html ||
+          displayMessage.body_text?.trim() ||
+          displayMessage.preview?.trim(),
+      );
+      setIsMessageLoading(!hasImmediateCopy);
       try {
         const fullMessage = await mailApi.fetchMessage(message.uid);
         if (
@@ -272,6 +304,10 @@ export function App() {
         ) {
           return;
         }
+        messageBodyCacheRef.current.set(
+          messageCacheKey(fullMessage),
+          bodySnapshot(fullMessage),
+        );
         setSelectedMessage(fullMessage);
         setMessages((current) =>
           current.map((mail) =>
@@ -293,7 +329,11 @@ export function App() {
 
   const refreshInbox = useCallback(
     async ({ selectFirst = false } = {}) => {
-      const inbox = await mailApi.listInbox(50);
+      const summaries = await mailApi.listInbox(50);
+      const inbox = summaries.map((message) => {
+        const cachedBody = messageBodyCacheRef.current.get(messageCacheKey(message));
+        return cachedBody ? { ...message, ...cachedBody } : message;
+      });
       setMessages(inbox);
       const currentUid = selectedUidRef.current;
       if (currentUid !== null) {
@@ -301,19 +341,7 @@ export function App() {
         if (!current) {
           clearSelection();
         } else {
-          setSelectedMessage((previous) =>
-            previous?.body_fetched
-              ? {
-                  ...current,
-                  body_text: previous.body_text,
-                  body_html: previous.body_html,
-                  body_html_available: previous.body_html_available,
-                  body_html_loaded: previous.body_html_loaded,
-                  has_remote_images: previous.has_remote_images,
-                  body_fetched: true,
-                }
-              : current,
-          );
+          setSelectedMessage(current);
         }
       } else if (selectFirst && inbox.length && window.innerWidth >= 720) {
         void handleSelect(inbox[0]);

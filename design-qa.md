@@ -66,3 +66,13 @@ The implementation evidence comes from the rebuilt Tauri debug executable. The f
 - No SMTP action was triggered during visual QA.
 
 final result: passed
+
+## Reader performance and theme integration — 2026-07-15
+
+- Inbox list queries omit raw RFC822 and full HTML payloads while retaining the local preview/text needed for immediate paint.
+- Opening a message never hides that local copy behind a skeleton. Full local/network content replaces it silently, and an in-memory body cache survives list refresh events.
+- Foreground body fetches reuse a dedicated IMAP session and skip the full UID search. Post-sync prefetch is bounded to 20 recent messages, 2 MiB each, and 8 MiB total per run.
+- HTML srcdoc attaches sizing before remote image load, forces root overflow hidden, remembers measured height, and leaves vertical scrolling to the outer reader only.
+- Simple HTML with a text alternative renders as native theme typography. Complex image/table/style mail remains sanitized in the isolated iframe; transparent regions receive a restrained theme tint without rewriting sender layout.
+- Live desktop cache check: 103 of 104 Inbox bodies cached; all newest 20 cached; the Nintendo layout mail cached.
+- Verification: core Rust 53 passed, React 44 passed, Tauri Rust 21 passed, Tauri `cargo check` passed, production React build passed. No SMTP action was triggered.

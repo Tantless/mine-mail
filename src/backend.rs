@@ -1,10 +1,11 @@
 use std::{
     collections::{BTreeSet, HashMap, HashSet},
     path::Path,
+    time::Duration,
 };
 
 use chrono::{SecondsFormat, Utc};
-use tokio::sync::Mutex;
+use tokio::{sync::Mutex, time::Instant};
 use uuid::Uuid;
 
 use crate::{
@@ -26,6 +27,12 @@ const SUMMARY_BATCH_SIZE: usize = 100;
 const FLAG_BATCH_SIZE: usize = 250;
 const MAX_CACHED_MESSAGE_BYTES: u32 = 50 * 1024 * 1024;
 const MAX_LOCAL_DRAFT_CAS_RETRIES: usize = 32;
+const BODY_IMAP_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(60);
+
+struct BodyImapSession {
+    connection: ImapConnection,
+    last_used: Instant,
+}
 
 #[derive(Clone, Debug)]
 struct RemoteDraftCandidate {
@@ -77,6 +84,7 @@ pub struct MailBackend {
     config: AccountConfig,
     repository: Repository,
     imap_gate: Mutex<()>,
+    body_imap: Mutex<Option<BodyImapSession>>,
     smtp_gate: Mutex<()>,
 }
 
@@ -86,6 +94,7 @@ impl MailBackend {
             config,
             repository: Repository::open(database_path)?,
             imap_gate: Mutex::new(()),
+            body_imap: Mutex::new(None),
             smtp_gate: Mutex::new(()),
         })
     }
@@ -275,6 +284,48 @@ impl MailBackend {
             .list_inbox(&self.config.account_id, limit, 0)
     }
 
+    pub fn cached_inbox_message(&self, uid: u32) -> Result<InboxMessage> {
+        let message = self
+            .repository
+            .get_message_by_uid(&self.config.account_id, INBOX, uid)?;
+        if !message.body_fetched {
+            return Err(MailError::NotFound {
+                entity: "cached message body",
+                id: uid.to_string(),
+            });
+        }
+        Ok(message)
+    }
+
+    pub async fn prefetch_inbox_bodies(
+        &self,
+        limit: usize,
+        max_total_bytes: u64,
+        max_message_bytes: u32,
+    ) -> Result<usize> {
+        if limit == 0 || max_total_bytes == 0 || max_message_bytes == 0 {
+            return Ok(0);
+        }
+        let candidates = self.repository.inbox_body_prefetch_candidates(
+            &self.config.account_id,
+            limit,
+            max_message_bytes,
+        )?;
+        let mut prefetched = 0;
+        let mut total_bytes = 0u64;
+        for (uid, size_bytes) in candidates {
+            let next_total = total_bytes.saturating_add(u64::from(size_bytes));
+            if next_total > max_total_bytes {
+                continue;
+            }
+            if self.fetch_message(uid, false).await.is_ok() {
+                total_bytes = next_total;
+                prefetched += 1;
+            }
+        }
+        Ok(prefetched)
+    }
+
     pub async fn fetch_message(&self, uid: u32, force: bool) -> Result<InboxMessage> {
         if uid == 0 {
             return Err(MailError::Validation(
@@ -296,56 +347,93 @@ impl MailBackend {
             Err(error) => return Err(error),
         }
 
-        let _guard = self.imap_gate.lock().await;
-        let mut connection = ImapConnection::connect(&self.config).await?;
-        let selected = connection.select_inbox().await?;
-        let local_uid_validity = self
-            .repository
-            .mailbox_state(&self.config.account_id, INBOX)?
-            .and_then(|state| state.uid_validity);
-        match classify_inbox_uid_scope(local_uid_validity, selected.uid_validity) {
-            InboxUidScope::Current => {}
-            InboxUidScope::NeedsSync => {
-                let _ = connection.logout().await;
-                return Err(MailError::Validation(
-                    "Inbox must be synchronized before downloading message bodies".to_owned(),
-                ));
+        let mut body_imap = self.body_imap.lock().await;
+        let connection_is_stale = match body_imap.as_mut() {
+            Some(session) if session.last_used.elapsed() >= BODY_IMAP_KEEPALIVE_INTERVAL => {
+                session.connection.noop().await.is_err()
             }
-            InboxUidScope::Changed => {
+            Some(_) => false,
+            None => true,
+        };
+        if connection_is_stale {
+            *body_imap = Some(BodyImapSession {
+                connection: ImapConnection::connect(&self.config).await?,
+                last_used: Instant::now(),
+            });
+        }
+
+        // A foreground request may have queued behind a prefetch of the same
+        // UID. Recheck SQLite after acquiring the body-session actor.
+        if !force
+            && let Ok(message) =
                 self.repository
-                    .reset_mailbox(&self.config.account_id, INBOX)?;
-                let _ = connection.logout().await;
-                return Err(MailError::Validation(
+                    .get_message_by_uid(&self.config.account_id, INBOX, uid)
+            && message.body_fetched
+        {
+            return Ok(message);
+        }
+
+        let session = body_imap
+            .as_mut()
+            .expect("body IMAP session is connected before use");
+        let result = async {
+            let selected_uid_validity = session.connection.select_inbox_for_fetch().await?;
+            let local_uid_validity = self
+                .repository
+                .mailbox_state(&self.config.account_id, INBOX)?
+                .and_then(|state| state.uid_validity);
+            match classify_inbox_uid_scope(local_uid_validity, selected_uid_validity) {
+                InboxUidScope::Current => {}
+                InboxUidScope::NeedsSync => {
+                    return Err(MailError::Validation(
+                        "Inbox must be synchronized before downloading message bodies".to_owned(),
+                    ));
+                }
+                InboxUidScope::Changed => {
+                    self.repository
+                        .reset_mailbox(&self.config.account_id, INBOX)?;
+                    return Err(MailError::Validation(
                     "Inbox UIDVALIDITY changed; synchronize Inbox before downloading this message"
                         .to_owned(),
                 ));
+                }
+            }
+            let remote = session.connection.fetch_full_message(uid).await?;
+
+            if remote.size_bytes > MAX_CACHED_MESSAGE_BYTES {
+                return Err(MailError::Validation(format!(
+                    "message UID {uid} exceeds the 50 MiB local cache limit"
+                )));
+            }
+
+            let message = parse_incoming_message(
+                &remote.raw,
+                IncomingMetadata {
+                    account_id: &self.config.account_id,
+                    mailbox: INBOX,
+                    uid: remote.uid,
+                    flags: remote.flags,
+                    internal_date: remote.internal_date,
+                    size_bytes: remote.size_bytes,
+                    synced_at: now(),
+                    body_fetched: true,
+                },
+            )?;
+            self.repository.upsert_message(&message)?;
+            self.repository
+                .get_message_by_uid(&self.config.account_id, INBOX, uid)
+        }
+        .await;
+        match result {
+            Ok(message) => {
+                session.last_used = Instant::now();
+                Ok(message)
+            }
+            Err(error) => {
+                *body_imap = None;
+                Err(error)
             }
         }
-        let remote = connection.fetch_full_message(uid).await?;
-        let _ = connection.logout().await;
-
-        if remote.size_bytes > MAX_CACHED_MESSAGE_BYTES {
-            return Err(MailError::Validation(format!(
-                "message UID {uid} exceeds the 50 MiB local cache limit"
-            )));
-        }
-
-        let message = parse_incoming_message(
-            &remote.raw,
-            IncomingMetadata {
-                account_id: &self.config.account_id,
-                mailbox: INBOX,
-                uid: remote.uid,
-                flags: remote.flags,
-                internal_date: remote.internal_date,
-                size_bytes: remote.size_bytes,
-                synced_at: now(),
-                body_fetched: true,
-            },
-        )?;
-        self.repository.upsert_message(&message)?;
-        self.repository
-            .get_message_by_uid(&self.config.account_id, INBOX, uid)
     }
 
     pub fn save_draft(&self, request: ComposeRequest) -> Result<Draft> {

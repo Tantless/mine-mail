@@ -1,5 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 const desktop = vi.hoisted(() => {
@@ -219,6 +227,34 @@ describe("Mine Mail desktop state bridge", () => {
 
     expect(screen.getByRole("heading", { name: "Second mail" })).toBeTruthy();
     expect(screen.queryByText("Stale first body")).toBeNull();
+  });
+
+  it("paints the local preview immediately while the full body hydrates", async () => {
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 600 });
+    const localSummary = {
+      ...summary(3, "Instant mail"),
+      preview: "Immediately visible local copy",
+    };
+    const bodyResponse = deferred();
+    desktop.mailApi.listInbox.mockResolvedValue([localSummary]);
+    desktop.mailApi.fetchMessage.mockReturnValue(bodyResponse.promise);
+    const user = userEvent.setup();
+
+    render(<App />);
+    await user.click(await screen.findByText("Instant mail"));
+
+    const reader = screen.getByLabelText("邮件阅读区");
+    expect(within(reader).getByText("Immediately visible local copy")).toBeTruthy();
+    expect(within(reader).queryByLabelText("正在加载正文")).toBeNull();
+
+    await act(async () => {
+      bodyResponse.resolve({
+        ...localSummary,
+        body_text: "Canonical full body",
+        body_fetched: true,
+      });
+    });
+    expect(await within(reader).findByText("Canonical full body")).toBeTruthy();
   });
 
   it("hydrates cached HTML on selection and preserves it across summary refreshes", async () => {

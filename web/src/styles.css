@@ -60,6 +60,11 @@
   --reader-surface: color-mix(in srgb, var(--color-panel) 68%, transparent);
   --reader-toolbar-surface: color-mix(in srgb, var(--color-panel) 14%, transparent);
   --reader-content-surface: color-mix(in srgb, var(--color-panel) 9%, transparent);
+  --email-document-surface: color-mix(
+    in srgb,
+    var(--color-panel) 28%,
+    rgba(255, 255, 255, 0.76)
+  );
   --surface-edge: rgba(255, 255, 255, 0.58);
   --surface-highlight: rgba(255, 255, 255, 0.42);
   --surface-blur-list: 24px;
@@ -1471,8 +1476,15 @@ kbd {
   min-height: 220px;
   border: 0;
   border-radius: 10px;
-  background: rgba(255, 255, 255, 0.96);
+  overflow: hidden;
+  background: var(--email-document-surface, rgba(255, 255, 255, 0.9));
   color-scheme: light;
+  opacity: 0;
+  transition: opacity 90ms ease-out;
+}
+
+.html-message__frame[data-ready="true"] {
+  opacity: 1;
 }
 
 .body-skeleton {

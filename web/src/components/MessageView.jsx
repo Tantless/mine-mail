@@ -131,6 +131,7 @@ export function MessageView({
           ) : message.body_html ? (
             <HtmlMessageBody
               key={message.uid}
+              cacheKey={`${message.mailbox || "INBOX"}:${message.uid}`}
               html={message.body_html}
               hasRemoteImages={message.has_remote_images}
               remoteImageMode={remoteImageMode}

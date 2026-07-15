@@ -561,6 +561,27 @@ async fn sync_inbox_unlocked(app: &AppHandle) -> Result<SyncReport, String> {
             report: report.clone(),
         },
     );
+    let prefetch_backend = backend.clone();
+    let prefetch_app = app.clone();
+    let prefetch_report = report.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Ok(prefetched) = prefetch_backend
+            .prefetch_inbox_bodies(
+                crate::INBOX_PREFETCH_LIMIT,
+                crate::INBOX_PREFETCH_TOTAL_BYTES,
+                crate::INBOX_PREFETCH_MESSAGE_BYTES,
+            )
+            .await
+            && prefetched > 0
+        {
+            let _ = prefetch_app.emit(
+                "mail:inbox-updated",
+                InboxUpdatedEvent {
+                    report: prefetch_report,
+                },
+            );
+        }
+    });
     Ok(report)
 }
 

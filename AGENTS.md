@@ -8,6 +8,8 @@ Cross-platform desktop mail client. Product decisions in this file are durable; 
 - Rust/SQLite own credentials, IMAP/SMTP, synchronization, drafts, outbox, and notification decisions. React only calls narrow Tauri commands and renders local state.
 - Never log or return authorization secrets, raw credentials, or complete RFC822 messages to React.
 - Preserve offline-first startup: render SQLite immediately, then synchronize in Rust.
+- Inbox summaries must not carry raw RFC822 or full HTML. Paint a local preview immediately, hydrate the selected body silently, and prefetch recent bounded-size bodies after sync.
+- Keep one reader scrollbar. Simple HTML with a readable text alternative uses the native themed reader; complex sender-designed HTML stays sanitized and isolated in a no-script iframe whose height is owned by the outer reader.
 
 ## MVP behavior
 

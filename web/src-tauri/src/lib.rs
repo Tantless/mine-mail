@@ -21,6 +21,9 @@ use mail_html::sanitize_mail_html;
 
 const INBOX_SYNC_LIMIT: usize = 100;
 const INBOX_LIST_LIMIT: usize = 250;
+const INBOX_PREFETCH_LIMIT: usize = 20;
+const INBOX_PREFETCH_TOTAL_BYTES: u64 = 8 * 1024 * 1024;
+const INBOX_PREFETCH_MESSAGE_BYTES: u32 = 2 * 1024 * 1024;
 
 type CommandResult<T> = Result<T, String>;
 
@@ -74,13 +77,29 @@ impl InboxMessageDto {
     }
 
     fn full(value: InboxMessage) -> Self {
-        let rendered_html = mine_mail::render_message_html(&value);
-        let body_html_available = rendered_html.is_some();
-        let sanitized = rendered_html.as_deref().map(sanitize_mail_html);
+        // MIME extraction (including safe CID image resolution) already ran
+        // when the body entered SQLite. Re-parsing raw RFC822 on every click
+        // made cached HTML feel like a network operation.
+        let body_html_available = value.body_html.is_some();
+        let has_readable_text = value
+            .body_text
+            .as_ref()
+            .is_some_and(|text| !text.trim().is_empty());
+        let sanitized = value.body_html.as_deref().map(sanitize_mail_html);
         let has_remote_images = sanitized
             .as_ref()
             .is_some_and(|html| html.has_remote_images);
-        let body_html = sanitized.map(|html| html.fragment);
+        // Simple multipart/HTML wrappers usually duplicate the plain-text
+        // alternative. Rendering that text natively makes typography and
+        // surfaces inherit the active Mine Mail theme. Preserve sender HTML
+        // when it carries layout, imagery, or has no readable text fallback.
+        let body_html = sanitized.and_then(|html| {
+            if has_readable_text && !html.has_complex_layout {
+                None
+            } else {
+                Some(html.fragment)
+            }
+        });
         Self::from_parts(
             value,
             body_html,
@@ -275,15 +294,11 @@ async fn fetch_message(
             .await
             .map(Into::into)
             .map_err(safe_mail_error),
-        Err(network_error) => {
-            let cached = backend
-                .local()?
-                .list_inbox(usize::MAX)
-                .map_err(safe_mail_error)?
-                .into_iter()
-                .find(|message| message.uid == uid && message.body_fetched);
-            cached.map(Into::into).ok_or(network_error)
-        }
+        Err(network_error) => backend
+            .local()?
+            .cached_inbox_message(uid)
+            .map(Into::into)
+            .map_err(|_| network_error),
     }
 }
 
@@ -724,6 +739,21 @@ mod tests {
         assert!(!html.contains("<script"));
         assert_eq!(json["body_html_loaded"], true);
         assert!(json.get("raw_rfc822").is_none());
+    }
+
+    #[test]
+    fn simple_html_uses_the_native_themed_text_reader() {
+        let mut message = rich_message();
+        message.body_html = Some("<div>Hello <strong>there</strong></div>".to_owned());
+        message.body_text = Some("Hello there".to_owned());
+
+        let dto = InboxMessageDto::full(message);
+        let json = serde_json::to_value(dto).expect("serialize native body");
+
+        assert!(json["body_html"].is_null());
+        assert_eq!(json["body_text"], "Hello there");
+        assert_eq!(json["body_html_available"], true);
+        assert_eq!(json["body_html_loaded"], true);
     }
 
     #[test]

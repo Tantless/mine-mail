@@ -12,6 +12,7 @@ use ammonia::{Builder, UrlRelative};
 pub(crate) struct SanitizedMailHtml {
     pub fragment: String,
     pub has_remote_images: bool,
+    pub has_complex_layout: bool,
 }
 
 pub(crate) fn sanitize_mail_html(source: &str) -> SanitizedMailHtml {
@@ -84,10 +85,23 @@ pub(crate) fn sanitize_mail_html(source: &str) -> SanitizedMailHtml {
     ]
     .iter()
     .any(|needle| lower_fragment.contains(needle));
+    let has_complex_layout = [
+        "<table",
+        "<img",
+        "<picture",
+        "<style",
+        "<font",
+        "<section",
+        " background=",
+        " bgcolor=",
+    ]
+    .iter()
+    .any(|needle| lower_fragment.contains(needle));
 
     SanitizedMailHtml {
         fragment,
         has_remote_images: has_remote_images.load(Ordering::Relaxed) || has_remote_css_image,
+        has_complex_layout,
     }
 }
 
@@ -140,6 +154,7 @@ mod tests {
         assert!(!result.fragment.contains("onclick"));
         assert!(!result.fragment.contains("javascript:"));
         assert!(result.has_remote_images);
+        assert!(result.has_complex_layout);
     }
 
     #[test]
@@ -156,5 +171,15 @@ mod tests {
         assert!(!result.fragment.contains("data:text/html"));
         assert!(result.fragment.contains("https://example.com"));
         assert!(!result.has_remote_images);
+        assert!(result.has_complex_layout);
+    }
+
+    #[test]
+    fn recognizes_simple_html_that_can_use_the_native_themed_reader() {
+        let result =
+            sanitize_mail_html(r#"<div>Hello <strong>there</strong></div><p>A short reply.</p>"#);
+
+        assert!(!result.has_remote_images);
+        assert!(!result.has_complex_layout);
     }
 }

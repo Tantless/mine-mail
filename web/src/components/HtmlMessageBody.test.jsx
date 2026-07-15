@@ -14,6 +14,7 @@ describe("HTML message body", () => {
     expect(document).toContain("img-src data: blob:");
     expect(document).not.toContain("img-src data: blob: http: https:");
     expect(document).toContain('img[src^="https://"]');
+    expect(document).toContain("overflow: hidden !important");
   });
 
   it("loads remote images automatically by default", () => {
@@ -28,6 +29,7 @@ describe("HTML message body", () => {
 
     const frame = screen.getByTitle("Automatic remote mail HTML 正文");
     expect(frame.getAttribute("sandbox")).toBe("allow-same-origin");
+    expect(frame.getAttribute("scrolling")).toBe("no");
     expect(frame.getAttribute("srcdoc")).toContain(
       "img-src data: blob: http: https:",
     );

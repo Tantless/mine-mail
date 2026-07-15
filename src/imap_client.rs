@@ -127,13 +127,17 @@ impl ImapConnection {
     }
 
     pub async fn probe(mut self) -> Result<()> {
+        self.noop().await?;
+        self.logout().await
+    }
+
+    pub async fn noop(&mut self) -> Result<()> {
         timeout(COMMAND_TIMEOUT, self.session.noop())
             .await
             .map_err(|_| MailError::Timeout {
                 operation: "IMAP NOOP",
             })?
-            .map_err(|error| MailError::Imap(error.to_string()))?;
-        self.logout().await
+            .map_err(|error| MailError::Imap(error.to_string()))
     }
 
     pub async fn list_mailboxes(&mut self) -> Result<Vec<RemoteMailbox>> {
@@ -178,6 +182,18 @@ impl ImapConnection {
             highest_modseq: selected.highest_modseq,
             all_uids,
         })
+    }
+
+    /// Selects INBOX for a known-UID body fetch without the full UID SEARCH
+    /// required by metadata reconciliation.
+    pub async fn select_inbox_for_fetch(&mut self) -> Result<Option<u32>> {
+        timeout(COMMAND_TIMEOUT, self.session.select("INBOX"))
+            .await
+            .map_err(|_| MailError::Timeout {
+                operation: "IMAP SELECT INBOX",
+            })?
+            .map(|selected| selected.uid_validity)
+            .map_err(|error| MailError::Imap(error.to_string()))
     }
 
     async fn search_all_uids(&mut self) -> Result<Vec<u32>> {
