@@ -97,6 +97,109 @@ describe("Mine Mail MVP", () => {
     expect(screen.queryByRole("alertdialog")).toBeNull();
   });
 
+  it("moves, resizes, persists, minimizes, and restores the compose surface", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findAllByText("欢迎来到 Mine Mail");
+    await user.click(screen.getByRole("button", { name: /写信/ }));
+
+    const dialog = screen.getByRole("dialog", { name: "新邮件" });
+    const dragSurface = dialog.querySelector(".compose-drag-surface");
+    const initialLeft = Number.parseFloat(dialog.style.left);
+    const initialTop = Number.parseFloat(dialog.style.top);
+
+    expect(screen.queryByRole("button", { name: "展开写信窗口" })).toBeNull();
+    expect(screen.getByRole("button", { name: "保存并关闭" })).toBeTruthy();
+    expect(screen.queryByText("保存并关闭")).toBeNull();
+
+    fireEvent.pointerDown(dragSurface, {
+      button: 0,
+      clientX: 500,
+      clientY: 120,
+      pointerId: 1,
+    });
+    fireEvent.pointerMove(window, {
+      clientX: 450,
+      clientY: 90,
+      pointerId: 1,
+    });
+    fireEvent.pointerUp(window, { pointerId: 1 });
+
+    expect(Number.parseFloat(dialog.style.left)).toBeLessThan(initialLeft);
+    expect(Number.parseFloat(dialog.style.top)).toBeLessThan(initialTop);
+
+    const initialWidth = Number.parseFloat(dialog.style.width);
+    const initialHeight = Number.parseFloat(dialog.style.height);
+    const resizeHandle = dialog.querySelector('[data-resize-direction="se"]');
+    fireEvent.pointerDown(resizeHandle, {
+      button: 0,
+      clientX: 850,
+      clientY: 650,
+      pointerId: 2,
+    });
+    fireEvent.pointerMove(window, {
+      clientX: 900,
+      clientY: 700,
+      pointerId: 2,
+    });
+    fireEvent.pointerUp(window, { pointerId: 2 });
+
+    expect(Number.parseFloat(dialog.style.width)).toBeGreaterThan(initialWidth);
+    expect(Number.parseFloat(dialog.style.height)).toBeGreaterThan(initialHeight);
+
+    const persisted = JSON.parse(
+      window.localStorage.getItem("mine-mail-compose-geometry-v1"),
+    );
+    expect(persisted.width).toBe(Number.parseFloat(dialog.style.width));
+    expect(persisted.height).toBe(Number.parseFloat(dialog.style.height));
+
+    await user.type(screen.getByLabelText("主题"), "季度计划");
+    const restoredGeometry = {
+      left: dialog.style.left,
+      top: dialog.style.top,
+      width: dialog.style.width,
+      height: dialog.style.height,
+    };
+
+    await user.click(screen.getByRole("button", { name: "最小化写信窗口" }));
+    const minimizedDialog = screen.getByRole("dialog", { name: "季度计划" });
+    const minimizedLayer = minimizedDialog.closest(".compose-layer");
+    const restoreButton = screen.getByRole("button", {
+      name: "还原写信窗口：季度计划",
+    });
+
+    expect(dialog.dataset.minimized).toBe("true");
+    expect(minimizedLayer.dataset.minimized).toBe("true");
+    expect(dialog.style.width).toBe("340px");
+    expect(dialog.style.height).toBe("44px");
+    expect(restoreButton.textContent).toBe("季度计划");
+    expect(screen.queryByRole("button", { name: "关闭写信窗口" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "最小化写信窗口" })).toBeNull();
+
+    await user.click(restoreButton);
+    expect(dialog.dataset.minimized).toBe("false");
+    expect(dialog.style.left).toBe(restoredGeometry.left);
+    expect(dialog.style.top).toBe(restoredGeometry.top);
+    expect(dialog.style.width).toBe(restoredGeometry.width);
+    expect(dialog.style.height).toBe(restoredGeometry.height);
+
+    await user.clear(screen.getByLabelText("主题"));
+    await user.click(screen.getByRole("button", { name: "关闭写信窗口" }));
+    expect(screen.queryByRole("dialog", { name: "新邮件" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: /写信/ }));
+
+    const reopened = screen.getByRole("dialog", { name: "新邮件" });
+    expect(reopened.style.left).toBe(`${persisted.x}px`);
+    expect(reopened.style.top).toBe(`${persisted.y}px`);
+    expect(reopened.style.width).toBe(`${persisted.width}px`);
+    expect(reopened.style.height).toBe(`${persisted.height}px`);
+
+    await user.click(screen.getByRole("button", { name: "最小化写信窗口" }));
+    expect(
+      screen.getByRole("button", { name: "还原写信窗口：新邮件" }).textContent,
+    ).toBe("新邮件");
+  });
+
   it("filters the inbox by a search query", async () => {
     const user = userEvent.setup();
     render(<App />);

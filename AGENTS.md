@@ -20,6 +20,12 @@ Cross-platform desktop mail client. Product decisions in this file are durable; 
 - Sending binds exact-recipient confirmation and Outbox state to one draft `local_version`. Preserve newer edits, supersede safe older retry items, and never automatically retry `delivery_unknown` items.
 - Import the development account from `password.txt` once into the OS credential store. Keep provider presets (163, Gmail, Outlook) and a custom IMAP/SMTP option; users supply account and authorization secret.
 
+## Visual baseline
+
+- The approved MVP material is the layered frosted treatment in `web/design/references/mine-mail-frosted-material-reference.png`: one continuous painterly wallpaper, quieter glass for the message list, more atmospheric glass for the reader, and a theme-tinted compose control. All themes inherit the shared material structure and only tune semantic tokens.
+- The compose window uses that same layered glass system for its shell, fields, editor, footer, and controls. It has no visible title bar; only minimize and close remain at the top-right. The floating surface can be dragged and resized from every edge/corner, remembers the user's last normal position and size across messages and app restarts, and stays within the visible app bounds.
+- A minimized composer is a 340 × 44 subject-only glass bar at the bottom center. It removes the compose backdrop blur and all status/action chrome; clicking the bar restores the exact pre-minimize geometry. An empty subject is shown as **新邮件**.
+
 ## Verification
 
 - Root Rust: `cargo test`

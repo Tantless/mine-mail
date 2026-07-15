@@ -1,69 +1,62 @@
-# Mine Mail — Frosted Material Design QA
+# Mine Mail — Simplified Composer Design QA
 
 ## Evidence
 
-- Source visual truth: `web/design/references/mine-mail-frosted-material-reference.png`
-- Final Tauri implementation: `web/design/qa/implementation-frosted-daylight-final.png`
-- Full-view comparison: `web/design/qa/comparison-frosted-material-final.png`
-- Focused surface comparison: `web/design/qa/comparison-frosted-material-focused.png`
-- Source viewport: 1586 × 992.
-- Implementation viewport: 3000 × 1872 physical pixels, normalized to the source viewport for comparison.
-- State: Daylight theme, inbox, first message selected, real cached mailbox data.
+- Source visual truth: `web/design/qa/implementation-compose-glass-daylight-final.png`
+- Final normal composer: `web/design/qa/implementation-compose-refined-full-final.png`
+- Final minimized composer: `web/design/qa/implementation-compose-refined-minimized-final.png`
+- Full before/after comparison: `web/design/qa/comparison-compose-refined-before-after.png`
+- Normal/minimized state comparison: `web/design/qa/comparison-compose-refined-states.png`
+- Focused chrome/control comparison: `web/design/qa/comparison-compose-refined-focused.png`
+- Source and implementation viewport: 3098 × 1850 physical pixels (1549 × 925 logical pixels at 2× capture scale).
+- State: Windows Tauri/WebView2, Daylight theme, configured local mailbox, empty new-message composer.
 
-The Product Design browser surface was unavailable. Because this is a desktop-only Tauri app, QA used the current compiled debug executable and Windows `PrintWindow` capture. The captured executable path was `web/src-tauri/target/debug/mine-mail-desktop.exe`.
+The implementation evidence comes from the rebuilt Tauri debug executable. The final captures use the live cached mailbox and Windows `PrintWindow`; no parallel browser mail runtime or mock inbox was used.
 
 ## Findings
 
-- No actionable P0, P1, or P2 visual mismatch remains for the requested material change.
-- The compose action now reads as an accent-tinted glass control rather than a flat saturated rectangle. Its sampled Daylight surface is `#266EC4`, giving white label text sufficient contrast while retaining environmental translucency.
-- The message list uses the lighter frosted surface. Wallpaper color and light are perceptible through the panel without interfering with row scanning.
-- The reader uses the more opaque paper-glass surface. It belongs to the same material family as the list while preserving long-form text readability.
-- Search, selected row, footer, edge highlight, shadow softness, blur, and saturation now derive from the same semantic material system.
+- No actionable P0, P1, or P2 mismatch remains for the requested simplification.
+- The visible composer title/status band and maximize action are removed. The top edge is now uninterrupted glass with only minimize and close at the right, while the empty left area remains the drag target.
+- **保存并关闭** is now a Phosphor floppy-disk icon button with the same size, material, hover treatment, tooltip, and accessible name as the discard control.
+- The minimized state is a 340 × 44 subject-only glass bar centered 18 pixels above the bottom edge. It contains no status dot, draft status, or right-side controls.
+- The compose overlay becomes fully transparent and drops its backdrop filter while minimized, so the mailbox below remains sharp and readable.
+- Empty subjects render as **新邮件**. A non-empty subject is truncated to one centered line when necessary.
+- Drag and resize changes persist as a bounded `{x, y, width, height}` UI preference. New compose sessions and later app launches reuse it; minimize/restore does not overwrite the saved normal geometry.
 
 ## Required fidelity surfaces
 
-- Fonts and typography: existing Inter/Segoe UI fallbacks, weights, sizes, truncation, and reading line height remain unchanged. The material change introduces no wrapping or density regression.
-- Spacing and layout rhythm: existing three-column proportions, panel gaps, radii, toolbar heights, and row density are preserved. The source and implementation differ only where live content and Windows DPI affect capture scale.
-- Colors and visual tokens: Daylight, Night, Dusk, and Forest define theme-specific list, reader, control, selected-row, compose, edge, highlight, and shadow values. Unknown future themes inherit safe semantic defaults derived from their panel and accent colors.
-- Image quality and asset fidelity: the original painterly wallpapers remain continuous beneath all columns. No replacement imagery, placeholder art, CSS illustration, or new icon family was introduced.
-- Copy and content: static app copy is unchanged. The implementation uses live mailbox content, so the selected-message body is not expected to reproduce every line of the generated reference.
-- Accessibility: reader and list surfaces stay near-opaque; body and secondary text remain high contrast. The Daylight compose control was darkened after measurement so its white label does not lose contrast through transparency.
+- Fonts and typography: existing Inter/Segoe UI fallback, weights, field labels, placeholders, and footer hierarchy are unchanged. The minimized subject uses the existing 12px semibold UI scale with single-line ellipsis.
+- Spacing and layout rhythm: the original default 660 × 680 surface and right-side placement are preserved for first use. Removing the visible header tightens the hierarchy without moving the address, body, or footer controls out of alignment.
+- Colors and visual tokens: the approved compose glass, wallpaper reflection, borders, shadows, focus ring, and theme tokens are preserved. The compact bar uses the same semantic surface rather than introducing a new solid color.
+- Image quality and asset fidelity: the active painterly wallpaper remains the only raster source. No generated filler, CSS illustration, inline SVG, or extra icon family was added.
+- Copy and content: minimized copy follows the exact subject-or-**新邮件** rule. Existing recipient, subject, body, send, save, discard, and draft-status copy remains wired to live state.
+- Accessibility: the removed visual heading remains available as a clipped semantic heading; both top actions and both footer actions retain accessible names and focus states. Pointer resizing has large edge/corner targets, and the minimized bar is a single keyboard-accessible restore button.
 
-## Interaction and runtime validation
+## Interaction validation
 
-- The real Tauri debug app launched and displayed the updated CSS through Windows WebView2.
-- Inbox content and the selected message rendered successfully on the new surfaces.
-- Existing hover, pressed, focus-visible, selected, and theme-switching behavior remains wired to the same components.
-- React verification passed: 35 tests across 4 files.
-- The React production build and complete Tauri Release/MSI/NSIS build passed.
-- No SMTP action was triggered during visual QA.
+- Real Tauri UI Automation invoked the compose action, minimize action, and subject-bar restore action successfully.
+- React coverage exercises drag, southeast resize, geometry persistence, close/reopen restoration, subject and empty-subject minimized labels, compact geometry, and restore-to-previous geometry.
+- The minimized layer exposes the sharp mailbox and permits pointer interaction outside the compact bar.
+- Mail send, local draft save, remote draft synchronization, discard, and recipient confirmation logic were not changed.
 
 ## Comparison history
 
-### Pass 1
+### Final pass
 
-- The first attempted capture was rejected because Tauri single-instance handling focused an older Release process. Pixel sampling confirmed the stale flat colors (`#0878F9` compose and `#FCFCFD` panels), so those screenshots were not accepted as implementation evidence.
-- Fix: terminated only Mine Mail processes from this workspace and relaunched `target/debug/mine-mail-desktop.exe` after compilation completed.
-
-### Pass 2
-
-- The current implementation showed the intended shared material system and matched the source hierarchy.
-- [P2] The initially translucent Daylight compose surface reduced white-label contrast too far.
-- Fix: retained translucency but moved the Daylight, Dusk, and Forest accent glass toward darker theme-derived values. The final Daylight sample is `#266EC4`.
-
-### Pass 3
-
-- Post-fix evidence: `implementation-frosted-daylight-final.png`, `comparison-frosted-material-final.png`, and `comparison-frosted-material-focused.png`.
+- The full-view comparison confirms the old titled chrome and maximize button are gone while the glass shell and default placement remain stable.
+- The focused comparison confirms the footer text action has become an icon and the top-right control set contains only minimize and close.
+- The state comparison confirms the minimized bar is compact, centered, subject-only, and leaves the underlying mailbox unblurred.
 - No actionable P0, P1, or P2 issue remains.
-- Residual P3: the generated source contains a slightly more luminous compose-button highlight than CSS can reproduce without adding a decorative gradient. The implementation intentionally uses a quieter inset highlight to remain consistent with the app's existing visual language.
+- Residual P3: the compact width is fixed at 340 logical pixels, clamped on narrower windows. It can be tuned later if hands-on use favors a slightly shorter or longer subject preview.
 
-## Implementation checklist
+## Verification
 
-- [x] Add shared semantic frosted-material tokens.
-- [x] Tune all four MVP themes.
-- [x] Apply list and reader opacity hierarchy.
-- [x] Convert compose, search, selected row, and footer to related materials.
-- [x] Preserve readable content and accessible primary-action contrast.
-- [x] Validate against the selected mock in the real Tauri desktop runtime.
+- Core Rust: 49 tests passed.
+- React: 36 tests across 4 files passed.
+- Tauri: 13 Rust tests and `cargo check` passed.
+- Production frontend build: passed.
+- Embedded-assets Tauri debug build: passed.
+- Real Tauri normal/minimized visual capture: passed.
+- No SMTP action was triggered during visual QA.
 
 final result: passed

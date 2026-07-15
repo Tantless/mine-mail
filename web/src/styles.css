@@ -56,39 +56,67 @@
    * from their semantic panel/primary colors and may tune only the values
    * that need a different optical weight.
    */
-  --mail-list-surface: color-mix(in srgb, var(--color-panel) 84%, transparent);
-  --reader-surface: color-mix(in srgb, var(--color-panel) 90%, transparent);
+  --mail-list-surface: color-mix(in srgb, var(--color-panel) 76%, transparent);
+  --reader-surface: color-mix(in srgb, var(--color-panel) 68%, transparent);
+  --reader-toolbar-surface: color-mix(in srgb, var(--color-panel) 14%, transparent);
+  --reader-content-surface: color-mix(in srgb, var(--color-panel) 9%, transparent);
   --surface-edge: rgba(255, 255, 255, 0.58);
   --surface-highlight: rgba(255, 255, 255, 0.42);
-  --surface-blur-list: 20px;
-  --surface-blur-reader: 16px;
-  --surface-saturation: 1.08;
+  --surface-blur-list: 24px;
+  --surface-blur-reader: 30px;
+  --surface-saturation: 1.12;
+  --surface-brightness: 1.02;
+  --mail-list-wallpaper-echo: 0.08;
+  --reader-wallpaper-echo: 0.14;
+  --compose-wallpaper-echo: 0.1;
+  --compose-panel-surface: color-mix(in srgb, var(--color-panel) 66%, transparent);
+  --compose-panel-wallpaper-echo: 0.13;
+  --compose-header-surface: color-mix(in srgb, var(--color-panel-subtle) 42%, transparent);
+  --compose-content-surface: color-mix(in srgb, var(--color-panel) 34%, transparent);
+  --compose-control-surface: color-mix(in srgb, var(--color-control) 48%, transparent);
+  --compose-control-hover: color-mix(in srgb, var(--color-hover) 64%, transparent);
+  --compose-divider: color-mix(in srgb, var(--color-divider) 72%, transparent);
+  --surface-echo-blur: 18px;
   --control-surface: color-mix(in srgb, var(--color-control) 78%, transparent);
   --footer-surface: color-mix(in srgb, var(--color-panel-subtle) 54%, transparent);
   --row-hover-surface: color-mix(in srgb, var(--color-hover) 70%, transparent);
   --row-selection-surface: color-mix(in srgb, var(--color-selection) 68%, transparent);
   --row-selection-edge: color-mix(in srgb, var(--color-selection-border) 78%, var(--surface-edge));
-  --compose-surface: color-mix(in srgb, var(--color-primary) 70%, transparent);
-  --compose-surface-hover: color-mix(in srgb, var(--color-primary-hover) 78%, transparent);
-  --compose-surface-pressed: color-mix(in srgb, var(--color-primary-pressed) 83%, transparent);
+  --compose-surface: color-mix(in srgb, var(--color-primary) 74%, transparent);
+  --compose-surface-hover: color-mix(in srgb, var(--color-primary-hover) 80%, transparent);
+  --compose-surface-pressed: color-mix(in srgb, var(--color-primary-pressed) 84%, transparent);
   --compose-edge: rgba(255, 255, 255, 0.38);
   --compose-highlight: rgba(255, 255, 255, 0.22);
-  --compose-shadow: 0 8px 20px color-mix(in srgb, var(--color-primary) 16%, transparent),
-    inset 0 1px 0 var(--compose-highlight);
+  --compose-shadow: 0 9px 22px color-mix(in srgb, var(--color-primary) 18%, transparent),
+    0 2px 7px rgba(18, 35, 52, 0.08), inset 0 1px 0 var(--compose-highlight);
   --focus-ring: 0 0 0 2px var(--color-panel), 0 0 0 4px var(--color-primary);
 }
 
 :root[data-theme="daylight"] {
-  --mail-list-surface: rgba(239, 246, 250, 0.84);
-  --reader-surface: rgba(246, 249, 252, 0.9);
+  --mail-list-surface: rgba(236, 244, 248, 0.68);
+  --reader-surface: rgba(244, 249, 252, 0.58);
+  --reader-toolbar-surface: rgba(250, 253, 255, 0.14);
+  --reader-content-surface: rgba(250, 253, 255, 0.08);
   --control-surface: rgba(238, 244, 248, 0.76);
   --footer-surface: rgba(241, 247, 250, 0.54);
   --row-hover-surface: rgba(236, 244, 249, 0.68);
   --row-selection-surface: rgba(207, 230, 249, 0.7);
   --row-selection-edge: rgba(140, 185, 224, 0.42);
-  --compose-surface: rgba(0, 86, 190, 0.82);
-  --compose-surface-hover: rgba(0, 99, 211, 0.86);
-  --compose-surface-pressed: rgba(0, 77, 170, 0.9);
+  --compose-surface: rgba(0, 104, 232, 0.76);
+  --compose-surface-hover: rgba(0, 112, 244, 0.82);
+  --compose-surface-pressed: rgba(0, 88, 205, 0.86);
+  --compose-edge: rgba(230, 244, 255, 0.5);
+  --compose-highlight: rgba(255, 255, 255, 0.34);
+  --mail-list-wallpaper-echo: 0.1;
+  --reader-wallpaper-echo: 0.2;
+  --compose-wallpaper-echo: 0.18;
+  --compose-panel-surface: rgba(242, 248, 252, 0.62);
+  --compose-panel-wallpaper-echo: 0.18;
+  --compose-header-surface: rgba(246, 251, 254, 0.38);
+  --compose-content-surface: rgba(249, 252, 254, 0.3);
+  --compose-control-surface: rgba(239, 246, 250, 0.46);
+  --compose-control-hover: rgba(248, 252, 254, 0.62);
+  --compose-divider: rgba(114, 136, 151, 0.2);
 }
 
 :root[data-theme="night"] {
@@ -122,11 +150,24 @@
   --titlebar-hover: rgba(240, 246, 255, 0.12);
   --panel-border: rgba(202, 216, 232, 0.14);
   --panel-shadow: 0 16px 40px rgba(0, 0, 0, 0.36), 0 2px 8px rgba(0, 0, 0, 0.22);
-  --mail-list-surface: rgba(20, 25, 34, 0.82);
-  --reader-surface: rgba(23, 28, 37, 0.89);
+  --mail-list-surface: rgba(17, 23, 32, 0.74);
+  --reader-surface: rgba(17, 23, 32, 0.68);
+  --reader-toolbar-surface: rgba(34, 42, 54, 0.14);
+  --reader-content-surface: rgba(24, 31, 42, 0.09);
   --surface-edge: rgba(226, 237, 248, 0.16);
   --surface-highlight: rgba(238, 246, 255, 0.09);
-  --surface-saturation: 1.04;
+  --surface-saturation: 1.06;
+  --surface-brightness: 0.94;
+  --mail-list-wallpaper-echo: 0.06;
+  --reader-wallpaper-echo: 0.1;
+  --compose-wallpaper-echo: 0.08;
+  --compose-panel-surface: rgba(17, 23, 32, 0.68);
+  --compose-panel-wallpaper-echo: 0.1;
+  --compose-header-surface: rgba(30, 38, 50, 0.46);
+  --compose-content-surface: rgba(20, 27, 38, 0.42);
+  --compose-control-surface: rgba(39, 48, 61, 0.5);
+  --compose-control-hover: rgba(49, 61, 77, 0.64);
+  --compose-divider: rgba(194, 211, 229, 0.14);
   --control-surface: rgba(34, 41, 52, 0.7);
   --footer-surface: rgba(24, 30, 40, 0.58);
   --row-hover-surface: rgba(35, 43, 55, 0.66);
@@ -170,8 +211,10 @@
   --titlebar-hover: rgba(255, 248, 242, 0.13);
   --panel-border: rgba(90, 58, 58, 0.18);
   --panel-shadow: 0 16px 38px rgba(75, 42, 42, 0.2), 0 2px 8px rgba(75, 42, 42, 0.1);
-  --mail-list-surface: rgba(252, 244, 237, 0.84);
-  --reader-surface: rgba(255, 250, 245, 0.9);
+  --mail-list-surface: rgba(247, 237, 229, 0.75);
+  --reader-surface: rgba(247, 235, 228, 0.68);
+  --reader-toolbar-surface: rgba(255, 249, 245, 0.14);
+  --reader-content-surface: rgba(255, 250, 246, 0.09);
   --surface-edge: rgba(255, 248, 241, 0.54);
   --surface-highlight: rgba(255, 255, 255, 0.36);
   --control-surface: rgba(247, 237, 229, 0.76);
@@ -179,11 +222,21 @@
   --row-hover-surface: rgba(249, 235, 227, 0.68);
   --row-selection-surface: rgba(247, 222, 208, 0.7);
   --row-selection-edge: rgba(210, 154, 134, 0.42);
-  --compose-surface: rgba(124, 47, 38, 0.82);
-  --compose-surface-hover: rgba(143, 58, 47, 0.86);
-  --compose-surface-pressed: rgba(107, 39, 32, 0.9);
+  --compose-surface: rgba(166, 66, 51, 0.76);
+  --compose-surface-hover: rgba(184, 77, 59, 0.82);
+  --compose-surface-pressed: rgba(139, 51, 41, 0.86);
   --compose-edge: rgba(255, 239, 229, 0.32);
   --compose-highlight: rgba(255, 255, 255, 0.18);
+  --mail-list-wallpaper-echo: 0.08;
+  --reader-wallpaper-echo: 0.14;
+  --compose-wallpaper-echo: 0.1;
+  --compose-panel-surface: rgba(250, 242, 235, 0.66);
+  --compose-panel-wallpaper-echo: 0.13;
+  --compose-header-surface: rgba(255, 248, 243, 0.4);
+  --compose-content-surface: rgba(255, 250, 246, 0.32);
+  --compose-control-surface: rgba(248, 237, 229, 0.48);
+  --compose-control-hover: rgba(255, 247, 241, 0.62);
+  --compose-divider: rgba(118, 77, 73, 0.18);
 }
 
 :root[data-theme="forest"] {
@@ -217,8 +270,10 @@
   --titlebar-hover: rgba(239, 248, 240, 0.13);
   --panel-border: rgba(38, 67, 50, 0.18);
   --panel-shadow: 0 16px 38px rgba(17, 48, 32, 0.25), 0 2px 8px rgba(17, 48, 32, 0.12);
-  --mail-list-surface: rgba(237, 244, 237, 0.84);
-  --reader-surface: rgba(246, 250, 245, 0.9);
+  --mail-list-surface: rgba(226, 238, 227, 0.75);
+  --reader-surface: rgba(226, 238, 227, 0.68);
+  --reader-toolbar-surface: rgba(247, 252, 247, 0.14);
+  --reader-content-surface: rgba(249, 253, 249, 0.09);
   --surface-edge: rgba(244, 252, 246, 0.52);
   --surface-highlight: rgba(255, 255, 255, 0.32);
   --control-surface: rgba(232, 239, 231, 0.76);
@@ -226,11 +281,21 @@
   --row-hover-surface: rgba(228, 238, 229, 0.68);
   --row-selection-surface: rgba(214, 234, 220, 0.7);
   --row-selection-edge: rgba(137, 181, 151, 0.42);
-  --compose-surface: rgba(25, 90, 55, 0.82);
-  --compose-surface-hover: rgba(32, 108, 67, 0.86);
-  --compose-surface-pressed: rgba(20, 75, 45, 0.9);
+  --compose-surface: rgba(37, 116, 73, 0.76);
+  --compose-surface-hover: rgba(43, 132, 82, 0.82);
+  --compose-surface-pressed: rgba(28, 94, 58, 0.86);
   --compose-edge: rgba(229, 247, 235, 0.3);
   --compose-highlight: rgba(255, 255, 255, 0.16);
+  --mail-list-wallpaper-echo: 0.08;
+  --reader-wallpaper-echo: 0.14;
+  --compose-wallpaper-echo: 0.1;
+  --compose-panel-surface: rgba(234, 243, 234, 0.66);
+  --compose-panel-wallpaper-echo: 0.13;
+  --compose-header-surface: rgba(247, 252, 247, 0.4);
+  --compose-content-surface: rgba(249, 253, 249, 0.32);
+  --compose-control-surface: rgba(231, 240, 231, 0.48);
+  --compose-control-hover: rgba(244, 250, 245, 0.62);
+  --compose-divider: rgba(51, 88, 65, 0.18);
 }
 
 * {
@@ -552,6 +617,8 @@ kbd {
 }
 
 .compose-button {
+  position: relative;
+  isolation: isolate;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -565,17 +632,38 @@ kbd {
   box-shadow: var(--compose-shadow);
   font-size: 14px;
   font-weight: 650;
-  backdrop-filter: blur(14px) saturate(1.12);
-  -webkit-backdrop-filter: blur(14px) saturate(1.12);
+  backdrop-filter: blur(20px) saturate(1.18) brightness(1.03);
+  -webkit-backdrop-filter: blur(20px) saturate(1.18) brightness(1.03);
   transition: background var(--motion-fast), border-color var(--motion-fast),
     box-shadow var(--motion-fast), transform 80ms;
+  overflow: hidden;
+}
+
+.compose-button::before {
+  position: absolute;
+  inset: -14px;
+  z-index: 0;
+  background-attachment: fixed;
+  background-image: var(--wallpaper);
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: cover;
+  content: "";
+  filter: blur(12px) saturate(1.04);
+  opacity: var(--compose-wallpaper-echo);
+  pointer-events: none;
+}
+
+.compose-button > * {
+  position: relative;
+  z-index: 1;
 }
 
 .compose-button:hover {
   background: var(--compose-surface-hover);
   border-color: color-mix(in srgb, var(--compose-edge) 72%, #fff);
-  box-shadow: 0 10px 24px color-mix(in srgb, var(--color-primary) 20%, transparent),
-    inset 0 1px 0 var(--compose-highlight);
+  box-shadow: 0 11px 26px color-mix(in srgb, var(--color-primary) 21%, transparent),
+    0 2px 7px rgba(18, 35, 52, 0.08), inset 0 1px 0 var(--compose-highlight);
 }
 
 .compose-button:active {
@@ -791,12 +879,43 @@ kbd {
   box-shadow: inset 0 1px 0 var(--surface-highlight), var(--panel-shadow);
 }
 
+.mail-list-panel::before,
+.reader-panel::before {
+  position: absolute;
+  inset: calc(var(--surface-echo-blur) * -1);
+  z-index: 0;
+  background-attachment: fixed;
+  background-image: var(--wallpaper);
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: cover;
+  content: "";
+  filter: blur(var(--surface-echo-blur)) saturate(0.94);
+  pointer-events: none;
+}
+
+.mail-list-panel::before {
+  opacity: var(--mail-list-wallpaper-echo);
+}
+
+.reader-panel::before {
+  opacity: var(--reader-wallpaper-echo);
+}
+
+.mail-list-panel > *,
+.reader-panel > * {
+  position: relative;
+  z-index: 1;
+}
+
 .mail-list-panel {
   display: grid;
   grid-template-rows: auto auto auto minmax(0, 1fr) 31px;
   background: var(--mail-list-surface);
-  backdrop-filter: blur(var(--surface-blur-list)) saturate(var(--surface-saturation));
-  -webkit-backdrop-filter: blur(var(--surface-blur-list)) saturate(var(--surface-saturation));
+  backdrop-filter: blur(var(--surface-blur-list)) saturate(var(--surface-saturation))
+    brightness(var(--surface-brightness));
+  -webkit-backdrop-filter: blur(var(--surface-blur-list)) saturate(var(--surface-saturation))
+    brightness(var(--surface-brightness));
 }
 
 .list-topbar {
@@ -1151,8 +1270,10 @@ kbd {
   display: grid;
   grid-template-rows: 64px minmax(0, 1fr);
   background: var(--reader-surface);
-  backdrop-filter: blur(var(--surface-blur-reader)) saturate(var(--surface-saturation));
-  -webkit-backdrop-filter: blur(var(--surface-blur-reader)) saturate(var(--surface-saturation));
+  backdrop-filter: blur(var(--surface-blur-reader)) saturate(var(--surface-saturation))
+    brightness(var(--surface-brightness));
+  -webkit-backdrop-filter: blur(var(--surface-blur-reader)) saturate(var(--surface-saturation))
+    brightness(var(--surface-brightness));
   animation: reader-in var(--motion-normal) ease-out;
 }
 
@@ -1167,6 +1288,10 @@ kbd {
   box-shadow: none;
   color: var(--sidebar-text);
   text-align: center;
+}
+
+.reader-panel--empty::before {
+  display: none;
 }
 
 .reader-empty__art {
@@ -1198,6 +1323,7 @@ kbd {
   justify-content: space-between;
   padding: 0 22px;
   border-bottom: 1px solid var(--color-divider);
+  background: var(--reader-toolbar-surface);
 }
 
 .reader-toolbar__group {
@@ -1221,6 +1347,7 @@ kbd {
   min-height: 0;
   overflow: auto;
   padding: 32px clamp(28px, 3.1vw, 46px) 46px;
+  background: var(--reader-content-surface);
   scrollbar-color: color-mix(in srgb, var(--color-text-muted) 36%, transparent) transparent;
   scrollbar-width: thin;
 }
@@ -1445,65 +1572,172 @@ kbd {
   position: fixed;
   inset: 0;
   z-index: 30;
-  background: var(--overlay);
-  backdrop-filter: blur(3px);
+  background: color-mix(in srgb, var(--overlay) 86%, transparent);
+  backdrop-filter: blur(7px) saturate(0.92);
+  -webkit-backdrop-filter: blur(7px) saturate(0.92);
+}
+
+.compose-layer[data-minimized="true"] {
+  background: transparent;
+  pointer-events: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.compose-layer[data-minimized="true"] .compose-panel {
+  pointer-events: auto;
 }
 
 .compose-panel {
   position: absolute;
+  isolation: isolate;
   right: 26px;
   bottom: 22px;
-  display: grid;
-  grid-template-rows: 54px auto minmax(180px, 1fr) 62px;
+  display: flex;
+  flex-direction: column;
   width: min(660px, calc(100vw - 42px));
   height: min(680px, calc(100vh - 54px));
   overflow: hidden;
-  border: 1px solid var(--panel-border);
-  border-radius: 14px;
-  background: var(--color-panel);
+  border: 1px solid color-mix(in srgb, var(--panel-border) 70%, var(--surface-edge));
+  border-radius: 16px;
+  background: var(--compose-panel-surface);
   color: var(--color-text);
-  box-shadow: 0 30px 80px rgba(8, 17, 25, 0.34), var(--panel-shadow);
+  box-shadow: inset 0 1px 0 var(--surface-highlight),
+    0 30px 80px rgba(8, 17, 25, 0.3), var(--panel-shadow);
+  backdrop-filter: blur(30px) saturate(var(--surface-saturation))
+    brightness(var(--surface-brightness));
+  -webkit-backdrop-filter: blur(30px) saturate(var(--surface-saturation))
+    brightness(var(--surface-brightness));
   animation: compose-in 220ms cubic-bezier(0.2, 0.72, 0.28, 1);
+  will-change: left, top, width, height;
 }
 
-.compose-header,
-.compose-footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0 14px 0 18px;
+.compose-panel::before {
+  position: absolute;
+  inset: -22px;
+  z-index: 0;
+  background-attachment: fixed;
+  background-image: var(--wallpaper);
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: cover;
+  content: "";
+  filter: blur(20px) saturate(0.96);
+  opacity: var(--compose-panel-wallpaper-echo);
+  pointer-events: none;
 }
 
-.compose-header {
-  border-bottom: 1px solid var(--color-divider);
-  background: var(--color-panel-subtle);
+.compose-panel > :not(.compose-resize-handle) {
+  position: relative;
+  z-index: 1;
 }
 
-.compose-header > div,
-.compose-header__actions,
-.compose-footer__left,
-.compose-footer__right {
+.compose-panel[data-minimized="true"] {
+  display: block;
+  min-width: 0;
+  min-height: 44px;
+  border-radius: 12px;
+  box-shadow: inset 0 1px 0 var(--surface-highlight),
+    0 12px 34px rgba(8, 17, 25, 0.2), var(--panel-shadow);
+  backdrop-filter: blur(18px) saturate(var(--surface-saturation));
+  -webkit-backdrop-filter: blur(18px) saturate(var(--surface-saturation));
+}
+
+.compose-minimized-bar {
+  position: relative;
+  z-index: 2;
+  display: grid;
+  width: 100%;
+  height: 100%;
+  place-items: center;
+  padding: 0 20px;
+  border: 0;
+  background: transparent;
+  color: var(--color-text);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 670;
+  text-align: center;
+}
+
+.compose-minimized-bar span {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.compose-minimized-bar:hover {
+  background: color-mix(in srgb, var(--compose-control-hover) 52%, transparent);
+}
+
+.compose-dialog-title {
+  position: absolute !important;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.compose-drag-surface {
+  position: absolute !important;
+  top: 0;
+  right: 94px;
+  left: 0;
+  z-index: 4 !important;
+  height: 52px;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.compose-drag-surface:active {
+  cursor: grabbing;
+}
+
+.compose-window-actions {
+  position: absolute !important;
+  top: 9px;
+  right: 11px;
+  z-index: 5 !important;
   display: flex;
   align-items: center;
   gap: 4px;
 }
 
-.compose-header__indicator {
-  width: 7px;
-  height: 7px;
-  margin-right: 7px;
-  border-radius: 50%;
-  background: var(--color-primary);
+.compose-unsupported-notice {
+  flex: 0 0 auto;
+  margin: 56px 14px 0;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--color-primary) 22%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--compose-control-surface) 86%, var(--color-primary) 14%);
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
-.compose-header h2 {
-  margin: 0;
-  font-size: 13px;
-  font-weight: 680;
+.compose-window-actions .icon-button,
+.compose-footer .icon-button {
+  width: 34px;
+  height: 34px;
+  border-color: color-mix(in srgb, var(--compose-divider) 58%, transparent);
+  background: color-mix(in srgb, var(--compose-control-surface) 52%, transparent);
+  backdrop-filter: blur(10px) saturate(1.08);
+  -webkit-backdrop-filter: blur(10px) saturate(1.08);
+}
+
+.compose-window-actions .icon-button:hover:not(:disabled),
+.compose-footer .icon-button:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--color-primary) 28%, var(--compose-divider));
+  background: var(--compose-control-hover);
 }
 
 .compose-save-state {
-  margin-left: 8px;
+  margin-right: 6px;
   color: var(--color-text-muted);
   font-size: 10px;
 }
@@ -1521,24 +1755,20 @@ kbd {
   color: var(--color-warning, #a66a20);
 }
 
-.compose-unsupported-notice {
-  margin: 12px 20px 4px;
-  padding: 10px 12px;
-  border: 1px solid color-mix(in srgb, var(--color-primary) 22%, transparent);
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--color-panel) 86%, var(--color-primary) 14%);
-  color: var(--color-text-secondary);
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.compose-header .icon-button {
-  width: 34px;
-  height: 34px;
-}
-
 .compose-fields {
-  padding: 0 20px;
+  flex: 0 0 auto;
+  margin: 54px 14px 0;
+  padding: 0 10px;
+  overflow: hidden;
+  border: 1px solid var(--compose-divider);
+  border-radius: 12px;
+  background: var(--compose-control-surface);
+  backdrop-filter: blur(12px) saturate(1.06);
+  -webkit-backdrop-filter: blur(12px) saturate(1.06);
+}
+
+.compose-unsupported-notice + .compose-fields {
+  margin-top: 10px;
 }
 
 .compose-field {
@@ -1546,7 +1776,18 @@ kbd {
   grid-template-columns: 58px minmax(0, 1fr) auto;
   min-height: 46px;
   align-items: center;
-  border-bottom: 1px solid var(--color-divider);
+  padding: 0 4px;
+  border-bottom: 1px solid var(--compose-divider);
+  transition: background var(--motion-fast), box-shadow var(--motion-fast);
+}
+
+.compose-field:last-child {
+  border-bottom: 0;
+}
+
+.compose-field:focus-within {
+  background: color-mix(in srgb, var(--compose-control-hover) 68%, transparent);
+  box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--color-primary) 54%, transparent);
 }
 
 .compose-field > span {
@@ -1566,24 +1807,45 @@ kbd {
 
 .compose-field > button {
   padding: 5px 8px;
-  border: 0;
+  border: 1px solid var(--compose-divider);
   border-radius: 6px;
-  background: var(--color-control);
+  background: var(--compose-control-surface);
   color: var(--color-text-muted);
   font-size: 10px;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+.compose-field > button:hover:not(:disabled) {
+  background: var(--compose-control-hover);
+  color: var(--color-text);
 }
 
 .compose-body {
-  width: 100%;
-  height: 100%;
+  flex: 1 1 auto;
+  min-height: 180px;
+  width: auto;
+  height: auto;
   resize: none;
-  padding: 22px 24px;
-  border: 0;
+  margin: 12px 14px;
+  padding: 18px 20px;
+  border: 1px solid var(--compose-divider);
+  border-radius: 12px;
   outline: 0;
-  background: var(--color-panel);
+  background: var(--compose-content-surface);
   color: var(--color-text-secondary);
   font-size: 14px;
   line-height: 1.7;
+  backdrop-filter: blur(12px) saturate(1.04);
+  -webkit-backdrop-filter: blur(12px) saturate(1.04);
+  transition: border-color var(--motion-fast), background var(--motion-fast),
+    box-shadow var(--motion-fast);
+}
+
+.compose-body:focus {
+  border-color: color-mix(in srgb, var(--color-primary) 46%, var(--compose-divider));
+  background: color-mix(in srgb, var(--compose-content-surface) 82%, var(--compose-control-hover));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 10%, transparent);
 }
 
 .compose-body::placeholder {
@@ -1591,8 +1853,22 @@ kbd {
 }
 
 .compose-footer {
-  border-top: 1px solid var(--color-divider);
-  background: var(--color-panel-subtle);
+  display: flex;
+  flex: 0 0 62px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 14px 0 18px;
+  border-top: 1px solid var(--compose-divider);
+  background: var(--compose-header-surface);
+  backdrop-filter: blur(14px) saturate(1.06);
+  -webkit-backdrop-filter: blur(14px) saturate(1.06);
+}
+
+.compose-footer__left,
+.compose-footer__right {
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .send-button {
@@ -1602,21 +1878,23 @@ kbd {
   justify-content: center;
   gap: 8px;
   padding: 0 15px;
-  border: 1px solid color-mix(in srgb, var(--color-primary) 82%, #000);
+  border: 1px solid var(--compose-edge);
   border-radius: var(--control-radius);
-  background: var(--color-primary);
+  background: var(--compose-surface);
   color: #fff;
   box-shadow: 0 5px 14px color-mix(in srgb, var(--color-primary) 28%, transparent);
   font-size: 12px;
   font-weight: 680;
+  backdrop-filter: blur(14px) saturate(1.12);
+  -webkit-backdrop-filter: blur(14px) saturate(1.12);
 }
 
 .send-button:hover:not(:disabled) {
-  background: var(--color-primary-hover);
+  background: var(--compose-surface-hover);
 }
 
 .send-button:active:not(:disabled) {
-  background: var(--color-primary-pressed);
+  background: var(--compose-surface-pressed);
   transform: translateY(1px);
 }
 
@@ -1627,10 +1905,48 @@ kbd {
   color: rgba(255, 255, 255, 0.78);
 }
 
-.draft-button {
-  border-color: transparent;
-  background: transparent;
+.compose-resize-handle {
+  position: absolute;
+  z-index: 6;
+  touch-action: none;
 }
+
+.compose-resize-handle--n,
+.compose-resize-handle--s {
+  right: 22px;
+  left: 22px;
+  height: 12px;
+}
+
+.compose-resize-handle--n { top: -4px; cursor: ns-resize; }
+.compose-resize-handle--s { bottom: -4px; cursor: ns-resize; }
+
+.compose-resize-handle--e,
+.compose-resize-handle--w {
+  top: 22px;
+  bottom: 22px;
+  width: 12px;
+}
+
+.compose-resize-handle--e { right: -4px; cursor: ew-resize; }
+.compose-resize-handle--w { left: -4px; cursor: ew-resize; }
+
+.compose-resize-handle--ne,
+.compose-resize-handle--se,
+.compose-resize-handle--sw,
+.compose-resize-handle--nw {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  color: var(--color-text-muted);
+  opacity: 0.56;
+}
+
+.compose-resize-handle--ne { top: -4px; right: -4px; cursor: nesw-resize; }
+.compose-resize-handle--se { right: -4px; bottom: -4px; cursor: nwse-resize; }
+.compose-resize-handle--sw { bottom: -4px; left: -4px; cursor: nesw-resize; }
+.compose-resize-handle--nw { top: -4px; left: -4px; cursor: nwse-resize; }
 
 .confirm-layer {
   display: grid;
