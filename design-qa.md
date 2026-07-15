@@ -1,70 +1,69 @@
-# Mine Mail — Themed Titlebar Design QA
+# Mine Mail — Frosted Material Design QA
 
 ## Evidence
 
-- Source visual truth: `web/design/references/mine-mail-windows-reference.png`
-- User-reported before state: the Windows 11 native white titlebar shown in the current conversation.
-- Final Daylight implementation: `web/design/qa/implementation-titlebar-daylight-final.png`
-- Final Night implementation: `web/design/qa/implementation-titlebar-night-final.png`
-- Full-view comparison: `web/design/qa/comparison-titlebar-full.png`
-- Focused titlebar comparison: `web/design/qa/comparison-titlebar-focused.png`
-- Viewport: maximized Windows 11 Tauri/WebView2 window, 3072 × 1824 physical pixels at 200% DPI.
-- State: empty cached inbox, no network sync and no SMTP operation triggered.
+- Source visual truth: `web/design/references/mine-mail-frosted-material-reference.png`
+- Final Tauri implementation: `web/design/qa/implementation-frosted-daylight-final.png`
+- Full-view comparison: `web/design/qa/comparison-frosted-material-final.png`
+- Focused surface comparison: `web/design/qa/comparison-frosted-material-focused.png`
+- Source viewport: 1586 × 992.
+- Implementation viewport: 3000 × 1872 physical pixels, normalized to the source viewport for comparison.
+- State: Daylight theme, inbox, first message selected, real cached mailbox data.
 
-The Product Design in-app browser was unavailable for this desktop-only window-chrome change. QA therefore used the compiled Tauri application and Windows `PrintWindow` capture, with DWM frame bounds applied so the invisible resize border was excluded.
+The Product Design browser surface was unavailable. Because this is a desktop-only Tauri app, QA used the current compiled debug executable and Windows `PrintWindow` capture. The captured executable path was `web/src-tauri/target/debug/mine-mail-desktop.exe`.
 
-## Full-view comparison
+## Findings
 
-- The app wallpaper now extends behind the complete window surface instead of beginning below a native white strip.
-- The titlebar uses the active theme's semantic tint, text, divider, and hover tokens while preserving the three-panel layout and its existing top spacing.
-- Center and reader panels retain their previous dimensions; no above-the-fold content was lost.
-- Daylight retains the pale painterly sky treatment from the source reference. Night uses the same structure with a dark blue translucent tint rather than an unrelated system color.
-
-## Focused comparison
-
-- The 38 px titlebar matches the compact density of the selected reference and the former Windows titlebar.
-- App identity remains on the left; minimize, maximize/restore, and close remain aligned to the right.
-- The close hover state uses the Windows destructive red treatment. Other controls use theme-aware translucent hover states.
-- A thin theme-aware divider separates window chrome from content without introducing a second visual frame.
+- No actionable P0, P1, or P2 visual mismatch remains for the requested material change.
+- The compose action now reads as an accent-tinted glass control rather than a flat saturated rectangle. Its sampled Daylight surface is `#266EC4`, giving white label text sufficient contrast while retaining environmental translucency.
+- The message list uses the lighter frosted surface. Wallpaper color and light are perceptible through the panel without interfering with row scanning.
+- The reader uses the more opaque paper-glass surface. It belongs to the same material family as the list while preserving long-form text readability.
+- Search, selected row, footer, edge highlight, shadow softness, blur, and saturation now derive from the same semantic material system.
 
 ## Required fidelity surfaces
 
-- Fonts and typography: the titlebar reuses Inter/Segoe UI fallbacks, 12 px sizing, restrained weight, and single-line app copy. Controls use Phosphor icons already established by the MVP.
-- Spacing and layout rhythm: the titlebar is 38 px high, controls are 46 px wide, and content begins 14 px below it. Panel proportions, radii, and gaps remain unchanged.
-- Colors and visual tokens: Daylight, Night, Dusk, and Forest each define titlebar foreground, tint, border, and hover tokens. Contrast remains readable in the two captured extremes.
-- Image quality and asset fidelity: the original full-resolution painterly wallpapers remain continuous beneath the titlebar. No placeholder or CSS-drawn product asset was introduced.
-- Copy and content: `Mine Mail` and the existing Chinese mailbox copy are unchanged.
+- Fonts and typography: existing Inter/Segoe UI fallbacks, weights, sizes, truncation, and reading line height remain unchanged. The material change introduces no wrapping or density regression.
+- Spacing and layout rhythm: existing three-column proportions, panel gaps, radii, toolbar heights, and row density are preserved. The source and implementation differ only where live content and Windows DPI affect capture scale.
+- Colors and visual tokens: Daylight, Night, Dusk, and Forest define theme-specific list, reader, control, selected-row, compose, edge, highlight, and shadow values. Unknown future themes inherit safe semantic defaults derived from their panel and accent colors.
+- Image quality and asset fidelity: the original painterly wallpapers remain continuous beneath all columns. No replacement imagery, placeholder art, CSS illustration, or new icon family was introduced.
+- Copy and content: static app copy is unchanged. The implementation uses live mailbox content, so the selected-message body is not expected to reproduce every line of the generated reference.
+- Accessibility: reader and list surfaces stay near-opaque; body and secondary text remain high contrast. The Daylight compose control was darkened after measurement so its white label does not lose contrast through transparency.
 
-## Interaction validation
+## Interaction and runtime validation
 
-- Drag region moved the real frameless Tauri window.
-- The maximize/restore control worked in both directions.
-- Double-clicking the drag region maximized the window.
-- Minimize and close controls worked in the real Windows window.
-- React interaction suite: 6 tests passed, including drag-region depth and non-draggable control-region assertions.
-- React production build: passed.
-- Tauri debug no-bundle build: passed.
+- The real Tauri debug app launched and displayed the updated CSS through Windows WebView2.
+- Inbox content and the selected message rendered successfully on the new surfaces.
+- Existing hover, pressed, focus-visible, selected, and theme-switching behavior remains wired to the same components.
+- React verification passed: 35 tests across 4 files.
+- The React production build and complete Tauri Release/MSI/NSIS build passed.
+- No SMTP action was triggered during visual QA.
 
 ## Comparison history
 
 ### Pass 1
 
-- [P2] The first theme tint was visually denser than the selected reference and hid too much of the wallpaper at the top edge.
-- Evidence: `web/design/qa/implementation-titlebar-night-full.png`.
-- Fix: reduced titlebar tint opacity for all four themes and reduced backdrop blur from 18 px to 12 px.
+- The first attempted capture was rejected because Tauri single-instance handling focused an older Release process. Pixel sampling confirmed the stale flat colors (`#0878F9` compose and `#FCFCFD` panels), so those screenshots were not accepted as implementation evidence.
+- Fix: terminated only Mine Mail processes from this workspace and relaunched `target/debug/mine-mail-desktop.exe` after compilation completed.
 
 ### Pass 2
 
-- Post-fix evidence: `web/design/qa/implementation-titlebar-daylight-final.png`, `web/design/qa/implementation-titlebar-night-final.png`, and `web/design/qa/comparison-titlebar-focused.png`.
-- No actionable P0, P1, or P2 mismatch remains.
-- Residual P3: the small titlebar app label intentionally coexists with the larger sidebar brand, matching the current product structure and keeping app identity visible when the sidebar collapses.
+- The current implementation showed the intended shared material system and matched the source hierarchy.
+- [P2] The initially translucent Daylight compose surface reduced white-label contrast too far.
+- Fix: retained translucency but moved the Daylight, Dusk, and Forest accent glass toward darker theme-derived values. The final Daylight sample is `#266EC4`.
+
+### Pass 3
+
+- Post-fix evidence: `implementation-frosted-daylight-final.png`, `comparison-frosted-material-final.png`, and `comparison-frosted-material-focused.png`.
+- No actionable P0, P1, or P2 issue remains.
+- Residual P3: the generated source contains a slightly more luminous compose-button highlight than CSS can reproduce without adding a decorative gradient. The implementation intentionally uses a quieter inset highlight to remain consistent with the app's existing visual language.
 
 ## Implementation checklist
 
-- [x] Disable native window decorations and retain system shadow/resizing.
-- [x] Add a deep Tauri drag region with explicit non-draggable controls.
-- [x] Add least-required window command permissions.
-- [x] Apply semantic titlebar tokens to all four MVP themes.
-- [x] Verify real Windows window controls and visual output.
+- [x] Add shared semantic frosted-material tokens.
+- [x] Tune all four MVP themes.
+- [x] Apply list and reader opacity hierarchy.
+- [x] Convert compose, search, selected row, and footer to related materials.
+- [x] Preserve readable content and accessible primary-action contrast.
+- [x] Validate against the selected mock in the real Tauri desktop runtime.
 
 final result: passed

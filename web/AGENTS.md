@@ -15,6 +15,7 @@ When implementing from a selected generated mock, treat that image as the source
 - Backgrounds are original, non-photorealistic, low-detail landscape paintings rather than photographs.
 - The MVP ships four selectable themes: Daylight, Night, Dusk, and Forest.
 - Email text is always rendered on an opaque or near-opaque surface; decorative wallpaper must never reduce readability.
+- The compose action, message list, and reading pane share semantic frosted-material tokens. The list is lighter than the reading pane, the reading pane stays near-opaque, and the compose action uses a translucent theme accent. New themes must inherit or override these tokens rather than introducing flat opaque cards.
 
 ## Desktop integration decisions
 
