@@ -37,17 +37,9 @@ export function Sidebar({
   isThemeMenuOpen,
   onThemeMenuToggle,
   counts = {},
-  connectionState = "checking",
   accountStatus,
   onOpenSettings,
 }) {
-  const connectionCopy = {
-    checking: { label: "正在检查连接", aria: "正在检查邮箱连接" },
-    connected: { label: "已连接", aria: "IMAP 与 SMTP 已连接" },
-    degraded: { label: "部分服务不可用", aria: "邮箱部分服务不可用" },
-    offline: { label: "离线", aria: "邮箱当前离线" },
-    error: { label: "连接异常", aria: "邮箱连接异常" },
-  }[connectionState] || { label: "状态未知", aria: "邮箱连接状态未知" };
   const accountLabel = {
     "163": "163 邮箱",
     gmail: "Gmail",
@@ -97,15 +89,14 @@ export function Sidebar({
 
         <div className="sidebar__spacer" />
 
-        <div className="account-card" data-connection={connectionState}>
+        <div className="account-card">
           <span className="account-card__avatar">
             {(accountStatus?.email || accountLabel).slice(0, 1).toUpperCase()}
           </span>
           <span className="account-card__copy">
             <strong>{accountLabel}</strong>
-            <small>{connectionCopy.label}</small>
+            <small>{accountStatus?.email || "当前账户"}</small>
           </span>
-          <span className="account-card__status" aria-label={connectionCopy.aria} />
         </div>
 
         <div className="theme-control">

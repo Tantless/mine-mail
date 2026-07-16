@@ -45,6 +45,11 @@ describe("Mine Mail MVP", () => {
 
     expect(await screen.findAllByText("欢迎来到 Mine Mail")).toHaveLength(2);
     expect(screen.getByText(/我们希望它是一间安静的邮件工作室/)).toBeTruthy();
+    const searchInput = screen.getByLabelText("搜索邮件");
+    expect(searchInput.closest(".inset-input-shell")).toBeTruthy();
+    expect(screen.queryByText("Ctrl K")).toBeNull();
+    fireEvent.keyDown(window, { key: "k", ctrlKey: true });
+    expect(document.activeElement).toBe(searchInput);
   });
 
   it("renders integrated draggable window chrome without a duplicate brand", () => {
@@ -79,6 +84,16 @@ describe("Mine Mail MVP", () => {
     expect(forward.classList.contains("message-action-button")).toBe(true);
     expect(actions.classList.contains("message-actions--mail")).toBe(true);
     expect(actions.lastElementChild).toBe(forward);
+  });
+
+  it("keeps routine backend health details out of the main interface", async () => {
+    render(<App />);
+
+    expect(await screen.findByText("demo@163.com")).toBeTruthy();
+    expect(screen.queryByText("已连接")).toBeNull();
+    expect(screen.queryByText("本地缓存已就绪")).toBeNull();
+    expect(document.querySelector(".account-card__status")).toBeNull();
+    expect(document.querySelector(".list-status")).toBeNull();
   });
 
   it("switches and persists an MVP theme", async () => {
@@ -121,7 +136,7 @@ describe("Mine Mail MVP", () => {
     const recipient = screen.getByLabelText("收件人");
     const expandCopies = screen.getByRole("button", { name: "展开抄送和密送" });
 
-    expect(recipient.closest(".compose-input-shell")).toBeTruthy();
+    expect(recipient.closest(".compose-input-shell.inset-input-shell")).toBeTruthy();
     expect(expandCopies.getAttribute("aria-expanded")).toBe("false");
     expect(screen.queryByLabelText("抄送")).toBeNull();
     expect(screen.queryByLabelText("密送")).toBeNull();

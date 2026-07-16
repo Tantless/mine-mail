@@ -32,7 +32,6 @@ export function MailList({
   syncState,
   canSync = true,
   onOpenMobileNav,
-  searchShortcut,
 }) {
   return (
     <section className="mail-list-panel" aria-label={`${folderLabel}邮件列表`}>
@@ -45,7 +44,7 @@ export function MailList({
         >
           <List size={21} />
         </button>
-        <label className="search-box">
+        <label className="search-box inset-input-shell">
           <MagnifyingGlass size={18} aria-hidden="true" />
           <input
             value={query}
@@ -53,7 +52,6 @@ export function MailList({
             placeholder="搜索邮件"
             aria-label="搜索邮件"
           />
-          <kbd>{searchShortcut}</kbd>
         </label>
         <IconButton label="筛选邮件">
           <FunnelSimple size={19} />
@@ -154,18 +152,6 @@ export function MailList({
         )}
       </div>
 
-      <footer className="list-status" aria-live="polite">
-        <span className={`sync-dot sync-dot--${syncState}`} />
-        <span>
-          {syncState === "syncing"
-            ? "正在同步邮箱…"
-            : syncState === "error"
-              ? "同步失败，请重试"
-              : syncState === "done"
-                ? "刚刚完成同步"
-                : "本地缓存已就绪"}
-        </span>
-      </footer>
     </section>
   );
 }

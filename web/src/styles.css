@@ -84,7 +84,6 @@
   --compose-divider: color-mix(in srgb, var(--color-divider) 72%, transparent);
   --surface-echo-blur: 18px;
   --control-surface: color-mix(in srgb, var(--color-control) 78%, transparent);
-  --footer-surface: color-mix(in srgb, var(--color-panel-subtle) 54%, transparent);
   --row-hover-surface: color-mix(in srgb, var(--color-hover) 70%, transparent);
   --row-selection-surface: color-mix(in srgb, var(--color-selection) 68%, transparent);
   --row-selection-edge: color-mix(in srgb, var(--color-selection-border) 78%, var(--surface-edge));
@@ -104,7 +103,6 @@
   --reader-toolbar-surface: rgba(250, 253, 255, 0.14);
   --reader-content-surface: rgba(250, 253, 255, 0.08);
   --control-surface: rgba(238, 244, 248, 0.76);
-  --footer-surface: rgba(241, 247, 250, 0.54);
   --row-hover-surface: rgba(236, 244, 249, 0.68);
   --row-selection-surface: rgba(207, 230, 249, 0.7);
   --row-selection-edge: rgba(140, 185, 224, 0.42);
@@ -176,7 +174,6 @@
   --compose-control-hover: rgba(49, 61, 77, 0.64);
   --compose-divider: rgba(194, 211, 229, 0.14);
   --control-surface: rgba(34, 41, 52, 0.7);
-  --footer-surface: rgba(24, 30, 40, 0.58);
   --row-hover-surface: rgba(35, 43, 55, 0.66);
   --row-selection-surface: rgba(41, 65, 94, 0.72);
   --row-selection-edge: rgba(99, 150, 209, 0.42);
@@ -225,7 +222,6 @@
   --surface-edge: rgba(255, 248, 241, 0.54);
   --surface-highlight: rgba(255, 255, 255, 0.36);
   --control-surface: rgba(247, 237, 229, 0.76);
-  --footer-surface: rgba(251, 242, 234, 0.54);
   --row-hover-surface: rgba(249, 235, 227, 0.68);
   --row-selection-surface: rgba(247, 222, 208, 0.7);
   --row-selection-edge: rgba(210, 154, 134, 0.42);
@@ -284,7 +280,6 @@
   --surface-edge: rgba(244, 252, 246, 0.52);
   --surface-highlight: rgba(255, 255, 255, 0.32);
   --control-surface: rgba(232, 239, 231, 0.76);
-  --footer-surface: rgba(237, 243, 235, 0.54);
   --row-hover-surface: rgba(228, 238, 229, 0.68);
   --row-selection-surface: rgba(214, 234, 220, 0.7);
   --row-selection-edge: rgba(137, 181, 151, 0.42);
@@ -755,29 +750,6 @@ kbd {
   font-size: 10px;
 }
 
-.account-card__status {
-  width: 8px;
-  height: 8px;
-  margin-left: auto;
-  border: 2px solid rgba(255, 255, 255, 0.6);
-  border-radius: 50%;
-  background: var(--color-success);
-}
-
-.account-card[data-connection="checking"] .account-card__status {
-  background: var(--color-primary);
-  animation: pulse 1s ease-in-out infinite;
-}
-
-.account-card[data-connection="degraded"] .account-card__status {
-  background: #e9a23b;
-}
-
-.account-card[data-connection="offline"] .account-card__status,
-.account-card[data-connection="error"] .account-card__status {
-  background: var(--color-danger);
-}
-
 .theme-control {
   position: relative;
 }
@@ -893,7 +865,7 @@ kbd {
 
 .mail-list-panel {
   display: grid;
-  grid-template-rows: auto auto auto minmax(0, 1fr) 31px;
+  grid-template-rows: auto auto auto minmax(0, 1fr);
   background: var(--mail-list-surface);
   backdrop-filter: blur(var(--surface-blur-list)) saturate(var(--surface-saturation))
     brightness(var(--surface-brightness));
@@ -909,6 +881,33 @@ kbd {
   padding: 13px 14px 9px;
 }
 
+.inset-input-shell {
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  transition: border-color var(--motion-fast), background var(--motion-fast),
+    box-shadow var(--motion-fast);
+}
+
+.inset-input-shell:hover {
+  background: color-mix(in srgb, var(--compose-control-hover) 42%, transparent);
+}
+
+.inset-input-shell:focus-within {
+  border-color: color-mix(in srgb, var(--color-primary) 48%, var(--compose-divider));
+  background: color-mix(in srgb, var(--compose-control-hover) 64%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 11%, transparent);
+}
+
+.inset-input-shell input:focus,
+.inset-input-shell input:focus-visible,
+.inset-input-shell select:focus,
+.inset-input-shell select:focus-visible {
+  border: 0;
+  outline: none;
+  box-shadow: none;
+}
+
 .search-box {
   display: flex;
   flex: 1;
@@ -917,16 +916,12 @@ kbd {
   min-width: 0;
   height: 40px;
   padding: 0 11px;
-  border: 1px solid var(--color-border);
-  border-radius: var(--control-radius);
-  background: var(--control-surface);
+  border-color: color-mix(in srgb, var(--color-border) 70%, transparent);
+  background: color-mix(in srgb, var(--control-surface) 72%, transparent);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 20%, transparent),
+    0 1px 2px color-mix(in srgb, var(--color-text) 8%, transparent);
   color: var(--color-text-muted);
-  transition: border-color var(--motion-fast), box-shadow var(--motion-fast);
-}
-
-.search-box:focus-within {
-  border-color: var(--color-primary);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 18%, transparent);
 }
 
 .search-box input {
@@ -940,15 +935,6 @@ kbd {
 }
 
 .search-box input::placeholder {
-  color: var(--color-text-muted);
-}
-
-.search-box kbd {
-  flex: 0 0 auto;
-  padding: 4px 6px;
-  border: 1px solid var(--color-border);
-  border-radius: 5px;
-  background: var(--color-panel);
   color: var(--color-text-muted);
 }
 
@@ -1220,33 +1206,6 @@ kbd {
 
 .empty-list span {
   font-size: 11px;
-}
-
-.list-status {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: 0 15px;
-  border-top: 1px solid var(--color-divider);
-  background: var(--footer-surface);
-  color: var(--color-text-muted);
-  font-size: 10px;
-}
-
-.sync-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--color-success);
-}
-
-.sync-dot--syncing {
-  background: var(--color-primary);
-  animation: pulse 900ms ease-in-out infinite;
-}
-
-.sync-dot--error {
-  background: var(--color-danger);
 }
 
 .reader-panel {
@@ -1990,21 +1949,6 @@ kbd {
   align-items: center;
   margin: 5px 0;
   padding: 0 9px;
-  border: 1px solid transparent;
-  border-radius: 9px;
-  background: transparent;
-  transition: border-color var(--motion-fast), background var(--motion-fast),
-    box-shadow var(--motion-fast);
-}
-
-.compose-input-shell:hover {
-  background: color-mix(in srgb, var(--compose-control-hover) 42%, transparent);
-}
-
-.compose-input-shell:focus-within {
-  border-color: color-mix(in srgb, var(--color-primary) 48%, var(--compose-divider));
-  background: color-mix(in srgb, var(--compose-control-hover) 64%, transparent);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 11%, transparent);
 }
 
 .compose-input-shell input {
@@ -2015,13 +1959,6 @@ kbd {
   background: transparent;
   color: var(--color-text);
   font-size: 13px;
-}
-
-.compose-input-shell input:focus,
-.compose-input-shell input:focus-visible {
-  border: 0;
-  outline: none;
-  box-shadow: none;
 }
 
 .compose-field .compose-copy-toggle {
@@ -2546,21 +2483,28 @@ kbd {
   gap: 6px;
 }
 
-.settings-field > span {
+.settings-field > span:first-child {
   color: var(--color-text-secondary);
   font-size: 11px;
   font-weight: 640;
 }
 
-.settings-field input,
-.settings-field select {
-  width: 100%;
+.settings-input-shell {
+  display: flex;
+  min-width: 0;
   min-height: 40px;
+  align-items: center;
   padding: 0 11px;
-  border: 1px solid var(--color-border);
-  border-radius: 8px;
+}
+
+.settings-input-shell input,
+.settings-input-shell select {
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  border: 0;
   outline: 0;
-  background: var(--color-panel-subtle);
+  background: transparent;
   color: var(--color-text);
   font: inherit;
   font-size: 12px;
@@ -2701,7 +2645,6 @@ kbd {
   .folder-nav__item > span:not(.folder-nav__count),
   .folder-nav__count,
   .account-card__copy,
-  .account-card__status,
   .sidebar-action span {
     display: none;
   }
@@ -2779,7 +2722,6 @@ kbd {
   .folder-nav__item > span:not(.folder-nav__count),
   .folder-nav__count,
   .account-card__copy,
-  .account-card__status,
   .sidebar-action span {
     display: initial;
   }
@@ -2791,8 +2733,7 @@ kbd {
   }
 
   .compose-button kbd,
-  .folder-nav__count,
-  .account-card__status {
+  .folder-nav__count {
     margin-left: auto;
   }
 
@@ -2925,8 +2866,7 @@ kbd {
   }
 
   .draft-button,
-  .send-button kbd,
-  .search-box kbd {
+  .send-button kbd {
     display: none;
   }
 

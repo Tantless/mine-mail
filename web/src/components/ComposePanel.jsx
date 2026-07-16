@@ -395,7 +395,7 @@ export function ComposePanel({
             <div className="compose-fields">
               <div className="compose-field">
                 <label htmlFor="compose-to">收件人</label>
-                <div className="compose-input-shell">
+                <div className="compose-input-shell inset-input-shell">
                   <input
                     id="compose-to"
                     autoFocus
@@ -427,7 +427,7 @@ export function ComposePanel({
                 <div id="compose-copy-fields" className="compose-copy-fields">
                   <div className="compose-field">
                     <label htmlFor="compose-cc">抄送</label>
-                    <div className="compose-input-shell">
+                    <div className="compose-input-shell inset-input-shell">
                       <input
                         id="compose-cc"
                         aria-label="抄送"
@@ -439,7 +439,7 @@ export function ComposePanel({
                   </div>
                   <div className="compose-field">
                     <label htmlFor="compose-bcc">密送</label>
-                    <div className="compose-input-shell">
+                    <div className="compose-input-shell inset-input-shell">
                       <input
                         id="compose-bcc"
                         aria-label="密送"
@@ -453,7 +453,7 @@ export function ComposePanel({
               ) : null}
               <div className="compose-field compose-field--subject">
                 <label htmlFor="compose-subject">主题</label>
-                <div className="compose-input-shell">
+                <div className="compose-input-shell inset-input-shell">
                   <input
                     id="compose-subject"
                     aria-label="主题"

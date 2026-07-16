@@ -32,7 +32,7 @@ describe("AccountSetupForm", () => {
     );
 
     await user.type(screen.getByLabelText("邮箱地址"), "me@163.com");
-    const secretInput = screen.getByPlaceholderText("仅在提交时传给 Rust");
+    const secretInput = screen.getByPlaceholderText("请输入授权密码");
     await user.type(secretInput, "temporary-secret");
     await user.click(screen.getByRole("button", { name: "连接邮箱" }));
 

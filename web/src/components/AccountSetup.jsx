@@ -101,98 +101,112 @@ export function AccountSetupForm({ presets, status, submitStatus, error, onSubmi
             <strong>{outlookBlocked ? "Outlook 暂不能配置" : `${selected?.label} 暂不能配置`}</strong>
             {selected?.note ||
               (outlookBlocked
-                ? "OAuth / Modern Auth 尚未支持。Mine Mail 不会要求或保存 Outlook 普通密码。"
-                : "当前 MVP 尚未支持此认证方式。")}
+                ? "Mine Mail 暂不支持 Outlook 登录，请选择其他邮箱服务。"
+                : "Mine Mail 暂不支持此登录方式。")}
           </span>
         </div>
       ) : (
         <>
           <label className="settings-field">
             <span>邮箱地址</span>
-            <input
-              type="email"
-              required
-              autoComplete="username"
-              value={email}
-              onChange={(event) => setEmail(event.target.value)}
-              placeholder="name@example.com"
-            />
+            <span className="settings-input-shell inset-input-shell">
+              <input
+                type="email"
+                required
+                autoComplete="username"
+                value={email}
+                onChange={(event) => setEmail(event.target.value)}
+                placeholder="name@example.com"
+              />
+            </span>
           </label>
           {selected?.note ? <p className="account-preset-note">{selected.note}</p> : null}
           <label className="settings-field">
             <span>{selected?.secretLabel}</span>
-            <input
-              ref={secretRef}
-              type="password"
-              aria-label={selected?.secretLabel}
-              required
-          autoComplete="new-password"
-              placeholder="仅在提交时传给 Rust"
-            />
-            <small>密钥不会写入 React 状态或浏览器存储。</small>
+            <span className="settings-input-shell inset-input-shell">
+              <input
+                ref={secretRef}
+                type="password"
+                aria-label={selected?.secretLabel}
+                required
+                autoComplete="new-password"
+                placeholder="请输入授权密码"
+              />
+            </span>
+            <small>授权信息将安全保存在系统凭据库中。</small>
           </label>
 
           {provider === "custom" ? (
             <div className="custom-server-grid">
               <label className="settings-field">
                 <span>IMAP 主机</span>
-                <input
-                  required
-                  value={custom.imapHost}
-                  onChange={(event) =>
-                    setCustom((current) => ({ ...current, imapHost: event.target.value }))
-                  }
-                  placeholder="imap.example.com"
-                />
+                <span className="settings-input-shell inset-input-shell">
+                  <input
+                    required
+                    value={custom.imapHost}
+                    onChange={(event) =>
+                      setCustom((current) => ({ ...current, imapHost: event.target.value }))
+                    }
+                    placeholder="imap.example.com"
+                  />
+                </span>
               </label>
               <label className="settings-field settings-field--port">
                 <span>IMAP 端口</span>
-                <input
-                  required
-                  type="number"
-                  min="1"
-                  max="65535"
-                  value={custom.imapPort}
-                  onChange={(event) =>
-                    setCustom((current) => ({ ...current, imapPort: event.target.value }))
-                  }
-                />
+                <span className="settings-input-shell inset-input-shell">
+                  <input
+                    required
+                    type="number"
+                    min="1"
+                    max="65535"
+                    value={custom.imapPort}
+                    onChange={(event) =>
+                      setCustom((current) => ({ ...current, imapPort: event.target.value }))
+                    }
+                  />
+                </span>
               </label>
               <label className="settings-field">
                 <span>SMTP 主机</span>
-                <input
-                  required
-                  value={custom.smtpHost}
-                  onChange={(event) =>
-                    setCustom((current) => ({ ...current, smtpHost: event.target.value }))
-                  }
-                  placeholder="smtp.example.com"
-                />
+                <span className="settings-input-shell inset-input-shell">
+                  <input
+                    required
+                    value={custom.smtpHost}
+                    onChange={(event) =>
+                      setCustom((current) => ({ ...current, smtpHost: event.target.value }))
+                    }
+                    placeholder="smtp.example.com"
+                  />
+                </span>
               </label>
               <label className="settings-field settings-field--port">
                 <span>SMTP 端口</span>
-                <input
-                  required
-                  type="number"
-                  min="1"
-                  max="65535"
-                  value={custom.smtpPort}
-                  onChange={(event) =>
-                    setCustom((current) => ({ ...current, smtpPort: event.target.value }))
-                  }
-                />
+                <span className="settings-input-shell inset-input-shell">
+                  <input
+                    required
+                    type="number"
+                    min="1"
+                    max="65535"
+                    value={custom.smtpPort}
+                    onChange={(event) =>
+                      setCustom((current) => ({ ...current, smtpPort: event.target.value }))
+                    }
+                  />
+                </span>
               </label>
               <label className="settings-field settings-field--wide">
                 <span>SMTP 安全</span>
-                <select
-                  value={custom.smtpSecurity}
-                  onChange={(event) =>
-                    setCustom((current) => ({ ...current, smtpSecurity: event.target.value }))
-                  }
-                >
-                  <option value="implicit_tls">TLS</option>
-                  <option value="start_tls">STARTTLS</option>
-                </select>
+                <span className="settings-input-shell inset-input-shell">
+                  <select
+                    value={custom.smtpSecurity}
+                    onChange={(event) =>
+                      setCustom((current) => ({ ...current, smtpSecurity: event.target.value }))
+                    }
+                  >
+                    <option value="implicit_tls">TLS</option>
+                    <option value="start_tls">STARTTLS</option>
+                  </select>
+                </span>
               </label>
             </div>
           ) : null}
@@ -227,7 +241,7 @@ export function AccountSetupPanel(props) {
         <p className="eyebrow">MINE MAIL</p>
         <h1 id="account-onboarding-title">先连接你的邮箱</h1>
         <p className="account-onboarding__lead">
-          账户尚未配置。完成连接后，应用才会读取本地缓存并启动同步。
+          完成连接后，即可收取、阅读和发送邮件。
         </p>
         <AccountSetupForm {...props} />
       </section>

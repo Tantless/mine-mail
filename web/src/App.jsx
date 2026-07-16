@@ -182,7 +182,6 @@ export function App() {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
   const [syncState, setSyncState] = useState("idle");
-  const [connectionState, setConnectionState] = useState("checking");
   const [isThemeMenuOpen, setIsThemeMenuOpen] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [composer, setComposer] = useState(null);
@@ -287,7 +286,7 @@ export function App() {
       if (!networkActionsAvailableRef.current && !displayMessage.body_fetched) {
         setIsMessageLoading(false);
         setMessageError(
-          "这封邮件尚未缓存正文。重新连接账户后才能从服务器获取。",
+          "这封邮件的正文尚未下载。重新连接账户后即可获取。",
         );
         return;
       }
@@ -401,7 +400,7 @@ export function App() {
   }, []);
 
   const loadMailboxData = useCallback(
-    async ({ selectFirst = false, probeNetwork = true } = {}) => {
+    async ({ selectFirst = false } = {}) => {
       const localTasks = [
         mailApi.listInbox(50).then((inbox) => {
           setMessages(inbox);
@@ -419,18 +418,6 @@ export function App() {
           return items;
         }),
       ];
-
-      // Connection probing is deliberately detached from local SQLite reads.
-      if (probeNetwork) {
-        void mailApi
-          .checkConnections()
-          .then(({ imap_ok: imapOk, smtp_ok: smtpOk }) => {
-            setConnectionState(imapOk && smtpOk ? "connected" : "degraded");
-          })
-          .catch(() => setConnectionState("offline"));
-      } else {
-        setConnectionState("degraded");
-      }
 
       const results = await Promise.allSettled(localTasks);
       if (results.some((result) => result.status === "rejected")) {
@@ -476,10 +463,7 @@ export function App() {
                 "本地邮件仍可阅读，但账户凭据或网络连接不可用。请重新连接账户后再同步或发送。",
             );
           }
-          void loadMailboxData({
-            selectFirst: true,
-            probeNetwork: networkUsable,
-          });
+          void loadMailboxData({ selectFirst: true });
         } else {
           setAccountError(
             status.startupError ||
@@ -487,13 +471,11 @@ export function App() {
                 ? "账户信息存在，但系统凭据不可用，请重新输入授权信息。"
                 : null),
           );
-          setConnectionState("error");
         }
       } catch (error) {
         if (cancelled) return;
         setAccountStatus({ configured: false, provider: null, email: null });
         setAccountError(describeError(error, "无法读取账户配置"));
-        setConnectionState("error");
       }
 
       await Promise.allSettled([settingsTask, presetsTask]);
@@ -655,9 +637,8 @@ export function App() {
         const syncErrorUnlisten = await mailApi.onMailEvent(
           "mail:sync-error",
           (event) => {
-            setConnectionState("offline");
             setSyncState("error");
-            const message = event?.payload?.message || "后台邮箱同步失败";
+            const message = event?.payload?.message || "邮箱同步失败";
             showToast(message, "error");
           },
         );
@@ -685,13 +666,13 @@ export function App() {
                 try {
                   const cancelledExit = await mailApi.cancelExit(requestId);
                   if (cancelledExit !== true) {
-                    throw new Error("桌面后端未确认取消退出");
+                    throw new Error("未能取消退出请求");
                   }
                 } catch (cancelError) {
                   // The actionable failure remains the local save. Include the
                   // cancellation failure without replacing that root cause.
                   showToast(
-                    `退出前保存草稿失败：${describeError(error, "本地保存失败")}；取消退出也失败：${describeError(cancelError, "桌面后端无响应")}`,
+                    `退出前保存草稿失败：${describeError(error, "本地保存失败")}；取消退出也失败：${describeError(cancelError, "应用暂时无响应")}`,
                     "error",
                     true,
                   );
@@ -717,7 +698,7 @@ export function App() {
               try {
                 const completedExit = await mailApi.completeExit(requestId);
                 if (completedExit !== true) {
-                  throw new Error("桌面后端未确认退出");
+                  throw new Error("未能完成退出请求");
                 }
               } catch (error) {
                 commitComposer((current) =>
@@ -733,7 +714,7 @@ export function App() {
                   exitFlushRef.current = null;
                 }
                 showToast(
-                  `无法完成安全退出：${describeError(error, "桌面后端无响应")}。请再次尝试。`,
+                  `无法完成安全退出：${describeError(error, "应用暂时无响应")}。请再次尝试。`,
                   "error",
                   true,
                 );
@@ -867,13 +848,11 @@ export function App() {
     try {
       const report = await mailApi.syncAll();
       await Promise.all([refreshInbox(), refreshDrafts(), refreshOutbox()]);
-      setConnectionState("connected");
       setSyncState("done");
       const fetched = report?.inbox?.fetched ?? report?.fetched ?? 0;
       showToast(fetched ? `同步完成，收到 ${fetched} 封新邮件` : "邮箱已是最新状态");
     } catch (error) {
       setSyncState("error");
-      setConnectionState("offline");
       showToast(describeError(error, "同步失败，请检查网络"), "error");
     }
   };
@@ -1155,9 +1134,8 @@ export function App() {
       const backendUsable = status.configured && status.backendReady;
       if (!backendUsable) {
         const message =
-          status.startupError || "账户信息已保存，但邮件后端尚未就绪，请检查授权信息。";
+          status.startupError || "账户信息已保存，但邮箱服务尚未就绪，请检查授权信息。";
         setAccountError(message);
-        setConnectionState("error");
         setAccountSubmitStatus("error");
         return;
       }
@@ -1166,10 +1144,9 @@ export function App() {
       setMessages([]);
       setDrafts([]);
       setOutbox([]);
-      setConnectionState("checking");
       const networkUsable =
         status.credentialAvailable && status.networkReady !== false;
-      await loadMailboxData({ selectFirst: true, probeNetwork: networkUsable });
+      await loadMailboxData({ selectFirst: true });
       if (!networkUsable) {
         setAccountError(
           status.startupError ||
@@ -1182,7 +1159,6 @@ export function App() {
       const message = describeError(error, "账户配置失败，请检查地址和授权信息");
       setAccountError(message);
       setAccountSubmitStatus("error");
-      setConnectionState("error");
     }
   };
 
@@ -1266,7 +1242,7 @@ export function App() {
         <div className="account-repair-banner" role="alert">
           <span>
             {accountError ||
-              "本地缓存可继续阅读；重新连接账户后才能同步、获取未缓存正文或发送邮件。"}
+              "已下载的邮件仍可阅读；重新连接账户后才能同步、下载其他正文或发送邮件。"}
           </span>
           <button
             type="button"
@@ -1291,7 +1267,6 @@ export function App() {
           isThemeMenuOpen={isThemeMenuOpen}
           onThemeMenuToggle={() => setIsThemeMenuOpen((open) => !open)}
           counts={folderCounts}
-          connectionState={connectionState}
           accountStatus={accountStatus}
           onOpenSettings={() => {
             setSettingsSaveStatus("idle");
@@ -1321,7 +1296,6 @@ export function App() {
           syncState={syncState}
           canSync={networkActionsAvailable}
           onOpenMobileNav={() => setIsSidebarOpen(true)}
-          searchShortcut={platform === "mac" ? "⌘ K" : "Ctrl K"}
         />
 
         <MessageView
