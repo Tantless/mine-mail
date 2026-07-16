@@ -442,30 +442,11 @@ kbd {
   display: flex;
   height: var(--titlebar-height);
   align-items: center;
-  border-bottom: 1px solid var(--titlebar-border);
-  background: var(--titlebar-surface);
+  border: 0;
+  background: transparent;
   color: var(--titlebar-text);
-  backdrop-filter: blur(12px) saturate(0.96);
-  -webkit-backdrop-filter: blur(12px) saturate(0.96);
   user-select: none;
   -webkit-user-select: none;
-}
-
-.titlebar-brand {
-  position: absolute;
-  left: 13px;
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  color: var(--titlebar-muted);
-  font-size: 12px;
-  font-weight: 620;
-  letter-spacing: -0.01em;
-  pointer-events: none;
-}
-
-.titlebar-brand svg {
-  opacity: 0.9;
 }
 
 .titlebar-controls {
@@ -559,11 +540,6 @@ kbd {
 
 .titlebar-control[aria-disabled="true"] {
   cursor: default;
-}
-
-.platform-mac .titlebar-brand {
-  left: 50%;
-  transform: translateX(-50%);
 }
 
 .mail-layout {
@@ -1439,6 +1415,124 @@ kbd {
 
 .message-body--html {
   max-width: none;
+}
+
+.message-body--native-html {
+  min-height: 0;
+}
+
+.native-html-message {
+  display: grid;
+  gap: 12px;
+  width: 100%;
+}
+
+.native-html-message__content {
+  min-width: 0;
+  color: inherit;
+  font: inherit;
+  overflow-wrap: anywhere;
+}
+
+.native-html-message__content :first-child {
+  margin-top: 0;
+}
+
+.native-html-message__content :last-child {
+  margin-bottom: 0;
+}
+
+.native-html-message__content h1,
+.native-html-message__content h2,
+.native-html-message__content h3,
+.native-html-message__content h4,
+.native-html-message__content h5,
+.native-html-message__content h6 {
+  margin: 1.35em 0 0.55em;
+  color: var(--color-text-primary);
+  font: inherit;
+  font-weight: 720;
+  line-height: 1.3;
+}
+
+.native-html-message__content h1 { font-size: 1.55em; }
+.native-html-message__content h2 { font-size: 1.35em; }
+.native-html-message__content h3 { font-size: 1.18em; }
+
+.native-html-message__content a {
+  color: var(--color-primary);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+
+.native-html-message__content blockquote {
+  margin: 1em 0;
+  padding: 0.15em 0 0.15em 1em;
+  border-left: 3px solid color-mix(in srgb, var(--color-primary) 38%, transparent);
+  color: var(--color-text-muted);
+}
+
+.native-html-message__content table {
+  max-width: 100%;
+  border: 0;
+  border-collapse: collapse;
+  background: transparent;
+  color: inherit;
+}
+
+.native-html-message__content th,
+.native-html-message__content td {
+  padding: 0.2em 0.45em;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  vertical-align: top;
+}
+
+.native-html-message__content th:first-child,
+.native-html-message__content td:first-child {
+  padding-left: 0;
+}
+
+.native-html-message__content th:last-child,
+.native-html-message__content td:last-child {
+  padding-right: 0;
+}
+
+.native-html-message__content ul,
+.native-html-message__content ol {
+  margin: 0 0 1em;
+  padding-left: 1.6em;
+}
+
+.native-html-message__content pre,
+.native-html-message__content code,
+.native-html-message__content kbd,
+.native-html-message__content samp {
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+}
+
+.native-html-message__content pre {
+  max-width: 100%;
+  padding: 12px;
+  border: 1px solid var(--color-divider);
+  border-radius: 9px;
+  overflow: auto;
+  background: color-mix(in srgb, var(--color-control) 52%, transparent);
+  white-space: pre-wrap;
+}
+
+.native-html-message__content img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 0.75em 0;
+  border-radius: 8px;
+}
+
+.native-html-message__content img[data-mine-mail-image-blocked="true"] {
+  display: none;
 }
 
 .html-message {

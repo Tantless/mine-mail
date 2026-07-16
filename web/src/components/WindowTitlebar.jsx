@@ -1,6 +1,5 @@
 import {
   ArrowsOutSimple,
-  EnvelopeSimple,
   Minus,
   Square,
   X,
@@ -25,6 +24,7 @@ export function WindowTitlebar({ platform, isDesktop }) {
   return (
     <header
       className="app-titlebar"
+      aria-label="窗口控制与拖动区域"
       data-testid="window-titlebar"
       data-tauri-drag-region="deep"
     >
@@ -71,11 +71,6 @@ export function WindowTitlebar({ platform, isDesktop }) {
           </button>
         </div>
       ) : null}
-
-      <div className="titlebar-brand">
-        <EnvelopeSimple size={15} weight="regular" aria-hidden="true" />
-        <span>Mine Mail</span>
-      </div>
 
       {!isMac ? (
         <div

@@ -16,7 +16,7 @@ use crate::{
     mime::{
         IncomingMetadata, build_draft_message_revision, build_outgoing_message,
         parse_draft_message, parse_incoming_message, parse_incoming_summary_or_fallback,
-        restore_outbox_envelope,
+        render_message_html, restore_outbox_envelope,
     },
     models::DraftSyncReport,
     smtp_client::SmtpClient,
@@ -294,7 +294,32 @@ impl MailBackend {
                 id: uid.to_string(),
             });
         }
-        Ok(message)
+        self.repair_cached_inline_images(message)
+    }
+
+    /// Older cache rows may predate CID resolution. Rebuild only those HTML
+    /// bodies that still contain an inline-image reference, then persist the
+    /// repaired body so later opens stay on the fast SQLite path.
+    fn repair_cached_inline_images(&self, mut message: InboxMessage) -> Result<InboxMessage> {
+        let needs_repair = !message.raw_rfc822.is_empty()
+            && message.body_html.as_deref().is_some_and(|html| {
+                let lower = html.to_ascii_lowercase();
+                lower.contains("<img") && lower.contains("cid:")
+            });
+        if !needs_repair {
+            return Ok(message);
+        }
+
+        let Some(rendered) = render_message_html(&message) else {
+            return Ok(message);
+        };
+        if message.body_html.as_deref() == Some(rendered.as_str()) {
+            return Ok(message);
+        }
+        message.body_html = Some(rendered);
+        self.repository.upsert_message(&message)?;
+        self.repository
+            .get_message_by_uid(&self.config.account_id, INBOX, message.uid)
     }
 
     pub async fn prefetch_inbox_bodies(
@@ -337,7 +362,9 @@ impl MailBackend {
             .repository
             .get_message_by_uid(&self.config.account_id, INBOX, uid)
         {
-            Ok(message) if message.body_fetched && !force => return Ok(message),
+            Ok(message) if message.body_fetched && !force => {
+                return self.repair_cached_inline_images(message);
+            }
             Ok(message) if message.size_bytes > MAX_CACHED_MESSAGE_BYTES => {
                 return Err(MailError::Validation(format!(
                     "message UID {uid} exceeds the 50 MiB local cache limit"
@@ -370,7 +397,7 @@ impl MailBackend {
                     .get_message_by_uid(&self.config.account_id, INBOX, uid)
             && message.body_fetched
         {
-            return Ok(message);
+            return self.repair_cached_inline_images(message);
         }
 
         let session = body_imap
@@ -1505,14 +1532,14 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        DraftReconciliation, InboxUidScope, MailBackend, RemoteDraftCandidate,
+        DraftReconciliation, INBOX, InboxUidScope, MailBackend, RemoteDraftCandidate,
         RemoteForkPreservation, classify_draft_reconciliation, classify_inbox_uid_scope,
         draft_record_matches_remote, remote_candidates_equivalent, remote_draft_candidate,
         validate_manual_retry,
     };
     use crate::{
-        AccountConfig, ComposeRequest, Draft, DraftDeleteKind, DraftSaveKind, MailError,
-        OutboxItem, OutboxStatus,
+        AccountConfig, ComposeRequest, Draft, DraftDeleteKind, DraftSaveKind, InboxMessage,
+        MailError, OutboxItem, OutboxStatus,
         database::{DraftRecord, Repository},
         imap_client::RemoteMessage,
         mime::parse_draft_message,
@@ -1593,6 +1620,55 @@ mod tests {
 
         assert_eq!(saved.status, "local");
         assert_eq!(backend.list_drafts().expect("drafts").len(), 1);
+    }
+
+    #[test]
+    fn opening_an_old_cached_body_repairs_unresolved_inline_cid_images_once() {
+        let directory = tempdir().expect("tempdir");
+        let config =
+            AccountConfig::from_163_lines(["demo@163.com", "not-a-real-secret"]).expect("config");
+        let backend = MailBackend::open(config, directory.path().join("mail.db")).expect("backend");
+        backend.initialize().expect("initialize");
+        let raw = b"From: sender@example.com\r\nTo: receiver@example.com\r\nSubject: Inline image\r\nContent-Type: multipart/related; boundary=x\r\n\r\n--x\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<p>Hello</p><img src=\"cid:avatar@example.com\">\r\n--x\r\nContent-Type: image/png\r\nContent-Transfer-Encoding: base64\r\nContent-ID: <avatar@example.com>\r\nContent-Disposition: inline; filename=avatar.png\r\n\r\nAQID\r\n--x--\r\n";
+        let stale = InboxMessage {
+            id: 0,
+            account_id: backend.config.account_id.clone(),
+            mailbox: INBOX.to_owned(),
+            uid: 42,
+            message_id: None,
+            subject: "Inline image".to_owned(),
+            sender: None,
+            to: Vec::new(),
+            cc: Vec::new(),
+            sent_at: None,
+            internal_date: None,
+            flags: Vec::new(),
+            size_bytes: u32::try_from(raw.len()).unwrap(),
+            preview: "Hello".to_owned(),
+            body_text: Some("Hello".to_owned()),
+            body_html: Some("<p>Hello</p><img src=\"cid:avatar@example.com\">".to_owned()),
+            attachment_names: vec!["avatar.png".to_owned()],
+            body_fetched: true,
+            raw_rfc822: raw.to_vec(),
+            synced_at: "2026-07-16T00:00:00Z".to_owned(),
+        };
+        backend
+            .repository
+            .upsert_message(&stale)
+            .expect("stale cache");
+
+        let repaired = backend.cached_inbox_message(42).expect("repaired body");
+        let html = repaired.body_html.expect("HTML body");
+        assert!(html.contains("data:image/png;base64,AQID"));
+        assert!(!html.to_ascii_lowercase().contains("cid:avatar@example.com"));
+        assert_eq!(
+            backend
+                .cached_inbox_message(42)
+                .expect("persisted repair")
+                .body_html
+                .as_deref(),
+            Some(html.as_str())
+        );
     }
 
     #[test]

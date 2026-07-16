@@ -38,6 +38,7 @@ const localDraftDebounceMs = 900;
 const cachedBodyFields = [
   "body_text",
   "body_html",
+  "body_render_mode",
   "body_html_available",
   "body_html_loaded",
   "has_remote_images",
@@ -138,6 +139,11 @@ function createComposer(value = emptyCompose, draftId = null, persistedDraft = n
   return {
     sessionId: crypto.randomUUID(),
     draftId,
+    // Keep the session origin separate from draftId. A new composer can gain a
+    // draftId through background autosave, but closing it should still remove
+    // that session-created recovery draft. Existing drafts must never be
+    // mistaken for those temporary drafts.
+    openedDraftId: draftId,
     baseLocalVersion: persistedDraft?.local_version ?? null,
     persistedDraft,
     readOnlyUnsupported,
@@ -759,7 +765,12 @@ export function App() {
     }
     const sessionId = composer.sessionId;
     const timer = window.setTimeout(() => {
-      if (composerRef.current?.sessionId !== sessionId) return;
+      if (
+        composerRef.current?.sessionId !== sessionId ||
+        composerRef.current?.locked
+      ) {
+        return;
+      }
       void saveDraftNow().catch((error) => {
         showToast(describeError(error, "草稿自动保存失败"), "error");
       });
@@ -914,19 +925,67 @@ export function App() {
   };
 
   const handleCloseComposer = async () => {
-    if (composerRef.current?.locked) return;
-    if (composerRef.current?.readOnlyUnsupported) {
+    const initial = composerRef.current;
+    if (!initial || initial.locked) return;
+    if (initial.readOnlyUnsupported) {
       commitComposer(null);
       return;
     }
-    if (
-      !composerRef.current?.draftId &&
-      !hasDraftContent(composerRef.current?.value)
-    ) {
+
+    // Closing an existing draft means leaving the editor. It must not force a
+    // final save, and it must not delete the draft that the user opened.
+    if (initial.openedDraftId) {
       commitComposer(null);
       return;
     }
-    await handleSaveDraftAndClose({ syncRemote: false });
+
+    // A new composer may already have produced a local recovery draft through
+    // autosave. Mark the session as locked so no new timer can start, wait for
+    // a write already in flight, then remove only the draft created by this
+    // compose session.
+    const sessionId = initial.sessionId;
+    commitComposer((current) =>
+      current?.sessionId === sessionId ? { ...current, locked: true } : current,
+    );
+
+    try {
+      if (draftSaveRef.current) {
+        try {
+          await draftSaveRef.current;
+        } catch {
+          // A failed first autosave has nothing to retain. If an older recovery
+          // snapshot exists, draftId below still identifies it for cleanup.
+        }
+      }
+
+      const current = composerRef.current;
+      if (!current || current.sessionId !== sessionId) return;
+      if (!current.draftId) {
+        commitComposer(null);
+        return;
+      }
+
+      const outcome = await mailApi.deleteDraft(
+        current.draftId,
+        current.baseLocalVersion,
+      );
+      commitComposer(null);
+      await refreshDrafts();
+      if (outcome.kind === "stale") {
+        showToast(
+          "临时草稿已在其他客户端更新；已关闭当前编辑，没有删除较新的版本。",
+          "error",
+          true,
+        );
+      }
+    } catch (error) {
+      commitComposer((current) =>
+        current?.sessionId === sessionId
+          ? { ...current, locked: false, saveStatus: "error" }
+          : current,
+      );
+      showToast(describeError(error, "临时草稿清理失败，写信窗口仍保持打开"), "error");
+    }
   };
 
   const handleDiscardComposer = async () => {

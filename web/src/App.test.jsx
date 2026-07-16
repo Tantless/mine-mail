@@ -47,7 +47,7 @@ describe("Mine Mail MVP", () => {
     expect(screen.getByText(/我们希望它是一间安静的邮件工作室/)).toBeTruthy();
   });
 
-  it("renders an integrated draggable titlebar with window controls", () => {
+  it("renders integrated draggable window chrome without a duplicate brand", () => {
     render(<App />);
 
     const titlebar = screen.getByTestId("window-titlebar");
@@ -64,6 +64,8 @@ describe("Mine Mail MVP", () => {
       screen.getByRole("button", { name: "最大化或还原窗口" }),
     ).toBeTruthy();
     expect(screen.getByRole("button", { name: "关闭窗口" })).toBeTruthy();
+    expect(titlebar.querySelector(".titlebar-brand")).toBeNull();
+    expect(screen.getAllByText("Mine Mail")).toHaveLength(1);
   });
 
   it("switches and persists an MVP theme", async () => {

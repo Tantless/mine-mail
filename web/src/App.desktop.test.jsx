@@ -152,6 +152,7 @@ describe("Mine Mail desktop state bridge", () => {
     }));
     desktop.mailApi.openExternalUrl.mockResolvedValue(true);
     desktop.mailApi.syncAll.mockResolvedValue({ inbox: { fetched: 0 } });
+    desktop.mailApi.deleteDraft.mockResolvedValue({ kind: "deleted" });
     desktop.mailApi.completeExit.mockResolvedValue(true);
     desktop.mailApi.cancelExit.mockResolvedValue(true);
     desktop.mailApi.retryOutbox.mockResolvedValue({
@@ -270,6 +271,7 @@ describe("Mine Mail desktop state bridge", () => {
     desktop.mailApi.fetchMessage.mockResolvedValue({
       ...richSummary,
       body_html: '<table><tbody><tr><td class="desktop">Rich layout</td></tr></tbody></table>',
+      body_render_mode: "isolated_html",
       body_html_loaded: true,
       has_remote_images: false,
     });
@@ -295,6 +297,36 @@ describe("Mine Mail desktop state bridge", () => {
         "Rich layout",
       );
     });
+  });
+
+  it("renders bounded semantic HTML directly on the themed reader material", async () => {
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 600 });
+    const nativeSummary = {
+      ...summary(8, "Native mail"),
+      body_text: "Myo myo@paa.moe",
+      body_fetched: true,
+      body_html_available: true,
+      body_html_loaded: false,
+    };
+    desktop.mailApi.listInbox.mockResolvedValue([nativeSummary]);
+    desktop.mailApi.fetchMessage.mockResolvedValue({
+      ...nativeSummary,
+      body_html: '<p>Hello <strong>Myo</strong></p><a href="https://paa.moe">Profile</a>',
+      body_render_mode: "native_html",
+      body_html_loaded: true,
+      has_remote_images: false,
+    });
+    const user = userEvent.setup();
+
+    render(<App />);
+    await user.click(await screen.findByText("Native mail"));
+
+    const reader = screen.getByLabelText("邮件阅读区");
+    const semanticText = await within(reader).findByText("Myo");
+    expect(semanticText.tagName).toBe("STRONG");
+    expect(reader.querySelector(".native-html-message__content")).toBeTruthy();
+    expect(reader.querySelector("iframe")).toBeNull();
+    expect(within(reader).queryByText("Myo myo@paa.moe")).toBeNull();
   });
 
   it("flushes the final composer revision before completing desktop exit", async () => {
@@ -473,6 +505,70 @@ describe("Mine Mail desktop state bridge", () => {
     expect(desktop.mailApi.saveDraft).not.toHaveBeenCalled();
     expect(desktop.mailApi.deleteDraft).not.toHaveBeenCalled();
     expect(desktop.mailApi.sendDraft).not.toHaveBeenCalled();
+  });
+
+  it("closes a new dirty composer without creating a draft", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findAllByText("First mail");
+
+    await user.click(screen.getByRole("button", { name: /写信/ }));
+    fireEvent.change(screen.getByLabelText("主题"), {
+      target: { value: "不应保存的临时内容" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "关闭写信窗口" }));
+
+    expect(screen.queryByRole("dialog", { name: "不应保存的临时内容" })).toBeNull();
+    expect(desktop.mailApi.saveDraft).not.toHaveBeenCalled();
+    expect(desktop.mailApi.deleteDraft).not.toHaveBeenCalled();
+  });
+
+  it("removes a recovery draft when a new composer is closed", async () => {
+    desktop.mailApi.saveDraft.mockImplementation(
+      async (request, draftId, expectedLocalVersion) =>
+        savedOutcome(request, draftId, expectedLocalVersion),
+    );
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findAllByText("First mail");
+
+    await user.click(screen.getByRole("button", { name: /写信/ }));
+    vi.useFakeTimers();
+    fireEvent.change(screen.getByLabelText("主题"), {
+      target: { value: "已自动保存的临时内容" },
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(901);
+    });
+    expect(desktop.mailApi.saveDraft).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+
+    fireEvent.click(screen.getByRole("button", { name: "关闭写信窗口" }));
+
+    await waitFor(() =>
+      expect(desktop.mailApi.deleteDraft).toHaveBeenCalledWith("exit-draft", 1),
+    );
+    expect(desktop.mailApi.saveDraft).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("dialog", { name: "已自动保存的临时内容" })).toBeNull();
+  });
+
+  it("closes an existing dirty draft without forcing a save or deleting it", async () => {
+    const original = draftSnapshot(1, "Existing draft");
+    desktop.mailApi.listDrafts.mockResolvedValue([original]);
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findAllByText("First mail");
+
+    await user.click(screen.getByRole("button", { name: /草稿/ }));
+    await user.click(screen.getByText("Existing draft"));
+    fireEvent.change(screen.getByLabelText("主题"), {
+      target: { value: "尚未自动保存的修改" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "关闭写信窗口" }));
+
+    expect(screen.queryByRole("heading", { name: "编辑草稿" })).toBeNull();
+    expect(desktop.mailApi.saveDraft).not.toHaveBeenCalled();
+    expect(desktop.mailApi.deleteDraft).not.toHaveBeenCalled();
   });
 
   it("preserves a dirty stale edit as a conflict copy", async () => {

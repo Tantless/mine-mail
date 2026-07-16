@@ -1,78 +1,55 @@
-# Mine Mail — Simplified Composer Design QA
+# Design QA — Integrated Window Chrome
 
-## Evidence
+- Source visual truth: `C:\Users\tantl\Documents\xwechat_files\wxid_0qqrc78n3hvm12_adc0\temp\InputTemp\0caddea4-c2d6-4fb4-9828-1003a8a72356.png`
+- Implementation screenshot: `Z:\mine-mail\design-qa\titlebar-integrated-current.png`
+- Full-view comparison: `Z:\mine-mail\design-qa\titlebar-reference-comparison.png`
+- Focused top-chrome comparison: `Z:\mine-mail\design-qa\titlebar-focused-comparison.png`
+- Viewport: 1453 × 908 logical pixels / 2906 × 1815 physical capture pixels
+- State: Windows, Dusk theme, inbox with a selected message
 
-- Source visual truth: `web/design/qa/implementation-compose-glass-daylight-final.png`
-- Final normal composer: `web/design/qa/implementation-compose-refined-full-final.png`
-- Final minimized composer: `web/design/qa/implementation-compose-refined-minimized-final.png`
-- Full before/after comparison: `web/design/qa/comparison-compose-refined-before-after.png`
-- Normal/minimized state comparison: `web/design/qa/comparison-compose-refined-states.png`
-- Focused chrome/control comparison: `web/design/qa/comparison-compose-refined-focused.png`
-- Collapsed copy-recipient focus: `web/design/qa/implementation-compose-copy-focus-collapsed.png`
-- Expanded CC focus: `web/design/qa/implementation-compose-copy-focus-expanded.png`
-- Rounded-only input focus: `web/design/qa/implementation-compose-focus-rounded-only.png`
-- Source and implementation viewport: 3098 × 1850 physical pixels (1549 × 925 logical pixels at 2× capture scale).
-- State: Windows Tauri/WebView2, Daylight theme, configured local mailbox, empty new-message composer.
+## Comparison Scope
 
-The implementation evidence comes from the rebuilt Tauri debug executable. The final captures use the live cached mailbox and Windows `PrintWindow`; no parallel browser mail runtime or mock inbox was used.
+The WeChat reference is directional rather than a full-screen clone. The comparison therefore evaluates the requested window-chrome behavior: a visually quiet draggable safe area, platform controls in their standard corner, no separate titlebar band, and one product identity at the top-left. Message content and navigation anatomy intentionally remain Mine Mail.
+
+## Full-view Comparison Evidence
+
+- The implementation keeps the three-column Mine Mail structure and its approved layered material system.
+- The former full-width titlebar surface, divider, blur band, duplicate envelope, and duplicate `Mine Mail` text are absent.
+- The painterly shell now continues uninterrupted behind the top draggable area, matching the reference's weak titlebar hierarchy without copying its flat palette.
+- Windows minimize, maximize, and close controls remain at the top-right and clear of mail controls.
+- The single Mine Mail brand is aligned with the left navigation, so it reads as part of the app rather than operating-system chrome.
+
+## Focused Region Comparison Evidence
+
+- Both screens reserve a shallow top safe area without presenting it as a separate content card.
+- Both keep window controls visually lightweight and anchored at the window edge.
+- The implementation's brand begins below the drag-safe strip, with spacing comparable to the reference avatar/search start while respecting Mine Mail's larger sidebar identity.
+
+## Required Fidelity Surfaces
+
+- Fonts and typography: Existing Inter/Segoe UI hierarchy is unchanged; removing the 12 px titlebar copy eliminates the duplicate, weaker brand treatment. The remaining sidebar brand has appropriate weight and scale.
+- Spacing and layout rhythm: Top gutter, panel starts, and window controls do not collide. The three columns retain their approved proportions and rounded material edges.
+- Colors and visual tokens: No titlebar surface or divider remains. Theme-specific foreground and hover tokens still keep controls legible across Daylight, Night, Dusk, and Forest.
+- Image quality and asset fidelity: Existing wallpaper and icon-library assets are preserved without replacements or generated approximations.
+- Copy and content: Exactly one visible `Mine Mail` label remains; mail labels and user content are unchanged.
 
 ## Findings
 
-- No actionable P0, P1, or P2 mismatch remains for the requested simplification.
-- The visible composer title/status band and maximize action are removed. The top edge is now uninterrupted glass with only minimize and close at the right, while the empty left area remains the drag target.
-- **保存并关闭** is now a Phosphor floppy-disk icon button with the same size, material, hover treatment, tooltip, and accessible name as the discard control.
-- The minimized state is a 340 × 44 subject-only glass bar centered 18 pixels above the bottom edge. It contains no status dot, draft status, or right-side controls.
-- The compose overlay becomes fully transparent and drops its backdrop filter while minimized, so the mailbox below remains sharp and readable.
-- Empty subjects render as **新邮件**. A non-empty subject is truncated to one centered line when necessary.
-- Drag and resize changes persist as a bounded `{x, y, width, height}` UI preference. New compose sessions and later app launches reuse it; minimize/restore does not overwrite the saved normal geometry.
-- Recipient, CC, BCC, and subject focus now sits inside a rounded inset surface rather than highlighting the full rectangular row. The copy-recipient icon remains outside that focus surface and toggles both optional rows without discarding their values.
-- Compose inputs suppress the global native-element focus shadow, leaving one rounded focus surface instead of a nested rectangular ring.
+No actionable P0, P1, or P2 differences remain for the scoped titlebar integration.
 
-## Required fidelity surfaces
+## Comparison History
 
-- Fonts and typography: existing Inter/Segoe UI fallback, weights, field labels, placeholders, and footer hierarchy are unchanged. The minimized subject uses the existing 12px semibold UI scale with single-line ellipsis.
-- Spacing and layout rhythm: the original default 660 × 680 surface and right-side placement are preserved for first use. Removing the visible header tightens the hierarchy without moving the address, body, or footer controls out of alignment.
-- Colors and visual tokens: the approved compose glass, wallpaper reflection, borders, shadows, focus ring, and theme tokens are preserved. The compact bar uses the same semantic surface rather than introducing a new solid color.
-- Image quality and asset fidelity: the active painterly wallpaper remains the only raster source. No generated filler, CSS illustration, inline SVG, or extra icon family was added.
-- Copy and content: minimized copy follows the exact subject-or-**新邮件** rule. Existing recipient, subject, body, send, save, discard, and draft-status copy remains wired to live state.
-- Accessibility: the removed visual heading remains available as a clipped semantic heading; both top actions and both footer actions retain accessible names and focus states. Pointer resizing has large edge/corner targets, and the minimized bar is a single keyboard-accessible restore button.
+- Pass 1: The full and focused comparisons confirmed that the separate titlebar band and duplicate brand were removed, the platform controls stayed in position, and the three-column shell retained its hierarchy. No post-comparison P0/P1/P2 fix was required.
 
-## Interaction validation
+## Interaction Checks
 
-- Real Tauri UI Automation invoked the compose action, minimize action, and subject-bar restore action successfully.
-- React coverage exercises drag, southeast resize, geometry persistence, close/reopen restoration, subject and empty-subject minimized labels, compact geometry, and restore-to-previous geometry.
-- React coverage also exercises CC/BCC expansion, collapse, repeated expansion, and retained address values.
-- The minimized layer exposes the sharp mailbox and permits pointer interaction outside the compact bar.
-- Mail send, local draft save, remote draft synchronization, discard, and recipient confirmation logic were not changed.
+- The full top safe area remains a deep Tauri drag region.
+- Window controls remain excluded from dragging.
+- Minimize, maximize/restore, and close controls remain present with their existing desktop actions and accessible labels.
+- Responsive sidebar and mail selection behavior are unchanged.
 
-## Comparison history
+## Follow-up Polish
 
-### Final pass
-
-- The full-view comparison confirms the old titled chrome and maximize button are gone while the glass shell and default placement remain stable.
-- The focused comparison confirms the footer text action has become an icon and the top-right control set contains only minimize and close.
-- The state comparison confirms the minimized bar is compact, centered, subject-only, and leaves the underlying mailbox unblurred.
-- No actionable P0, P1, or P2 issue remains.
-- Residual P3: the compact width is fixed at 340 logical pixels, clamped on narrower windows. It can be tuned later if hands-on use favors a slightly shorter or longer subject preview.
-
-## Verification
-
-- Core Rust: 51 tests passed (49 library + 2 send-confirmation).
-- React: 41 tests across 5 files passed.
-- Tauri: 15 Rust tests and `cargo check` passed.
-- Production frontend build: passed.
-- Embedded-assets Tauri debug build: passed.
-- Real Tauri normal/minimized and collapsed/expanded recipient visual capture: passed.
-- No SMTP action was triggered during visual QA.
+- P3: A future pass could tune control hover opacity per theme after broader use, but the current treatment is already consistent and readable.
 
 final result: passed
-
-## Reader performance and theme integration — 2026-07-15
-
-- Inbox list queries omit raw RFC822 and full HTML payloads while retaining the local preview/text needed for immediate paint.
-- Opening a message never hides that local copy behind a skeleton. Full local/network content replaces it silently, and an in-memory body cache survives list refresh events.
-- Foreground body fetches reuse a dedicated IMAP session and skip the full UID search. Post-sync prefetch is bounded to 20 recent messages, 2 MiB each, and 8 MiB total per run.
-- HTML srcdoc attaches sizing before remote image load, forces root overflow hidden, remembers measured height, and leaves vertical scrolling to the outer reader only.
-- Simple HTML with a text alternative renders as native theme typography. Complex image/table/style mail remains sanitized in the isolated iframe; transparent regions receive a restrained theme tint without rewriting sender layout.
-- Live desktop cache check: 103 of 104 Inbox bodies cached; all newest 20 cached; the Nintendo layout mail cached.
-- Verification: core Rust 53 passed, React 44 passed, Tauri Rust 21 passed, Tauri `cargo check` passed, production React build passed. No SMTP action was triggered.

@@ -15,6 +15,7 @@ import {
 } from "@phosphor-icons/react";
 import { IconButton } from "./IconButton.jsx";
 import { HtmlMessageBody } from "./HtmlMessageBody.jsx";
+import { NativeHtmlMessageBody } from "./NativeHtmlMessageBody.jsx";
 import { formatFullDate, initials, senderLabel } from "../utils/formatters.js";
 
 function fileSizeLabel(bytes) {
@@ -57,6 +58,8 @@ export function MessageView({
   const body = message.body_fetched
     ? message.body_text || "这封邮件没有纯文本正文。"
     : message.preview || "这封邮件没有纯文本正文。";
+  const bodyRenderMode =
+    message.body_render_mode || (message.body_html ? "isolated_html" : "plain");
 
   return (
     <section className="reader-panel" aria-label="邮件阅读区">
@@ -110,7 +113,13 @@ export function MessageView({
         </div>
 
         <article
-          className={`message-body${message.body_html ? " message-body--html" : ""}`}
+          className={`message-body${
+            bodyRenderMode === "isolated_html" && message.body_html
+              ? " message-body--html"
+              : bodyRenderMode === "native_html" && message.body_html
+                ? " message-body--native-html"
+                : ""
+          }`}
           aria-busy={isLoading}
         >
           {isLoading ? (
@@ -128,7 +137,15 @@ export function MessageView({
                 重新加载
               </button>
             </div>
-          ) : message.body_html ? (
+          ) : bodyRenderMode === "native_html" && message.body_html ? (
+            <NativeHtmlMessageBody
+              key={message.uid}
+              html={message.body_html}
+              hasRemoteImages={message.has_remote_images}
+              remoteImageMode={remoteImageMode}
+              onOpenLink={onOpenExternalLink}
+            />
+          ) : bodyRenderMode === "isolated_html" && message.body_html ? (
             <HtmlMessageBody
               key={message.uid}
               cacheKey={`${message.mailbox || "INBOX"}:${message.uid}`}

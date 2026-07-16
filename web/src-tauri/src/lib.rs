@@ -17,7 +17,7 @@ use account::{
     AccountPresetDto, AccountRuntime, AccountStatusDto, BackendState, ConfigureAccountRequest,
 };
 use desktop::{DesktopRuntime, DesktopSettingsDto, DesktopSettingsUpdate};
-use mail_html::sanitize_mail_html;
+use mail_html::{MailHtmlStructure, sanitize_mail_html};
 
 const INBOX_SYNC_LIMIT: usize = 100;
 const INBOX_LIST_LIMIT: usize = 250;
@@ -62,6 +62,7 @@ struct InboxMessageDto {
     preview: String,
     body_text: Option<String>,
     body_html: Option<String>,
+    body_render_mode: Option<BodyRenderMode>,
     body_html_available: bool,
     body_html_loaded: bool,
     has_remote_images: bool,
@@ -70,10 +71,18 @@ struct InboxMessageDto {
     synced_at: String,
 }
 
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum BodyRenderMode {
+    Plain,
+    NativeHtml,
+    IsolatedHtml,
+}
+
 impl InboxMessageDto {
     fn summary(value: InboxMessage) -> Self {
         let body_html_available = value.body_html.is_some();
-        Self::from_parts(value, None, body_html_available, false, false)
+        Self::from_parts(value, None, None, body_html_available, false, false)
     }
 
     fn full(value: InboxMessage) -> Self {
@@ -89,20 +98,26 @@ impl InboxMessageDto {
         let has_remote_images = sanitized
             .as_ref()
             .is_some_and(|html| html.has_remote_images);
-        // Simple multipart/HTML wrappers usually duplicate the plain-text
-        // alternative. Rendering that text natively makes typography and
-        // surfaces inherit the active Mine Mail theme. Preserve sender HTML
-        // when it carries layout, imagery, or has no readable text fallback.
-        let body_html = sanitized.and_then(|html| {
-            if has_readable_text && !html.has_complex_layout {
-                None
-            } else {
-                Some(html.fragment)
-            }
-        });
+        // Text-equivalent wrappers use the existing plain reader. Bounded,
+        // semantic HTML is stripped of sender styling and rendered natively
+        // against the Mine Mail material. Layout-dependent sender HTML (and
+        // HTML without a readable text alternative) stays isolated.
+        let (body_html, body_render_mode) = match sanitized {
+            None => (None, BodyRenderMode::Plain),
+            Some(html) if !has_readable_text => (Some(html.fragment), BodyRenderMode::IsolatedHtml),
+            Some(html) => match html.structure {
+                MailHtmlStructure::PlainEquivalent => (None, BodyRenderMode::Plain),
+                MailHtmlStructure::Native => match html.native_fragment {
+                    Some(fragment) => (Some(fragment), BodyRenderMode::NativeHtml),
+                    None => (Some(html.fragment), BodyRenderMode::IsolatedHtml),
+                },
+                MailHtmlStructure::Isolated => (Some(html.fragment), BodyRenderMode::IsolatedHtml),
+            },
+        };
         Self::from_parts(
             value,
             body_html,
+            Some(body_render_mode),
             body_html_available,
             true,
             has_remote_images,
@@ -112,6 +127,7 @@ impl InboxMessageDto {
     fn from_parts(
         value: InboxMessage,
         body_html: Option<String>,
+        body_render_mode: Option<BodyRenderMode>,
         body_html_available: bool,
         body_html_loaded: bool,
         has_remote_images: bool,
@@ -132,6 +148,7 @@ impl InboxMessageDto {
             preview: value.preview,
             body_text: value.body_text,
             body_html,
+            body_render_mode,
             body_html_available,
             body_html_loaded,
             has_remote_images,
@@ -724,6 +741,7 @@ mod tests {
         assert_eq!(json["body_html_available"], true);
         assert_eq!(json["body_html_loaded"], false);
         assert!(json["body_html"].is_null());
+        assert!(json["body_render_mode"].is_null());
         assert!(json.get("raw_rfc822").is_none());
     }
 
@@ -737,14 +755,15 @@ mod tests {
         assert!(html.contains("Rich"));
         assert!(!html.contains("onclick"));
         assert!(!html.contains("<script"));
+        assert_eq!(json["body_render_mode"], "isolated_html");
         assert_eq!(json["body_html_loaded"], true);
         assert!(json.get("raw_rfc822").is_none());
     }
 
     #[test]
-    fn simple_html_uses_the_native_themed_text_reader() {
+    fn plain_html_wrappers_use_the_plain_text_reader() {
         let mut message = rich_message();
-        message.body_html = Some("<div>Hello <strong>there</strong></div>".to_owned());
+        message.body_html = Some("<div>Hello there</div><p>A short reply.</p>".to_owned());
         message.body_text = Some("Hello there".to_owned());
 
         let dto = InboxMessageDto::full(message);
@@ -752,8 +771,53 @@ mod tests {
 
         assert!(json["body_html"].is_null());
         assert_eq!(json["body_text"], "Hello there");
+        assert_eq!(json["body_render_mode"], "plain");
         assert_eq!(json["body_html_available"], true);
         assert_eq!(json["body_html_loaded"], true);
+    }
+
+    #[test]
+    fn bounded_semantic_html_uses_the_native_themed_html_reader() {
+        let mut message = rich_message();
+        message.body_html = Some(
+            r#"<div class="signature"><strong style="color:red">Myo</strong>
+               <a href="https://paa.moe">myo@paa.moe</a></div>"#
+                .to_owned(),
+        );
+        message.body_text = Some("Myo myo@paa.moe".to_owned());
+
+        let dto = InboxMessageDto::full(message);
+        let json = serde_json::to_value(dto).expect("serialize native HTML body");
+        let html = json["body_html"].as_str().expect("native HTML");
+
+        assert_eq!(json["body_render_mode"], "native_html");
+        assert!(html.contains("<strong>Myo</strong>"));
+        assert!(html.contains("href=\"https://paa.moe\""));
+        assert!(!html.contains("class="));
+        assert!(!html.contains("style="));
+    }
+
+    #[test]
+    fn small_signature_table_uses_the_native_themed_html_reader() {
+        let mut message = rich_message();
+        message.body_html = Some(
+            r#"<div style="width:640px"><table width="640" border="0"><tbody><tr>
+               <td style="width:72px"><img alt="avatar" width="64" src="data:image/png;base64,AQID"></td>
+               <td><strong>Myo</strong><br><a href="https://paa.moe">myo@paa.moe</a></td>
+               </tr></tbody></table><i>A short signature.</i></div>"#
+                .to_owned(),
+        );
+        message.body_text = Some("Myo myo@paa.moe A short signature.".to_owned());
+
+        let dto = InboxMessageDto::full(message);
+        let json = serde_json::to_value(dto).expect("serialize native table body");
+        let html = json["body_html"].as_str().expect("native table HTML");
+
+        assert_eq!(json["body_render_mode"], "native_html");
+        assert!(html.contains("<table>"));
+        assert!(html.contains("data:image/png;base64,AQID"));
+        assert!(!html.contains("style="));
+        assert!(!html.contains("width="));
     }
 
     #[test]
