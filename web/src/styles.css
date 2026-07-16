@@ -30,6 +30,7 @@
   --color-primary: #0878f9;
   --color-primary-hover: #006dea;
   --color-primary-pressed: #0062d5;
+  --color-on-primary: #fff;
   --color-selection: #eaf4ff;
   --color-selection-border: #cfe4fb;
   --color-hover: #f2f5f8;
@@ -138,6 +139,7 @@
   --color-primary: #72aefc;
   --color-primary-hover: #8abdff;
   --color-primary-pressed: #5a9cf4;
+  --color-on-primary: #10243c;
   --color-selection: #23344b;
   --color-selection-border: #315278;
   --color-hover: #202630;
@@ -1691,6 +1693,43 @@ kbd {
   display: flex;
   gap: 9px;
   padding-top: 20px;
+}
+
+.message-actions--mail {
+  width: min(760px, 100%);
+  justify-content: space-between;
+}
+
+.message-action-button {
+  display: inline-flex;
+  min-width: 108px;
+  min-height: 40px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 17px;
+  border: 1px solid color-mix(in srgb, var(--color-primary) 76%, var(--surface-edge));
+  border-radius: var(--control-radius);
+  background: var(--color-primary);
+  color: var(--color-on-primary);
+  box-shadow: 0 7px 18px color-mix(in srgb, var(--color-primary) 20%, transparent),
+    inset 0 1px 0 color-mix(in srgb, #fff 24%, transparent);
+  font-size: 12px;
+  font-weight: 680;
+  transition: background var(--motion-fast), border-color var(--motion-fast),
+    box-shadow var(--motion-fast), transform 80ms;
+}
+
+.message-action-button:hover {
+  border-color: color-mix(in srgb, var(--color-primary-hover) 82%, var(--surface-edge));
+  background: var(--color-primary-hover);
+  box-shadow: 0 9px 21px color-mix(in srgb, var(--color-primary) 25%, transparent),
+    inset 0 1px 0 color-mix(in srgb, #fff 28%, transparent);
+}
+
+.message-action-button:active {
+  background: var(--color-primary-pressed);
+  transform: translateY(1px);
 }
 
 .secondary-button,

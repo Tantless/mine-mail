@@ -68,6 +68,19 @@ describe("Mine Mail MVP", () => {
     expect(screen.getAllByText("Mine Mail")).toHaveLength(1);
   });
 
+  it("places themed reply and forward actions at opposite sides of the reader", async () => {
+    render(<App />);
+
+    const reply = await screen.findByRole("button", { name: "回复" });
+    const forward = screen.getByRole("button", { name: "转发" });
+    const actions = reply.closest(".message-actions");
+
+    expect(reply.classList.contains("message-action-button")).toBe(true);
+    expect(forward.classList.contains("message-action-button")).toBe(true);
+    expect(actions.classList.contains("message-actions--mail")).toBe(true);
+    expect(actions.lastElementChild).toBe(forward);
+  });
+
   it("switches and persists an MVP theme", async () => {
     const user = userEvent.setup();
     render(<App />);

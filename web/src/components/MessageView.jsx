@@ -200,12 +200,12 @@ export function MessageView({
         ) : null}
 
         {message.kind !== "outbox" ? (
-          <div className="message-actions">
-            <button type="button" className="secondary-button" onClick={onReply}>
+          <div className="message-actions message-actions--mail">
+            <button type="button" className="message-action-button" onClick={onReply}>
               <ArrowBendUpLeft size={18} />
               回复
             </button>
-            <button type="button" className="secondary-button" onClick={onForward}>
+            <button type="button" className="message-action-button" onClick={onForward}>
               <ArrowBendUpRight size={18} />
               转发
             </button>
