@@ -399,7 +399,7 @@ describe("Mine Mail MVP", () => {
     await waitFor(() => expect(syncAll).toHaveBeenCalledOnce());
   });
 
-  it("saves the selected polling interval and opt-in autostart setting", async () => {
+  it("navigates the settings menu and saves function preferences", async () => {
     const updateSettings = vi
       .spyOn(mailApi, "updateDesktopSettings")
       .mockImplementation(async (value) => value);
@@ -408,13 +408,19 @@ describe("Mine Mail MVP", () => {
     await screen.findAllByText("欢迎来到 Mine Mail");
 
     await user.click(screen.getByRole("button", { name: "设置" }));
+    expect(screen.getByRole("navigation", { name: "设置菜单" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "账户" })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: /功能设定/ }));
     expect(
       screen.getByRole("button", { name: "了解自动加载远程图片的隐私风险" }),
     ).toBeTruthy();
     expect(screen.getByRole("tooltip").textContent).toContain("邮件打开时间");
-    await user.click(screen.getByRole("radio", { name: "3 分钟" }));
-    await user.click(screen.getByRole("radio", { name: "每次询问" }));
+    await user.selectOptions(screen.getByRole("combobox", { name: "自动同步间隔" }), "3");
+    await user.selectOptions(screen.getByRole("combobox", { name: "远程图片加载方式" }), "ask");
     await user.click(screen.getByRole("checkbox", { name: /开机启动/ }));
+    await user.click(screen.getByRole("button", { name: /版本/ }));
+    expect(screen.getByText("v0.0.1")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "检查更新" }).disabled).toBe(true);
     await user.click(screen.getByRole("button", { name: "保存设置" }));
 
     await waitFor(() =>
