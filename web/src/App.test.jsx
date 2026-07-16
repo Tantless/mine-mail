@@ -81,7 +81,10 @@ describe("Mine Mail MVP", () => {
     const actions = reply.closest(".message-actions");
 
     expect(reply.classList.contains("message-action-button")).toBe(true);
-    expect(forward.classList.contains("message-action-button")).toBe(true);
+    expect(reply.classList.contains("message-action-button--reply")).toBe(true);
+    expect(forward.classList.contains("message-forward-button")).toBe(true);
+    expect(forward.classList.contains("message-action-button")).toBe(false);
+    expect(forward.textContent).toBe("");
     expect(actions.classList.contains("message-actions--mail")).toBe(true);
     expect(actions.lastElementChild).toBe(forward);
   });

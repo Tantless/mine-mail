@@ -233,14 +233,21 @@ export function MessageView({
 
         {message.kind !== "outbox" ? (
           <div className="message-actions message-actions--mail">
-            <button type="button" className="message-action-button" onClick={onReply}>
+            <button
+              type="button"
+              className="message-action-button message-action-button--reply"
+              onClick={onReply}
+            >
               <ArrowBendUpLeft size={18} />
               回复
             </button>
-            <button type="button" className="message-action-button" onClick={onForward}>
+            <IconButton
+              label="转发"
+              className="message-forward-button"
+              onClick={onForward}
+            >
               <ArrowBendUpRight size={18} />
-              转发
-            </button>
+            </IconButton>
           </div>
         ) : message.outbox?.status === "retryable" ? (
           <div className="message-actions">

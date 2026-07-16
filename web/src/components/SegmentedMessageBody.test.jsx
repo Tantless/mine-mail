@@ -22,6 +22,12 @@ const message = {
       render_mode: "plain",
       quote_depth: 1,
       confidence: "high",
+      quote_metadata: {
+        subject: "Earlier note",
+        sender: "sender@example.com",
+        recipient: "receiver@example.com",
+        sent_at: "2026-07-01 20:15",
+      },
     },
   ],
 };
@@ -39,7 +45,10 @@ describe("segmented message body", () => {
     );
 
     expect(screen.getByText("My reply.")).toBeTruthy();
-    expect(screen.getByText("引用的原邮件")).toBeTruthy();
+    expect(screen.getByText("Earlier note")).toBeTruthy();
+    expect(screen.getByText("sender@example.com")).toBeTruthy();
+    expect(screen.getByText("receiver@example.com")).toBeTruthy();
+    expect(screen.getByText("2026-07-01 20:15")).toBeTruthy();
     expect(container.querySelector("details").open).toBe(false);
     expect(container.querySelector("iframe")).toBeNull();
   });
@@ -56,11 +65,11 @@ describe("segmented message body", () => {
     fireEvent.click(screen.getByRole("button", { name: "按原始格式查看" }));
 
     expect(screen.getByRole("button", { name: "返回分段阅读" })).toBeTruthy();
-    expect(screen.queryByText("引用的原邮件")).toBeNull();
+    expect(screen.queryByText("Earlier note")).toBeNull();
     expect(screen.getByText("Original body.")).toBeTruthy();
   });
 
-  it("nests older quoted history behind one collapsible layer at a time", () => {
+  it("shows every quoted message as an independent top-level collapsible card", () => {
     const nestedMessage = {
       ...message,
       body_segments: [
@@ -72,6 +81,12 @@ describe("segmented message body", () => {
           render_mode: "plain",
           quote_depth: 2,
           confidence: "high",
+          quote_metadata: {
+            subject: "Oldest note",
+            sender: "older@example.com",
+            recipient: "sender@example.com",
+            sent_at: "2026-06-30 09:00",
+          },
         },
       ],
     };
@@ -85,7 +100,10 @@ describe("segmented message body", () => {
 
     const quotedLayers = container.querySelectorAll("details.quoted-message");
     expect(quotedLayers).toHaveLength(2);
-    expect(quotedLayers[0].contains(quotedLayers[1])).toBe(true);
+    expect(quotedLayers[0].contains(quotedLayers[1])).toBe(false);
+    expect(quotedLayers[0].parentElement).toBe(quotedLayers[1].parentElement);
+    expect(screen.getByText("Earlier note")).toBeTruthy();
+    expect(screen.getByText("Oldest note")).toBeTruthy();
     expect(quotedLayers[0].open).toBe(false);
     expect(quotedLayers[1].open).toBe(false);
 
@@ -93,6 +111,5 @@ describe("segmented message body", () => {
 
     expect(quotedLayers[0].open).toBe(true);
     expect(quotedLayers[1].open).toBe(false);
-    expect(screen.getByText("Older quoted body.")).toBeTruthy();
   });
 });

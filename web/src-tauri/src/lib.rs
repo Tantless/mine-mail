@@ -21,8 +21,8 @@ use desktop::{
     ProfileAvatarDto, SaveProfileAvatarRequest,
 };
 use mail_html::{
-    MailBodySegmentConfidence, MailBodySegmentKind, MailHtmlStructure, SanitizedMailBodySegment,
-    sanitize_mail_html, segment_mail_body,
+    MailBodySegmentConfidence, MailBodySegmentKind, MailBodySegmentMetadata, MailHtmlStructure,
+    SanitizedMailBodySegment, sanitize_mail_html, segment_mail_body,
 };
 
 const INBOX_SYNC_LIMIT: usize = 100;
@@ -93,6 +93,27 @@ struct BodySegmentDto {
     render_mode: BodyRenderMode,
     quote_depth: u8,
     confidence: BodySegmentConfidenceDto,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    quote_metadata: Option<BodySegmentMetadataDto>,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+struct BodySegmentMetadataDto {
+    subject: Option<String>,
+    sender: Option<String>,
+    recipient: Option<String>,
+    sent_at: Option<String>,
+}
+
+impl From<MailBodySegmentMetadata> for BodySegmentMetadataDto {
+    fn from(value: MailBodySegmentMetadata) -> Self {
+        Self {
+            subject: value.subject,
+            sender: value.sender,
+            recipient: value.recipient,
+            sent_at: value.sent_at,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
@@ -133,6 +154,7 @@ impl From<SanitizedMailBodySegment> for BodySegmentDto {
                 MailBodySegmentConfidence::High => BodySegmentConfidenceDto::High,
                 MailBodySegmentConfidence::Medium => BodySegmentConfidenceDto::Medium,
             },
+            quote_metadata: value.quote_metadata.map(Into::into),
         }
     }
 }
@@ -871,7 +893,7 @@ mod tests {
         let mut message = rich_message();
         message.in_reply_to = vec!["parent@example.com".to_owned()];
         message.body_text = Some(
-            "My reply.\n\n---- 回复的原邮件 ----\n| 发件人 | sender@example.com |\nOriginal body.\n\n---- 回复的原邮件 ----\n| 发件人 | older@example.com |\nOlder body."
+            "My reply.\n\n---- 回复的原邮件 ----\n| 发件人 | sender@example.com |\n| 收件人 | receiver@example.com |\n| 主题 | Earlier note |\n| 日期 | 2026-07-01 |\nOriginal body.\n\n---- 回复的原邮件 ----\n| 发件人 | older@example.com |\nOlder body."
                 .to_owned(),
         );
         message.body_html = Some(
@@ -891,6 +913,16 @@ mod tests {
         assert_eq!(segments[1]["confidence"], "high");
         assert_eq!(segments[1]["content"], "Original body.");
         assert_eq!(segments[1]["quote_depth"], 1);
+        assert_eq!(segments[1]["quote_metadata"]["subject"], "Earlier note");
+        assert_eq!(
+            segments[1]["quote_metadata"]["sender"],
+            "sender@example.com"
+        );
+        assert_eq!(
+            segments[1]["quote_metadata"]["recipient"],
+            "receiver@example.com"
+        );
+        assert_eq!(segments[1]["quote_metadata"]["sent_at"], "2026-07-01");
         assert_eq!(segments[2]["kind"], "quoted");
         assert_eq!(segments[2]["content"], "Older body.");
         assert_eq!(segments[2]["quote_depth"], 2);

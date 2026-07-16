@@ -374,7 +374,7 @@ describe("Mine Mail desktop state bridge", () => {
     await user.click(await screen.findByText("Reply mail"));
 
     expect(await screen.findByText("My reply.")).toBeTruthy();
-    expect(screen.getByText("引用的原邮件")).toBeTruthy();
+    expect(screen.getByText("引用邮件 1")).toBeTruthy();
     expect(container.querySelector("details.quoted-message").open).toBe(false);
     expect(container.querySelector("iframe")).toBeNull();
   });

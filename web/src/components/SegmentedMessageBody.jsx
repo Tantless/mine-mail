@@ -77,85 +77,58 @@ function OriginalBody({ message, body, bodyRenderMode, remoteImageMode, onOpenEx
   return <PlainContent text={body} />;
 }
 
-export function buildSegmentTree(segments) {
-  const roots = [];
-  const quoteStack = [];
-
-  segments.forEach((segment, sourceIndex) => {
-    const node = { ...segment, sourceIndex, children: [] };
-    if (segment.kind !== "quoted") {
-      roots.push(node);
-      quoteStack.length = 0;
-      return;
-    }
-
-    const parsedDepth = Number(segment.quote_depth);
-    const depth = Number.isFinite(parsedDepth)
-      ? Math.max(1, Math.trunc(parsedDepth))
-      : 1;
-    while (quoteStack.length >= depth) {
-      quoteStack.pop();
-    }
-
-    const parent = depth > 1 ? quoteStack[depth - 2] : null;
-    if (parent) {
-      parent.children.push(node);
-    } else {
-      roots.push(node);
-    }
-    quoteStack[depth - 1] = node;
-    quoteStack.length = depth;
-  });
-
-  return roots;
-}
-
 function QuotedSegment({
-  node,
+  segment,
+  quoteNumber,
   message,
-  path,
+  sourceIndex,
   remoteImageMode,
   onOpenExternalLink,
 }) {
+  const metadata = segment.quote_metadata || {};
+  const subject = metadata.subject || `引用邮件 ${quoteNumber}`;
+  const hasRoute = metadata.sender || metadata.recipient;
+
   return (
     <details
       className="quoted-message"
-      defaultOpen={node.confidence === "medium"}
+      open={segment.confidence === "medium" ? true : undefined}
     >
       <summary>
         <span className="quoted-message__icon" aria-hidden="true">
           <Quotes size={16} weight="fill" />
         </span>
-        <span>
-          <strong>引用的原邮件</strong>
-          <small>
-            {node.confidence === "high" ? "点击展开" : "已展开供你确认"}
-          </small>
+        <span className="quoted-message__metadata">
+          <strong className="quoted-message__subject" title={subject}>
+            {subject}
+          </strong>
+          {hasRoute ? (
+            <span className="quoted-message__route">
+              <span title={metadata.sender || undefined}>
+                {metadata.sender || "未知发件人"}
+              </span>
+              <span className="quoted-message__route-arrow" aria-hidden="true">
+                →
+              </span>
+              <span title={metadata.recipient || undefined}>
+                {metadata.recipient || "未知收件人"}
+              </span>
+            </span>
+          ) : null}
+          {metadata.sent_at ? (
+            <time className="quoted-message__time">{metadata.sent_at}</time>
+          ) : null}
         </span>
         <CaretRight className="quoted-message__caret" size={16} weight="bold" />
       </summary>
       <div className="quoted-message__content">
         <SegmentContent
-          segment={node}
+          segment={segment}
           message={message}
-          index={node.sourceIndex}
+          index={sourceIndex}
           remoteImageMode={remoteImageMode}
           onOpenExternalLink={onOpenExternalLink}
         />
-        {node.children.length > 0 ? (
-          <div className="quoted-message__children">
-            {node.children.map((child, childIndex) => (
-              <QuotedSegment
-                key={`${path}.${childIndex}-${child.content.slice(0, 16)}`}
-                node={child}
-                message={message}
-                path={`${path}.${childIndex}`}
-                remoteImageMode={remoteImageMode}
-                onOpenExternalLink={onOpenExternalLink}
-              />
-            ))}
-          </div>
-        ) : null}
       </div>
     </details>
   );
@@ -170,7 +143,12 @@ export function SegmentedMessageBody({
 }) {
   const [showOriginal, setShowOriginal] = useState(false);
   const segments = message.body_segments || [];
-  const segmentTree = buildSegmentTree(segments);
+  let quoteNumber = 0;
+  const displaySegments = segments.map((segment, sourceIndex) => ({
+    ...segment,
+    sourceIndex,
+    quoteNumber: segment.kind === "quoted" ? (quoteNumber += 1) : null,
+  }));
 
   return (
     <div className="segmented-message-body">
@@ -195,13 +173,14 @@ export function SegmentedMessageBody({
         />
       ) : (
         <div className="message-segments">
-          {segmentTree.map((segment, index) =>
+          {displaySegments.map((segment, index) =>
             segment.kind === "quoted" ? (
               <QuotedSegment
                 key={`${index}-${segment.content.slice(0, 16)}`}
-                node={segment}
+                segment={segment}
+                quoteNumber={segment.quoteNumber}
                 message={message}
-                path={`${index}`}
+                sourceIndex={segment.sourceIndex}
                 remoteImageMode={remoteImageMode}
                 onOpenExternalLink={onOpenExternalLink}
               />
