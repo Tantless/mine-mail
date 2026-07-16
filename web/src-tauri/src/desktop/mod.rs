@@ -20,7 +20,10 @@ use tokio::time::Instant as TokioInstant;
 
 use crate::account::BackendState;
 
-pub(crate) use settings::{DesktopSettingsDto, DesktopSettingsUpdate};
+pub(crate) use settings::{
+    DeleteProfileAvatarRequest, DesktopSettingsDto, DesktopSettingsUpdate, ProfileAvatarDto,
+    SaveProfileAvatarRequest,
+};
 use settings::{DesktopSettingsStore, StoredDesktopSettings, valid_poll_interval};
 
 const MINIMUM_AUTOMATIC_SYNC_GAP: Duration = Duration::from_secs(30);
@@ -167,6 +170,34 @@ impl DesktopRuntime {
             .map_err(|_| "Desktop settings are temporarily unavailable.".to_owned())? = settings;
         let _ = self.sync_tx.try_send(BackgroundRequest::ScheduleChanged);
         Ok(())
+    }
+
+    pub(crate) fn list_profile_avatars(&self) -> Result<Vec<ProfileAvatarDto>, String> {
+        self.store
+            .as_ref()
+            .ok_or_else(|| "Avatar storage is unavailable.".to_owned())?
+            .list_profile_avatars()
+            .map_err(|_| "Avatars could not be loaded.".to_owned())
+    }
+
+    pub(crate) fn save_profile_avatar(
+        &self,
+        request: SaveProfileAvatarRequest,
+    ) -> Result<ProfileAvatarDto, String> {
+        self.store
+            .as_ref()
+            .ok_or_else(|| "Avatar storage is unavailable.".to_owned())?
+            .save_profile_avatar(request)
+    }
+
+    pub(crate) fn delete_profile_avatar(
+        &self,
+        request: DeleteProfileAvatarRequest,
+    ) -> Result<(), String> {
+        self.store
+            .as_ref()
+            .ok_or_else(|| "Avatar storage is unavailable.".to_owned())?
+            .delete_profile_avatar(request)
     }
 
     pub(crate) fn user_settings_snapshot(&self) -> Result<DesktopSettingsUpdate, String> {
@@ -851,6 +882,8 @@ mod tests {
             mailbox: "INBOX".to_owned(),
             uid: 1,
             message_id: None,
+            in_reply_to: Vec::new(),
+            references: Vec::new(),
             subject: "Subject".to_owned(),
             sender: Some(MailAddress {
                 name: Some("Sender".to_owned()),

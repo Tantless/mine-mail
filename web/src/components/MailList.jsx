@@ -6,10 +6,10 @@ import {
   Star,
 } from "@phosphor-icons/react";
 import { IconButton } from "./IconButton.jsx";
+import { ProfileAvatar } from "./ProfileAvatar.jsx";
 import {
   formatMailTime,
   hasFlag,
-  initials,
   senderLabel,
 } from "../utils/formatters.js";
 
@@ -32,6 +32,7 @@ export function MailList({
   syncState,
   canSync = true,
   onOpenMobileNav,
+  avatarForEmail = () => null,
 }) {
   return (
     <section className="mail-list-panel" aria-label={`${folderLabel}邮件列表`}>
@@ -116,9 +117,12 @@ export function MailList({
                   }
                 }}
               >
-                <span className="mail-row__avatar" aria-hidden="true">
-                  {initials(sender)}
-                </span>
+                <ProfileAvatar
+                  className="mail-row__avatar"
+                  email={message.sender?.email}
+                  label={sender}
+                  customSrc={avatarForEmail(message.sender?.email)}
+                />
                 <span className="mail-row__content">
                   <span className="mail-row__meta">
                     <span className="mail-row__sender">

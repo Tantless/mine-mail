@@ -10,6 +10,7 @@ import {
   Star,
   Trash,
 } from "@phosphor-icons/react";
+import { ProfileAvatar } from "./ProfileAvatar.jsx";
 
 const folders = [
   { id: "inbox", label: "收件箱", icon: Tray },
@@ -38,6 +39,7 @@ export function Sidebar({
   onThemeMenuToggle,
   counts = {},
   accountStatus,
+  accountAvatar,
   onOpenSettings,
 }) {
   const accountLabel = {
@@ -90,9 +92,12 @@ export function Sidebar({
         <div className="sidebar__spacer" />
 
         <div className="account-card">
-          <span className="account-card__avatar">
-            {(accountStatus?.email || accountLabel).slice(0, 1).toUpperCase()}
-          </span>
+          <ProfileAvatar
+            className="account-card__avatar"
+            email={accountStatus?.email}
+            label={accountLabel}
+            customSrc={accountAvatar}
+          />
           <span className="account-card__copy">
             <strong>{accountLabel}</strong>
             <small>{accountStatus?.email || "当前账户"}</small>

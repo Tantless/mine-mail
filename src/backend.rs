@@ -1636,6 +1636,8 @@ mod tests {
             mailbox: INBOX.to_owned(),
             uid: 42,
             message_id: None,
+            in_reply_to: Vec::new(),
+            references: Vec::new(),
             subject: "Inline image".to_owned(),
             sender: None,
             to: Vec::new(),

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Check, GearSix, Question, X } from "@phosphor-icons/react";
 import { IconButton } from "./IconButton.jsx";
 import { AccountSetupForm } from "./AccountSetup.jsx";
+import { ProfileAvatar } from "./ProfileAvatar.jsx";
 
 const intervalOptions = [1, 3, 5];
 const remoteImageOptions = [
@@ -22,6 +23,9 @@ export function SettingsPanel({
   accountSubmitStatus,
   accountError,
   onConfigureAccount,
+  accountAvatar,
+  onSetAccountAvatar,
+  onRemoveAccountAvatar,
 }) {
   const [value, setValue] = useState(settings);
 
@@ -60,6 +64,42 @@ export function SettingsPanel({
                   : "连接邮箱后才能同步和发送邮件。"}
               </span>
             </div>
+            {accountStatus?.configured && accountStatus.email ? (
+              <div className="account-avatar-setting">
+                <ProfileAvatar
+                  className="account-avatar-setting__preview"
+                  email={accountStatus.email}
+                  label={accountStatus.email}
+                  customSrc={accountAvatar}
+                />
+                <span className="account-avatar-setting__copy">
+                  <strong>Mine Mail 头像</strong>
+                  <small>仅保存在这台设备上，不会修改邮箱服务商的头像。</small>
+                </span>
+                <label className="secondary-button account-avatar-setting__choose">
+                  {accountAvatar ? "更换" : "选择图片"}
+                  <input
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp"
+                    aria-label="选择 Mine Mail 账户头像"
+                    onChange={(event) => {
+                      const file = event.target.files?.[0];
+                      if (file) void onSetAccountAvatar(file);
+                      event.target.value = "";
+                    }}
+                  />
+                </label>
+                {accountAvatar ? (
+                  <button
+                    type="button"
+                    className="settings-text-button"
+                    onClick={onRemoveAccountAvatar}
+                  >
+                    移除
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
             <AccountSetupForm
               presets={accountPresets}
               status={accountStatus}

@@ -8,6 +8,8 @@ use std::{
 };
 
 use ammonia::{Builder, UrlRelative};
+use html5ever::tree_builder::TreeSink;
+use scraper::{ElementRef, Html, HtmlTreeSink, Selector};
 
 const MAX_NATIVE_HTML_BYTES: usize = 32 * 1024;
 const MAX_NATIVE_ELEMENTS: usize = 100;
@@ -18,6 +20,7 @@ const MAX_DEGRADABLE_STYLE_DEPTH: usize = 6;
 const MAX_NATIVE_TABLE_DEPTH: usize = 24;
 const MAX_DEGRADABLE_TABLE_ROWS: usize = 4;
 const MAX_DEGRADABLE_TABLE_CELLS: usize = 8;
+const MAX_REPLY_QUOTE_DEPTH: u8 = 12;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum MailHtmlStructure {
@@ -32,6 +35,66 @@ pub(crate) struct SanitizedMailHtml {
     pub native_fragment: Option<String>,
     pub has_remote_images: bool,
     pub structure: MailHtmlStructure,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MailBodySegmentKind {
+    Authored,
+    Quoted,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MailBodySegmentConfidence {
+    High,
+    Medium,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct SanitizedMailBodySegment {
+    pub kind: MailBodySegmentKind,
+    pub content: String,
+    pub is_html: bool,
+    pub structure: MailHtmlStructure,
+    pub quote_depth: u8,
+    pub confidence: MailBodySegmentConfidence,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct PlainBodySegment {
+    kind: MailBodySegmentKind,
+    content: String,
+    quote_depth: u8,
+    confidence: MailBodySegmentConfidence,
+}
+
+/// Splits replies into authored and quoted regions without discarding either.
+/// Plain alternatives are preferred because reply clients tend to preserve
+/// quote boundaries there even when their HTML template is layout-heavy. HTML
+/// DOM detection is the fallback for HTML-only messages.
+pub(crate) fn segment_mail_body(
+    body_text: Option<&str>,
+    body_html: Option<&str>,
+    has_reply_headers: bool,
+) -> Vec<SanitizedMailBodySegment> {
+    if let Some(text) = body_text
+        && let Some(segments) = split_plain_reply(text, has_reply_headers)
+    {
+        return segments
+            .into_iter()
+            .map(|segment| SanitizedMailBodySegment {
+                kind: segment.kind,
+                content: segment.content,
+                is_html: false,
+                structure: MailHtmlStructure::PlainEquivalent,
+                quote_depth: segment.quote_depth,
+                confidence: segment.confidence,
+            })
+            .collect();
+    }
+
+    body_html
+        .and_then(|html| split_html_reply(html, has_reply_headers))
+        .unwrap_or_default()
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -598,9 +661,452 @@ fn is_safe_image_data_url(value: &str) -> bool {
     })
 }
 
+fn split_plain_reply(text: &str, has_reply_headers: bool) -> Option<Vec<PlainBodySegment>> {
+    let lines = text.lines().collect::<Vec<_>>();
+    if lines.len() < 2 {
+        return None;
+    }
+
+    if let Some(separator) = lines
+        .iter()
+        .position(|line| is_strong_reply_separator(line))
+    {
+        let authored = lines[..separator].join("\n").trim().to_owned();
+        let quoted = trim_quoted_metadata(&lines[separator + 1..]);
+        if !authored.is_empty() && quoted.iter().any(|line| !line.trim().is_empty()) {
+            let mut segments = vec![PlainBodySegment {
+                kind: MailBodySegmentKind::Authored,
+                content: authored,
+                quote_depth: 0,
+                confidence: MailBodySegmentConfidence::High,
+            }];
+            append_quoted_history(quoted, 1, &mut segments);
+            if segments.len() > 1 {
+                return Some(segments);
+            }
+        }
+    }
+
+    if has_reply_headers && let Some(separator) = find_outlook_header_boundary(&lines) {
+        let authored = lines[..separator].join("\n").trim().to_owned();
+        let quoted = trim_outlook_metadata(&lines[separator..])
+            .join("\n")
+            .trim()
+            .to_owned();
+        if !authored.is_empty() && !quoted.is_empty() {
+            return Some(vec![
+                PlainBodySegment {
+                    kind: MailBodySegmentKind::Authored,
+                    content: authored,
+                    quote_depth: 0,
+                    confidence: MailBodySegmentConfidence::High,
+                },
+                PlainBodySegment {
+                    kind: MailBodySegmentKind::Quoted,
+                    content: quoted,
+                    quote_depth: 1,
+                    confidence: MailBodySegmentConfidence::High,
+                },
+            ]);
+        }
+    }
+
+    split_prefixed_plain_quotes(&lines, has_reply_headers)
+}
+
+fn append_quoted_history(lines: &[&str], depth: u8, segments: &mut Vec<PlainBodySegment>) {
+    let content = lines.join("\n").trim().to_owned();
+    if content.is_empty() {
+        return;
+    }
+    if depth >= MAX_REPLY_QUOTE_DEPTH {
+        segments.push(PlainBodySegment {
+            kind: MailBodySegmentKind::Quoted,
+            content,
+            quote_depth: depth,
+            confidence: MailBodySegmentConfidence::High,
+        });
+        return;
+    }
+
+    let Some(separator) = lines
+        .iter()
+        .position(|line| is_strong_reply_separator(line))
+    else {
+        segments.push(PlainBodySegment {
+            kind: MailBodySegmentKind::Quoted,
+            content,
+            quote_depth: depth,
+            confidence: MailBodySegmentConfidence::High,
+        });
+        return;
+    };
+
+    let current = lines[..separator].join("\n").trim().to_owned();
+    let has_current_quote = !current.is_empty();
+    if has_current_quote {
+        segments.push(PlainBodySegment {
+            kind: MailBodySegmentKind::Quoted,
+            content: current,
+            quote_depth: depth,
+            confidence: MailBodySegmentConfidence::High,
+        });
+    }
+    let nested = trim_quoted_metadata(&lines[separator + 1..]);
+    append_quoted_history(
+        nested,
+        if has_current_quote {
+            depth.saturating_add(1)
+        } else {
+            depth
+        },
+        segments,
+    );
+}
+
+fn is_strong_reply_separator(line: &str) -> bool {
+    let normalized = line
+        .trim()
+        .trim_matches(|character: char| {
+            character.is_ascii_whitespace() || matches!(character, '-' | '_' | '—' | '–')
+        })
+        .trim()
+        .to_lowercase();
+    normalized == "回复的原邮件"
+        || normalized == "原始邮件"
+        || normalized == "original message"
+        || normalized == "forwarded message"
+        || normalized == "begin forwarded message"
+}
+
+fn trim_quoted_metadata<'a>(lines: &'a [&'a str]) -> &'a [&'a str] {
+    let mut start = lines
+        .iter()
+        .position(|line| !line.trim().is_empty())
+        .unwrap_or(lines.len());
+    if start >= lines.len() {
+        return &lines[start..];
+    }
+    if lines[start].trim_start().starts_with('|') {
+        while start < lines.len() && lines[start].trim_start().starts_with('|') {
+            start += 1;
+        }
+        while start < lines.len() && lines[start].trim().is_empty() {
+            start += 1;
+        }
+    }
+    &lines[start..]
+}
+
+fn find_outlook_header_boundary(lines: &[&str]) -> Option<usize> {
+    lines.iter().enumerate().find_map(|(index, line)| {
+        if !has_header_label(line, &["from", "发件人"]) {
+            return None;
+        }
+        let window = &lines[index..lines.len().min(index + 8)];
+        let has_destination = window
+            .iter()
+            .any(|line| has_header_label(line, &["to", "收件人"]));
+        let has_subject = window
+            .iter()
+            .any(|line| has_header_label(line, &["subject", "主题"]));
+        (has_destination && has_subject).then_some(index)
+    })
+}
+
+fn has_header_label(line: &str, labels: &[&str]) -> bool {
+    let line = line.trim_start().to_lowercase();
+    labels.iter().any(|label| {
+        line.strip_prefix(label).is_some_and(|rest| {
+            rest.trim_start().starts_with(':') || rest.trim_start().starts_with('：')
+        })
+    })
+}
+
+fn trim_outlook_metadata<'a>(lines: &'a [&'a str]) -> &'a [&'a str] {
+    let mut start = 0;
+    while start < lines.len() && !lines[start].trim().is_empty() {
+        start += 1;
+    }
+    while start < lines.len() && lines[start].trim().is_empty() {
+        start += 1;
+    }
+    &lines[start..]
+}
+
+fn split_prefixed_plain_quotes(
+    lines: &[&str],
+    has_reply_headers: bool,
+) -> Option<Vec<PlainBodySegment>> {
+    let first_quoted = lines.iter().position(|line| quote_depth(line) > 0)?;
+    let intro = previous_nonempty(lines, first_quoted).filter(|(_, line)| is_reply_intro(line));
+    if !has_reply_headers && intro.is_none() {
+        return None;
+    }
+
+    let mut quoted = lines
+        .iter()
+        .map(|line| (!line.trim().is_empty()).then(|| quote_depth(line) > 0))
+        .collect::<Vec<_>>();
+    if let Some((index, _)) = intro {
+        quoted[index] = Some(true);
+    }
+    for index in 0..quoted.len() {
+        if quoted[index].is_some() {
+            continue;
+        }
+        let before = quoted[..index].iter().rev().flatten().next().copied();
+        let after = quoted[index + 1..].iter().flatten().next().copied();
+        quoted[index] = Some(matches!((before, after), (Some(true), Some(true))));
+    }
+
+    let mut segments = Vec::new();
+    let mut start = 0;
+    while start < lines.len() {
+        let is_quoted = quoted[start].unwrap_or(false);
+        let mut end = start + 1;
+        while end < lines.len() && quoted[end].unwrap_or(false) == is_quoted {
+            end += 1;
+        }
+        let source = &lines[start..end];
+        let content = if is_quoted {
+            strip_quote_prefix(source)
+        } else {
+            source.join("\n").trim().to_owned()
+        };
+        if !content.is_empty() {
+            segments.push(PlainBodySegment {
+                kind: if is_quoted {
+                    MailBodySegmentKind::Quoted
+                } else {
+                    MailBodySegmentKind::Authored
+                },
+                content,
+                quote_depth: if is_quoted {
+                    minimum_quote_depth(source).max(1)
+                } else {
+                    0
+                },
+                confidence: MailBodySegmentConfidence::Medium,
+            });
+        }
+        start = end;
+    }
+    let has_authored = segments
+        .iter()
+        .any(|segment| segment.kind == MailBodySegmentKind::Authored);
+    let has_quote = segments
+        .iter()
+        .any(|segment| segment.kind == MailBodySegmentKind::Quoted);
+    (has_authored && has_quote).then_some(segments)
+}
+
+fn previous_nonempty<'a>(lines: &'a [&'a str], before: usize) -> Option<(usize, &'a str)> {
+    lines[..before]
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, line)| !line.trim().is_empty())
+        .map(|(index, line)| (index, *line))
+}
+
+fn is_reply_intro(line: &str) -> bool {
+    let lower = line.trim().to_lowercase();
+    (lower.starts_with("on ") && lower.ends_with("wrote:"))
+        || lower.ends_with("写道：")
+        || lower.ends_with("写道:")
+}
+
+fn quote_depth(line: &str) -> u8 {
+    line.trim_start()
+        .chars()
+        .take_while(|character| *character == '>')
+        .count()
+        .min(usize::from(u8::MAX)) as u8
+}
+
+fn minimum_quote_depth(lines: &[&str]) -> u8 {
+    lines
+        .iter()
+        .map(|line| quote_depth(line))
+        .filter(|depth| *depth > 0)
+        .min()
+        .unwrap_or(1)
+}
+
+fn strip_quote_prefix(lines: &[&str]) -> String {
+    let depth = minimum_quote_depth(lines);
+    lines
+        .iter()
+        .map(|line| {
+            let mut value = line.trim_start();
+            for _ in 0..depth {
+                value = value.strip_prefix('>').unwrap_or(value);
+            }
+            value.strip_prefix(' ').unwrap_or(value)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_owned()
+}
+
+fn split_html_reply(
+    source: &str,
+    has_reply_headers: bool,
+) -> Option<Vec<SanitizedMailBodySegment>> {
+    if let Some((authored, quoted)) = split_outlook_html_suffix(source) {
+        return html_segments(authored, quoted, MailBodySegmentConfidence::High);
+    }
+
+    let document = Html::parse_fragment(source);
+    let strong_selector =
+        Selector::parse(".ntes-mailmaster-quote, .gmail_quote, [id^=\"divRplyFwdMsg\"]")
+            .expect("static provider quote selector");
+    let generic_selector = Selector::parse("blockquote[type=\"cite\"], blockquote")
+        .expect("static generic quote selector");
+    let mut candidates = document.select(&strong_selector).collect::<Vec<_>>();
+    let confidence = if candidates.is_empty() {
+        if !has_reply_headers {
+            return None;
+        }
+        candidates = document.select(&generic_selector).collect();
+        MailBodySegmentConfidence::Medium
+    } else {
+        MailBodySegmentConfidence::High
+    };
+    if candidates.is_empty() {
+        return None;
+    }
+
+    let candidate_ids = candidates
+        .iter()
+        .map(|candidate| candidate.id())
+        .collect::<HashSet<_>>();
+    let outer = candidates
+        .into_iter()
+        .filter(|candidate| {
+            !candidate
+                .ancestors()
+                .skip(1)
+                .any(|ancestor| candidate_ids.contains(&ancestor.id()))
+        })
+        .collect::<Vec<_>>();
+    if outer.is_empty()
+        || outer.iter().any(|candidate| {
+            candidate.next_siblings().any(|sibling| {
+                !candidate_ids.contains(&sibling.id()) && node_has_visible_content(sibling)
+            })
+        })
+    {
+        // Inline HTML replies need ordered DOM segmentation. Do not move or
+        // hide content when a quote is followed by authored siblings.
+        return None;
+    }
+
+    let quoted = outer
+        .iter()
+        .map(ElementRef::html)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut authored_document = document.clone();
+    let sink = HtmlTreeSink::new(authored_document);
+    for candidate in outer {
+        sink.remove_from_parent(&candidate.id());
+    }
+    authored_document = sink.finish();
+    let body_selector = Selector::parse("body").expect("static body selector");
+    let authored = authored_document
+        .select(&body_selector)
+        .next()
+        .map(|body| body.inner_html())
+        .unwrap_or_else(|| authored_document.root_element().inner_html());
+    html_segments(&authored, &quoted, confidence)
+}
+
+fn split_outlook_html_suffix(source: &str) -> Option<(&str, &str)> {
+    let lower = source.to_ascii_lowercase();
+    let marker = ["id=\"divrplyfwdmsg", "id='divrplyfwdmsg"]
+        .iter()
+        .filter_map(|needle| lower.find(needle))
+        .min()?;
+    let boundary = lower[..marker].rfind('<')?;
+    let authored = source[..boundary].trim();
+    let quoted = source[boundary..].trim();
+    (!authored.is_empty() && !quoted.is_empty()).then_some((authored, quoted))
+}
+
+fn node_has_visible_content(node: ego_tree::NodeRef<'_, scraper::Node>) -> bool {
+    if let Some(text) = node.value().as_text() {
+        return !text.trim().is_empty();
+    }
+    ElementRef::wrap(node).is_some_and(|element| {
+        matches!(element.value().name(), "img" | "table" | "hr")
+            || element.text().any(|text| !text.trim().is_empty())
+    })
+}
+
+fn html_segments(
+    authored: &str,
+    quoted: &str,
+    confidence: MailBodySegmentConfidence,
+) -> Option<Vec<SanitizedMailBodySegment>> {
+    if !html_has_visible_content(authored) || !html_has_visible_content(quoted) {
+        return None;
+    }
+    Some(vec![
+        sanitize_html_segment(MailBodySegmentKind::Authored, authored, 0, confidence),
+        sanitize_html_segment(MailBodySegmentKind::Quoted, quoted, 1, confidence),
+    ])
+}
+
+fn html_has_visible_content(source: &str) -> bool {
+    let document = Html::parse_fragment(source);
+    document
+        .root_element()
+        .text()
+        .any(|text| !text.trim().is_empty())
+        || document
+            .select(&Selector::parse("img, table, hr").expect("static visible selector"))
+            .next()
+            .is_some()
+}
+
+fn sanitize_html_segment(
+    kind: MailBodySegmentKind,
+    source: &str,
+    quote_depth: u8,
+    confidence: MailBodySegmentConfidence,
+) -> SanitizedMailBodySegment {
+    let sanitized = sanitize_mail_html(source);
+    let (content, structure) = match sanitized.structure {
+        MailHtmlStructure::PlainEquivalent => {
+            (sanitize_native_mail_html(source), MailHtmlStructure::Native)
+        }
+        MailHtmlStructure::Native => (
+            sanitized
+                .native_fragment
+                .unwrap_or_else(|| sanitize_native_mail_html(source)),
+            MailHtmlStructure::Native,
+        ),
+        MailHtmlStructure::Isolated => (sanitized.fragment, MailHtmlStructure::Isolated),
+    };
+    SanitizedMailBodySegment {
+        kind,
+        content,
+        is_html: true,
+        structure,
+        quote_depth,
+        confidence,
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{MailHtmlStructure, sanitize_mail_html};
+    use super::{
+        MailBodySegmentConfidence, MailBodySegmentKind, MailHtmlStructure, sanitize_mail_html,
+        segment_mail_body,
+    };
 
     #[test]
     fn keeps_complex_email_layout_but_removes_active_content_and_dangerous_urls() {
@@ -779,5 +1285,101 @@ mod tests {
         assert!(!result.fragment.contains("Repeated subject"));
         assert!(result.fragment.contains("Actual body"));
         assert_eq!(result.structure, MailHtmlStructure::Isolated);
+    }
+
+    #[test]
+    fn netease_plain_reply_becomes_a_nested_collapsible_history() {
+        let text = "Thanks for the thoughtful reply.\n\nAll the best.\n\n---- 回复的原邮件 ----\n| 发件人 | sender@example.com |\n| 日期 | 2026-07-01 |\n| 收件人 | receiver@example.com |\n| 主题 | Earlier note |\nOriginal message body.\n\n---- 回复的原邮件 ----\n| 发件人 | receiver@example.com |\nOlder nested quote.";
+
+        let segments = segment_mail_body(Some(text), None, false);
+
+        assert_eq!(segments.len(), 3);
+        assert_eq!(segments[0].kind, MailBodySegmentKind::Authored);
+        assert_eq!(segments[0].quote_depth, 0);
+        assert!(segments[0].content.starts_with("Thanks for"));
+        assert_eq!(segments[1].kind, MailBodySegmentKind::Quoted);
+        assert_eq!(segments[1].quote_depth, 1);
+        assert_eq!(segments[1].confidence, MailBodySegmentConfidence::High);
+        assert_eq!(segments[1].content, "Original message body.");
+        assert!(!segments[1].content.starts_with('|'));
+        assert!(!segments[1].content.contains("回复的原邮件"));
+        assert_eq!(segments[2].kind, MailBodySegmentKind::Quoted);
+        assert_eq!(segments[2].quote_depth, 2);
+        assert_eq!(segments[2].content, "Older nested quote.");
+        assert!(!segments[2].content.starts_with('|'));
+    }
+
+    #[test]
+    fn prefixed_plain_quotes_keep_inline_authored_replies_in_order() {
+        let text = "My opening reply.\n\nOn Monday, Alex wrote:\n> First question?\n\nMy inline answer.\n\n> Second question?";
+
+        let segments = segment_mail_body(Some(text), None, true);
+
+        assert_eq!(segments.len(), 4);
+        assert_eq!(segments[0].kind, MailBodySegmentKind::Authored);
+        assert_eq!(segments[1].kind, MailBodySegmentKind::Quoted);
+        assert_eq!(segments[2].kind, MailBodySegmentKind::Authored);
+        assert_eq!(segments[3].kind, MailBodySegmentKind::Quoted);
+        assert!(segments[1].content.contains("First question?"));
+        assert!(!segments[1].content.contains("> First"));
+    }
+
+    #[test]
+    fn gmail_html_only_reply_uses_dom_quote_boundary() {
+        let html = r#"<div>My short reply.</div>
+            <div class="gmail_quote"><div>On Monday, Alex wrote:</div>
+            <blockquote><p>Original <strong>message</strong>.</p></blockquote></div>"#;
+
+        let segments = segment_mail_body(None, Some(html), true);
+
+        assert_eq!(segments.len(), 2);
+        assert_eq!(segments[0].kind, MailBodySegmentKind::Authored);
+        assert!(segments[0].is_html);
+        assert!(segments[0].content.contains("My short reply"));
+        assert_eq!(segments[1].kind, MailBodySegmentKind::Quoted);
+        assert!(segments[1].content.contains("Original"));
+        assert_eq!(segments[1].confidence, MailBodySegmentConfidence::High);
+    }
+
+    #[test]
+    fn outlook_html_only_reply_treats_the_reply_header_as_a_suffix_boundary() {
+        let html = r#"<html><body><div>My Outlook reply.</div><hr>
+            <div id="divRplyFwdMsg"><b>From:</b> sender@example.com<br>
+            <b>To:</b> receiver@example.com<br><b>Subject:</b> Earlier note</div>
+            <div>Original Outlook body.</div></body></html>"#;
+
+        let segments = segment_mail_body(None, Some(html), true);
+
+        assert_eq!(segments.len(), 2);
+        assert!(segments[0].content.contains("My Outlook reply"));
+        assert_eq!(segments[1].kind, MailBodySegmentKind::Quoted);
+        assert!(segments[1].content.contains("Original Outlook body"));
+        assert_eq!(segments[1].confidence, MailBodySegmentConfidence::High);
+    }
+
+    #[test]
+    fn generic_blockquote_uses_medium_confidence_only_for_a_known_reply() {
+        let html = r#"<p>My reply.</p><blockquote type="cite"><p>Earlier body.</p></blockquote>"#;
+
+        let reply_segments = segment_mail_body(None, Some(html), true);
+        let standalone_segments = segment_mail_body(None, Some(html), false);
+
+        assert_eq!(reply_segments.len(), 2);
+        assert_eq!(
+            reply_segments[1].confidence,
+            MailBodySegmentConfidence::Medium
+        );
+        assert!(standalone_segments.is_empty());
+    }
+
+    #[test]
+    fn ordinary_html_is_not_split_without_quote_evidence() {
+        let segments = segment_mail_body(
+            Some("A greater-than sign is ordinary prose: 2 > 1."),
+            Some("<p>A greater-than sign is ordinary prose: 2 &gt; 1.</p>"),
+            false,
+        );
+
+        assert!(segments.is_empty());
     }
 }

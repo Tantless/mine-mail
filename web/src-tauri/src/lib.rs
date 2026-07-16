@@ -16,8 +16,14 @@ use url::Url;
 use account::{
     AccountPresetDto, AccountRuntime, AccountStatusDto, BackendState, ConfigureAccountRequest,
 };
-use desktop::{DesktopRuntime, DesktopSettingsDto, DesktopSettingsUpdate};
-use mail_html::{MailHtmlStructure, sanitize_mail_html};
+use desktop::{
+    DeleteProfileAvatarRequest, DesktopRuntime, DesktopSettingsDto, DesktopSettingsUpdate,
+    ProfileAvatarDto, SaveProfileAvatarRequest,
+};
+use mail_html::{
+    MailBodySegmentConfidence, MailBodySegmentKind, MailHtmlStructure, SanitizedMailBodySegment,
+    sanitize_mail_html, segment_mail_body,
+};
 
 const INBOX_SYNC_LIMIT: usize = 100;
 const INBOX_LIST_LIMIT: usize = 250;
@@ -63,6 +69,7 @@ struct InboxMessageDto {
     body_text: Option<String>,
     body_html: Option<String>,
     body_render_mode: Option<BodyRenderMode>,
+    body_segments: Vec<BodySegmentDto>,
     body_html_available: bool,
     body_html_loaded: bool,
     has_remote_images: bool,
@@ -79,10 +86,69 @@ enum BodyRenderMode {
     IsolatedHtml,
 }
 
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+struct BodySegmentDto {
+    kind: BodySegmentKindDto,
+    content: String,
+    render_mode: BodyRenderMode,
+    quote_depth: u8,
+    confidence: BodySegmentConfidenceDto,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum BodySegmentKindDto {
+    Authored,
+    Quoted,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum BodySegmentConfidenceDto {
+    High,
+    Medium,
+}
+
+impl From<SanitizedMailBodySegment> for BodySegmentDto {
+    fn from(value: SanitizedMailBodySegment) -> Self {
+        let render_mode = if !value.is_html {
+            BodyRenderMode::Plain
+        } else {
+            match value.structure {
+                MailHtmlStructure::Isolated => BodyRenderMode::IsolatedHtml,
+                MailHtmlStructure::Native | MailHtmlStructure::PlainEquivalent => {
+                    BodyRenderMode::NativeHtml
+                }
+            }
+        };
+        Self {
+            kind: match value.kind {
+                MailBodySegmentKind::Authored => BodySegmentKindDto::Authored,
+                MailBodySegmentKind::Quoted => BodySegmentKindDto::Quoted,
+            },
+            content: value.content,
+            render_mode,
+            quote_depth: value.quote_depth,
+            confidence: match value.confidence {
+                MailBodySegmentConfidence::High => BodySegmentConfidenceDto::High,
+                MailBodySegmentConfidence::Medium => BodySegmentConfidenceDto::Medium,
+            },
+        }
+    }
+}
+
 impl InboxMessageDto {
     fn summary(value: InboxMessage) -> Self {
         let body_html_available = value.body_html.is_some();
-        Self::from_parts(value, None, None, body_html_available, false, false)
+        Self::from_parts(
+            value,
+            None,
+            None,
+            Vec::new(),
+            body_html_available,
+            false,
+            false,
+        )
     }
 
     fn full(value: InboxMessage) -> Self {
@@ -94,6 +160,15 @@ impl InboxMessageDto {
             .body_text
             .as_ref()
             .is_some_and(|text| !text.trim().is_empty());
+        let has_reply_headers = !value.in_reply_to.is_empty() || !value.references.is_empty();
+        let body_segments = segment_mail_body(
+            value.body_text.as_deref(),
+            value.body_html.as_deref(),
+            has_reply_headers,
+        )
+        .into_iter()
+        .map(Into::into)
+        .collect();
         let sanitized = value.body_html.as_deref().map(sanitize_mail_html);
         let has_remote_images = sanitized
             .as_ref()
@@ -118,6 +193,7 @@ impl InboxMessageDto {
             value,
             body_html,
             Some(body_render_mode),
+            body_segments,
             body_html_available,
             true,
             has_remote_images,
@@ -128,6 +204,7 @@ impl InboxMessageDto {
         value: InboxMessage,
         body_html: Option<String>,
         body_render_mode: Option<BodyRenderMode>,
+        body_segments: Vec<BodySegmentDto>,
         body_html_available: bool,
         body_html_loaded: bool,
         has_remote_images: bool,
@@ -149,6 +226,7 @@ impl InboxMessageDto {
             body_text: value.body_text,
             body_html,
             body_render_mode,
+            body_segments,
             body_html_available,
             body_html_loaded,
             has_remote_images,
@@ -422,6 +500,29 @@ fn get_desktop_settings(
 }
 
 #[tauri::command]
+fn list_profile_avatars(
+    runtime: State<'_, DesktopRuntime>,
+) -> CommandResult<Vec<ProfileAvatarDto>> {
+    runtime.list_profile_avatars()
+}
+
+#[tauri::command]
+fn save_profile_avatar(
+    runtime: State<'_, DesktopRuntime>,
+    request: SaveProfileAvatarRequest,
+) -> CommandResult<ProfileAvatarDto> {
+    runtime.save_profile_avatar(request)
+}
+
+#[tauri::command]
+fn delete_profile_avatar(
+    runtime: State<'_, DesktopRuntime>,
+    request: DeleteProfileAvatarRequest,
+) -> CommandResult<()> {
+    runtime.delete_profile_avatar(request)
+}
+
+#[tauri::command]
 fn update_desktop_settings(
     app: AppHandle,
     runtime: State<'_, DesktopRuntime>,
@@ -669,6 +770,9 @@ pub fn run() {
             list_outbox,
             get_desktop_settings,
             update_desktop_settings,
+            list_profile_avatars,
+            save_profile_avatar,
+            delete_profile_avatar,
             complete_exit,
             cancel_exit,
         ])
@@ -712,6 +816,8 @@ mod tests {
             mailbox: "INBOX".to_owned(),
             uid: 7,
             message_id: None,
+            in_reply_to: Vec::new(),
+            references: Vec::new(),
             subject: "Rich".to_owned(),
             sender: None,
             to: Vec::new(),
@@ -757,6 +863,37 @@ mod tests {
         assert!(!html.contains("<script"));
         assert_eq!(json["body_render_mode"], "isolated_html");
         assert_eq!(json["body_html_loaded"], true);
+        assert!(json.get("raw_rfc822").is_none());
+    }
+
+    #[test]
+    fn reply_bodies_cross_as_safe_authored_and_quoted_segments() {
+        let mut message = rich_message();
+        message.in_reply_to = vec!["parent@example.com".to_owned()];
+        message.body_text = Some(
+            "My reply.\n\n---- 回复的原邮件 ----\n| 发件人 | sender@example.com |\nOriginal body.\n\n---- 回复的原邮件 ----\n| 发件人 | older@example.com |\nOlder body."
+                .to_owned(),
+        );
+        message.body_html = Some(
+            r#"<div>My reply.</div><div class="ntes-mailmaster-quote"><table><tr><td>Original body.</td></tr></table></div>"#
+                .to_owned(),
+        );
+
+        let dto = InboxMessageDto::full(message);
+        let json = serde_json::to_value(dto).expect("serialize segmented body");
+        let segments = json["body_segments"].as_array().expect("body segments");
+
+        assert_eq!(segments.len(), 3);
+        assert_eq!(segments[0]["kind"], "authored");
+        assert_eq!(segments[0]["render_mode"], "plain");
+        assert_eq!(segments[0]["content"], "My reply.");
+        assert_eq!(segments[1]["kind"], "quoted");
+        assert_eq!(segments[1]["confidence"], "high");
+        assert_eq!(segments[1]["content"], "Original body.");
+        assert_eq!(segments[1]["quote_depth"], 1);
+        assert_eq!(segments[2]["kind"], "quoted");
+        assert_eq!(segments[2]["content"], "Older body.");
+        assert_eq!(segments[2]["quote_depth"], 2);
         assert!(json.get("raw_rfc822").is_none());
     }
 

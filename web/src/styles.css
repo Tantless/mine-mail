@@ -1325,6 +1325,145 @@ kbd {
   font-weight: 720;
 }
 
+.profile-avatar {
+  position: relative;
+  flex: 0 0 auto;
+  overflow: hidden;
+}
+
+.profile-avatar img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.profile-avatar--brand {
+  font-weight: 800;
+  letter-spacing: -0.04em;
+}
+
+.profile-avatar--github {
+  background: #24292f !important;
+  color: #fff !important;
+}
+
+.profile-avatar--github svg {
+  width: 62%;
+  height: 62%;
+}
+
+.profile-avatar--google {
+  border: 1px solid color-mix(in srgb, #4285f4 24%, var(--color-border));
+  background: #fff !important;
+  color: #4285f4 !important;
+}
+
+.profile-avatar--google .brand-mark__letters {
+  background: conic-gradient(from -45deg, #4285f4 0 25%, #34a853 0 45%, #fbbc05 0 65%, #ea4335 0 82%, #4285f4 0);
+  background-clip: text;
+  color: transparent;
+  font-size: 1.35em;
+}
+
+.profile-avatar--netease,
+.profile-avatar--nintendo {
+  background: #d9271c !important;
+  color: #fff !important;
+}
+
+.profile-avatar--microsoft {
+  border: 1px solid color-mix(in srgb, #737373 22%, var(--color-border));
+  background: #fff !important;
+}
+
+.brand-mark__microsoft {
+  display: grid;
+  width: 50%;
+  aspect-ratio: 1;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px;
+}
+
+.brand-mark__microsoft i:nth-child(1) { background: #f25022; }
+.brand-mark__microsoft i:nth-child(2) { background: #7fba00; }
+.brand-mark__microsoft i:nth-child(3) { background: #00a4ef; }
+.brand-mark__microsoft i:nth-child(4) { background: #ffb900; }
+
+.profile-avatar--playstation {
+  background: #07439c !important;
+  color: #fff !important;
+}
+
+.profile-avatar--nintendo .brand-mark__letters,
+.profile-avatar--playstation .brand-mark__letters {
+  font-size: 0.78em;
+}
+
+.avatar-picker {
+  position: relative;
+  display: inline-grid;
+  align-self: start;
+}
+
+.avatar-picker__choose {
+  position: relative;
+  display: grid;
+  cursor: pointer;
+}
+
+.avatar-picker__choose input,
+.account-avatar-setting__choose input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.avatar-picker__edit,
+.avatar-picker__remove {
+  position: absolute;
+  z-index: 2;
+  display: grid;
+  width: 17px;
+  height: 17px;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--surface-edge) 82%, transparent);
+  border-radius: 999px;
+  background: var(--color-panel);
+  color: var(--color-text-secondary);
+  box-shadow: 0 3px 8px rgba(17, 26, 34, 0.16);
+}
+
+.avatar-picker__edit {
+  right: -3px;
+  bottom: -3px;
+  pointer-events: none;
+}
+
+.avatar-picker__remove {
+  top: -5px;
+  right: -6px;
+  padding: 0;
+  opacity: 0;
+  transition: opacity var(--motion-fast), color var(--motion-fast);
+}
+
+.avatar-picker:hover .avatar-picker__remove,
+.avatar-picker:focus-within .avatar-picker__remove {
+  opacity: 1;
+}
+
+.avatar-picker__remove:hover {
+  color: var(--color-danger);
+}
+
+.avatar-picker__choose:focus-within .profile-avatar {
+  box-shadow: var(--focus-ring);
+}
+
 .sender-card__identity {
   display: grid;
   justify-items: start;
@@ -1380,6 +1519,138 @@ kbd {
 
 .message-body--native-html {
   min-height: 0;
+}
+
+.message-body--segmented {
+  min-height: 0;
+}
+
+.segmented-message-body,
+.message-segments {
+  display: grid;
+  gap: 18px;
+  min-width: 0;
+}
+
+.segmented-message-body__toolbar {
+  display: flex;
+  justify-content: flex-end;
+  min-height: 22px;
+}
+
+.segmented-message-body__original-toggle {
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-muted);
+  font-size: 10px;
+  text-decoration: underline;
+  text-decoration-color: transparent;
+  text-underline-offset: 3px;
+  transition: color var(--motion-fast), text-decoration-color var(--motion-fast);
+}
+
+.segmented-message-body__original-toggle:hover {
+  color: var(--color-text-secondary);
+  text-decoration-color: currentColor;
+}
+
+.message-segment--authored {
+  min-width: 0;
+}
+
+.quoted-message {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--color-border) 74%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--control-surface) 46%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, white 15%, transparent);
+  backdrop-filter: blur(10px) saturate(1.04);
+  -webkit-backdrop-filter: blur(10px) saturate(1.04);
+}
+
+.quoted-message > summary {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) 20px;
+  gap: 9px;
+  align-items: center;
+  min-height: 52px;
+  padding: 7px 13px;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.quoted-message > summary::-webkit-details-marker {
+  display: none;
+}
+
+.quoted-message > summary:hover {
+  background: color-mix(in srgb, var(--color-hover) 30%, transparent);
+}
+
+.quoted-message__icon {
+  display: inline-grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--color-primary) 12%, transparent);
+  color: var(--color-primary);
+}
+
+.quoted-message > summary > span:nth-child(2) {
+  display: grid;
+  gap: 1px;
+}
+
+.quoted-message > summary strong {
+  font-size: 12px;
+  font-weight: 680;
+}
+
+.quoted-message > summary small {
+  color: var(--color-text-muted);
+  font-size: 9px;
+}
+
+.quoted-message__caret {
+  color: var(--color-text-muted);
+  transition: transform var(--motion-fast);
+}
+
+.quoted-message[open] > summary .quoted-message__caret {
+  transform: rotate(90deg);
+}
+
+.quoted-message__content {
+  min-width: 0;
+  padding: 18px 20px;
+  border-top: 1px solid color-mix(in srgb, var(--color-divider) 78%, transparent);
+  color: var(--color-text-muted);
+  font-size: 0.92em;
+}
+
+.quoted-message__content > :last-child,
+.quoted-message__content p:last-child {
+  margin-bottom: 0;
+}
+
+.quoted-message__children {
+  display: grid;
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.quoted-message__children .quoted-message {
+  background: color-mix(in srgb, var(--control-surface) 34%, transparent);
+  box-shadow: none;
+}
+
+.quoted-message__children .quoted-message__content {
+  font-size: 1em;
 }
 
 .native-html-message {
@@ -2366,6 +2637,63 @@ kbd {
 .settings-toggle small {
   color: var(--color-text-muted);
   font-size: 11px;
+}
+
+.account-avatar-setting {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr) auto auto;
+  gap: 10px;
+  align-items: center;
+  margin: 0 0 14px;
+  padding: 11px;
+  border: 1px solid var(--color-divider);
+  border-radius: 11px;
+  background: var(--color-panel-subtle);
+}
+
+.account-avatar-setting__preview {
+  display: grid;
+  width: 48px;
+  height: 48px;
+  place-items: center;
+  border-radius: 14px;
+  background: var(--color-control);
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  font-weight: 720;
+}
+
+.account-avatar-setting__copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.account-avatar-setting__copy strong {
+  font-size: 12px;
+}
+
+.account-avatar-setting__copy small {
+  color: var(--color-text-muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.account-avatar-setting__choose {
+  position: relative;
+  cursor: pointer;
+}
+
+.settings-text-button {
+  padding: 5px;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-muted);
+  font-size: 11px;
+}
+
+.settings-text-button:hover {
+  color: var(--color-danger);
 }
 
 .settings-options,

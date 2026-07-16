@@ -44,6 +44,7 @@ let webAccountStatus = {
   networkReady: true,
   startupError: null,
 };
+let webProfileAvatars = [];
 
 const webAccountPresets = [
   { id: "163", label: "163 邮箱", secret_label: "客户端授权密码" },
@@ -131,6 +132,22 @@ function normalizeAccountStatus(status = {}) {
         status.configured,
     ),
     startupError: status.startupError ?? status.startup_error ?? null,
+  };
+}
+
+function normalizeProfileAvatar(avatar = {}) {
+  return {
+    ownerType: avatar.ownerType ?? avatar.owner_type,
+    ownerKey: (avatar.ownerKey ?? avatar.owner_key ?? "").trim().toLowerCase(),
+    imageDataUrl: avatar.imageDataUrl ?? avatar.image_data_url ?? null,
+  };
+}
+
+function profileAvatarRequest(request) {
+  return {
+    owner_type: request.ownerType,
+    owner_key: request.ownerKey,
+    ...(request.imageBytes ? { image_bytes: request.imageBytes } : {}),
   };
 }
 
@@ -386,6 +403,51 @@ export const mailApi = {
     })();
   },
 
+  async listProfileAvatars() {
+    if (isTauri) {
+      const avatars = await desktopInvoke("list_profile_avatars");
+      return avatars.map(normalizeProfileAvatar);
+    }
+    return webOnly(() => structuredClone(webProfileAvatars))();
+  },
+
+  async saveProfileAvatar(request) {
+    if (isTauri) {
+      return normalizeProfileAvatar(
+        await desktopInvoke("save_profile_avatar", {
+          request: profileAvatarRequest(request),
+        }),
+      );
+    }
+    return webOnly(() => {
+      const normalized = normalizeProfileAvatar({
+        ...request,
+        imageDataUrl: request.imageDataUrl,
+      });
+      webProfileAvatars = webProfileAvatars.filter(
+        (avatar) =>
+          avatar.ownerType !== normalized.ownerType || avatar.ownerKey !== normalized.ownerKey,
+      );
+      webProfileAvatars.push(normalized);
+      return structuredClone(normalized);
+    })();
+  },
+
+  async deleteProfileAvatar(request) {
+    if (isTauri) {
+      await desktopInvoke("delete_profile_avatar", {
+        request: profileAvatarRequest(request),
+      });
+      return;
+    }
+    return webOnly(() => {
+      const ownerKey = request.ownerKey.trim().toLowerCase();
+      webProfileAvatars = webProfileAvatars.filter(
+        (avatar) => avatar.ownerType !== request.ownerType || avatar.ownerKey !== ownerKey,
+      );
+    })();
+  },
+
   async onMailEvent(eventName, handler) {
     if (!isTauri) return webOnly(() => () => {})();
     try {
@@ -400,4 +462,5 @@ export const __testing = {
   resolveRuntime,
   normalizeSettings,
   normalizeAccountStatus,
+  normalizeProfileAvatar,
 };

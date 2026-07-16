@@ -15,6 +15,7 @@ import { SendConfirmDialog } from "./components/SendConfirmDialog.jsx";
 import { SettingsPanel } from "./components/SettingsPanel.jsx";
 import { AccountSetupPanel } from "./components/AccountSetup.jsx";
 import { Toast } from "./components/Toast.jsx";
+import { normalizeAvatarEmail } from "./components/ProfileAvatar.jsx";
 import { hasFlag } from "./utils/formatters.js";
 
 const folderLabels = {
@@ -33,12 +34,24 @@ const defaultSettings = {
   autostartEnabled: false,
   remoteImageMode: "automatic",
 };
+const supportedAvatarTypes = new Set(["image/png", "image/jpeg", "image/webp"]);
+const maxAvatarBytes = 2 * 1024 * 1024;
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.addEventListener("load", () => resolve(reader.result));
+    reader.addEventListener("error", () => reject(new Error("无法读取所选图片")));
+    reader.readAsDataURL(file);
+  });
+}
 const localDraftDebounceMs = 900;
 
 const cachedBodyFields = [
   "body_text",
   "body_html",
   "body_render_mode",
+  "body_segments",
   "body_html_available",
   "body_html_loaded",
   "has_remote_images",
@@ -195,6 +208,7 @@ export function App() {
   const [accountStatus, setAccountStatus] = useState({ configured: null });
   const [accountSubmitStatus, setAccountSubmitStatus] = useState("idle");
   const [accountError, setAccountError] = useState(null);
+  const [profileAvatars, setProfileAvatars] = useState([]);
   const [toast, setToast] = useState(null);
 
   const composerRef = useRef(null);
@@ -218,6 +232,81 @@ export function App() {
   const showToast = useCallback((message, tone = "success", persistent = false) => {
     setToast({ message, tone, persistent, id: Date.now() });
   }, []);
+
+  const profileAvatarMap = useMemo(
+    () =>
+      new Map(
+        profileAvatars.map((avatar) => [
+          `${avatar.ownerType}:${normalizeAvatarEmail(avatar.ownerKey)}`,
+          avatar.imageDataUrl,
+        ]),
+      ),
+    [profileAvatars],
+  );
+
+  const profileAvatarFor = useCallback(
+    (ownerType, email) =>
+      email
+        ? profileAvatarMap.get(`${ownerType}:${normalizeAvatarEmail(email)}`) || null
+        : null,
+    [profileAvatarMap],
+  );
+
+  const handleSaveProfileAvatar = useCallback(
+    async (ownerType, email, file) => {
+      if (!email) return;
+      if (!supportedAvatarTypes.has(file.type)) {
+        showToast("请选择 PNG、JPEG 或 WebP 图片", "error");
+        return;
+      }
+      if (!file.size || file.size > maxAvatarBytes) {
+        showToast("头像图片不能超过 2 MB", "error");
+        return;
+      }
+      try {
+        const [buffer, imageDataUrl] = await Promise.all([
+          file.arrayBuffer(),
+          readFileAsDataUrl(file),
+        ]);
+        const saved = await mailApi.saveProfileAvatar({
+          ownerType,
+          ownerKey: normalizeAvatarEmail(email),
+          imageBytes: Array.from(new Uint8Array(buffer)),
+          imageDataUrl,
+        });
+        setProfileAvatars((current) => [
+          ...current.filter(
+            (avatar) =>
+              avatar.ownerType !== saved.ownerType || avatar.ownerKey !== saved.ownerKey,
+          ),
+          saved,
+        ]);
+        showToast(ownerType === "account" ? "Mine Mail 头像已更新" : "联系人头像已更新");
+      } catch (error) {
+        showToast(describeError(error, "头像没有保存，请重试"), "error");
+      }
+    },
+    [showToast],
+  );
+
+  const handleDeleteProfileAvatar = useCallback(
+    async (ownerType, email) => {
+      if (!email) return;
+      const ownerKey = normalizeAvatarEmail(email);
+      try {
+        await mailApi.deleteProfileAvatar({ ownerType, ownerKey });
+        setProfileAvatars((current) =>
+          current.filter(
+            (avatar) => avatar.ownerType !== ownerType || avatar.ownerKey !== ownerKey,
+          ),
+        );
+        showToast(ownerType === "account" ? "已恢复默认账户头像" : "已恢复默认联系人头像");
+      } catch (error) {
+        showToast(describeError(error, "头像没有移除，请重试"), "error");
+      }
+    },
+    [showToast],
+  );
 
   const commitComposer = useCallback((valueOrUpdater) => {
     const next =
@@ -448,6 +537,12 @@ export function App() {
         .catch((error) => {
           if (!cancelled) showToast(describeError(error, "账户预设读取失败"), "error");
         });
+      const avatarsTask = mailApi
+        .listProfileAvatars()
+        .then((value) => !cancelled && setProfileAvatars(value))
+        .catch((error) => {
+          if (!cancelled) showToast(describeError(error, "本地头像读取失败"), "error");
+        });
 
       try {
         const status = await mailApi.getAccountStatus();
@@ -478,7 +573,7 @@ export function App() {
         setAccountError(describeError(error, "无法读取账户配置"));
       }
 
-      await Promise.allSettled([settingsTask, presetsTask]);
+      await Promise.allSettled([settingsTask, presetsTask, avatarsTask]);
     };
     void load();
     return () => {
@@ -1268,6 +1363,7 @@ export function App() {
           onThemeMenuToggle={() => setIsThemeMenuOpen((open) => !open)}
           counts={folderCounts}
           accountStatus={accountStatus}
+          accountAvatar={profileAvatarFor("account", accountStatus.email)}
           onOpenSettings={() => {
             setSettingsSaveStatus("idle");
             setIsSettingsOpen(true);
@@ -1296,6 +1392,7 @@ export function App() {
           syncState={syncState}
           canSync={networkActionsAvailable}
           onOpenMobileNav={() => setIsSidebarOpen(true)}
+          avatarForEmail={(email) => profileAvatarFor("contact", email)}
         />
 
         <MessageView
@@ -1317,6 +1414,13 @@ export function App() {
           canNext={selectedIndex >= 0 && selectedIndex < visibleMessages.length - 1}
           remoteImageMode={settings.remoteImageMode}
           onOpenExternalLink={(url) => void handleOpenExternalLink(url)}
+          senderAvatar={profileAvatarFor("contact", selectedMessage?.sender?.email)}
+          onSetSenderAvatar={(file) =>
+            handleSaveProfileAvatar("contact", selectedMessage?.sender?.email, file)
+          }
+          onRemoveSenderAvatar={() =>
+            handleDeleteProfileAvatar("contact", selectedMessage?.sender?.email)
+          }
         />
       </div>
 
@@ -1357,6 +1461,13 @@ export function App() {
           accountSubmitStatus={accountSubmitStatus}
           accountError={accountError}
           onConfigureAccount={handleConfigureAccount}
+          accountAvatar={profileAvatarFor("account", accountStatus.email)}
+          onSetAccountAvatar={(file) =>
+            handleSaveProfileAvatar("account", accountStatus.email, file)
+          }
+          onRemoveAccountAvatar={() =>
+            handleDeleteProfileAvatar("account", accountStatus.email)
+          }
         />
       ) : null}
 

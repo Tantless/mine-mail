@@ -153,6 +153,55 @@ describe("mailApi desktop IPC contract", () => {
     expect(dispose).toHaveBeenCalledOnce();
   });
 
+  it("maps local avatar commands through the narrow desktop boundary", async () => {
+    ipc.invoke
+      .mockResolvedValueOnce([
+        {
+          owner_type: "contact",
+          owner_key: "friend@example.com",
+          image_data_url: "data:image/png;base64,AQID",
+        },
+      ])
+      .mockResolvedValueOnce({
+        owner_type: "account",
+        owner_key: "me@example.com",
+        image_data_url: "data:image/png;base64,AQID",
+      })
+      .mockResolvedValueOnce(undefined);
+    const { mailApi } = await import("./mailApi.js");
+
+    expect(await mailApi.listProfileAvatars()).toEqual([
+      {
+        ownerType: "contact",
+        ownerKey: "friend@example.com",
+        imageDataUrl: "data:image/png;base64,AQID",
+      },
+    ]);
+    await mailApi.saveProfileAvatar({
+      ownerType: "account",
+      ownerKey: "me@example.com",
+      imageBytes: [1, 2, 3],
+    });
+    await mailApi.deleteProfileAvatar({
+      ownerType: "contact",
+      ownerKey: "friend@example.com",
+    });
+
+    expect(ipc.invoke).toHaveBeenNthCalledWith(2, "save_profile_avatar", {
+      request: {
+        owner_type: "account",
+        owner_key: "me@example.com",
+        image_bytes: [1, 2, 3],
+      },
+    });
+    expect(ipc.invoke).toHaveBeenNthCalledWith(3, "delete_profile_avatar", {
+      request: {
+        owner_type: "contact",
+        owner_key: "friend@example.com",
+      },
+    });
+  });
+
   it("preserves safe string errors returned by Rust", async () => {
     ipc.invoke.mockRejectedValue("Recipient confirmation did not match");
     const { mailApi } = await import("./mailApi.js");

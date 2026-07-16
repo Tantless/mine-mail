@@ -12,18 +12,18 @@ use serde::{Serialize, de::DeserializeOwned};
 
 use crate::{
     AccountConfig, Draft, InboxMessage, MailError, OutboxItem, OutboxStatus, Result,
-    mime::draft_has_unsupported_content,
+    mime::{draft_has_unsupported_content, reply_message_ids},
 };
 
-const MESSAGE_COLUMNS: &str = "id, account_id, mailbox, uid, message_id, subject, \
-    sender_json, to_json, cc_json, sent_at, internal_date, flags_json, size_bytes, \
-    preview, body_text, body_html, attachment_names_json, body_fetched, raw_rfc822, synced_at";
+const MESSAGE_COLUMNS: &str = "id, account_id, mailbox, uid, message_id, in_reply_to_json, \
+    references_json, subject, sender_json, to_json, cc_json, sent_at, internal_date, flags_json, \
+    size_bytes, preview, body_text, body_html, attachment_names_json, body_fetched, raw_rfc822, synced_at";
 // Inbox rows only need enough local body data to paint an immediate fallback.
 // The empty HTML sentinel preserves `body_html.is_some()` without reading the
 // potentially large HTML/RFC822 payload for every visible list item.
-const MESSAGE_SUMMARY_COLUMNS: &str = "id, account_id, mailbox, uid, message_id, subject, \
-    sender_json, to_json, cc_json, sent_at, internal_date, flags_json, size_bytes, \
-    preview, body_text, CASE WHEN body_html IS NULL THEN NULL ELSE '' END, \
+const MESSAGE_SUMMARY_COLUMNS: &str = "id, account_id, mailbox, uid, message_id, in_reply_to_json, \
+    references_json, subject, sender_json, to_json, cc_json, sent_at, internal_date, flags_json, \
+    size_bytes, preview, body_text, CASE WHEN body_html IS NULL THEN NULL ELSE '' END, \
     attachment_names_json, body_fetched, X'', synced_at";
 const DRAFT_COLUMNS: &str = "id, account_id, to_json, cc_json, bcc_json, subject, \
     body_text, status, remote_mailbox, remote_uid, created_at, updated_at, raw_rfc822, local_version, \
@@ -109,6 +109,8 @@ impl Repository {
                  mailbox TEXT NOT NULL,
                  uid INTEGER NOT NULL,
                  message_id TEXT,
+                 in_reply_to_json TEXT NOT NULL DEFAULT '[]',
+                 references_json TEXT NOT NULL DEFAULT '[]',
                  subject TEXT NOT NULL DEFAULT '',
                  sender_json TEXT,
                  to_json TEXT NOT NULL DEFAULT '[]',
@@ -185,10 +187,11 @@ impl Repository {
         migrate_drafts_v2(&connection)?;
         migrate_outbox_v3(&connection)?;
         migrate_drafts_v4(&connection)?;
+        migrate_messages_v5(&connection)?;
         connection.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_drafts_remote_identity
                  ON drafts(account_id, remote_mailbox, remote_uid);
-             PRAGMA user_version = 4;",
+             PRAGMA user_version = 5;",
         )?;
         Ok(repository)
     }
@@ -365,16 +368,18 @@ impl Repository {
         let sender_json = message.sender.as_ref().map(encode_json).transpose()?;
         connection.execute(
             "INSERT INTO messages (
-                 account_id, mailbox, uid, message_id, subject, sender_json,
+                 account_id, mailbox, uid, message_id, in_reply_to_json, references_json, subject, sender_json,
                  to_json, cc_json, sent_at, internal_date, flags_json, size_bytes,
                  preview, body_text, body_html, attachment_names_json, body_fetched,
                  raw_rfc822, synced_at
              ) VALUES (
                  ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
-                 ?13, ?14, ?15, ?16, ?17, ?18, ?19
+                 ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21
              )
              ON CONFLICT(account_id, mailbox, uid) DO UPDATE SET
                  message_id = excluded.message_id,
+                 in_reply_to_json = excluded.in_reply_to_json,
+                 references_json = excluded.references_json,
                  subject = excluded.subject,
                  sender_json = excluded.sender_json,
                  to_json = excluded.to_json,
@@ -395,6 +400,8 @@ impl Repository {
                 message.mailbox,
                 message.uid,
                 message.message_id,
+                encode_json(&message.in_reply_to)?,
+                encode_json(&message.references)?,
                 message.subject,
                 sender_json,
                 encode_json(&message.to)?,
@@ -1278,6 +1285,39 @@ fn migrate_drafts_v4(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn migrate_messages_v5(connection: &Connection) -> Result<()> {
+    let mut needs_backfill = false;
+    for column in ["in_reply_to_json", "references_json"] {
+        if !table_has_column(connection, "messages", column)? {
+            needs_backfill = true;
+            connection.execute_batch(&format!(
+                "ALTER TABLE messages ADD COLUMN {column} TEXT NOT NULL DEFAULT '[]';"
+            ))?;
+        }
+    }
+    if needs_backfill {
+        let rows = {
+            let mut statement = connection
+                .prepare("SELECT id, raw_rfc822 FROM messages WHERE length(raw_rfc822) > 0")?;
+            statement
+                .query_map([], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()?
+        };
+        for (id, raw_rfc822) in rows {
+            let (in_reply_to, references) = reply_message_ids(&raw_rfc822);
+            connection.execute(
+                "UPDATE messages
+                 SET in_reply_to_json = ?2, references_json = ?3
+                 WHERE id = ?1",
+                params![id, encode_json(&in_reply_to)?, encode_json(&references)?],
+            )?;
+        }
+    }
+    Ok(())
+}
+
 fn table_has_column(connection: &Connection, table: &str, column: &str) -> Result<bool> {
     debug_assert!(
         table
@@ -1442,31 +1482,33 @@ fn decode_u64(column: usize, value: i64) -> rusqlite::Result<u64> {
 }
 
 fn row_to_message(row: &Row<'_>) -> rusqlite::Result<InboxMessage> {
-    let sender_json: Option<String> = row.get(6)?;
+    let sender_json: Option<String> = row.get(8)?;
     Ok(InboxMessage {
         id: row.get(0)?,
         account_id: row.get(1)?,
         mailbox: row.get(2)?,
         uid: row.get(3)?,
         message_id: row.get(4)?,
-        subject: row.get(5)?,
+        in_reply_to: decode_json(5, &row.get::<_, String>(5)?)?,
+        references: decode_json(6, &row.get::<_, String>(6)?)?,
+        subject: row.get(7)?,
         sender: sender_json
             .as_deref()
-            .map(|json| decode_json(6, json))
+            .map(|json| decode_json(8, json))
             .transpose()?,
-        to: decode_json(7, &row.get::<_, String>(7)?)?,
-        cc: decode_json(8, &row.get::<_, String>(8)?)?,
-        sent_at: row.get(9)?,
-        internal_date: row.get(10)?,
-        flags: decode_json(11, &row.get::<_, String>(11)?)?,
-        size_bytes: row.get(12)?,
-        preview: row.get(13)?,
-        body_text: row.get(14)?,
-        body_html: row.get(15)?,
-        attachment_names: decode_json(16, &row.get::<_, String>(16)?)?,
-        body_fetched: row.get(17)?,
-        raw_rfc822: row.get(18)?,
-        synced_at: row.get(19)?,
+        to: decode_json(9, &row.get::<_, String>(9)?)?,
+        cc: decode_json(10, &row.get::<_, String>(10)?)?,
+        sent_at: row.get(11)?,
+        internal_date: row.get(12)?,
+        flags: decode_json(13, &row.get::<_, String>(13)?)?,
+        size_bytes: row.get(14)?,
+        preview: row.get(15)?,
+        body_text: row.get(16)?,
+        body_html: row.get(17)?,
+        attachment_names: decode_json(18, &row.get::<_, String>(18)?)?,
+        body_fetched: row.get(19)?,
+        raw_rfc822: row.get(20)?,
+        synced_at: row.get(21)?,
     })
 }
 
@@ -1587,6 +1629,8 @@ mod tests {
             mailbox: "INBOX".to_owned(),
             uid: 42,
             message_id: Some("message-42@example.com".to_owned()),
+            in_reply_to: Vec::new(),
+            references: Vec::new(),
             subject: "First subject".to_owned(),
             sender: Some(MailAddress {
                 name: Some("Alice".to_owned()),
@@ -2444,7 +2488,7 @@ Body' AS BLOB)
         let version: u32 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("schema version");
-        assert_eq!(version, 4);
+        assert_eq!(version, 5);
         for column in [
             "local_version",
             "has_unsupported_content",

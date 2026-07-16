@@ -438,6 +438,8 @@ pub(crate) fn parse_incoming_message(
         mailbox: metadata.mailbox.to_owned(),
         uid: metadata.uid,
         message_id: message.message_id().map(str::to_owned),
+        in_reply_to: message_ids(message.in_reply_to()),
+        references: message_ids(message.references()),
         subject: message.subject().unwrap_or_default().to_owned(),
         sender,
         to,
@@ -472,6 +474,8 @@ pub(crate) fn parse_incoming_summary_or_fallback(
         mailbox: metadata.mailbox.to_owned(),
         uid: metadata.uid,
         message_id: None,
+        in_reply_to: Vec::new(),
+        references: Vec::new(),
         subject: "无法解析的邮件".to_owned(),
         sender: None,
         to: Vec::new(),
@@ -490,6 +494,33 @@ pub(crate) fn parse_incoming_summary_or_fallback(
     };
 
     parse_incoming_message(raw, metadata).unwrap_or(fallback)
+}
+
+fn message_ids(value: &HeaderValue<'_>) -> Vec<String> {
+    value
+        .as_text_list()
+        .into_iter()
+        .flatten()
+        .flat_map(|value| value.split_ascii_whitespace())
+        .map(|value| {
+            value
+                .trim_matches(|character| matches!(character, '<' | '>'))
+                .to_owned()
+        })
+        .filter(|value| !value.is_empty())
+        .collect()
+}
+
+pub(crate) fn reply_message_ids(raw: &[u8]) -> (Vec<String>, Vec<String>) {
+    MessageParser::default().parse(raw).map_or_else(
+        || (Vec::new(), Vec::new()),
+        |message| {
+            (
+                message_ids(message.in_reply_to()),
+                message_ids(message.references()),
+            )
+        },
+    )
 }
 
 fn map_addresses(addresses: Option<&ParsedAddress<'_>>) -> Vec<MailAddress> {
@@ -672,6 +703,31 @@ mod tests {
         assert_eq!(parsed.body_text.as_deref(), Some("Only text"));
         assert_eq!(parsed.body_html, None);
         assert_eq!(render_message_html(&parsed), None);
+    }
+
+    #[test]
+    fn incoming_reply_retains_parent_and_thread_message_ids() {
+        let raw = b"From: sender@example.com\r\nSubject: Reply\r\nMessage-ID: <reply@example.com>\r\nIn-Reply-To: <parent@example.com>\r\nReferences: <root@example.com> <parent@example.com>\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nReply body";
+        let parsed = parse_incoming_message(
+            raw,
+            IncomingMetadata {
+                account_id: "primary",
+                mailbox: "INBOX",
+                uid: 45,
+                flags: Vec::new(),
+                internal_date: None,
+                size_bytes: raw.len() as u32,
+                synced_at: "2026-07-16T00:00:00Z".to_owned(),
+                body_fetched: true,
+            },
+        )
+        .expect("parse reply");
+
+        assert_eq!(parsed.in_reply_to, ["parent@example.com"]);
+        assert_eq!(
+            parsed.references,
+            ["root@example.com", "parent@example.com"]
+        );
     }
 
     #[test]

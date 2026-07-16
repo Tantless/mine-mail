@@ -52,6 +52,10 @@ pub struct InboxMessage {
     pub mailbox: String,
     pub uid: u32,
     pub message_id: Option<String>,
+    #[serde(default)]
+    pub in_reply_to: Vec<String>,
+    #[serde(default)]
+    pub references: Vec<String>,
     pub subject: String,
     pub sender: Option<MailAddress>,
     pub to: Vec<MailAddress>,

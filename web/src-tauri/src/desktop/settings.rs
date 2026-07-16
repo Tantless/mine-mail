@@ -1,9 +1,59 @@
 use std::{path::Path, path::PathBuf, time::Duration};
 
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 
 pub(super) const DEFAULT_POLL_INTERVAL_MINUTES: u8 = 5;
+const MAX_PROFILE_AVATAR_BYTES: usize = 2 * 1024 * 1024;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ProfileAvatarOwnerType {
+    Account,
+    Contact,
+}
+
+impl ProfileAvatarOwnerType {
+    fn as_storage_value(self) -> &'static str {
+        match self {
+            Self::Account => "account",
+            Self::Contact => "contact",
+        }
+    }
+
+    fn from_storage_value(value: &str) -> rusqlite::Result<Self> {
+        match value {
+            "account" => Ok(Self::Account),
+            "contact" => Ok(Self::Contact),
+            _ => Err(rusqlite::Error::InvalidColumnType(
+                0,
+                "owner_type".to_owned(),
+                rusqlite::types::Type::Text,
+            )),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub(crate) struct ProfileAvatarDto {
+    pub owner_type: ProfileAvatarOwnerType,
+    pub owner_key: String,
+    pub image_data_url: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub(crate) struct SaveProfileAvatarRequest {
+    pub owner_type: ProfileAvatarOwnerType,
+    pub owner_key: String,
+    pub image_bytes: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub(crate) struct DeleteProfileAvatarRequest {
+    pub owner_type: ProfileAvatarOwnerType,
+    pub owner_key: String,
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -103,6 +153,17 @@ impl DesktopSettingsStore {
                  updated_at TEXT NOT NULL
                      DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
              );
+             CREATE TABLE IF NOT EXISTS profile_avatars (
+                 owner_type TEXT NOT NULL
+                     CHECK (owner_type IN ('account', 'contact')),
+                 owner_key TEXT NOT NULL,
+                 mime_type TEXT NOT NULL
+                     CHECK (mime_type IN ('image/png', 'image/jpeg', 'image/webp')),
+                 image_bytes BLOB NOT NULL,
+                 updated_at TEXT NOT NULL
+                     DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                 PRIMARY KEY (owner_type, owner_key)
+             );
              INSERT INTO desktop_settings (
                  id, background_enabled, poll_interval_minutes,
                  notifications_enabled, notification_baseline_initialized,
@@ -178,11 +239,114 @@ impl DesktopSettingsStore {
         Ok(())
     }
 
+    pub(super) fn list_profile_avatars(&self) -> rusqlite::Result<Vec<ProfileAvatarDto>> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT owner_type, owner_key, mime_type, image_bytes
+             FROM profile_avatars
+             ORDER BY owner_type, owner_key",
+        )?;
+        statement
+            .query_map([], |row| {
+                Ok(ProfileAvatarDto {
+                    owner_type: ProfileAvatarOwnerType::from_storage_value(
+                        &row.get::<_, String>(0)?,
+                    )?,
+                    owner_key: row.get(1)?,
+                    image_data_url: avatar_data_url(
+                        &row.get::<_, String>(2)?,
+                        &row.get::<_, Vec<u8>>(3)?,
+                    ),
+                })
+            })?
+            .collect()
+    }
+
+    pub(super) fn save_profile_avatar(
+        &self,
+        request: SaveProfileAvatarRequest,
+    ) -> Result<ProfileAvatarDto, String> {
+        let owner_key = normalize_avatar_owner_key(&request.owner_key)?;
+        let mime_type = sniff_avatar_mime_type(&request.image_bytes)?;
+        self.connection()
+            .map_err(|_| "The avatar store is unavailable.".to_owned())?
+            .execute(
+                "INSERT INTO profile_avatars (
+                     owner_type, owner_key, mime_type, image_bytes, updated_at
+                 ) VALUES (?1, ?2, ?3, ?4, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                 ON CONFLICT(owner_type, owner_key) DO UPDATE SET
+                     mime_type = excluded.mime_type,
+                     image_bytes = excluded.image_bytes,
+                     updated_at = excluded.updated_at",
+                params![
+                    request.owner_type.as_storage_value(),
+                    owner_key,
+                    mime_type,
+                    request.image_bytes,
+                ],
+            )
+            .map_err(|_| "The avatar could not be saved.".to_owned())?;
+        Ok(ProfileAvatarDto {
+            owner_type: request.owner_type,
+            owner_key,
+            image_data_url: avatar_data_url(mime_type, &request.image_bytes),
+        })
+    }
+
+    pub(super) fn delete_profile_avatar(
+        &self,
+        request: DeleteProfileAvatarRequest,
+    ) -> Result<(), String> {
+        let owner_key = normalize_avatar_owner_key(&request.owner_key)?;
+        self.connection()
+            .map_err(|_| "The avatar store is unavailable.".to_owned())?
+            .execute(
+                "DELETE FROM profile_avatars WHERE owner_type = ?1 AND owner_key = ?2",
+                params![request.owner_type.as_storage_value(), owner_key],
+            )
+            .map_err(|_| "The avatar could not be removed.".to_owned())?;
+        Ok(())
+    }
+
     fn connection(&self) -> rusqlite::Result<Connection> {
         let connection = Connection::open(&self.path)?;
         connection.busy_timeout(Duration::from_secs(5))?;
         Ok(connection)
     }
+}
+
+fn normalize_avatar_owner_key(value: &str) -> Result<String, String> {
+    let normalized = value.trim().to_ascii_lowercase();
+    let valid = normalized.len() <= 320
+        && normalized.contains('@')
+        && !normalized.chars().any(char::is_whitespace)
+        && normalized
+            .split_once('@')
+            .is_some_and(|(local, domain)| !local.is_empty() && domain.contains('.'));
+    if !valid {
+        return Err("A valid email address is required for an avatar.".to_owned());
+    }
+    Ok(normalized)
+}
+
+fn sniff_avatar_mime_type(bytes: &[u8]) -> Result<&'static str, String> {
+    if bytes.is_empty() || bytes.len() > MAX_PROFILE_AVATAR_BYTES {
+        return Err("Avatar images must be no larger than 2 MB.".to_owned());
+    }
+    if bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]) {
+        return Ok("image/png");
+    }
+    if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        return Ok("image/jpeg");
+    }
+    if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        return Ok("image/webp");
+    }
+    Err("Only PNG, JPEG, and WebP avatar images are supported.".to_owned())
+}
+
+fn avatar_data_url(mime_type: &str, bytes: &[u8]) -> String {
+    format!("data:{mime_type};base64,{}", BASE64_STANDARD.encode(bytes))
 }
 
 pub(super) fn valid_poll_interval(value: u8) -> bool {
@@ -195,7 +359,10 @@ mod tests {
 
     use rusqlite::Connection;
 
-    use super::{DesktopSettingsStore, RemoteImageMode, StoredDesktopSettings};
+    use super::{
+        DeleteProfileAvatarRequest, DesktopSettingsStore, ProfileAvatarOwnerType, RemoteImageMode,
+        SaveProfileAvatarRequest, StoredDesktopSettings,
+    };
 
     #[test]
     fn settings_are_persisted_with_safe_defaults() {
@@ -248,5 +415,52 @@ mod tests {
             store.load().expect("migrated settings").remote_image_mode,
             RemoteImageMode::Automatic,
         );
+    }
+
+    #[test]
+    fn profile_avatars_are_bounded_normalized_and_removable() {
+        let directory = tempdir().expect("temporary directory");
+        let store = DesktopSettingsStore::open(directory.path().join("desktop.sqlite3"))
+            .expect("settings store");
+        let png = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 1, 2, 3];
+
+        let saved = store
+            .save_profile_avatar(SaveProfileAvatarRequest {
+                owner_type: ProfileAvatarOwnerType::Contact,
+                owner_key: "  Friend@Example.COM ".to_owned(),
+                image_bytes: png.clone(),
+            })
+            .expect("save avatar");
+        assert_eq!(saved.owner_key, "friend@example.com");
+        assert!(saved.image_data_url.starts_with("data:image/png;base64,"));
+        assert_eq!(store.list_profile_avatars().expect("list"), vec![saved]);
+
+        store
+            .delete_profile_avatar(DeleteProfileAvatarRequest {
+                owner_type: ProfileAvatarOwnerType::Contact,
+                owner_key: "FRIEND@example.com".to_owned(),
+            })
+            .expect("delete avatar");
+        assert!(
+            store
+                .list_profile_avatars()
+                .expect("list after delete")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn profile_avatars_reject_untrusted_image_formats() {
+        let directory = tempdir().expect("temporary directory");
+        let store = DesktopSettingsStore::open(directory.path().join("desktop.sqlite3"))
+            .expect("settings store");
+        let error = store
+            .save_profile_avatar(SaveProfileAvatarRequest {
+                owner_type: ProfileAvatarOwnerType::Account,
+                owner_key: "me@example.com".to_owned(),
+                image_bytes: b"<svg><script/></svg>".to_vec(),
+            })
+            .expect_err("SVG must be rejected");
+        assert!(error.contains("PNG, JPEG, and WebP"));
     }
 }

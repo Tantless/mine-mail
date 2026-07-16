@@ -34,6 +34,9 @@ const desktop = vi.hoisted(() => {
       listAccountPresets: vi.fn(),
       getAccountStatus: vi.fn(),
       configureAccount: vi.fn(),
+      listProfileAvatars: vi.fn(),
+      saveProfileAvatar: vi.fn(),
+      deleteProfileAvatar: vi.fn(),
       onMailEvent: vi.fn(async (name, handler) => {
         listeners.set(name, handler);
         return () => listeners.delete(name);
@@ -141,6 +144,13 @@ describe("Mine Mail desktop state bridge", () => {
       networkReady: true,
       startupError: null,
     });
+    desktop.mailApi.listProfileAvatars.mockResolvedValue([]);
+    desktop.mailApi.saveProfileAvatar.mockImplementation(async (request) => ({
+      ownerType: request.ownerType,
+      ownerKey: request.ownerKey,
+      imageDataUrl: request.imageDataUrl,
+    }));
+    desktop.mailApi.deleteProfileAvatar.mockResolvedValue(undefined);
     desktop.mailApi.checkConnections.mockResolvedValue({
       imap_ok: true,
       smtp_ok: true,
@@ -196,6 +206,32 @@ describe("Mine Mail desktop state bridge", () => {
       expect(desktop.mailApi.listDrafts).toHaveBeenCalledTimes(2);
       expect(desktop.mailApi.listOutbox).toHaveBeenCalledTimes(2);
     });
+  });
+
+  it("hydrates local account and exact-contact avatars across the shell", async () => {
+    desktop.mailApi.listProfileAvatars.mockResolvedValue([
+      {
+        ownerType: "account",
+        ownerKey: "me@163.com",
+        imageDataUrl: "data:image/png;base64,AAAA",
+      },
+      {
+        ownerType: "contact",
+        ownerKey: "sender1@example.com",
+        imageDataUrl: "data:image/png;base64,AQID",
+      },
+    ]);
+
+    render(<App />);
+
+    await screen.findAllByText("First mail");
+    await waitFor(() => {
+      expect(
+        document.querySelectorAll('img[src="data:image/png;base64,AQID"]').length,
+      ).toBeGreaterThanOrEqual(2);
+    });
+    expect(document.querySelector('img[src="data:image/png;base64,AAAA"]')).toBeTruthy();
+    expect(screen.getByLabelText("设置 Sender 1 的头像")).toBeTruthy();
   });
 
   it("ignores a stale body response after the user selects another message", async () => {
@@ -297,6 +333,50 @@ describe("Mine Mail desktop state bridge", () => {
         "Rich layout",
       );
     });
+  });
+
+  it("renders a reply as native authored text with collapsed quoted history", async () => {
+    const replySummary = {
+      ...summary(9, "Reply mail"),
+      body_text: "My reply preview",
+      body_fetched: true,
+      body_html_available: true,
+      body_html_loaded: false,
+    };
+    desktop.mailApi.listInbox.mockResolvedValue([replySummary]);
+    desktop.mailApi.fetchMessage.mockResolvedValue({
+      ...replySummary,
+      body_text: "My reply.\n\nOriginal body.",
+      body_html: "<div>My reply.</div><table><tr><td>Original body.</td></tr></table>",
+      body_render_mode: "isolated_html",
+      body_segments: [
+        {
+          kind: "authored",
+          content: "My reply.",
+          render_mode: "plain",
+          quote_depth: 0,
+          confidence: "high",
+        },
+        {
+          kind: "quoted",
+          content: "Original body.",
+          render_mode: "plain",
+          quote_depth: 1,
+          confidence: "high",
+        },
+      ],
+      body_html_loaded: true,
+      has_remote_images: false,
+    });
+    const user = userEvent.setup();
+
+    const { container } = render(<App />);
+    await user.click(await screen.findByText("Reply mail"));
+
+    expect(await screen.findByText("My reply.")).toBeTruthy();
+    expect(screen.getByText("引用的原邮件")).toBeTruthy();
+    expect(container.querySelector("details.quoted-message").open).toBe(false);
+    expect(container.querySelector("iframe")).toBeNull();
   });
 
   it("renders bounded semantic HTML directly on the themed reader material", async () => {

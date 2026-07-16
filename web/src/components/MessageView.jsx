@@ -16,7 +16,9 @@ import {
 import { IconButton } from "./IconButton.jsx";
 import { HtmlMessageBody } from "./HtmlMessageBody.jsx";
 import { NativeHtmlMessageBody } from "./NativeHtmlMessageBody.jsx";
-import { formatFullDate, initials, senderLabel } from "../utils/formatters.js";
+import { SegmentedMessageBody } from "./SegmentedMessageBody.jsx";
+import { EditableProfileAvatar, ProfileAvatar } from "./ProfileAvatar.jsx";
+import { formatFullDate, senderLabel } from "../utils/formatters.js";
 
 function fileSizeLabel(bytes) {
   if (!bytes) return "附件";
@@ -41,6 +43,9 @@ export function MessageView({
   canNext,
   remoteImageMode = "automatic",
   onOpenExternalLink,
+  senderAvatar,
+  onSetSenderAvatar,
+  onRemoveSenderAvatar,
 }) {
   if (!message) {
     return (
@@ -60,6 +65,7 @@ export function MessageView({
     : message.preview || "这封邮件没有纯文本正文。";
   const bodyRenderMode =
     message.body_render_mode || (message.body_html ? "isolated_html" : "plain");
+  const hasBodySegments = Boolean(message.body_segments?.length);
 
   return (
     <section className="reader-panel" aria-label="邮件阅读区">
@@ -98,9 +104,24 @@ export function MessageView({
           <h2>{message.subject || "（无主题）"}</h2>
 
           <div className="sender-card">
-            <span className="sender-card__avatar" aria-hidden="true">
-              {initials(sender)}
-            </span>
+            {message.kind !== "outbox" && message.sender?.email && onSetSenderAvatar ? (
+              <EditableProfileAvatar
+                className="sender-avatar-picker"
+                avatarClassName="sender-card__avatar"
+                email={message.sender.email}
+                label={sender}
+                customSrc={senderAvatar}
+                onSelectFile={onSetSenderAvatar}
+                onRemove={onRemoveSenderAvatar}
+              />
+            ) : (
+              <ProfileAvatar
+                className="sender-card__avatar"
+                email={message.sender?.email}
+                label={sender}
+                customSrc={senderAvatar}
+              />
+            )}
             <div className="sender-card__identity">
               <strong>{sender}</strong>
               <span>{message.sender?.email}</span>
@@ -114,7 +135,9 @@ export function MessageView({
 
         <article
           className={`message-body${
-            bodyRenderMode === "isolated_html" && message.body_html
+            hasBodySegments
+              ? " message-body--segmented"
+              : bodyRenderMode === "isolated_html" && message.body_html
               ? " message-body--html"
               : bodyRenderMode === "native_html" && message.body_html
                 ? " message-body--native-html"
@@ -137,6 +160,15 @@ export function MessageView({
                 重新加载
               </button>
             </div>
+          ) : hasBodySegments ? (
+            <SegmentedMessageBody
+              key={`${message.mailbox || "INBOX"}:${message.uid}`}
+              message={message}
+              body={body}
+              bodyRenderMode={bodyRenderMode}
+              remoteImageMode={remoteImageMode}
+              onOpenExternalLink={onOpenExternalLink}
+            />
           ) : bodyRenderMode === "native_html" && message.body_html ? (
             <NativeHtmlMessageBody
               key={message.uid}
