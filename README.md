@@ -7,9 +7,6 @@ Mine Mail 使用 **Tauri 2 + React 19 + Rust + SQLite** 构建。项目希望在
 > [!IMPORTANT]
 > Mine Mail 目前是开发预览版（MVP），尚未提供经过签名的公开安装包，也未达到生产环境所需的完整兼容性与安全审计标准。当前实机开发和验收平台为 Windows 11；macOS 与 Linux 是目标平台，但仍需要真实设备验证。
 
-<p align="center">
-  <img src="design-qa/reply-forward-accent-current.png" alt="Mine Mail 夜间主题界面" width="100%" />
-</p>
 
 ## 当前进度
 
