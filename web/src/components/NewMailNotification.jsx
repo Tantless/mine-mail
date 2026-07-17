@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { EnvelopeSimple, X } from "@phosphor-icons/react";
+import { X } from "@phosphor-icons/react";
 import { mailApi } from "../services/mailApi.js";
+import { BrandLogo } from "./BrandLogo.jsx";
 
 const visibleDurationMs = 8000;
 const validThemes = new Set(["daylight", "night", "dusk", "forest"]);
@@ -177,7 +178,7 @@ export function NewMailNotification() {
         onClick={openMessage}
       >
         <span className="new-mail-notification__icon" aria-hidden="true">
-          <EnvelopeSimple size={25} weight="duotone" />
+          <BrandLogo />
         </span>
         <span className="new-mail-notification__copy">
           <span className="new-mail-notification__eyebrow">

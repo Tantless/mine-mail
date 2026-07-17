@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { EnvelopeSimple, GoogleLogo, ShieldCheck, ShieldWarning } from "@phosphor-icons/react";
+import { BrandLogo } from "./BrandLogo.jsx";
 
 const fallbackPresets = [
   { id: "163", label: "163 邮箱", secret_label: "客户端授权密码" },
@@ -268,8 +269,8 @@ export function AccountSetupPanel(props) {
   return (
     <div className="account-onboarding-layer">
       <section className="account-onboarding" aria-labelledby="account-onboarding-title">
-        <span className="account-onboarding__mark">
-          <EnvelopeSimple size={28} weight="duotone" />
+        <span className="account-onboarding__mark" aria-hidden="true">
+          <BrandLogo />
         </span>
         <p className="eyebrow">MINE MAIL</p>
         <h1 id="account-onboarding-title">先连接你的邮箱</h1>

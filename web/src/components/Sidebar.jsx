@@ -1,6 +1,5 @@
 import {
   Archive,
-  EnvelopeSimple,
   FileText,
   GearSix,
   Plus,
@@ -11,6 +10,7 @@ import {
   Star,
   Trash,
 } from "@phosphor-icons/react";
+import { BrandLogo } from "./BrandLogo.jsx";
 import { ProfileAvatar } from "./ProfileAvatar.jsx";
 
 const folders = [
@@ -74,8 +74,8 @@ export function Sidebar({
       <div className="sidebar__scrim" aria-hidden="true" />
       <div className="sidebar__content">
         <div className="brand" aria-label="Mine Mail">
-          <span className="brand__mark">
-            <EnvelopeSimple size={22} weight="duotone" />
+          <span className="brand__mark" aria-hidden="true">
+            <BrandLogo />
           </span>
           <span className="brand__name">Mine Mail</span>
         </div>

@@ -32,6 +32,7 @@ Cross-platform desktop mail client. Product decisions in this file are durable; 
 
 ## Visual baseline
 
+- Mine Mail's primary brand mark is the transparent fox holding an envelope in `web/src/assets/brand/mine-mail-fox.png`; use it for app/package icons, tray, notifications, onboarding, and the sidebar brand. Preserve `mine-mail-cat-candidate.png` as the approved alternate, but do not mix both mascots in one build.
 - The approved MVP material is the layered frosted treatment in `web/design/references/mine-mail-frosted-material-reference.png`: one continuous painterly wallpaper, quieter glass for the message list, more atmospheric glass for the reader, and a theme-tinted compose control. All themes inherit the shared material structure and only tune semantic tokens.
 - The native window chrome is visually fused into the app shell: keep a transparent draggable top safe area with the platform window controls in their standard positions, but no separate titlebar surface, divider, title, or duplicate logo. The single Mine Mail brand lives at the top of the left navigation.
 - Reader reply and forward actions use the active theme accent as emphasized buttons. Their shared action row spans the native reading width, with reply anchored left and forward anchored right.
