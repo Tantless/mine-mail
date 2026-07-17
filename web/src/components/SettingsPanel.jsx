@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   CheckCircle,
   CaretDown,
@@ -20,6 +20,13 @@ const remoteImageOptions = [
   { id: "blocked", label: "始终阻止" },
 ];
 
+const notificationSoundOptions = [
+  { id: "mail", label: "邮件提示音" },
+  { id: "default", label: "系统默认" },
+  { id: "im", label: "轻柔提示" },
+  { id: "reminder", label: "提醒提示" },
+];
+
 const menuItems = [
   {
     id: "account",
@@ -30,7 +37,7 @@ const menuItems = [
   {
     id: "features",
     label: "功能设定",
-    description: "同步、图片与启动",
+    description: "同步、通知、图片与启动",
     icon: SlidersHorizontal,
   },
   {
@@ -51,10 +58,16 @@ const providerNames = {
 const remoteImageRisk =
   "自动加载会连接发件人的图片服务器，可能暴露邮件打开时间、IP 地址和设备信息，并让追踪像素确认邮箱处于活跃状态。";
 
-function SettingsSelect({ id, label, value, onChange, children }) {
+function SettingsSelect({ id, label, value, onChange, disabled = false, children }) {
   return (
     <span className="settings-select-wrap">
-      <select id={id} aria-label={label} value={value} onChange={onChange}>
+      <select
+        id={id}
+        aria-label={label}
+        value={value}
+        onChange={onChange}
+        disabled={disabled}
+      >
         {children}
       </select>
       <CaretDown size={15} weight="bold" aria-hidden="true" />
@@ -72,18 +85,32 @@ export function SettingsPanel({
   accountSubmitStatus,
   accountError,
   onConfigureAccount,
+  onConnectGoogle,
+  onSwitchAccount,
+  onRemoveAccount,
   accountAvatar,
   onSetAccountAvatar,
   onRemoveAccountAvatar,
+  focusTarget,
 }) {
   const [value, setValue] = useState(settings);
   const [activeSection, setActiveSection] = useState("account");
+  const accountFormRef = useRef(null);
 
   useEffect(() => {
     setValue(settings);
   }, [settings]);
 
-  const configuredEmail = accountStatus?.email || "";
+  useEffect(() => {
+    if (focusTarget !== "account-form") return undefined;
+    setActiveSection("account");
+    const scheduleFrame = window.requestAnimationFrame || window.setTimeout;
+    const cancelFrame = window.cancelAnimationFrame || window.clearTimeout;
+    const frame = scheduleFrame(() => {
+      accountFormRef.current?.scrollIntoView?.({ block: "start", behavior: "smooth" });
+    });
+    return () => cancelFrame(frame);
+  }, [focusTarget]);
 
   return (
     <div className="settings-layer">
@@ -159,45 +186,80 @@ export function SettingsPanel({
                     {accountStatus?.configured ? (
                       <span className="settings-status-chip">
                         <CheckCircle size={15} weight="fill" />
-                        已连接
+                        {accountStatus.accountCount || accountStatus.accounts?.length || 1}/
+                        {accountStatus.maxAccounts || 3}
                       </span>
                     ) : null}
                   </div>
 
-                  {accountStatus?.configured && configuredEmail ? (
-                    <div className="settings-account-card">
-                      <ProfileAvatar
-                        className="settings-account-card__avatar"
-                        email={configuredEmail}
-                        label={configuredEmail}
-                        customSrc={accountAvatar}
-                      />
-                      <span className="settings-account-card__copy">
-                        <strong>{configuredEmail}</strong>
-                        <small>{providerNames[accountStatus.provider] || "邮箱账户"}</small>
-                      </span>
-                      <label className="secondary-button settings-account-card__avatar-action">
-                        {accountAvatar ? "更换头像" : "设置头像"}
-                        <input
-                          type="file"
-                          accept="image/png,image/jpeg,image/webp"
-                          aria-label="选择 Mine Mail 账户头像"
-                          onChange={(event) => {
-                            const file = event.target.files?.[0];
-                            if (file) void onSetAccountAvatar(file);
-                            event.target.value = "";
-                          }}
-                        />
-                      </label>
-                      {accountAvatar ? (
-                        <button
-                          type="button"
-                          className="settings-text-button"
-                          onClick={onRemoveAccountAvatar}
-                        >
-                          移除
-                        </button>
-                      ) : null}
+                  {accountStatus?.configured && accountStatus.accounts?.length ? (
+                    <div className="settings-account-list">
+                      {accountStatus.accounts.map((connectedAccount) => {
+                        const active =
+                          connectedAccount.accountId === accountStatus.activeAccountId;
+                        return (
+                          <div
+                            className="settings-account-card"
+                            data-active={active}
+                            key={connectedAccount.accountId}
+                          >
+                            <ProfileAvatar
+                              className="settings-account-card__avatar"
+                              email={connectedAccount.email}
+                              label={connectedAccount.email}
+                              customSrc={active ? accountAvatar : null}
+                            />
+                            <span className="settings-account-card__copy">
+                              <strong>{connectedAccount.email}</strong>
+                              <small>
+                                {providerNames[connectedAccount.provider] || "邮箱账户"}
+                                {active ? " · 当前账户" : ""}
+                              </small>
+                            </span>
+                            <span className="settings-account-card__actions">
+                              {active ? (
+                                <label className="secondary-button settings-account-card__avatar-action">
+                                  {accountAvatar ? "更换头像" : "设置头像"}
+                                  <input
+                                    type="file"
+                                    accept="image/png,image/jpeg,image/webp"
+                                    aria-label="选择 Mine Mail 账户头像"
+                                    onChange={(event) => {
+                                      const file = event.target.files?.[0];
+                                      if (file) void onSetAccountAvatar(file);
+                                      event.target.value = "";
+                                    }}
+                                  />
+                                </label>
+                              ) : (
+                                <button
+                                  type="button"
+                                  className="secondary-button"
+                                  onClick={() => onSwitchAccount(connectedAccount.accountId)}
+                                >
+                                  切换
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                className="settings-text-button settings-text-button--danger"
+                                onClick={() => onRemoveAccount(connectedAccount)}
+                              >
+                                移除账户
+                              </button>
+                              {active && accountAvatar ? (
+                                <button
+                                  type="button"
+                                  className="settings-text-button"
+                                  onClick={onRemoveAccountAvatar}
+                                >
+                                  移除头像
+                                </button>
+                              ) : null}
+                            </span>
+                          </div>
+                        );
+                      })}
                     </div>
                   ) : (
                     <div className="settings-account-empty">
@@ -210,7 +272,10 @@ export function SettingsPanel({
                   )}
                 </div>
 
-                <div className="settings-subsection settings-subsection--account-form">
+                <div
+                  ref={accountFormRef}
+                  className="settings-subsection settings-subsection--account-form"
+                >
                   <div className="settings-subsection__heading">
                     <span>
                       <strong className="settings-heading-with-icon">
@@ -220,13 +285,24 @@ export function SettingsPanel({
                       <small>选择服务商，并使用邮箱服务商生成的客户端授权信息。</small>
                     </span>
                   </div>
-                  <AccountSetupForm
-                    presets={accountPresets}
-                    status={null}
-                    submitStatus={accountSubmitStatus}
-                    error={accountError}
-                    onSubmit={onConfigureAccount}
-                  />
+                  {accountStatus?.canAddAccount === false ? (
+                    <div className="settings-account-empty">
+                      <Info size={25} weight="duotone" />
+                      <span>
+                        <strong>已达到 3 个账户上限</strong>
+                        <small>移除一个账户后即可连接新的邮箱。</small>
+                      </span>
+                    </div>
+                  ) : (
+                    <AccountSetupForm
+                      presets={accountPresets}
+                      status={null}
+                      submitStatus={accountSubmitStatus}
+                      error={accountError}
+                      onSubmit={onConfigureAccount}
+                      onGoogle={onConnectGoogle}
+                    />
+                  )}
                 </div>
               </section>
             ) : null}
@@ -236,7 +312,7 @@ export function SettingsPanel({
                 <header className="settings-page__heading">
                   <p className="eyebrow">PREFERENCES</p>
                   <h3 id="settings-features-title">功能设定</h3>
-                  <p>控制后台同步、邮件图片和系统启动行为。</p>
+                  <p>控制后台同步、新邮件通知、邮件图片和系统启动行为。</p>
                 </header>
 
                 <div className="settings-preference-card">
@@ -261,6 +337,83 @@ export function SettingsPanel({
                       <option value={5}>5 分钟</option>
                     </SettingsSelect>
                   </label>
+
+                  <label className="settings-preference-row settings-preference-row--toggle">
+                    <span>
+                      <strong>桌面通知</strong>
+                      <small>同步到新邮件时显示 Mine Mail 右下角通知卡片；手动刷新同样生效。</small>
+                    </span>
+                    <input
+                      type="checkbox"
+                      checked={value.notificationsEnabled}
+                      onChange={(event) =>
+                        setValue((current) => ({
+                          ...current,
+                          notificationsEnabled: event.target.checked,
+                        }))
+                      }
+                    />
+                  </label>
+
+                  <label className="settings-preference-row settings-preference-row--toggle">
+                    <span>
+                      <strong>前台也提醒</strong>
+                      <small>正在使用 Mine Mail 时也显示新邮件弹窗。</small>
+                    </span>
+                    <input
+                      type="checkbox"
+                      checked={value.foregroundNotificationsEnabled}
+                      disabled={!value.notificationsEnabled}
+                      onChange={(event) =>
+                        setValue((current) => ({
+                          ...current,
+                          foregroundNotificationsEnabled: event.target.checked,
+                        }))
+                      }
+                    />
+                  </label>
+
+                  <div className="settings-preference-row">
+                    <span>
+                      <strong>通知声音</strong>
+                      <small>新邮件通知出现时播放所选系统提示音。</small>
+                    </span>
+                    <span className="settings-notification-sound-control">
+                      <input
+                        type="checkbox"
+                        aria-label="启用通知声音"
+                        checked={value.notificationSoundEnabled}
+                        disabled={!value.notificationsEnabled}
+                        onChange={(event) =>
+                          setValue((current) => ({
+                            ...current,
+                            notificationSoundEnabled: event.target.checked,
+                          }))
+                        }
+                      />
+                      <SettingsSelect
+                        id="settings-notification-sound"
+                        label="通知声音类型"
+                        value={value.notificationSound}
+                        disabled={
+                          !value.notificationsEnabled ||
+                          !value.notificationSoundEnabled
+                        }
+                        onChange={(event) =>
+                          setValue((current) => ({
+                            ...current,
+                            notificationSound: event.target.value,
+                          }))
+                        }
+                      >
+                        {notificationSoundOptions.map((option) => (
+                          <option key={option.id} value={option.id}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </SettingsSelect>
+                    </span>
+                  </div>
 
                   <div className="settings-preference-row">
                     <span>

@@ -20,6 +20,11 @@ const MAX_DEGRADABLE_STYLE_DEPTH: usize = 6;
 const MAX_NATIVE_TABLE_DEPTH: usize = 24;
 const MAX_DEGRADABLE_TABLE_ROWS: usize = 4;
 const MAX_DEGRADABLE_TABLE_CELLS: usize = 8;
+const MAX_TEXT_DOMINANT_HTML_BYTES: usize = 12 * 1024;
+const MAX_TEXT_DOMINANT_ELEMENTS: usize = 60;
+const MAX_TEXT_DOMINANT_DEPTH: usize = 16;
+const MAX_TEXT_DOMINANT_CHARS: usize = 1_600;
+const MIN_STYLED_TEXT_DOMINANT_CHARS: usize = 80;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum MailHtmlStructure {
@@ -133,6 +138,7 @@ struct HtmlAnalysis {
     merged_table_cells: usize,
     has_sizing_layout: bool,
     has_blocking_layout: bool,
+    has_background_attribute: bool,
 }
 
 pub(crate) fn sanitize_mail_html(source: &str) -> SanitizedMailHtml {
@@ -203,6 +209,8 @@ pub(crate) fn sanitize_mail_html(source: &str) -> SanitizedMailHtml {
     .any(|needle| lower_fragment.contains(needle));
     let analysis = analyze_html(&fragment);
     let structural_bytes = fragment.len().saturating_sub(analysis.inline_image_bytes);
+    let native_candidate = sanitize_native_mail_html(source);
+    let visible_text_chars = visible_text_chars(&native_candidate);
     let source_lower = source.to_ascii_lowercase();
     let has_hard_source_tag = [
         "script", "picture", "form", "input", "button", "select", "textarea", "video", "audio",
@@ -227,7 +235,32 @@ pub(crate) fn sanitize_mail_html(source: &str) -> SanitizedMailHtml {
     let table_requires_isolation = analysis.tables > 0 && !degradable_table;
     let layout_requires_isolation =
         analysis.has_blocking_layout || (analysis.has_sizing_layout && !degradable_table);
-    let depth_limit = if degradable_table {
+    // A number of notification and person-to-person templates wrap a few
+    // lines of text in styled divs, sometimes with an avatar in a one-row
+    // table. Their CSS is ornamental rather than necessary for understanding
+    // the message. When the document is tightly bounded, prefer Mine Mail's
+    // transparent native reader and discard that sender styling. Larger
+    // layouts, image-heavy mail, nested/merged tables, and explicit legacy
+    // background attributes still retain iframe isolation.
+    let has_bounded_text_table = analysis.tables == 0
+        || (analysis.tables == 1
+            && analysis.max_table_depth == 1
+            && analysis.table_rows <= 2
+            && analysis.table_cells <= 4
+            && analysis.merged_table_cells == 0);
+    let text_dominant_template = has_bounded_text_table
+        && analysis.has_meaningful_semantics
+        && !analysis.has_background_attribute
+        && structural_bytes <= MAX_TEXT_DOMINANT_HTML_BYTES
+        && analysis.elements <= MAX_TEXT_DOMINANT_ELEMENTS
+        && analysis.max_depth <= MAX_TEXT_DOMINANT_DEPTH
+        && analysis.images <= 2
+        && visible_text_chars > 0
+        && visible_text_chars <= MAX_TEXT_DOMINANT_CHARS
+        && (analysis.style_blocks == 0
+            || (analysis.style_blocks <= 2
+                && visible_text_chars >= MIN_STYLED_TEXT_DOMINANT_CHARS));
+    let depth_limit = if degradable_table || text_dominant_template {
         MAX_NATIVE_TABLE_DEPTH
     } else {
         MAX_NATIVE_DEPTH
@@ -244,9 +277,9 @@ pub(crate) fn sanitize_mail_html(source: &str) -> SanitizedMailHtml {
     let structure = if is_plain_equivalent {
         MailHtmlStructure::PlainEquivalent
     } else if has_hard_source_tag
-        || table_requires_isolation
-        || layout_requires_isolation
-        || style_dependent_layout
+        || (table_requires_isolation && !text_dominant_template)
+        || (layout_requires_isolation && !text_dominant_template)
+        || (style_dependent_layout && !text_dominant_template)
         || structural_bytes > MAX_NATIVE_HTML_BYTES
         || analysis.elements > MAX_NATIVE_ELEMENTS
         || analysis.max_depth > depth_limit
@@ -258,8 +291,7 @@ pub(crate) fn sanitize_mail_html(source: &str) -> SanitizedMailHtml {
     } else {
         MailHtmlStructure::PlainEquivalent
     };
-    let native_fragment =
-        (structure == MailHtmlStructure::Native).then(|| sanitize_native_mail_html(source));
+    let native_fragment = (structure == MailHtmlStructure::Native).then_some(native_candidate);
 
     SanitizedMailHtml {
         fragment,
@@ -482,6 +514,7 @@ fn analyze_html(fragment: &str) -> HtmlAnalysis {
             || attribute_value(token, "bgcolor").is_some()
         {
             analysis.has_blocking_layout = true;
+            analysis.has_background_attribute = true;
         }
         if name != "img" {
             if attribute_value(token, "width").is_some()
@@ -503,6 +536,15 @@ fn analyze_html(fragment: &str) -> HtmlAnalysis {
     }
 
     analysis
+}
+
+fn visible_text_chars(fragment: &str) -> usize {
+    Html::parse_fragment(fragment)
+        .root_element()
+        .text()
+        .flat_map(str::chars)
+        .filter(|character| !character.is_whitespace())
+        .count()
 }
 
 fn attribute_value<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
@@ -1331,6 +1373,56 @@ mod tests {
         assert!(!native.contains("style="));
         assert!(!native.contains("width="));
         assert!(!native.contains("border="));
+    }
+
+    #[test]
+    fn compact_profile_card_with_ornamental_layout_uses_the_native_reader() {
+        let result = sanitize_mail_html(
+            r#"<div style="background:#fff;border-radius:12px;padding:18px">Short note</div>
+               <table style="display:table;table-layout:fixed;width:100%;background:#fff">
+                 <tbody><tr>
+                   <td style="width:64px"><img alt="avatar" width="48" height="48"
+                     src="data:image/png;base64,AQID"></td>
+                   <td style="min-width:180px"><div style="font-weight:700">Example Person</div>
+                     <a href="mailto:person@example.test">person@example.test</a></td>
+                 </tr></tbody>
+               </table>"#,
+        );
+
+        assert_eq!(result.structure, MailHtmlStructure::Native);
+        let native = result.native_fragment.expect("native contact card");
+        assert!(native.contains("Example Person"));
+        assert!(native.contains("person@example.test"));
+        assert!(native.contains("<table>"));
+        assert!(!native.contains("style="));
+        assert!(!native.contains("width="));
+    }
+
+    #[test]
+    fn compact_text_notification_discards_ornamental_template_css() {
+        let result = sanitize_mail_html(
+            r#"<!doctype html><html><head>
+               <style>.digest{background-color:#fff;color:#333}.user{display:flex;width:100%}</style>
+               <style>.action{border-top:1px solid #ddd;padding-top:14px}</style>
+               </head><body><div class="digest">
+                 <table class="user"><tbody><tr>
+                   <td><img alt="avatar" src="https://images.example/avatar.png"></td>
+                   <td><strong>Example Member</strong><br><small>Active member · June 23</small></td>
+                 </tr></tbody></table>
+                 <p>This is a short conversational notification whose content is mostly text.</p><hr>
+                 <p class="action"><a href="https://forum.example.test/topic/42">Open discussion</a>
+                   or reply to this email to respond.</p>
+                 <p>To stop these emails, <a href="https://forum.example.test/unsubscribe">unsubscribe here</a>.</p>
+               </div></body></html>"#,
+        );
+
+        assert_eq!(result.structure, MailHtmlStructure::Native);
+        let native = result.native_fragment.expect("native text notification");
+        assert!(native.contains("mostly text"));
+        assert!(native.contains("Open discussion"));
+        assert!(!native.contains("<style"));
+        assert!(!native.contains("class="));
+        assert!(!native.contains("background-color"));
     }
 
     #[test]

@@ -8,6 +8,7 @@
 *.db-shm
 *.db-wal
 password.txt
+web/src-tauri/google-oauth-client.json
 .env
 .env.*
 !.env.example

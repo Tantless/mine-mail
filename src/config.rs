@@ -18,12 +18,19 @@ pub enum SmtpSecurity {
     StartTls,
 }
 
-/// Runtime account configuration. The authorization password is zeroized on
-/// drop and deliberately omitted from `Debug` output.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AuthenticationKind {
+    Password,
+    OAuth2,
+}
+
+/// Runtime account configuration. The password or short-lived OAuth access
+/// token is zeroized on drop and deliberately omitted from `Debug` output.
 pub struct AccountConfig {
     pub account_id: String,
     pub email: String,
-    authorization_password: Zeroizing<String>,
+    authorization_secret: Zeroizing<String>,
+    authentication_kind: AuthenticationKind,
     pub imap: ServerConfig,
     pub smtp: ServerConfig,
     pub smtp_security: SmtpSecurity,
@@ -40,7 +47,48 @@ impl AccountConfig {
     ) -> Result<Self> {
         let account_id = account_id.into().trim().to_owned();
         let email = email.into().trim().to_owned();
-        let authorization_password = Zeroizing::new(authorization_password.into());
+        Self::new_with_authentication(
+            account_id,
+            email,
+            authorization_password,
+            AuthenticationKind::Password,
+            imap,
+            smtp,
+            smtp_security,
+        )
+    }
+
+    pub fn new_oauth2(
+        account_id: impl Into<String>,
+        email: impl Into<String>,
+        access_token: impl Into<String>,
+        imap: ServerConfig,
+        smtp: ServerConfig,
+        smtp_security: SmtpSecurity,
+    ) -> Result<Self> {
+        Self::new_with_authentication(
+            account_id,
+            email,
+            access_token,
+            AuthenticationKind::OAuth2,
+            imap,
+            smtp,
+            smtp_security,
+        )
+    }
+
+    fn new_with_authentication(
+        account_id: impl Into<String>,
+        email: impl Into<String>,
+        authorization_secret: impl Into<String>,
+        authentication_kind: AuthenticationKind,
+        imap: ServerConfig,
+        smtp: ServerConfig,
+        smtp_security: SmtpSecurity,
+    ) -> Result<Self> {
+        let account_id = account_id.into().trim().to_owned();
+        let email = email.into().trim().to_owned();
+        let authorization_secret = Zeroizing::new(authorization_secret.into());
 
         if account_id.is_empty() {
             return Err(MailError::Config("account id cannot be empty".to_owned()));
@@ -50,9 +98,9 @@ impl AccountConfig {
                 "account email address is invalid".to_owned(),
             ));
         }
-        if authorization_password.trim().is_empty() {
+        if authorization_secret.trim().is_empty() {
             return Err(MailError::Config(
-                "the authorization password cannot be empty".to_owned(),
+                "the authorization credential cannot be empty".to_owned(),
             ));
         }
         if imap.host.trim().is_empty() || smtp.host.trim().is_empty() {
@@ -69,7 +117,8 @@ impl AccountConfig {
         Ok(Self {
             account_id,
             email,
-            authorization_password,
+            authorization_secret,
+            authentication_kind,
             imap,
             smtp,
             smtp_security,
@@ -129,8 +178,12 @@ impl AccountConfig {
         )
     }
 
-    pub(crate) fn authorization_password(&self) -> &str {
-        self.authorization_password.as_str()
+    pub(crate) fn authorization_secret(&self) -> &str {
+        self.authorization_secret.as_str()
+    }
+
+    pub(crate) fn authentication_kind(&self) -> AuthenticationKind {
+        self.authentication_kind
     }
 }
 
@@ -140,7 +193,8 @@ impl fmt::Debug for AccountConfig {
             .debug_struct("AccountConfig")
             .field("account_id", &self.account_id)
             .field("email", &self.email)
-            .field("authorization_password", &"[REDACTED]")
+            .field("authentication_kind", &self.authentication_kind)
+            .field("authorization_secret", &"[REDACTED]")
             .field("imap", &self.imap)
             .field("smtp", &self.smtp)
             .field("smtp_security", &self.smtp_security)
@@ -150,7 +204,7 @@ impl fmt::Debug for AccountConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::{AccountConfig, ServerConfig, SmtpSecurity};
+    use super::{AccountConfig, AuthenticationKind, ServerConfig, SmtpSecurity};
 
     #[test]
     fn parses_two_line_163_credentials_without_debugging_secret() {
@@ -189,5 +243,27 @@ mod tests {
 
         assert_eq!(config.smtp_security, SmtpSecurity::StartTls);
         assert!(!format!("{config:?}").contains("app-secret"));
+    }
+
+    #[test]
+    fn oauth_access_tokens_are_typed_and_redacted() {
+        let config = AccountConfig::new_oauth2(
+            "gmail-account",
+            "demo@gmail.com",
+            "short-lived-oauth-token",
+            ServerConfig {
+                host: "imap.gmail.com".to_owned(),
+                port: 993,
+            },
+            ServerConfig {
+                host: "smtp.gmail.com".to_owned(),
+                port: 465,
+            },
+            SmtpSecurity::ImplicitTls,
+        )
+        .expect("valid OAuth account");
+
+        assert_eq!(config.authentication_kind(), AuthenticationKind::OAuth2);
+        assert!(!format!("{config:?}").contains("short-lived-oauth-token"));
     }
 }

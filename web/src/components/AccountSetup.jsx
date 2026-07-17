@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { EnvelopeSimple, ShieldWarning } from "@phosphor-icons/react";
+import { EnvelopeSimple, GoogleLogo, ShieldCheck, ShieldWarning } from "@phosphor-icons/react";
 
 const fallbackPresets = [
   { id: "163", label: "163 邮箱", secret_label: "客户端授权密码" },
-  { id: "gmail", label: "Gmail", secret_label: "应用专用密码" },
+  { id: "gmail", label: "Gmail", oauth: true, secret_label: "Google OAuth" },
   { id: "outlook", label: "Outlook", disabled: true },
   { id: "custom", label: "自定义 IMAP/SMTP", secret_label: "邮箱密码或授权密码" },
 ];
@@ -24,10 +24,18 @@ function normalizedPreset(preset) {
       null,
     secretLabel:
       preset.secretLabel ?? preset.secret_label ?? "邮箱密码或客户端授权密码",
+    oauth: Boolean(preset.oauth),
   };
 }
 
-export function AccountSetupForm({ presets, status, submitStatus, error, onSubmit }) {
+export function AccountSetupForm({
+  presets,
+  status,
+  submitStatus,
+  error,
+  onSubmit,
+  onGoogle,
+}) {
   const options = useMemo(
     () => (presets?.length ? presets : fallbackPresets).map(normalizedPreset),
     [presets],
@@ -56,6 +64,10 @@ export function AccountSetupForm({ presets, status, submitStatus, error, onSubmi
   const handleSubmit = (event) => {
     event.preventDefault();
     if (configurationBlocked || submitStatus === "saving") return;
+    if (provider === "gmail") {
+      void onGoogle?.();
+      return;
+    }
     const secret = secretRef.current?.value || "";
     if (secretRef.current) secretRef.current.value = "";
     const request = {
@@ -106,7 +118,19 @@ export function AccountSetupForm({ presets, status, submitStatus, error, onSubmi
           </span>
         </div>
       ) : (
-        <>
+        provider === "gmail" ? (
+          <div className="account-google-auth" role="status">
+            <ShieldCheck size={22} weight="duotone" />
+            <span>
+              <strong>通过 Google 安全登录</strong>
+              <small>
+                登录将在系统默认浏览器中完成。Mine Mail 不会读取你的 Google 密码，
+                OAuth 令牌只保存在系统凭据库中。
+              </small>
+            </span>
+          </div>
+        ) : (
+          <>
           <label className="settings-field">
             <span>邮箱地址</span>
             <span className="settings-input-shell inset-input-shell">
@@ -210,7 +234,8 @@ export function AccountSetupForm({ presets, status, submitStatus, error, onSubmi
               </label>
             </div>
           ) : null}
-        </>
+          </>
+        )
       )}
 
       {error ? <p className="settings-error" role="alert">{error}</p> : null}
@@ -220,9 +245,17 @@ export function AccountSetupForm({ presets, status, submitStatus, error, onSubmi
         className="send-button account-submit"
         disabled={configurationBlocked || submitStatus === "saving"}
       >
-        <EnvelopeSimple size={18} weight="fill" />
+        {provider === "gmail" ? (
+          <GoogleLogo size={18} weight="bold" />
+        ) : (
+          <EnvelopeSimple size={18} weight="fill" />
+        )}
         {submitStatus === "saving"
-          ? "正在验证并保存…"
+          ? provider === "gmail"
+            ? "等待 Google 登录…"
+            : "正在验证并保存…"
+          : provider === "gmail"
+            ? "使用 Google 登录"
           : status?.configured
             ? "更新账户"
             : "连接邮箱"}

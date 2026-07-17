@@ -5,7 +5,7 @@ import { AccountSetupForm } from "./AccountSetup.jsx";
 
 const presets = [
   { id: "163", label: "163 邮箱", secretLabel: "客户端授权密码", availableInMvp: true },
-  { id: "gmail", label: "Gmail", secretLabel: "应用专用密码", availableInMvp: true },
+  { id: "gmail", label: "Gmail", oauth: true, secretLabel: "Google OAuth", availableInMvp: true },
   {
     id: "outlook",
     label: "Outlook",
@@ -61,5 +61,26 @@ describe("AccountSetupForm", () => {
     await user.click(screen.getByRole("radio", { name: "Outlook" }));
     expect(screen.getByText(/OAuth \/ Modern Auth 尚未支持/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "连接邮箱" }).disabled).toBe(true);
+  });
+
+  it("starts Google OAuth without asking React for a password", async () => {
+    const onGoogle = vi.fn().mockResolvedValue(undefined);
+    const user = userEvent.setup();
+    render(
+      <AccountSetupForm
+        presets={presets}
+        status={{ configured: false }}
+        submitStatus="idle"
+        error={null}
+        onSubmit={vi.fn()}
+        onGoogle={onGoogle}
+      />,
+    );
+
+    await user.click(screen.getByRole("radio", { name: "Gmail" }));
+    expect(screen.queryByLabelText("邮箱地址")).toBeNull();
+    expect(screen.queryByPlaceholderText("请输入授权密码")).toBeNull();
+    await user.click(screen.getByRole("button", { name: "使用 Google 登录" }));
+    expect(onGoogle).toHaveBeenCalledOnce();
   });
 });

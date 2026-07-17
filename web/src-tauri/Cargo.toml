@@ -15,6 +15,7 @@ name = "mine-mail-desktop"
 path = "src/main.rs"
 
 [build-dependencies]
+serde_json = "1"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
@@ -24,15 +25,16 @@ ego-tree = "0.11"
 html5ever = "0.39"
 keyring = "4.1.4"
 mine-mail = { path = "../.." }
+reqwest = { version = "0.13", features = ["form", "json"] }
 rusqlite = { version = "0.40.1", features = ["bundled"] }
 scraper = "0.27"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 tauri = { version = "2", features = ["tray-icon"] }
-tauri-plugin-notification = "2"
 tempfile = "3"
-tokio = { version = "1", features = ["sync", "time"] }
+tokio = { version = "1", features = ["io-util", "net", "sync", "time"] }
+uuid = { version = "1.23", features = ["v4"] }
 zeroize = { version = "1.8", features = ["alloc"] }
 
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
@@ -40,6 +42,9 @@ open = "5"
 tauri-plugin-autostart = "2"
 tauri-plugin-single-instance = "2"
 url = "2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Media_Audio"] }
 
 # Tauri's Windows dependency graph can otherwise produce multi-gigabyte debug
 # symbol and incremental caches, which is disproportionate for this thin shell.

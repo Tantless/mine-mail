@@ -60,11 +60,19 @@ describe("mailApi desktop IPC contract", () => {
       .mockResolvedValueOnce({
         poll_interval_minutes: 3,
         autostart_enabled: true,
+        notifications_enabled: true,
+        foreground_notifications_enabled: false,
+        notification_sound_enabled: true,
+        notification_sound: "im",
         remote_image_mode: "ask",
       })
       .mockResolvedValueOnce({
         poll_interval_minutes: 1,
         autostart_enabled: false,
+        notifications_enabled: false,
+        foreground_notifications_enabled: true,
+        notification_sound_enabled: false,
+        notification_sound: "reminder",
         remote_image_mode: "blocked",
       })
       .mockResolvedValueOnce({
@@ -81,12 +89,20 @@ describe("mailApi desktop IPC contract", () => {
     expect(await mailApi.getDesktopSettings()).toEqual({
       pollingIntervalMinutes: 3,
       autostartEnabled: true,
+      notificationsEnabled: true,
+      foregroundNotificationsEnabled: false,
+      notificationSoundEnabled: true,
+      notificationSound: "im",
       remoteImageMode: "ask",
       startupError: null,
     });
     await mailApi.updateDesktopSettings({
       pollingIntervalMinutes: 1,
       autostartEnabled: false,
+      notificationsEnabled: false,
+      foregroundNotificationsEnabled: true,
+      notificationSoundEnabled: false,
+      notificationSound: "reminder",
       remoteImageMode: "blocked",
     });
     expect(await mailApi.getAccountStatus()).toMatchObject({
@@ -105,6 +121,10 @@ describe("mailApi desktop IPC contract", () => {
       settings: {
         poll_interval_minutes: 1,
         autostart_enabled: false,
+        notifications_enabled: false,
+        foreground_notifications_enabled: true,
+        notification_sound_enabled: false,
+        notification_sound: "reminder",
         remote_image_mode: "blocked",
       },
     });
@@ -151,6 +171,114 @@ describe("mailApi desktop IPC contract", () => {
     expect(ipc.listen).toHaveBeenCalledWith("mail:inbox-updated", handler);
     unlisten();
     expect(dispose).toHaveBeenCalledOnce();
+  });
+
+  it("uses narrow commands for the custom new-mail notification surface", async () => {
+    ipc.invoke
+      .mockResolvedValueOnce({
+        notificationId: 7,
+        sender: "Sender",
+        subject: "Subject",
+        uid: 42,
+        count: 1,
+        webSound: null,
+      })
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(true);
+    const { mailApi } = await import("./mailApi.js");
+
+    expect(await mailApi.getNewMailNotification()).toMatchObject({ uid: 42 });
+    await mailApi.dismissNewMailNotification(7);
+    await mailApi.openNewMailNotification(7, 42);
+
+    expect(ipc.invoke).toHaveBeenNthCalledWith(1, "get_new_mail_notification", undefined);
+    expect(ipc.invoke).toHaveBeenNthCalledWith(2, "dismiss_new_mail_notification", {
+      notificationId: 7,
+    });
+    expect(ipc.invoke).toHaveBeenNthCalledWith(3, "open_new_mail_notification", {
+      notificationId: 7,
+      uid: 42,
+    });
+  });
+
+  it("normalizes and controls a bounded multi-account desktop session", async () => {
+    const status = {
+      configured: true,
+      account_id: "account-a",
+      active_account_id: "account-a",
+      provider: "163",
+      email: "a@163.com",
+      backend_ready: true,
+      credential_available: true,
+      network_ready: true,
+      account_count: 2,
+      max_accounts: 3,
+      can_add_account: true,
+      google_oauth_configured: true,
+      accounts: [
+        {
+          account_id: "account-a",
+          provider: "163",
+          email: "a@163.com",
+          authentication: "password",
+          backend_ready: true,
+          credential_available: true,
+          network_ready: true,
+        },
+        {
+          account_id: "account-b",
+          provider: "gmail",
+          email: "b@gmail.com",
+          authentication: "google_oauth",
+          backend_ready: true,
+          credential_available: true,
+          network_ready: true,
+        },
+      ],
+    };
+    ipc.invoke.mockResolvedValue(status);
+    const { mailApi } = await import("./mailApi.js");
+
+    const normalized = await mailApi.getAccountStatus();
+    expect(normalized).toMatchObject({
+      activeAccountId: "account-a",
+      accountCount: 2,
+      maxAccounts: 3,
+      canAddAccount: true,
+    });
+    expect(normalized.accounts[1]).toMatchObject({
+      accountId: "account-b",
+      authentication: "google_oauth",
+    });
+    await mailApi.connectGoogleAccount();
+    await mailApi.switchAccount("account-b");
+    await mailApi.removeAccount("account-a");
+
+    expect(ipc.invoke).toHaveBeenNthCalledWith(2, "connect_google_account", undefined);
+    expect(ipc.invoke).toHaveBeenNthCalledWith(3, "switch_account", {
+      accountId: "account-b",
+    });
+    expect(ipc.invoke).toHaveBeenNthCalledWith(4, "remove_account", {
+      accountId: "account-a",
+    });
+  });
+
+  it("loads an inactive account snapshot without changing the active account", async () => {
+    ipc.invoke.mockResolvedValue({
+      account_id: "account-b",
+      inbox: [],
+      drafts: [],
+      outbox: [],
+    });
+    const { mailApi } = await import("./mailApi.js");
+
+    await expect(mailApi.getAccountMailboxSnapshot("account-b", 50)).resolves.toMatchObject({
+      account_id: "account-b",
+    });
+    expect(ipc.invoke).toHaveBeenCalledWith("get_account_mailbox_snapshot", {
+      accountId: "account-b",
+      limit: 50,
+    });
   });
 
   it("maps local avatar commands through the narrow desktop boundary", async () => {

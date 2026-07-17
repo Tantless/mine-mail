@@ -8,7 +8,7 @@ use async_native_tls::TlsStream;
 use futures::TryStreamExt;
 use tokio::{net::TcpStream, time::timeout};
 
-use crate::{AccountConfig, MailError, Result};
+use crate::{AccountConfig, AuthenticationKind, MailError, Result};
 
 type ImapSession = Session<TlsStream<TcpStream>>;
 
@@ -83,15 +83,32 @@ impl ImapConnection {
             .map_err(|error| MailError::Imap(error.to_string()))?
             .ok_or_else(|| MailError::Imap("server closed before IMAP greeting".to_owned()))?;
 
-        let mut session = timeout(
-            CONNECT_TIMEOUT,
-            client.login(&config.email, config.authorization_password()),
-        )
-        .await
-        .map_err(|_| MailError::Timeout {
-            operation: "IMAP authentication",
-        })?
-        .map_err(|(error, _client)| MailError::Imap(error.to_string()))?;
+        let mut session = match config.authentication_kind() {
+            AuthenticationKind::Password => timeout(
+                CONNECT_TIMEOUT,
+                client.login(&config.email, config.authorization_secret()),
+            )
+            .await
+            .map_err(|_| MailError::Timeout {
+                operation: "IMAP authentication",
+            })?
+            .map_err(|(error, _client)| MailError::Imap(error.to_string()))?,
+            AuthenticationKind::OAuth2 => {
+                let authenticator = OAuth2Authenticator {
+                    email: &config.email,
+                    access_token: config.authorization_secret(),
+                };
+                timeout(
+                    CONNECT_TIMEOUT,
+                    client.authenticate("XOAUTH2", authenticator),
+                )
+                .await
+                .map_err(|_| MailError::Timeout {
+                    operation: "IMAP OAuth authentication",
+                })?
+                .map_err(|(error, _client)| MailError::Imap(error.to_string()))?
+            }
+        };
 
         let capabilities = timeout(COMMAND_TIMEOUT, session.capabilities())
             .await
@@ -479,6 +496,22 @@ impl ImapConnection {
                 operation: "IMAP logout",
             })?
             .map_err(|error| MailError::Imap(error.to_string()))
+    }
+}
+
+struct OAuth2Authenticator<'a> {
+    email: &'a str,
+    access_token: &'a str,
+}
+
+impl async_imap::Authenticator for OAuth2Authenticator<'_> {
+    type Response = String;
+
+    fn process(&mut self, _challenge: &[u8]) -> Self::Response {
+        format!(
+            "user={}\x01auth=Bearer {}\x01\x01",
+            self.email, self.access_token
+        )
     }
 }
 

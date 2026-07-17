@@ -34,13 +34,22 @@ Mine Mail 是一个本地优先的跨平台桌面邮件客户端 MVP，技术栈
 
 ### 账户与凭据
 
-- 授权密码只保存在按账户身份隔离的操作系统密钥环条目中，不写入 SQLite、React 状态、本地存储或账户配置文件。
+- 授权密码与 Google OAuth 令牌只保存在按账户身份隔离的操作系统密钥环条目中，不写入 SQLite、React 状态、本地存储或账户配置文件。
 - 密钥环临时不可用时仍可读取本地收件箱、草稿与发件队列；同步、未缓存正文、发送和重试会保持禁用并提示修复账户。
 - 内置 163、Gmail、Outlook 和自定义 IMAP/SMTP 入口。
-- 163 和 Gmail 预填服务器地址；用户只需填写邮箱账号和授权密码/应用专用密码。
+- 163 预填服务器地址并使用客户端授权密码；Gmail 通过系统浏览器完成 Google OAuth 2.0 登录，IMAP 与 SMTP 使用 XOAUTH2。
 - 自定义账户可填写 IMAP、SMTP 主机/端口，并选择 SMTP 隐式 TLS 或 STARTTLS。
 - Outlook 入口目前会说明并阻止配置，因为正式支持需要 OAuth 2.0 / Modern Auth，不能安全地只依赖账号密码。
-- 当前只支持一个活动账户；重新配置会先验证 IMAP 和 SMTP，验证成功后才原子切换账户。
+- 最多可连接 3 个账户。界面一次显示一个活动账户，启动、托盘刷新、手动刷新与定时轮询会同步全部已连接账户；切换账户时立即读取各自 SQLite 缓存。
+- Google 登录使用桌面应用 Authorization Code + PKCE 与随机 loopback 回调；短期 access token 自动刷新，refresh token 不会跨越 Rust/React 边界。
+
+### 配置 Google 登录
+
+1. 在 Google Cloud Console 配置 OAuth consent screen，并创建类型为 **Desktop app** 的 OAuth client。
+2. 为 consent screen 加入 `openid`、`email` 与 `https://mail.google.com/` scope。后者是 Gmail IMAP/SMTP 所需的受限 scope；面向测试用户以外发布前需要按 Google 要求完成验证。
+3. Mine Mail 已内置项目的 Desktop OAuth client ID；最终用户无需设置环境变量或提供 client secret，点击 **使用 Google 登录** 即会打开系统默认浏览器。
+
+Google Cloud 项目处于 Testing 状态时，只有 Audience 中列出的测试用户可以授权；包含 Gmail scope 的测试授权及 refresh token 通常会在 7 天后失效，需要重新登录。
 
 ### 界面
 
@@ -186,8 +195,8 @@ cargo clippy --all-targets -- -D warnings
 
 ## 当前限制
 
-- 只支持一个活动账户；尚无多账户统一收件箱。
-- Outlook OAuth 2.0 / Modern Auth 尚未实现；Gmail 当前需要应用专用密码。
+- 目前最多连接 3 个账户，并逐账户同步；尚无把多个账户混排在一起的统一收件箱。
+- Outlook OAuth 2.0 / Modern Auth 尚未实现。
 - 首次同步当前只缓存最近 100 封摘要，尚无向更早邮件翻页/回填的界面。
 - 邮件仅支持纯文本显示和撰写；尚无安全 HTML 渲染、远程图片控制、富文本、附件上传/下载。含这些内容的远端草稿会只读保护。
 - 已读、星标、归档、垃圾箱、已发送等服务器文件夹操作尚未形成完整闭环。

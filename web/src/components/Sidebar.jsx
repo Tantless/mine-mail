@@ -3,6 +3,7 @@ import {
   EnvelopeSimple,
   FileText,
   GearSix,
+  Plus,
   Tray,
   Palette,
   PaperPlaneTilt,
@@ -29,6 +30,25 @@ const themeOptions = [
   { id: "forest", label: "森林", swatch: "theme-swatch--forest" },
 ];
 
+const providerNames = {
+  "163": "163 邮箱",
+  gmail: "Gmail",
+  outlook: "Outlook",
+  custom: "自定义邮箱",
+};
+
+function connectedAccounts(accountStatus) {
+  if (accountStatus?.accounts?.length) return accountStatus.accounts;
+  if (!accountStatus?.configured || !accountStatus?.email) return [];
+  return [
+    {
+      accountId: accountStatus.accountId || "primary",
+      provider: accountStatus.provider,
+      email: accountStatus.email,
+    },
+  ];
+}
+
 export function Sidebar({
   activeFolder,
   onFolderChange,
@@ -39,15 +59,15 @@ export function Sidebar({
   onThemeMenuToggle,
   counts = {},
   accountStatus,
-  accountAvatar,
+  accountAvatarFor,
+  onAccountSwitch,
+  onAddAccount,
   onOpenSettings,
 }) {
-  const accountLabel = {
-    "163": "163 邮箱",
-    gmail: "Gmail",
-    outlook: "Outlook",
-    custom: "自定义邮箱",
-  }[accountStatus?.provider] || "邮箱账户";
+  const accounts = connectedAccounts(accountStatus);
+  const maxAccounts = Math.max(accountStatus?.maxAccounts || 3, accounts.length);
+  const emptySlots = Math.max(0, maxAccounts - accounts.length);
+  const activeAccountId = accountStatus?.activeAccountId || accountStatus?.accountId;
 
   return (
     <aside className="sidebar" aria-label="邮箱导航">
@@ -91,17 +111,46 @@ export function Sidebar({
 
         <div className="sidebar__spacer" />
 
-        <div className="account-card">
-          <ProfileAvatar
-            className="account-card__avatar"
-            email={accountStatus?.email}
-            label={accountLabel}
-            customSrc={accountAvatar}
-          />
-          <span className="account-card__copy">
-            <strong>{accountLabel}</strong>
-            <small>{accountStatus?.email || "当前账户"}</small>
-          </span>
+        <div className="account-switcher" aria-label="已登录邮箱账户">
+          {Array.from({ length: emptySlots }, (_, index) => (
+            <button
+              key={`empty-account-slot-${index}`}
+              type="button"
+              className="account-add-slot"
+              aria-label={`添加邮箱账户，空位 ${index + 1}/${emptySlots}`}
+              onClick={onAddAccount}
+            >
+              <Plus size={16} weight="bold" aria-hidden="true" />
+              <span>添加账号</span>
+            </button>
+          ))}
+
+          {accounts.map((account) => {
+            const accountLabel = providerNames[account.provider] || "邮箱账户";
+            const active = account.accountId === activeAccountId;
+            return (
+              <button
+                key={account.accountId}
+                type="button"
+                className="account-card"
+                data-active={active}
+                aria-pressed={active}
+                aria-label={`${active ? "当前账户" : "切换到"} ${account.email}`}
+                onClick={() => onAccountSwitch(account.accountId)}
+              >
+                <ProfileAvatar
+                  className="account-card__avatar"
+                  email={account.email}
+                  label={accountLabel}
+                  customSrc={accountAvatarFor?.(account.email)}
+                />
+                <span className="account-card__copy">
+                  <strong>{accountLabel}</strong>
+                  <small>{account.email}</small>
+                </span>
+              </button>
+            );
+          })}
         </div>
 
         <div className="theme-control">

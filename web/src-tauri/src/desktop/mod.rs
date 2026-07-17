@@ -3,33 +3,58 @@ mod settings;
 use std::{
     fs,
     path::Path,
-    sync::{Mutex as StdMutex, RwLock},
+    sync::{
+        Mutex as StdMutex, RwLock,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{Duration, Instant},
 };
 
 use mine_mail::{DraftSyncReport, InboxMessage, SyncReport};
 use serde::Serialize;
 use tauri::{
-    App, AppHandle, Emitter, Manager,
+    App, AppHandle, Emitter, Manager, PhysicalPosition, WebviewWindow,
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
-use tauri_plugin_notification::{NotificationExt, PermissionState};
 use tokio::sync::{Mutex as AsyncMutex, MutexGuard as AsyncMutexGuard, mpsc, watch};
 use tokio::time::Instant as TokioInstant;
 
-use crate::account::BackendState;
+use crate::account::{AccountRuntime, BackendState};
 
 pub(crate) use settings::{
     DeleteProfileAvatarRequest, DesktopSettingsDto, DesktopSettingsUpdate, ProfileAvatarDto,
     SaveProfileAvatarRequest,
 };
-use settings::{DesktopSettingsStore, StoredDesktopSettings, valid_poll_interval};
+use settings::{
+    DesktopSettingsStore, NotificationBaseline, StoredDesktopSettings, valid_poll_interval,
+};
 
 const MINIMUM_AUTOMATIC_SYNC_GAP: Duration = Duration::from_secs(30);
 const DRAFT_SYNC_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const EXIT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 const SETTINGS_DATABASE_NAME: &str = "desktop-runtime.sqlite3";
+const NEW_MAIL_NOTIFICATION_WINDOW: &str = "new-mail-notification";
+const NEW_MAIL_NOTIFICATION_MARGIN: i32 = 18;
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct NewMailNotificationDto {
+    pub notification_id: u64,
+    pub sender: String,
+    pub subject: String,
+    pub uid: u32,
+    pub account_id: String,
+    pub count: usize,
+    pub web_sound: Option<settings::NotificationSound>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OpenMessageEvent {
+    uid: u32,
+    account_id: String,
+}
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum BackgroundRequest {
@@ -68,6 +93,8 @@ pub(crate) struct DesktopRuntime {
     sync_gate: AsyncMutex<()>,
     last_sync_started: StdMutex<Option<Instant>>,
     exit_handshake: StdMutex<ExitHandshakeState>,
+    notification_sequence: AtomicU64,
+    notification_popup: StdMutex<Option<NewMailNotificationDto>>,
 }
 
 impl DesktopRuntime {
@@ -120,6 +147,8 @@ impl DesktopRuntime {
                 sync_gate: AsyncMutex::new(()),
                 last_sync_started: StdMutex::new(None),
                 exit_handshake: StdMutex::new(ExitHandshakeState::default()),
+                notification_sequence: AtomicU64::new(0),
+                notification_popup: StdMutex::new(None),
             },
             sync_rx,
             shutdown_rx,
@@ -135,6 +164,9 @@ impl DesktopRuntime {
             background_enabled: settings.background_enabled,
             poll_interval_minutes: settings.poll_interval_minutes,
             notifications_enabled: settings.notifications_enabled,
+            foreground_notifications_enabled: settings.foreground_notifications_enabled,
+            notification_sound_enabled: settings.notification_sound_enabled,
+            notification_sound: settings.notification_sound,
             remote_image_mode: settings.remote_image_mode,
             autostart_enabled,
             startup_error: self
@@ -158,6 +190,15 @@ impl DesktopRuntime {
         }
         if let Some(value) = update.notifications_enabled {
             settings.notifications_enabled = value;
+        }
+        if let Some(value) = update.foreground_notifications_enabled {
+            settings.foreground_notifications_enabled = value;
+        }
+        if let Some(value) = update.notification_sound_enabled {
+            settings.notification_sound_enabled = value;
+        }
+        if let Some(value) = update.notification_sound {
+            settings.notification_sound = value;
         }
         if let Some(value) = update.remote_image_mode {
             settings.remote_image_mode = value;
@@ -206,9 +247,63 @@ impl DesktopRuntime {
             background_enabled: Some(settings.background_enabled),
             poll_interval_minutes: Some(settings.poll_interval_minutes),
             notifications_enabled: Some(settings.notifications_enabled),
+            foreground_notifications_enabled: Some(settings.foreground_notifications_enabled),
+            notification_sound_enabled: Some(settings.notification_sound_enabled),
+            notification_sound: Some(settings.notification_sound),
             remote_image_mode: Some(settings.remote_image_mode),
             autostart_enabled: None,
         })
+    }
+
+    pub(crate) fn latest_new_mail_notification(
+        &self,
+    ) -> Result<Option<NewMailNotificationDto>, String> {
+        self.notification_popup
+            .lock()
+            .map(|notification| notification.clone())
+            .map_err(|_| "The notification surface is temporarily unavailable.".to_owned())
+    }
+
+    fn publish_new_mail_notification(
+        &self,
+        sender: String,
+        subject: String,
+        uid: u32,
+        account_id: String,
+        count: usize,
+        web_sound: Option<settings::NotificationSound>,
+    ) -> Result<NewMailNotificationDto, String> {
+        let notification = NewMailNotificationDto {
+            notification_id: self.notification_sequence.fetch_add(1, Ordering::Relaxed) + 1,
+            sender,
+            subject,
+            uid,
+            account_id,
+            count,
+            web_sound,
+        };
+        *self
+            .notification_popup
+            .lock()
+            .map_err(|_| "The notification surface is temporarily unavailable.".to_owned())? =
+            Some(notification.clone());
+        Ok(notification)
+    }
+
+    fn clear_new_mail_notification(&self, notification_id: u64) -> Result<bool, String> {
+        let mut current = self
+            .notification_popup
+            .lock()
+            .map_err(|_| "The notification surface is temporarily unavailable.".to_owned())?;
+        if current
+            .as_ref()
+            .map(|notification| notification.notification_id)
+            != Some(notification_id)
+        {
+            return Ok(false);
+        }
+        *current = None;
+        Ok(true)
     }
 
     pub(crate) fn record_startup_error(&self, error: impl Into<String>) {
@@ -367,30 +462,36 @@ impl DesktopRuntime {
             .map_err(|_| "Desktop settings are temporarily unavailable.".to_owned())
     }
 
-    fn update_notification_baseline(&self, uid: u32) -> Result<(), String> {
-        let mut settings = self.settings()?;
-        settings.notification_baseline_initialized = true;
-        settings.notification_baseline_uid = uid;
-        self.persist_settings(settings, "The notification baseline could not be saved.")?;
-        *self
-            .settings
-            .write()
-            .map_err(|_| "Desktop settings are temporarily unavailable.".to_owned())? = settings;
+    fn notification_baseline(&self, account_id: &str) -> Result<NotificationBaseline, String> {
+        self.store
+            .as_ref()
+            .map(|store| store.load_notification_baseline(account_id))
+            .transpose()
+            .map_err(|_| "The notification baseline could not be read.".to_owned())
+            .map(|baseline| baseline.unwrap_or_default())
+    }
+
+    fn update_notification_baseline(&self, account_id: &str, uid: u32) -> Result<(), String> {
+        if let Some(store) = self.store.as_ref() {
+            store
+                .save_notification_baseline(
+                    account_id,
+                    NotificationBaseline {
+                        initialized: true,
+                        uid,
+                    },
+                )
+                .map_err(|_| "The notification baseline could not be saved.".to_owned())?;
+        }
         Ok(())
     }
 
-    pub(crate) fn reset_notification_baseline(&self) -> Result<(), String> {
-        let mut settings = self.settings()?;
-        settings.notification_baseline_initialized = false;
-        settings.notification_baseline_uid = 0;
-        // The in-memory account boundary must change even if the settings
-        // database is temporarily unwritable. Otherwise a newly configured
-        // account could inherit the previous account's UID baseline.
-        *self
-            .settings
-            .write()
-            .map_err(|_| "Desktop settings are temporarily unavailable.".to_owned())? = settings;
-        self.persist_settings(settings, "The notification baseline could not be reset.")?;
+    pub(crate) fn remove_notification_baseline(&self, account_id: &str) -> Result<(), String> {
+        if let Some(store) = self.store.as_ref() {
+            store
+                .delete_notification_baseline(account_id)
+                .map_err(|_| "The notification baseline could not be removed.".to_owned())?;
+        }
         Ok(())
     }
 
@@ -427,10 +528,12 @@ impl DesktopRuntime {
 pub(crate) struct SyncAllReport {
     pub inbox: SyncReport,
     pub drafts: DraftSyncReport,
+    pub accounts_synced: usize,
 }
 
 #[derive(Clone, Debug, Serialize)]
 struct InboxUpdatedEvent {
+    account_id: String,
     report: SyncReport,
 }
 
@@ -544,57 +647,116 @@ pub(crate) async fn perform_sync_all(
     }
     runtime.record_sync_start()?;
 
-    // Inbox and Drafts are independent remote mailboxes. Always attempt both
-    // so a temporary INBOX failure cannot starve five-minute Drafts sync (and
-    // vice versa); report a partial failure only after both attempts finish.
-    let inbox = sync_inbox_unlocked(app).await;
-    let drafts = sync_drafts_unlocked(app).await;
-    match (inbox, drafts) {
-        (Ok(inbox), Ok(drafts)) => Ok(Some(SyncAllReport { inbox, drafts })),
-        (Err(inbox_error), Ok(_)) => Err(format!(
-            "Inbox synchronization failed, but Drafts synchronization completed: {inbox_error}"
-        )),
-        (Ok(_), Err(drafts_error)) => Err(format!(
-            "Drafts synchronization failed, but Inbox synchronization completed: {drafts_error}"
-        )),
-        (Err(inbox_error), Err(drafts_error)) => Err(format!(
-            "Inbox synchronization failed: {inbox_error} Drafts synchronization failed: {drafts_error}"
-        )),
+    let account_runtime = app.state::<AccountRuntime>();
+    let backend_state = app.state::<BackendState>();
+    // Refresh every Google token that is near expiry before opening IMAP or
+    // SMTP. One failed refresh must not prevent the other configured accounts
+    // from synchronizing.
+    let refresh_error = account_runtime
+        .refresh_oauth_backends(&backend_state)
+        .await
+        .err();
+    let account_ids = account_runtime.account_ids();
+    if account_ids.is_empty() {
+        return Err("No mail account is configured.".to_owned());
     }
+    let active_account_id = backend_state.active_account_id();
+    let mut active_inbox = None;
+    let mut active_drafts = None;
+    let mut accounts_synced = 0;
+    let mut errors = Vec::new();
+
+    for account_id in account_ids {
+        let inbox = sync_inbox_for(app, &account_id).await;
+        let drafts = sync_drafts_for(app, &account_id).await;
+        let is_active = active_account_id.as_deref() == Some(account_id.as_str());
+        match inbox {
+            Ok(report) => {
+                if is_active {
+                    active_inbox = Some(report);
+                }
+            }
+            Err(error) => errors.push(format!("{account_id} Inbox: {error}")),
+        }
+        match drafts {
+            Ok(report) => {
+                if is_active {
+                    active_drafts = Some(report);
+                }
+            }
+            Err(error) => errors.push(format!("{account_id} Drafts: {error}")),
+        }
+        if !errors.iter().any(|error| error.starts_with(&account_id)) {
+            accounts_synced += 1;
+        }
+    }
+    if let Some(error) = refresh_error {
+        errors.push(error);
+    }
+    if !errors.is_empty() {
+        return Err(format!(
+            "Some account synchronization failed: {}",
+            errors.join(" ")
+        ));
+    }
+    Ok(Some(SyncAllReport {
+        inbox: active_inbox.ok_or_else(|| "The active Inbox was not synchronized.".to_owned())?,
+        drafts: active_drafts
+            .ok_or_else(|| "The active Drafts mailbox was not synchronized.".to_owned())?,
+        accounts_synced,
+    }))
 }
 
 pub(crate) async fn perform_inbox_sync(app: &AppHandle) -> Result<SyncReport, String> {
     let runtime = app.state::<DesktopRuntime>();
     let _guard = runtime.sync_gate.lock().await;
     runtime.record_sync_start()?;
-    sync_inbox_unlocked(app).await
+    let account_runtime = app.state::<AccountRuntime>();
+    let backend_state = app.state::<BackendState>();
+    account_runtime
+        .refresh_active_oauth_backend(&backend_state)
+        .await?;
+    let account_id = backend_state
+        .active_account_id()
+        .ok_or_else(|| "No mail account is selected.".to_owned())?;
+    sync_inbox_for(app, &account_id).await
 }
 
 pub(crate) async fn perform_draft_sync(app: &AppHandle) -> Result<DraftSyncReport, String> {
     let runtime = app.state::<DesktopRuntime>();
     let _guard = runtime.sync_gate.lock().await;
-    sync_drafts_unlocked(app).await
+    let account_runtime = app.state::<AccountRuntime>();
+    let backend_state = app.state::<BackendState>();
+    account_runtime
+        .refresh_active_oauth_backend(&backend_state)
+        .await?;
+    let account_id = backend_state
+        .active_account_id()
+        .ok_or_else(|| "No mail account is selected.".to_owned())?;
+    sync_drafts_for(app, &account_id).await
 }
 
-async fn sync_inbox_unlocked(app: &AppHandle) -> Result<SyncReport, String> {
-    let backend = app.state::<BackendState>().network()?;
+async fn sync_inbox_for(app: &AppHandle, account_id: &str) -> Result<SyncReport, String> {
+    let backend = app.state::<BackendState>().network_for(account_id)?;
     let report = backend
         .sync_inbox(crate::INBOX_SYNC_LIMIT)
         .await
         .map_err(crate::safe_mail_error)?;
 
     if let Ok(messages) = backend.list_inbox(crate::INBOX_LIST_LIMIT) {
-        update_notification_baseline_and_notify(app, &report, &messages);
+        update_notification_baseline_and_notify(app, account_id, &report, &messages);
     }
     let _ = app.emit(
         "mail:inbox-updated",
         InboxUpdatedEvent {
+            account_id: account_id.to_owned(),
             report: report.clone(),
         },
     );
     let prefetch_backend = backend.clone();
     let prefetch_app = app.clone();
     let prefetch_report = report.clone();
+    let prefetch_account_id = account_id.to_owned();
     tauri::async_runtime::spawn(async move {
         if let Ok(prefetched) = prefetch_backend
             .prefetch_inbox_bodies(
@@ -608,6 +770,7 @@ async fn sync_inbox_unlocked(app: &AppHandle) -> Result<SyncReport, String> {
             let _ = prefetch_app.emit(
                 "mail:inbox-updated",
                 InboxUpdatedEvent {
+                    account_id: prefetch_account_id,
                     report: prefetch_report,
                 },
             );
@@ -616,8 +779,8 @@ async fn sync_inbox_unlocked(app: &AppHandle) -> Result<SyncReport, String> {
     Ok(report)
 }
 
-async fn sync_drafts_unlocked(app: &AppHandle) -> Result<DraftSyncReport, String> {
-    let backend = app.state::<BackendState>().network()?;
+async fn sync_drafts_for(app: &AppHandle, account_id: &str) -> Result<DraftSyncReport, String> {
+    let backend = app.state::<BackendState>().network_for(account_id)?;
     let report = backend
         .sync_drafts(None)
         .await
@@ -631,11 +794,15 @@ async fn sync_drafts_unlocked(app: &AppHandle) -> Result<DraftSyncReport, String
 
 fn update_notification_baseline_and_notify(
     app: &AppHandle,
+    account_id: &str,
     report: &SyncReport,
     messages: &[InboxMessage],
 ) {
     let runtime = app.state::<DesktopRuntime>();
-    let Ok(settings) = runtime.settings() else {
+    let (Ok(settings), Ok(baseline)) = (
+        runtime.settings(),
+        runtime.notification_baseline(account_id),
+    ) else {
         return;
     };
     let current_highest_uid = messages
@@ -644,86 +811,185 @@ fn update_notification_baseline_and_notify(
         .max()
         .unwrap_or(0);
 
-    if !settings.notification_baseline_initialized || report.uid_validity_reset {
-        let _ = runtime.update_notification_baseline(current_highest_uid);
+    if !baseline.initialized || report.uid_validity_reset {
+        let _ = runtime.update_notification_baseline(account_id, current_highest_uid);
         return;
     }
 
-    let baseline = settings.notification_baseline_uid;
+    let baseline = baseline.uid;
     if runtime
-        .update_notification_baseline(current_highest_uid.max(baseline))
+        .update_notification_baseline(account_id, current_highest_uid.max(baseline))
         .is_err()
     {
         return;
     }
-    if !settings.notifications_enabled {
-        return;
-    }
-
     let mut new_unread: Vec<&InboxMessage> = messages
         .iter()
         .filter(|message| message.uid > baseline && !is_seen(message))
         .collect();
     new_unread.sort_by_key(|message| message.uid);
-    if new_unread.is_empty() || main_window_is_active(app) || !notification_permission_granted(app)
+    if new_unread.is_empty()
+        || !should_deliver_new_mail_notification(settings, main_window_is_active(app))
     {
         return;
     }
 
-    if new_unread.len() > 3 {
-        let _ = app
-            .notification()
-            .builder()
-            .title("Mine Mail")
-            .body(format!("收到 {} 封新未读邮件", new_unread.len()))
-            .show();
+    let newest = new_unread
+        .last()
+        .expect("new_unread is known to contain at least one message");
+    let newest_sender = notification_sender(newest);
+    let newest_subject = notification_subject(newest);
+    let count = new_unread.len();
+    let (sender, subject) = if count == 1 {
+        (newest_sender, newest_subject)
+    } else {
+        (
+            format!("收到 {count} 封新邮件"),
+            format!("最新：{newest_sender} · {newest_subject}"),
+        )
+    };
+    show_new_mail_notification(
+        app,
+        sender,
+        subject,
+        newest.uid,
+        account_id.to_owned(),
+        count,
+        settings,
+    );
+}
+
+fn should_deliver_new_mail_notification(
+    settings: StoredDesktopSettings,
+    main_window_is_active: bool,
+) -> bool {
+    settings.notifications_enabled
+        && (!main_window_is_active || settings.foreground_notifications_enabled)
+}
+
+fn show_new_mail_notification(
+    app: &AppHandle,
+    sender: String,
+    subject: String,
+    uid: u32,
+    account_id: String,
+    count: usize,
+    settings: StoredDesktopSettings,
+) {
+    let runtime = app.state::<DesktopRuntime>();
+    let web_sound = if settings.notification_sound_enabled {
+        web_sound(settings.notification_sound)
+    } else {
+        None
+    };
+    let Ok(notification) = runtime.publish_new_mail_notification(
+        sanitize_notification_text(&sender, 80),
+        sanitize_notification_text(&subject, 140),
+        uid,
+        account_id,
+        count,
+        web_sound,
+    ) else {
         return;
+    };
+
+    if settings.notification_sound_enabled {
+        play_native_notification_sound(settings.notification_sound);
     }
 
-    for message in new_unread {
-        let sender = message
-            .sender
-            .as_ref()
-            .map(|address| {
-                address
-                    .name
-                    .as_deref()
-                    .filter(|name| !name.trim().is_empty())
-                    .unwrap_or(&address.email)
-            })
-            .unwrap_or("未知发件人");
-        let subject = if message.subject.trim().is_empty() {
-            "(无主题)"
-        } else {
-            &message.subject
-        };
-        let _ = app
-            .notification()
-            .builder()
-            .title(sanitize_notification_text(sender, 80))
-            .body(sanitize_notification_text(subject, 140))
-            .show();
+    if let Some(window) = app.get_webview_window(NEW_MAIL_NOTIFICATION_WINDOW) {
+        position_notification_window(app, &window);
+        let _ = window.show();
+        let _ = app.emit_to(
+            NEW_MAIL_NOTIFICATION_WINDOW,
+            "mail:new-mail-notification",
+            notification,
+        );
     }
 }
+
+fn notification_sender(message: &InboxMessage) -> String {
+    message
+        .sender
+        .as_ref()
+        .map(|address| {
+            address
+                .name
+                .as_deref()
+                .filter(|name| !name.trim().is_empty())
+                .unwrap_or(&address.email)
+                .to_owned()
+        })
+        .unwrap_or_else(|| "未知发件人".to_owned())
+}
+
+fn notification_subject(message: &InboxMessage) -> String {
+    if message.subject.trim().is_empty() {
+        "(无主题)".to_owned()
+    } else {
+        message.subject.clone()
+    }
+}
+
+fn position_notification_window(app: &AppHandle, window: &WebviewWindow) {
+    let monitor = app
+        .get_webview_window("main")
+        .and_then(|main| main.current_monitor().ok().flatten())
+        .or_else(|| window.current_monitor().ok().flatten())
+        .or_else(|| window.primary_monitor().ok().flatten());
+    let (Some(monitor), Ok(window_size)) = (monitor, window.outer_size()) else {
+        return;
+    };
+    let work_area = monitor.work_area();
+    let x = work_area.position.x + work_area.size.width as i32
+        - window_size.width as i32
+        - NEW_MAIL_NOTIFICATION_MARGIN;
+    let y = work_area.position.y + work_area.size.height as i32
+        - window_size.height as i32
+        - NEW_MAIL_NOTIFICATION_MARGIN;
+    let _ = window.set_position(PhysicalPosition::new(
+        x.max(work_area.position.x),
+        y.max(work_area.position.y),
+    ));
+}
+
+#[cfg(target_os = "windows")]
+fn web_sound(_sound: settings::NotificationSound) -> Option<settings::NotificationSound> {
+    None
+}
+
+#[cfg(not(target_os = "windows"))]
+fn web_sound(sound: settings::NotificationSound) -> Option<settings::NotificationSound> {
+    Some(sound)
+}
+
+#[cfg(target_os = "windows")]
+fn play_native_notification_sound(sound: settings::NotificationSound) {
+    use windows_sys::Win32::Media::Audio::{PlaySoundW, SND_ALIAS, SND_ASYNC, SND_NODEFAULT};
+
+    let alias: Vec<u16> = sound
+        .system_resource_name()
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    // SAFETY: `alias` is a NUL-terminated UTF-16 string that remains alive for
+    // the duration of the call. SND_ASYNC makes winmm retain its own copy.
+    unsafe {
+        PlaySoundW(
+            alias.as_ptr(),
+            std::ptr::null_mut(),
+            SND_ALIAS | SND_ASYNC | SND_NODEFAULT,
+        );
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn play_native_notification_sound(_sound: settings::NotificationSound) {}
 
 fn main_window_is_active(app: &AppHandle) -> bool {
     app.get_webview_window("main").is_some_and(|window| {
         window.is_visible().unwrap_or(false) && window.is_focused().unwrap_or(false)
     })
-}
-
-fn notification_permission_granted(app: &AppHandle) -> bool {
-    let notifications = app.notification();
-    match notifications.permission_state() {
-        Ok(PermissionState::Granted) => true,
-        Ok(PermissionState::Prompt | PermissionState::PromptWithRationale) => {
-            matches!(
-                notifications.request_permission(),
-                Ok(PermissionState::Granted)
-            )
-        }
-        Ok(PermissionState::Denied) | Err(_) => false,
-    }
 }
 
 fn is_seen(message: &InboxMessage) -> bool {
@@ -794,6 +1060,45 @@ pub(crate) fn show_main_window(app: &AppHandle, force_sync: bool) {
         let _ = window.set_focus();
     }
     request_sync(app, force_sync);
+}
+
+pub(crate) fn dismiss_new_mail_notification(
+    app: &AppHandle,
+    notification_id: u64,
+) -> Result<bool, String> {
+    let runtime = app.state::<DesktopRuntime>();
+    if !runtime.clear_new_mail_notification(notification_id)? {
+        return Ok(false);
+    }
+    if let Some(window) = app.get_webview_window(NEW_MAIL_NOTIFICATION_WINDOW) {
+        window
+            .hide()
+            .map_err(|_| "The notification window could not be hidden.".to_owned())?;
+    }
+    Ok(true)
+}
+
+pub(crate) fn open_new_mail_notification(
+    app: &AppHandle,
+    notification_id: u64,
+    uid: u32,
+    account_id: String,
+) -> Result<bool, String> {
+    let runtime = app.state::<DesktopRuntime>();
+    if !runtime.clear_new_mail_notification(notification_id)? {
+        return Ok(false);
+    }
+    if let Some(window) = app.get_webview_window(NEW_MAIL_NOTIFICATION_WINDOW) {
+        let _ = window.hide();
+    }
+    show_main_window(app, false);
+    app.emit_to(
+        "main",
+        "mail:open-message",
+        OpenMessageEvent { uid, account_id },
+    )
+    .map_err(|_| "The selected message could not be opened.".to_owned())?;
+    Ok(true)
 }
 
 pub(crate) fn request_sync(app: &AppHandle, force: bool) {
@@ -870,9 +1175,11 @@ mod tests {
 
     use mine_mail::{InboxMessage, MailAddress};
 
+    use super::settings::NotificationSound;
+    use super::settings::StoredDesktopSettings;
     use super::{
         BeforeExitEvent, DesktopRuntime, EXIT_HANDSHAKE_TIMEOUT, is_seen,
-        sanitize_notification_text,
+        sanitize_notification_text, should_deliver_new_mail_notification,
     };
 
     fn message(flags: Vec<String>) -> InboxMessage {
@@ -918,6 +1225,56 @@ mod tests {
             "Hello world"
         );
         assert_eq!(sanitize_notification_text("abcdef", 3), "abc…");
+    }
+
+    #[test]
+    fn foreground_notifications_can_be_disabled_without_silencing_background_mail() {
+        let mut settings = StoredDesktopSettings::default();
+        assert!(should_deliver_new_mail_notification(settings, false));
+        assert!(should_deliver_new_mail_notification(settings, true));
+
+        settings.foreground_notifications_enabled = false;
+        assert!(should_deliver_new_mail_notification(settings, false));
+        assert!(!should_deliver_new_mail_notification(settings, true));
+
+        settings.notifications_enabled = false;
+        assert!(!should_deliver_new_mail_notification(settings, false));
+    }
+
+    #[test]
+    fn notification_surface_rejects_stale_dismissals() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let (runtime, _sync_rx, _shutdown_rx) = DesktopRuntime::open(directory.path());
+        let notification = runtime
+            .publish_new_mail_notification(
+                "Sender".to_owned(),
+                "Subject".to_owned(),
+                42,
+                "account-test".to_owned(),
+                1,
+                Some(NotificationSound::Mail),
+            )
+            .expect("publish notification");
+
+        assert!(
+            !runtime
+                .clear_new_mail_notification(notification.notification_id + 1)
+                .unwrap()
+        );
+        assert_eq!(
+            runtime
+                .latest_new_mail_notification()
+                .expect("notification state")
+                .expect("pending notification")
+                .uid,
+            42,
+        );
+        assert!(
+            runtime
+                .clear_new_mail_notification(notification.notification_id)
+                .unwrap()
+        );
+        assert!(runtime.latest_new_mail_notification().unwrap().is_none());
     }
 
     #[test]

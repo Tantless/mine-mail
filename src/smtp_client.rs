@@ -3,10 +3,13 @@ use std::time::Duration;
 use lettre::{
     AsyncSmtpTransport, AsyncTransport, Tokio1Executor,
     address::Envelope,
-    transport::smtp::{Error as SmtpError, authentication::Credentials},
+    transport::smtp::{
+        Error as SmtpError,
+        authentication::{Credentials, Mechanism},
+    },
 };
 
-use crate::{AccountConfig, MailError, OutboxStatus, Result, SmtpSecurity};
+use crate::{AccountConfig, AuthenticationKind, MailError, OutboxStatus, Result, SmtpSecurity};
 
 const SMTP_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -24,9 +27,9 @@ impl SmtpClient {
     pub fn new(config: &AccountConfig) -> Result<Self> {
         let credentials = Credentials::new(
             config.email.clone(),
-            config.authorization_password().to_owned(),
+            config.authorization_secret().to_owned(),
         );
-        let transport = match config.smtp_security {
+        let builder = match config.smtp_security {
             SmtpSecurity::ImplicitTls => {
                 AsyncSmtpTransport::<Tokio1Executor>::relay(&config.smtp.host)
             }
@@ -36,9 +39,13 @@ impl SmtpClient {
         }
         .map_err(|error| MailError::Smtp(format!("cannot configure TLS: {error}")))?
         .port(config.smtp.port)
-        .credentials(credentials)
-        .timeout(Some(SMTP_TIMEOUT))
-        .build();
+        .credentials(credentials);
+        let builder = if config.authentication_kind() == AuthenticationKind::OAuth2 {
+            builder.authentication(vec![Mechanism::Xoauth2])
+        } else {
+            builder
+        };
+        let transport = builder.timeout(Some(SMTP_TIMEOUT)).build();
         Ok(Self { transport })
     }
 

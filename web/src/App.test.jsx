@@ -99,6 +99,110 @@ describe("Mine Mail MVP", () => {
     expect(document.querySelector(".list-status")).toBeNull();
   });
 
+  it("opens the settings account form from a sidebar add-account slot", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await screen.findByText("demo@163.com");
+    const addSlots = screen.getAllByRole("button", { name: /添加邮箱账户/ });
+    expect(addSlots).toHaveLength(2);
+    await user.click(addSlots[0]);
+
+    expect(await screen.findByRole("dialog", { name: "设置" })).toBeTruthy();
+    expect(screen.getByText("连接新账户")).toBeTruthy();
+  });
+
+  it("paints a prewarmed mailbox immediately while the native account switch is pending", async () => {
+    const user = userEvent.setup();
+    const pendingSwitch = deferred();
+    const accountA = {
+      accountId: "account-a",
+      provider: "163",
+      email: "a@163.com",
+      authentication: "password",
+      backendReady: true,
+      credentialAvailable: true,
+      networkReady: true,
+    };
+    const accountB = {
+      accountId: "account-b",
+      provider: "gmail",
+      email: "b@gmail.com",
+      authentication: "google_oauth",
+      backendReady: true,
+      credentialAvailable: true,
+      networkReady: true,
+    };
+    const statusA = {
+      configured: true,
+      ...accountA,
+      activeAccountId: accountA.accountId,
+      accounts: [accountA, accountB],
+      accountCount: 2,
+      maxAccounts: 3,
+      canAddAccount: true,
+    };
+    const statusB = {
+      ...statusA,
+      ...accountB,
+      activeAccountId: accountB.accountId,
+    };
+    const cachedMessage = {
+      id: 202,
+      mailbox: "INBOX",
+      uid: 202,
+      subject: "Gmail 本地缓存即时显示",
+      sender: { name: "Google", email: "no-reply@google.com" },
+      to: [{ name: null, email: "b@gmail.com" }],
+      cc: [],
+      sent_at: "2026-07-17T10:00:00Z",
+      internal_date: "2026-07-17T10:00:00Z",
+      flags: ["\\Seen"],
+      size_bytes: 100,
+      preview: "切换不等待网络同步",
+      body_text: null,
+      body_html: null,
+      body_render_mode: "plain",
+      body_segments: [],
+      body_html_available: false,
+      body_html_loaded: false,
+      has_remote_images: false,
+      attachment_names: [],
+      body_fetched: false,
+      synced_at: "2026-07-17T10:00:00Z",
+    };
+
+    vi.spyOn(mailApi, "getAccountStatus").mockResolvedValue(statusA);
+    vi.spyOn(mailApi, "getAccountMailboxSnapshot").mockImplementation(
+      async (accountId) => ({
+        account_id: accountId,
+        inbox: accountId === accountB.accountId ? [cachedMessage] : [],
+        drafts: [],
+        outbox: [],
+      }),
+    );
+    vi.spyOn(mailApi, "switchAccount").mockReturnValue(pendingSwitch.promise);
+    const fetchMessage = vi.spyOn(mailApi, "fetchMessage").mockResolvedValue({
+      ...cachedMessage,
+      body_text: "切换不等待网络同步",
+      body_fetched: true,
+    });
+
+    render(<App />);
+    await waitFor(() => {
+      expect(mailApi.getAccountMailboxSnapshot).toHaveBeenCalledWith("account-b", 50);
+    });
+
+    await user.click(screen.getByRole("button", { name: "切换到 b@gmail.com" }));
+    expect(screen.getByRole("button", { name: "当前账户 b@gmail.com" })).toBeTruthy();
+    expect(screen.getAllByText("Gmail 本地缓存即时显示").length).toBeGreaterThan(0);
+    expect(fetchMessage).not.toHaveBeenCalled();
+
+    pendingSwitch.resolve(statusB);
+    expect(await screen.findByText("已切换到 b@gmail.com")).toBeTruthy();
+    await waitFor(() => expect(fetchMessage).toHaveBeenCalledWith(202));
+  });
+
   it("switches and persists an MVP theme", async () => {
     const user = userEvent.setup();
     render(<App />);
@@ -416,6 +520,11 @@ describe("Mine Mail MVP", () => {
     ).toBeTruthy();
     expect(screen.getByRole("tooltip").textContent).toContain("邮件打开时间");
     await user.selectOptions(screen.getByRole("combobox", { name: "自动同步间隔" }), "3");
+    await user.click(screen.getByRole("checkbox", { name: /前台也提醒/ }));
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "通知声音类型" }),
+      "reminder",
+    );
     await user.selectOptions(screen.getByRole("combobox", { name: "远程图片加载方式" }), "ask");
     await user.click(screen.getByRole("checkbox", { name: /开机启动/ }));
     await user.click(screen.getByRole("button", { name: /版本/ }));
@@ -427,6 +536,10 @@ describe("Mine Mail MVP", () => {
       expect(updateSettings).toHaveBeenCalledWith({
         pollingIntervalMinutes: 3,
         autostartEnabled: true,
+        notificationsEnabled: true,
+        foregroundNotificationsEnabled: false,
+        notificationSoundEnabled: true,
+        notificationSound: "reminder",
         remoteImageMode: "ask",
       }),
     );
@@ -507,20 +620,32 @@ describe("Mine Mail MVP", () => {
   it("keeps cached mail visible when credentials or network are unavailable", async () => {
     vi.spyOn(mailApi, "getAccountStatus").mockResolvedValue({
       configured: true,
+      accountId: "offline-account",
+      activeAccountId: "offline-account",
       provider: "163",
       email: "me@163.com",
       backendReady: true,
       credentialAvailable: false,
       networkReady: false,
       startupError: "系统凭据不可用，请重新连接账户。",
+      accounts: [
+        {
+          accountId: "offline-account",
+          provider: "163",
+          email: "me@163.com",
+          backendReady: true,
+          credentialAvailable: false,
+          networkReady: false,
+        },
+      ],
     });
-    const listInbox = vi.spyOn(mailApi, "listInbox");
+    const getSnapshot = vi.spyOn(mailApi, "getAccountMailboxSnapshot");
     render(<App />);
 
     expect(await screen.findAllByText("欢迎来到 Mine Mail")).toHaveLength(2);
     expect(screen.getByRole("alert").textContent).toContain("系统凭据不可用");
     expect(screen.queryByText("先连接你的邮箱")).toBeNull();
-    expect(listInbox).toHaveBeenCalled();
+    expect(getSnapshot).toHaveBeenCalledWith("offline-account", 50);
     expect(screen.getByRole("button", { name: "同步收件箱" }).disabled).toBe(true);
   });
 });

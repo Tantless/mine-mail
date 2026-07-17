@@ -33,22 +33,43 @@ let webOutbox = [];
 let webSettings = {
   pollingIntervalMinutes: 5,
   autostartEnabled: false,
+  notificationsEnabled: true,
+  foregroundNotificationsEnabled: true,
+  notificationSoundEnabled: true,
+  notificationSound: "mail",
   remoteImageMode: "automatic",
 };
 let webAccountStatus = {
   configured: true,
+  accountId: "demo-primary",
+  activeAccountId: "demo-primary",
   provider: "163",
   email: "demo@163.com",
   backendReady: true,
   credentialAvailable: true,
   networkReady: true,
   startupError: null,
+  accounts: [
+    {
+      accountId: "demo-primary",
+      provider: "163",
+      email: "demo@163.com",
+      authentication: "password",
+      backendReady: true,
+      credentialAvailable: true,
+      networkReady: true,
+    },
+  ],
+  accountCount: 1,
+  maxAccounts: 3,
+  canAddAccount: true,
+  googleOauthConfigured: true,
 };
 let webProfileAvatars = [];
 
 const webAccountPresets = [
   { id: "163", label: "163 邮箱", secret_label: "客户端授权密码" },
-  { id: "gmail", label: "Gmail", secret_label: "应用专用密码" },
+  { id: "gmail", label: "Gmail", oauth: true, secret_label: "Google OAuth" },
   {
     id: "outlook",
     label: "Outlook",
@@ -94,11 +115,31 @@ function normalizeSettings(settings = {}) {
   );
   const remoteImageMode =
     settings.remoteImageMode ?? settings.remote_image_mode ?? "automatic";
+  const notificationSound =
+    settings.notificationSound ?? settings.notification_sound ?? "mail";
   return {
     pollingIntervalMinutes: [1, 3, 5].includes(interval) ? interval : 5,
     autostartEnabled: Boolean(
       settings.autostartEnabled ?? settings.autostart_enabled ?? false,
     ),
+    notificationsEnabled: Boolean(
+      settings.notificationsEnabled ?? settings.notifications_enabled ?? true,
+    ),
+    foregroundNotificationsEnabled: Boolean(
+      settings.foregroundNotificationsEnabled ??
+        settings.foreground_notifications_enabled ??
+        true,
+    ),
+    notificationSoundEnabled: Boolean(
+      settings.notificationSoundEnabled ??
+        settings.notification_sound_enabled ??
+        true,
+    ),
+    notificationSound: ["default", "mail", "im", "reminder"].includes(
+      notificationSound,
+    )
+      ? notificationSound
+      : "mail",
     remoteImageMode: ["automatic", "ask", "blocked"].includes(remoteImageMode)
       ? remoteImageMode
       : "automatic",
@@ -111,15 +152,51 @@ function settingsDto(settings) {
   return {
     poll_interval_minutes: normalized.pollingIntervalMinutes,
     autostart_enabled: normalized.autostartEnabled,
+    notifications_enabled: normalized.notificationsEnabled,
+    foreground_notifications_enabled:
+      normalized.foregroundNotificationsEnabled,
+    notification_sound_enabled: normalized.notificationSoundEnabled,
+    notification_sound: normalized.notificationSound,
     remote_image_mode: normalized.remoteImageMode,
   };
 }
 
 function normalizeAccountStatus(status = {}) {
+  const normalizeAccount = (account = {}) => ({
+    accountId: account.accountId ?? account.account_id ?? null,
+    provider: account.provider ?? null,
+    email: account.email ?? null,
+    authentication: account.authentication ?? "password",
+    backendReady: Boolean(account.backendReady ?? account.backend_ready),
+    credentialAvailable: Boolean(
+      account.credentialAvailable ?? account.credential_available,
+    ),
+    networkReady: Boolean(account.networkReady ?? account.network_ready),
+  });
+  const accounts = Array.isArray(status.accounts)
+    ? status.accounts.map(normalizeAccount)
+    : status.configured
+      ? [
+          normalizeAccount({
+            accountId: status.accountId ?? status.account_id ?? "primary",
+            provider: status.provider ?? status.provider_id,
+            email: status.email,
+            authentication: status.authentication,
+            backendReady: status.backendReady ?? status.backend_ready ?? true,
+            credentialAvailable:
+              status.credentialAvailable ?? status.credential_available ?? true,
+            networkReady: status.networkReady ?? status.network_ready ?? true,
+          }),
+        ]
+      : [];
   return {
     configured: Boolean(status.configured),
+    accountId: status.accountId ?? status.account_id ?? null,
+    activeAccountId:
+      status.activeAccountId ?? status.active_account_id ?? status.accountId ?? status.account_id ?? null,
     provider: status.provider ?? status.provider_id ?? null,
     email: status.email ?? null,
+    authentication: status.authentication ?? null,
     backendReady: Boolean(status.backendReady ?? status.backend_ready ?? status.configured),
     credentialAvailable: Boolean(
       status.credentialAvailable ?? status.credential_available ?? status.configured,
@@ -132,6 +209,15 @@ function normalizeAccountStatus(status = {}) {
         status.configured,
     ),
     startupError: status.startupError ?? status.startup_error ?? null,
+    accounts,
+    accountCount: Number(status.accountCount ?? status.account_count ?? accounts.length),
+    maxAccounts: Number(status.maxAccounts ?? status.max_accounts ?? 3),
+    canAddAccount: Boolean(
+      status.canAddAccount ?? status.can_add_account ?? accounts.length < 3,
+    ),
+    googleOauthConfigured: Boolean(
+      status.googleOauthConfigured ?? status.google_oauth_configured ?? true,
+    ),
   };
 }
 
@@ -294,6 +380,18 @@ export const mailApi = {
     return webOnly(() => structuredClone(webOutbox))();
   },
 
+  async getAccountMailboxSnapshot(accountId, limit = 50) {
+    if (isTauri) {
+      return desktopInvoke("get_account_mailbox_snapshot", { accountId, limit });
+    }
+    return webOnly(() => ({
+      account_id: accountId,
+      inbox: structuredClone(webMessages.slice(0, limit)),
+      drafts: structuredClone(webDrafts),
+      outbox: structuredClone(webOutbox),
+    }))();
+  },
+
   async retryOutbox(outboxId) {
     if (isTauri) return desktopInvoke("retry_outbox", { outboxId });
     return webOnly(() => {
@@ -371,6 +469,29 @@ export const mailApi = {
     })();
   },
 
+  async getNewMailNotification() {
+    if (isTauri) return desktopInvoke("get_new_mail_notification");
+    return webOnly(() => null)();
+  },
+
+  async dismissNewMailNotification(notificationId) {
+    if (isTauri) {
+      return desktopInvoke("dismiss_new_mail_notification", { notificationId });
+    }
+    return webOnly(() => true)();
+  },
+
+  async openNewMailNotification(notificationId, uid, accountId) {
+    if (isTauri) {
+      return desktopInvoke("open_new_mail_notification", {
+        notificationId,
+        uid,
+        accountId,
+      });
+    }
+    return webOnly(() => true)();
+  },
+
   async listAccountPresets() {
     if (isTauri) return desktopInvoke("list_account_presets");
     return webOnly(() => structuredClone(webAccountPresets))();
@@ -398,6 +519,57 @@ export const mailApi = {
         credentialAvailable: true,
         networkReady: true,
         startupError: null,
+      };
+      return structuredClone(webAccountStatus);
+    })();
+  },
+
+  async connectGoogleAccount() {
+    if (isTauri) {
+      return normalizeAccountStatus(await desktopInvoke("connect_google_account"));
+    }
+    return webOnly(() => structuredClone(webAccountStatus))();
+  },
+
+  async switchAccount(accountId) {
+    if (isTauri) {
+      return normalizeAccountStatus(
+        await desktopInvoke("switch_account", { accountId }),
+      );
+    }
+    return webOnly(() => {
+      const selected = webAccountStatus.accounts.find(
+        (account) => account.accountId === accountId,
+      );
+      if (selected) {
+        webAccountStatus = {
+          ...webAccountStatus,
+          ...selected,
+          activeAccountId: selected.accountId,
+        };
+      }
+      return structuredClone(webAccountStatus);
+    })();
+  },
+
+  async removeAccount(accountId) {
+    if (isTauri) {
+      return normalizeAccountStatus(
+        await desktopInvoke("remove_account", { accountId }),
+      );
+    }
+    return webOnly(() => {
+      const accounts = webAccountStatus.accounts.filter(
+        (account) => account.accountId !== accountId,
+      );
+      const selected = accounts[0] ?? {};
+      webAccountStatus = {
+        ...webAccountStatus,
+        ...selected,
+        configured: accounts.length > 0,
+        accounts,
+        accountCount: accounts.length,
+        activeAccountId: selected.accountId ?? null,
       };
       return structuredClone(webAccountStatus);
     })();

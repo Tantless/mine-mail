@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "new-mail-notification",
+  "description": "Event-only capability set for the Mine Mail notification surface.",
+  "windows": ["new-mail-notification"],
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten"
+  ]
+}

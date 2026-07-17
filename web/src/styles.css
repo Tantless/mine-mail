@@ -41,6 +41,28 @@
   --sidebar-muted: rgba(18, 45, 59, 0.7);
   --sidebar-hover: rgba(247, 252, 255, 0.46);
   --sidebar-selected: rgba(249, 253, 255, 0.7);
+  --account-card-surface: rgba(255, 255, 255, 0.09);
+  --account-card-hover-surface: rgba(255, 255, 255, 0.17);
+  --account-card-active-surface: color-mix(
+    in srgb,
+    var(--color-primary) 14%,
+    rgba(255, 255, 255, 0.28)
+  );
+  --account-card-active-hover: color-mix(
+    in srgb,
+    var(--color-primary) 16%,
+    rgba(255, 255, 255, 0.33)
+  );
+  --account-card-active-edge: color-mix(
+    in srgb,
+    var(--color-primary) 32%,
+    rgba(255, 255, 255, 0.54)
+  );
+  --account-card-active-accent: color-mix(
+    in srgb,
+    var(--color-primary) 68%,
+    white
+  );
   --sidebar-scrim-top: rgba(241, 249, 252, 0.44);
   --sidebar-scrim-bottom: rgba(216, 231, 232, 0.42);
   --titlebar-text: #17303f;
@@ -362,6 +384,165 @@ kbd {
   font-family: inherit;
   font-size: 10px;
   line-height: 1;
+}
+
+html[data-surface="new-mail-notification"],
+html[data-surface="new-mail-notification"] body,
+html[data-surface="new-mail-notification"] #root {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+  overflow: hidden;
+  background: transparent !important;
+}
+
+.new-mail-notification {
+  position: relative;
+  width: calc(100% - 16px);
+  height: calc(100% - 16px);
+  margin: 8px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--surface-edge) 72%, white 12%);
+  border-radius: 18px;
+  background:
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--color-primary) 13%, transparent),
+      transparent 42%
+    ),
+    color-mix(in srgb, var(--compose-panel-surface) 91%, var(--color-panel) 9%);
+  box-shadow:
+    0 2px 5px rgb(17 24 39 / 18%),
+    0 1px 2px rgb(17 24 39 / 12%),
+    inset 0 1px 0 color-mix(in srgb, var(--surface-highlight) 82%, transparent);
+  color: var(--color-text);
+  animation: new-mail-notification-in 180ms cubic-bezier(0.2, 0.82, 0.2, 1) both;
+}
+
+.new-mail-notification::after {
+  position: absolute;
+  inset: auto 20px 0;
+  height: 2px;
+  border-radius: 99px;
+  background: linear-gradient(90deg, transparent, var(--color-primary), transparent);
+  content: "";
+  opacity: 0.66;
+}
+
+.new-mail-notification__main {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  grid-template-columns: 54px minmax(0, 1fr);
+  align-items: center;
+  gap: 14px;
+  padding: 13px 46px 13px 17px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.new-mail-notification__main:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--color-primary) 74%, white);
+  outline-offset: -4px;
+  border-radius: inherit;
+}
+
+.new-mail-notification__icon {
+  display: grid;
+  width: 52px;
+  height: 52px;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--color-primary) 24%, var(--surface-edge));
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--color-primary) 16%, var(--compose-control-surface));
+  color: var(--color-primary);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--surface-highlight) 75%, transparent),
+    0 8px 18px color-mix(in srgb, var(--color-primary) 12%, transparent);
+}
+
+.new-mail-notification__copy {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.new-mail-notification__eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--color-text-muted);
+  font-size: 10.5px;
+  font-weight: 720;
+  letter-spacing: 0.08em;
+}
+
+.new-mail-notification__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--color-primary);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--color-primary) 13%, transparent);
+}
+
+.new-mail-notification__copy strong,
+.new-mail-notification__copy > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.new-mail-notification__copy strong {
+  font-size: 15px;
+  line-height: 1.2;
+  font-weight: 720;
+  letter-spacing: -0.01em;
+}
+
+.new-mail-notification__copy > span:last-child {
+  color: var(--color-text-muted);
+  font-size: 13px;
+  line-height: 1.3;
+}
+
+.new-mail-notification__close {
+  position: absolute;
+  top: 13px;
+  right: 13px;
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+
+.new-mail-notification__close:hover,
+.new-mail-notification__close:focus-visible {
+  border-color: color-mix(in srgb, var(--surface-edge) 72%, transparent);
+  outline: none;
+  background: color-mix(in srgb, var(--compose-control-surface) 72%, transparent);
+  color: var(--color-text);
+}
+
+@keyframes new-mail-notification-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 
 .app-shell {
@@ -720,15 +901,81 @@ kbd {
   min-height: 20px;
 }
 
+.account-switcher {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.account-card,
+.account-add-slot {
+  width: 100%;
+  min-height: 52px;
+  border-radius: 10px;
+  color: var(--sidebar-text);
+  font: inherit;
+}
+
 .account-card {
   display: flex;
   align-items: center;
   gap: 10px;
-  min-height: 52px;
-  margin-bottom: 8px;
   padding: 8px 10px;
+  border: 1px solid transparent;
   border-radius: 10px;
-  background: rgba(255, 255, 255, 0.13);
+  background: var(--account-card-surface);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--motion-fast), border-color var(--motion-fast),
+    box-shadow var(--motion-fast), transform 80ms;
+}
+
+.account-card:hover {
+  background: var(--account-card-hover-surface);
+}
+
+.account-card:active {
+  transform: translateY(1px);
+}
+
+.account-card[data-active="true"] {
+  border-color: var(--account-card-active-edge);
+  background: var(--account-card-active-surface);
+  box-shadow: inset 3px 0 0 var(--account-card-active-accent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    0 7px 18px rgba(21, 41, 48, 0.12);
+}
+
+.account-card[data-active="true"]:hover {
+  background: var(--account-card-active-hover);
+}
+
+.account-card:focus-visible,
+.account-add-slot:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.account-add-slot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 8px 10px;
+  border: 1px dashed rgba(255, 255, 255, 0.42);
+  background: rgba(255, 255, 255, 0.035);
+  color: var(--sidebar-muted);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--motion-fast), border-color var(--motion-fast),
+    color var(--motion-fast);
+}
+
+.account-add-slot:hover {
+  border-color: rgba(255, 255, 255, 0.68);
+  background: var(--sidebar-hover);
+  color: var(--sidebar-text);
 }
 
 .account-card__avatar {
@@ -746,6 +993,7 @@ kbd {
 .account-card__copy {
   display: grid;
   gap: 2px;
+  flex: 1;
   min-width: 0;
 }
 
@@ -755,8 +1003,15 @@ kbd {
 }
 
 .account-card__copy small {
+  overflow: hidden;
   color: var(--sidebar-muted);
   font-size: 10px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.account-card[data-active="true"] .account-card__copy small {
+  color: color-mix(in srgb, var(--sidebar-text) 82%, transparent);
 }
 
 .theme-control {
@@ -1801,6 +2056,27 @@ kbd {
   border-radius: 8px;
 }
 
+.native-html-message__content table img {
+  width: auto;
+  max-width: 64px;
+  max-height: 64px;
+  margin: 0;
+  border-radius: 999px;
+  object-fit: cover;
+}
+
+.native-html-message__content img[alt^=":"][alt$=":"] {
+  display: inline-block;
+  width: 1.15em;
+  max-width: 1.15em;
+  height: 1.15em;
+  max-height: 1.15em;
+  margin: 0 0.08em;
+  border-radius: 0;
+  object-fit: contain;
+  vertical-align: -0.18em;
+}
+
 .native-html-message__content img[data-mine-mail-image-blocked="true"] {
   display: none;
 }
@@ -2832,13 +3108,30 @@ kbd {
 
 .settings-account-card {
   display: grid;
-  grid-template-columns: 52px minmax(0, 1fr) auto auto;
+  grid-template-columns: 52px minmax(0, 1fr) auto;
   gap: 11px;
   align-items: center;
   padding: 12px;
   border: 1px solid color-mix(in srgb, var(--compose-divider) 72%, transparent);
   border-radius: 12px;
   background: color-mix(in srgb, var(--compose-control-surface) 70%, transparent);
+}
+
+.settings-account-list {
+  display: grid;
+  gap: 9px;
+}
+
+.settings-account-card[data-active="true"] {
+  border-color: color-mix(in srgb, var(--color-accent) 38%, var(--compose-divider));
+}
+
+.settings-account-card__actions {
+  display: flex;
+  max-width: 230px;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 7px;
 }
 
 .settings-account-card__avatar {
@@ -2983,6 +3276,11 @@ kbd {
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 12%, transparent);
 }
 
+.settings-select-wrap select:disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
+}
+
 .settings-select-wrap > svg {
   position: absolute;
   right: 12px;
@@ -2995,6 +3293,25 @@ kbd {
   height: 19px;
   flex: 0 0 auto;
   accent-color: var(--color-primary);
+}
+
+.settings-notification-sound-control {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 12px;
+}
+
+.settings-notification-sound-control > input {
+  width: 19px;
+  height: 19px;
+  flex: 0 0 auto;
+  accent-color: var(--color-primary);
+}
+
+.settings-notification-sound-control > input:disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
 }
 
 .settings-help {
@@ -3111,6 +3428,10 @@ kbd {
 
 .settings-text-button:hover {
   color: var(--color-danger);
+}
+
+.settings-text-button--danger {
+  color: color-mix(in srgb, var(--color-danger) 78%, var(--color-text-muted));
 }
 
 .account-provider-grid {
@@ -3280,6 +3601,34 @@ kbd {
   color: var(--color-text);
 }
 
+.account-google-auth {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 11px;
+  align-items: start;
+  padding: 14px;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 30%, var(--color-border));
+  border-radius: 11px;
+  background: color-mix(in srgb, var(--color-accent) 8%, var(--color-panel));
+  color: var(--color-accent);
+}
+
+.account-google-auth > span {
+  display: grid;
+  gap: 5px;
+}
+
+.account-google-auth strong {
+  color: var(--color-text);
+  font-size: 12px;
+}
+
+.account-google-auth small {
+  color: var(--color-text-muted);
+  font-size: 10px;
+  line-height: 1.55;
+}
+
 .account-submit {
   justify-self: start;
   margin-top: 2px;
@@ -3395,6 +3744,19 @@ kbd {
     background: transparent;
   }
 
+  .account-switcher {
+    width: 44px;
+  }
+
+  .account-add-slot {
+    min-height: 44px;
+    padding: 0;
+  }
+
+  .account-add-slot span {
+    display: none;
+  }
+
   .theme-menu {
     bottom: 48px;
     left: 60px;
@@ -3482,6 +3844,19 @@ kbd {
     background: rgba(255, 255, 255, 0.13);
   }
 
+  .account-switcher {
+    width: auto;
+  }
+
+  .account-add-slot {
+    min-height: 52px;
+    padding: 8px 10px;
+  }
+
+  .account-add-slot span {
+    display: initial;
+  }
+
   .theme-menu {
     right: 0;
     bottom: 94px;
@@ -3530,7 +3905,7 @@ kbd {
   }
 
   .settings-account-card {
-    grid-template-columns: 48px minmax(0, 1fr) auto;
+    grid-template-columns: 48px minmax(0, 1fr);
   }
 
   .settings-account-card__avatar {
@@ -3538,8 +3913,11 @@ kbd {
     height: 48px;
   }
 
-  .settings-account-card .settings-text-button {
-    grid-column: 3;
+  .settings-account-card__actions {
+    grid-column: 2;
+    max-width: none;
+    justify-content: flex-start;
+    flex-wrap: wrap;
   }
 }
 
@@ -3695,10 +4073,10 @@ kbd {
     border-radius: 12px;
   }
 
-  .settings-account-card__avatar-action,
-  .settings-account-card .settings-text-button {
+  .settings-account-card__actions {
     grid-column: 2;
     justify-self: start;
+    flex-wrap: wrap;
   }
 
   .settings-preference-row {
@@ -3708,6 +4086,10 @@ kbd {
   }
 
   .settings-select-wrap {
+    width: 100%;
+  }
+
+  .settings-notification-sound-control {
     width: 100%;
   }
 

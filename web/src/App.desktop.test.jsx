@@ -26,6 +26,7 @@ const desktop = vi.hoisted(() => {
       completeExit: vi.fn(),
       cancelExit: vi.fn(),
       listOutbox: vi.fn(),
+      getAccountMailboxSnapshot: vi.fn(),
       retryOutbox: vi.fn(),
       sendDraft: vi.fn(),
       checkConnections: vi.fn(),
@@ -132,18 +133,42 @@ describe("Mine Mail desktop state bridge", () => {
     desktop.mailApi.getDesktopSettings.mockResolvedValue({
       pollingIntervalMinutes: 5,
       autostartEnabled: false,
+      notificationsEnabled: true,
+      foregroundNotificationsEnabled: true,
+      notificationSoundEnabled: true,
+      notificationSound: "mail",
       remoteImageMode: "automatic",
     });
     desktop.mailApi.listAccountPresets.mockResolvedValue([]);
     desktop.mailApi.getAccountStatus.mockResolvedValue({
       configured: true,
+      accountId: "desktop-account",
+      activeAccountId: "desktop-account",
       provider: "163",
       email: "me@163.com",
       backendReady: true,
       credentialAvailable: true,
       networkReady: true,
       startupError: null,
+      accounts: [
+        {
+          accountId: "desktop-account",
+          provider: "163",
+          email: "me@163.com",
+          backendReady: true,
+          credentialAvailable: true,
+          networkReady: true,
+        },
+      ],
     });
+    desktop.mailApi.getAccountMailboxSnapshot.mockImplementation(
+      async (accountId) => ({
+        account_id: accountId,
+        inbox: await desktop.mailApi.listInbox(50),
+        drafts: await desktop.mailApi.listDrafts(),
+        outbox: await desktop.mailApi.listOutbox(),
+      }),
+    );
     desktop.mailApi.listProfileAvatars.mockResolvedValue([]);
     desktop.mailApi.saveProfileAvatar.mockImplementation(async (request) => ({
       ownerType: request.ownerType,
@@ -206,6 +231,18 @@ describe("Mine Mail desktop state bridge", () => {
       expect(desktop.mailApi.listDrafts).toHaveBeenCalledTimes(2);
       expect(desktop.mailApi.listOutbox).toHaveBeenCalledTimes(2);
     });
+  });
+
+  it("opens the exact locally synced message selected from a desktop notification", async () => {
+    render(<App />);
+    await waitFor(() => expect(desktop.listeners.has("mail:open-message")).toBe(true));
+
+    await act(async () => {
+      desktop.listeners.get("mail:open-message")?.({ payload: { uid: 1 } });
+    });
+
+    await waitFor(() => expect(desktop.mailApi.fetchMessage).toHaveBeenCalledWith(1));
+    expect(await screen.findByText("Loaded body")).toBeTruthy();
   });
 
   it("hydrates local account and exact-contact avatars across the shell", async () => {
@@ -333,6 +370,36 @@ describe("Mine Mail desktop state bridge", () => {
         "Rich layout",
       );
     });
+  });
+
+  it("keeps the current reader stable when a new arrival moves it outside the bounded inbox", async () => {
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 600 });
+    desktop.mailApi.listInbox.mockResolvedValue([summary(1, "First mail")]);
+    desktop.mailApi.fetchMessage.mockResolvedValue({
+      ...summary(1, "First mail"),
+      body_text: "Reader content must remain visible",
+      body_fetched: true,
+    });
+    const user = userEvent.setup();
+
+    render(<App />);
+    await user.click(await screen.findByText("First mail"));
+    const reader = screen.getByLabelText("邮件阅读区");
+    expect(
+      await within(reader).findByText("Reader content must remain visible"),
+    ).toBeTruthy();
+
+    desktop.mailApi.listInbox.mockResolvedValue([summary(2, "New arrival")]);
+    await waitFor(() =>
+      expect(desktop.listeners.has("mail:inbox-updated")).toBe(true),
+    );
+    await act(async () => {
+      desktop.listeners.get("mail:inbox-updated")?.({ payload: {} });
+    });
+
+    await waitFor(() => expect(desktop.mailApi.listInbox).toHaveBeenCalledTimes(2));
+    expect(within(reader).getByText("Reader content must remain visible")).toBeTruthy();
+    expect(within(reader).getByRole("heading", { name: "First mail" })).toBeTruthy();
   });
 
   it("renders a reply as native authored text with collapsed quoted history", async () => {

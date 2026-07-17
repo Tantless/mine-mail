@@ -32,6 +32,10 @@ const validThemes = new Set(["daylight", "night", "dusk", "forest"]);
 const defaultSettings = {
   pollingIntervalMinutes: 5,
   autostartEnabled: false,
+  notificationsEnabled: true,
+  foregroundNotificationsEnabled: true,
+  notificationSoundEnabled: true,
+  notificationSound: "mail",
   remoteImageMode: "automatic",
 };
 const supportedAvatarTypes = new Set(["image/png", "image/jpeg", "image/webp"]);
@@ -59,8 +63,8 @@ const cachedBodyFields = [
   "body_fetched",
 ];
 
-function messageCacheKey(message) {
-  return `${message?.mailbox || "INBOX"}:${message?.uid}`;
+function messageCacheKey(message, accountId = "unscoped") {
+  return `${accountId}:${message?.mailbox || "INBOX"}:${message?.uid}`;
 }
 
 function bodySnapshot(message) {
@@ -203,6 +207,7 @@ export function App() {
   const [retryingOutboxId, setRetryingOutboxId] = useState(null);
   const [settings, setSettings] = useState(defaultSettings);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [settingsFocusTarget, setSettingsFocusTarget] = useState(null);
   const [settingsSaveStatus, setSettingsSaveStatus] = useState("idle");
   const [accountPresets, setAccountPresets] = useState([]);
   const [accountStatus, setAccountStatus] = useState({ configured: null });
@@ -219,6 +224,10 @@ export function App() {
   const selectionRequestRef = useRef(0);
   const selectedUidRef = useRef(null);
   const messageBodyCacheRef = useRef(new Map());
+  const accountViewsRef = useRef(new Map());
+  const accountViewLoadsRef = useRef(new Map());
+  const activeAccountIdRef = useRef(null);
+  const accountSwitchRequestRef = useRef(0);
   const platform = /Mac|iPhone|iPad/.test(navigator.platform) ? "mac" : "windows";
   const networkActionsAvailable = Boolean(
     accountStatus.configured &&
@@ -228,6 +237,20 @@ export function App() {
   );
   networkActionsAvailableRef.current = networkActionsAvailable;
   draftsRef.current = drafts;
+  activeAccountIdRef.current =
+    accountStatus.activeAccountId || accountStatus.accountId || null;
+
+  useEffect(() => {
+    const accountId = activeAccountIdRef.current;
+    if (!accountId) return;
+    accountViewsRef.current.set(accountId, {
+      messages,
+      drafts,
+      outbox,
+      selectedUid,
+      selectedMessage,
+    });
+  }, [drafts, messages, outbox, selectedMessage, selectedUid]);
 
   const showToast = useCallback((message, tone = "success", persistent = false) => {
     setToast({ message, tone, persistent, id: Date.now() });
@@ -352,7 +375,10 @@ export function App() {
         return;
       }
 
-      const cachedBody = messageBodyCacheRef.current.get(messageCacheKey(message));
+      const accountId = activeAccountIdRef.current || "unscoped";
+      const cachedBody = messageBodyCacheRef.current.get(
+        messageCacheKey(message, accountId),
+      );
       const displayMessage = cachedBody ? { ...message, ...cachedBody } : message;
       const requestId = selectionRequestRef.current + 1;
       selectionRequestRef.current = requestId;
@@ -399,7 +425,7 @@ export function App() {
           return;
         }
         messageBodyCacheRef.current.set(
-          messageCacheKey(fullMessage),
+          messageCacheKey(fullMessage, accountId),
           bodySnapshot(fullMessage),
         );
         setSelectedMessage(fullMessage);
@@ -423,30 +449,52 @@ export function App() {
 
   const refreshInbox = useCallback(
     async ({ selectFirst = false } = {}) => {
+      const accountId = activeAccountIdRef.current || "unscoped";
       const summaries = await mailApi.listInbox(50);
       const inbox = summaries.map((message) => {
-        const cachedBody = messageBodyCacheRef.current.get(messageCacheKey(message));
+        const cachedBody = messageBodyCacheRef.current.get(
+          messageCacheKey(message, accountId),
+        );
         return cachedBody ? { ...message, ...cachedBody } : message;
       });
+      const existingView = accountViewsRef.current.get(accountId) || {};
+      accountViewsRef.current.set(accountId, { ...existingView, messages: inbox });
+      if (activeAccountIdRef.current !== accountId) return inbox;
       setMessages(inbox);
       const currentUid = selectedUidRef.current;
       if (currentUid !== null) {
         const current = inbox.find((message) => message.uid === currentUid);
-        if (!current) {
-          clearSelection();
-        } else {
-          setSelectedMessage(current);
+        if (current) {
+          setSelectedMessage((previous) => {
+            if (!previous || previous.uid !== currentUid) return current;
+            const preservedBody = bodySnapshot(previous);
+            messageBodyCacheRef.current.set(
+              messageCacheKey(current, accountId),
+              preservedBody,
+            );
+            return { ...previous, ...current, ...preservedBody };
+          });
         }
+        // listInbox is deliberately bounded. A selected message can fall just
+        // outside that window when a new message arrives, so absence from this
+        // refresh is not proof that it was deleted. Keep the reader stable.
       } else if (selectFirst && inbox.length && window.innerWidth >= 720) {
         void handleSelect(inbox[0]);
       }
       return inbox;
     },
-    [clearSelection, handleSelect],
+    [handleSelect],
   );
 
   const refreshDrafts = useCallback(async () => {
+    const accountId = activeAccountIdRef.current || "unscoped";
     const localDrafts = await mailApi.listDrafts();
+    const existingView = accountViewsRef.current.get(accountId) || {};
+    accountViewsRef.current.set(accountId, {
+      ...existingView,
+      drafts: localDrafts,
+    });
+    if (activeAccountIdRef.current !== accountId) return localDrafts;
     draftsRef.current = localDrafts;
     setDrafts(localDrafts);
     const current = composerRef.current;
@@ -478,7 +526,11 @@ export function App() {
   }, [commitComposer, showToast]);
 
   const refreshOutbox = useCallback(async () => {
+    const accountId = activeAccountIdRef.current || "unscoped";
     const items = await mailApi.listOutbox();
+    const existingView = accountViewsRef.current.get(accountId) || {};
+    accountViewsRef.current.set(accountId, { ...existingView, outbox: items });
+    if (activeAccountIdRef.current !== accountId) return items;
     setOutbox(items);
     setSelectedMessage((current) => {
       if (current?.kind !== "outbox") return current;
@@ -488,33 +540,121 @@ export function App() {
     return items;
   }, []);
 
-  const loadMailboxData = useCallback(
-    async ({ selectFirst = false } = {}) => {
-      const localTasks = [
-        mailApi.listInbox(50).then((inbox) => {
-          setMessages(inbox);
-          if (selectFirst && inbox.length && window.innerWidth >= 720) {
-            void handleSelect(inbox[0]);
-          }
-          return inbox;
-        }),
-        mailApi.listDrafts().then((items) => {
-          setDrafts(items);
-          return items;
-        }),
-        mailApi.listOutbox().then((items) => {
-          setOutbox(items);
-          return items;
-        }),
-      ];
+  const cacheMailboxSnapshot = useCallback((accountId, snapshot) => {
+    const previous = accountViewsRef.current.get(accountId) || {};
+    const inbox = (snapshot?.inbox || []).map((message) => {
+      const cachedBody = messageBodyCacheRef.current.get(
+        messageCacheKey(message, accountId),
+      );
+      return cachedBody ? { ...message, ...cachedBody } : message;
+    });
+    const selectedUid = previous.selectedUid ?? null;
+    const selectedMessage = selectedUid
+      ? inbox.find((message) => message.uid === selectedUid) || previous.selectedMessage || null
+      : null;
+    const view = {
+      messages: inbox,
+      drafts: snapshot?.drafts || [],
+      outbox: snapshot?.outbox || [],
+      selectedUid,
+      selectedMessage,
+    };
+    accountViewsRef.current.set(accountId, view);
+    return view;
+  }, []);
 
-      const results = await Promise.allSettled(localTasks);
-      if (results.some((result) => result.status === "rejected")) {
-        showToast("部分本地邮箱数据没有加载完成", "error");
+  const loadAccountView = useCallback(
+    (accountId, { force = false } = {}) => {
+      if (!force && accountViewsRef.current.has(accountId)) {
+        return Promise.resolve(accountViewsRef.current.get(accountId));
       }
-      return results;
+      if (accountViewLoadsRef.current.has(accountId)) {
+        return accountViewLoadsRef.current.get(accountId);
+      }
+      const operation = mailApi
+        .getAccountMailboxSnapshot(accountId, 50)
+        .then((snapshot) => cacheMailboxSnapshot(accountId, snapshot))
+        .finally(() => {
+          if (accountViewLoadsRef.current.get(accountId) === operation) {
+            accountViewLoadsRef.current.delete(accountId);
+          }
+        });
+      accountViewLoadsRef.current.set(accountId, operation);
+      return operation;
     },
-    [handleSelect, showToast],
+    [cacheMailboxSnapshot],
+  );
+
+  const prefetchAccountViews = useCallback(
+    async (status) => {
+      const accounts = status?.accounts || [];
+      return Promise.allSettled(
+        accounts.map((account) => loadAccountView(account.accountId)),
+      );
+    },
+    [loadAccountView],
+  );
+
+  const loadMailboxData = useCallback(
+    async ({ selectFirst = false, accountId = activeAccountIdRef.current } = {}) => {
+      if (!accountId) return null;
+      try {
+        const view = await loadAccountView(accountId, { force: true });
+        if (activeAccountIdRef.current !== accountId) return view;
+        setMessages(view.messages);
+        draftsRef.current = view.drafts;
+        setDrafts(view.drafts);
+        setOutbox(view.outbox);
+        if (
+          selectFirst &&
+          view.selectedUid === null &&
+          view.messages.length &&
+          window.innerWidth >= 720
+        ) {
+          void handleSelect(view.messages[0]);
+        }
+        return view;
+      } catch (error) {
+        if (activeAccountIdRef.current === accountId) {
+          showToast("部分本地邮箱数据没有加载完成", "error");
+        }
+        throw error;
+      }
+    },
+    [handleSelect, loadAccountView, showToast],
+  );
+
+  const restoreAccountView = useCallback(
+    (accountId, view, { selectFirst = true } = {}) => {
+      const restored = view || {
+        messages: [],
+        drafts: [],
+        outbox: [],
+        selectedUid: null,
+        selectedMessage: null,
+      };
+      activeAccountIdRef.current = accountId;
+      selectionRequestRef.current += 1;
+      setMessages(restored.messages);
+      draftsRef.current = restored.drafts;
+      setDrafts(restored.drafts);
+      setOutbox(restored.outbox);
+      selectedUidRef.current = restored.selectedUid;
+      setSelectedUid(restored.selectedUid);
+      setSelectedMessage(restored.selectedMessage);
+      setMessageError(null);
+      setIsMessageLoading(false);
+      if (
+        selectFirst &&
+        restored.selectedUid === null &&
+        restored.messages.length &&
+        window.innerWidth >= 720
+      ) {
+        void handleSelect(restored.messages[0]);
+      }
+      return restored;
+    },
+    [handleSelect],
   );
 
   useEffect(() => {
@@ -547,7 +687,10 @@ export function App() {
       try {
         const status = await mailApi.getAccountStatus();
         if (cancelled) return;
+        const activeAccountId = status.activeAccountId || status.accountId || null;
+        activeAccountIdRef.current = activeAccountId;
         setAccountStatus(status);
+        void prefetchAccountViews(status);
         const backendUsable = status.configured && status.backendReady;
         if (backendUsable) {
           const networkUsable =
@@ -558,7 +701,10 @@ export function App() {
                 "本地邮件仍可阅读，但账户凭据或网络连接不可用。请重新连接账户后再同步或发送。",
             );
           }
-          void loadMailboxData({ selectFirst: true });
+          void loadMailboxData({
+            accountId: activeAccountId,
+            selectFirst: true,
+          });
         } else {
           setAccountError(
             status.startupError ||
@@ -579,7 +725,7 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [loadMailboxData]);
+  }, [loadMailboxData, prefetchAccountViews]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -718,6 +864,44 @@ export function App() {
         if (cancelled) inboxUnlisten();
         else disposers.push(inboxUnlisten);
 
+        const openMessageUnlisten = await mailApi.onMailEvent(
+          "mail:open-message",
+          (event) => {
+            const uid = Number(event?.payload?.uid);
+            const targetAccountId =
+              event?.payload?.accountId ?? event?.payload?.account_id;
+            if (!Number.isInteger(uid) || uid <= 0) return;
+            void mailApi
+              .getAccountStatus()
+              .then(async (currentStatus) => {
+                let status = currentStatus;
+                if (
+                  targetAccountId &&
+                  currentStatus.activeAccountId !== targetAccountId
+                ) {
+                  if (composerRef.current) {
+                    throw new Error("请先关闭当前写信窗口，再打开其他账户的新邮件");
+                  }
+                  status = await mailApi.switchAccount(targetAccountId);
+                }
+                setAccountStatus(status);
+                clearSelection();
+                messageBodyCacheRef.current.clear();
+                return refreshInbox();
+              })
+              .then((inbox) => {
+                const message = inbox.find((item) => item.uid === uid);
+                if (message) return handleSelect(message, true);
+                throw new Error("这封新邮件暂时不在本地收件箱中");
+              })
+              .catch((error) =>
+                reportEventError(error, "新邮件暂时无法打开"),
+              );
+          },
+        );
+        if (cancelled) openMessageUnlisten();
+        else disposers.push(openMessageUnlisten);
+
         const draftsUnlisten = await mailApi.onMailEvent(
           "mail:drafts-updated",
           () => {
@@ -829,7 +1013,15 @@ export function App() {
       cancelled = true;
       disposers.forEach((dispose) => dispose());
     };
-  }, [commitComposer, refreshDrafts, refreshInbox, refreshOutbox, saveDraftNow, showToast]);
+  }, [
+    commitComposer,
+    handleSelect,
+    refreshDrafts,
+    refreshInbox,
+    refreshOutbox,
+    saveDraftNow,
+    showToast,
+  ]);
 
   useEffect(() => {
     if (
@@ -1221,6 +1413,10 @@ export function App() {
   };
 
   const handleConfigureAccount = async (request) => {
+    if (composerRef.current) {
+      showToast("请先关闭当前写信窗口，再连接其他账户。", "error");
+      return;
+    }
     setAccountSubmitStatus("saving");
     setAccountError(null);
     try {
@@ -1254,6 +1450,145 @@ export function App() {
       const message = describeError(error, "账户配置失败，请检查地址和授权信息");
       setAccountError(message);
       setAccountSubmitStatus("error");
+    }
+  };
+
+  const applyActiveAccount = async (status, successMessage) => {
+    setAccountStatus(status);
+    activeAccountIdRef.current = status.activeAccountId || status.accountId || null;
+    clearSelection();
+    messageBodyCacheRef.current.clear();
+    setMessages([]);
+    setDrafts([]);
+    setOutbox([]);
+    if (status.configured && status.backendReady) {
+      await loadMailboxData({ selectFirst: true });
+    }
+    void prefetchAccountViews(status);
+    setAccountSubmitStatus("saved");
+    setAccountError(null);
+    if (successMessage) showToast(successMessage);
+  };
+
+  const handleConnectGoogle = async () => {
+    if (composerRef.current) {
+      showToast("请先关闭当前写信窗口，再连接其他账户。", "error");
+      return;
+    }
+    setAccountSubmitStatus("saving");
+    setAccountError(null);
+    try {
+      const status = await mailApi.connectGoogleAccount();
+      await applyActiveAccount(status, "Gmail 已通过 Google 安全连接");
+    } catch (error) {
+      const message = describeError(error, "Google 登录失败，请重试");
+      setAccountError(message);
+      setAccountSubmitStatus("error");
+    }
+  };
+
+  const handleSwitchAccount = async (accountId) => {
+    if (!accountId || accountId === accountStatus.activeAccountId) return;
+    if (composerRef.current) {
+      showToast("请先关闭当前写信窗口，再切换邮箱账户。", "error");
+      return;
+    }
+    const previousStatus = accountStatus;
+    const previousAccountId =
+      accountStatus.activeAccountId || accountStatus.accountId || null;
+    if (previousAccountId) {
+      accountViewsRef.current.set(previousAccountId, {
+        messages,
+        drafts,
+        outbox,
+        selectedUid,
+        selectedMessage,
+      });
+    }
+    const targetAccount = accountStatus.accounts?.find(
+      (account) => account.accountId === accountId,
+    );
+    if (!targetAccount) {
+      showToast("邮箱账户不存在，请刷新账户列表", "error");
+      return;
+    }
+    const optimisticStatus = {
+      ...accountStatus,
+      ...targetAccount,
+      accountId: targetAccount.accountId,
+      activeAccountId: targetAccount.accountId,
+    };
+    const requestId = accountSwitchRequestRef.current + 1;
+    accountSwitchRequestRef.current = requestId;
+    setAccountSubmitStatus("saving");
+
+    let targetView = accountViewsRef.current.get(accountId);
+    if (targetView) {
+      setAccountStatus(optimisticStatus);
+      restoreAccountView(accountId, targetView, { selectFirst: false });
+    }
+    try {
+      const viewPromise = targetView
+        ? Promise.resolve(targetView)
+        : loadAccountView(accountId).catch(() => null);
+      if (!targetView) {
+        void viewPromise.then((loadedView) => {
+          if (!loadedView || accountSwitchRequestRef.current !== requestId) return;
+          setAccountStatus(optimisticStatus);
+          restoreAccountView(accountId, loadedView, { selectFirst: false });
+        });
+      }
+      const status = await mailApi.switchAccount(accountId);
+      const loadedView = await viewPromise;
+      if (accountSwitchRequestRef.current !== requestId) return;
+      targetView = loadedView || accountViewsRef.current.get(accountId);
+      setAccountStatus(status);
+      if (activeAccountIdRef.current !== accountId || !targetView) {
+        restoreAccountView(accountId, targetView, { selectFirst: false });
+      }
+      if (
+        targetView?.selectedUid == null &&
+        targetView?.messages.length &&
+        window.innerWidth >= 720
+      ) {
+        void handleSelect(targetView.messages[0]);
+      }
+      setAccountSubmitStatus("saved");
+      setAccountError(null);
+      showToast(`已切换到 ${status.email}`);
+      void loadMailboxData({
+        accountId,
+        selectFirst: false,
+      }).catch(() => {});
+    } catch (error) {
+      if (accountSwitchRequestRef.current !== requestId) return;
+      accountSwitchRequestRef.current += 1;
+      setAccountStatus(previousStatus);
+      if (previousAccountId) {
+        restoreAccountView(previousAccountId, accountViewsRef.current.get(previousAccountId));
+      }
+      setAccountSubmitStatus("error");
+      showToast(describeError(error, "邮箱账户切换失败"), "error");
+    }
+  };
+
+  const handleRemoveAccount = async (connectedAccount) => {
+    if (!connectedAccount?.accountId) return;
+    if (composerRef.current) {
+      showToast("请先关闭当前写信窗口，再移除邮箱账户。", "error");
+      return;
+    }
+    const confirmed = window.confirm(
+      `确定从 Mine Mail 移除 ${connectedAccount.email} 吗？\n\n系统凭据会被移除；本地邮件缓存会保留，重新连接后仍可恢复。`,
+    );
+    if (!confirmed) return;
+    setAccountSubmitStatus("saving");
+    try {
+      const status = await mailApi.removeAccount(connectedAccount.accountId);
+      await applyActiveAccount(status, "邮箱账户已移除");
+    } catch (error) {
+      setAccountSubmitStatus("error");
+      showToast(describeError(error, "邮箱账户移除失败"), "error");
     }
   };
 
@@ -1363,9 +1698,16 @@ export function App() {
           onThemeMenuToggle={() => setIsThemeMenuOpen((open) => !open)}
           counts={folderCounts}
           accountStatus={accountStatus}
-          accountAvatar={profileAvatarFor("account", accountStatus.email)}
+          accountAvatarFor={(email) => profileAvatarFor("account", email)}
+          onAccountSwitch={(accountId) => void handleSwitchAccount(accountId)}
+          onAddAccount={() => {
+            setSettingsSaveStatus("idle");
+            setSettingsFocusTarget("account-form");
+            setIsSettingsOpen(true);
+          }}
           onOpenSettings={() => {
             setSettingsSaveStatus("idle");
+            setSettingsFocusTarget(null);
             setIsSettingsOpen(true);
           }}
         />
@@ -1461,6 +1803,11 @@ export function App() {
           accountSubmitStatus={accountSubmitStatus}
           accountError={accountError}
           onConfigureAccount={handleConfigureAccount}
+          onConnectGoogle={handleConnectGoogle}
+          onSwitchAccount={(accountId) => void handleSwitchAccount(accountId)}
+          onRemoveAccount={(connectedAccount) =>
+            void handleRemoveAccount(connectedAccount)
+          }
           accountAvatar={profileAvatarFor("account", accountStatus.email)}
           onSetAccountAvatar={(file) =>
             handleSaveProfileAvatar("account", accountStatus.email, file)
@@ -1468,6 +1815,7 @@ export function App() {
           onRemoveAccountAvatar={() =>
             handleDeleteProfileAvatar("account", accountStatus.email)
           }
+          focusTarget={settingsFocusTarget}
         />
       ) : null}
 
@@ -1478,6 +1826,7 @@ export function App() {
           submitStatus={accountSubmitStatus}
           error={accountError}
           onSubmit={handleConfigureAccount}
+          onGoogle={handleConnectGoogle}
         />
       ) : null}
 

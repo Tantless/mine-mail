@@ -24,6 +24,21 @@
         "decorations": false,
         "shadow": true,
         "transparent": false
+      },
+      {
+        "label": "new-mail-notification",
+        "title": "Mine Mail 新邮件",
+        "url": "index.html?surface=new-mail-notification",
+        "width": 388,
+        "height": 128,
+        "visible": false,
+        "resizable": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "focusable": false,
+        "shadow": false
       }
     ],
     "security": {

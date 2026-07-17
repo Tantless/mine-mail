@@ -18,7 +18,7 @@ use account::{
 };
 use desktop::{
     DeleteProfileAvatarRequest, DesktopRuntime, DesktopSettingsDto, DesktopSettingsUpdate,
-    ProfileAvatarDto, SaveProfileAvatarRequest,
+    NewMailNotificationDto, ProfileAvatarDto, SaveProfileAvatarRequest,
 };
 use mail_html::{
     MailBodySegmentConfidence, MailBodySegmentKind, MailBodySegmentMetadata, MailHtmlStructure,
@@ -336,6 +336,14 @@ struct OutboxItemDto {
     sent_at: Option<String>,
 }
 
+#[derive(Clone, Debug, Serialize)]
+struct AccountMailboxSnapshotDto {
+    account_id: String,
+    inbox: Vec<InboxMessageDto>,
+    drafts: Vec<DraftDto>,
+    outbox: Vec<OutboxItemDto>,
+}
+
 impl From<OutboxItem> for OutboxItemDto {
     fn from(value: OutboxItem) -> Self {
         Self {
@@ -352,7 +360,11 @@ impl From<OutboxItem> for OutboxItemDto {
 }
 
 #[tauri::command]
-async fn check_connections(backend: State<'_, BackendState>) -> CommandResult<ConnectionReport> {
+async fn check_connections(
+    account: State<'_, AccountRuntime>,
+    backend: State<'_, BackendState>,
+) -> CommandResult<ConnectionReport> {
+    account.refresh_active_oauth_backend(&backend).await?;
     let backend = backend.network()?;
     backend.check_connections().await.map_err(safe_mail_error)
 }
@@ -402,9 +414,11 @@ fn validate_external_url(value: &str) -> CommandResult<Url> {
 
 #[tauri::command]
 async fn fetch_message(
+    account: State<'_, AccountRuntime>,
     backend: State<'_, BackendState>,
     uid: u32,
 ) -> CommandResult<InboxMessageDto> {
+    let _ = account.refresh_active_oauth_backend(&backend).await;
     match backend.network() {
         Ok(network) => network
             .fetch_message(uid, false)
@@ -469,11 +483,13 @@ fn delete_draft(
 /// exact recipient confirmation supplied by the UI at send time.
 #[tauri::command]
 async fn send_draft(
+    account: State<'_, AccountRuntime>,
     backend: State<'_, BackendState>,
     draft_id: String,
     expected_local_version: u64,
     confirmed_recipients: Vec<String>,
 ) -> CommandResult<OutboxItemDto> {
+    account.refresh_active_oauth_backend(&backend).await?;
     let backend = backend.network()?;
     backend
         .send_draft(&draft_id, expected_local_version, &confirmed_recipients)
@@ -487,9 +503,11 @@ async fn send_draft(
 /// `retryable` state gate can authorize the transition back to `sending`.
 #[tauri::command]
 async fn retry_outbox(
+    account: State<'_, AccountRuntime>,
     backend: State<'_, BackendState>,
     outbox_id: String,
 ) -> CommandResult<OutboxItemDto> {
+    account.refresh_active_oauth_backend(&backend).await?;
     let backend = backend.network()?;
     backend
         .retry_outbox(&outbox_id)
@@ -507,6 +525,38 @@ fn list_outbox(backend: State<'_, BackendState>) -> CommandResult<Vec<OutboxItem
         .map_err(safe_mail_error)
 }
 
+/// Read one account's complete local navigation snapshot without changing the
+/// active account. React prewarms these bounded SQLite views so switching an
+/// already connected mailbox never waits for IMAP or exposes another account's
+/// messages while the target view is loading.
+#[tauri::command]
+fn get_account_mailbox_snapshot(
+    backend: State<'_, BackendState>,
+    account_id: String,
+    limit: Option<usize>,
+) -> CommandResult<AccountMailboxSnapshotDto> {
+    let local = backend.local_for(&account_id)?;
+    let limit = limit.unwrap_or(INBOX_LIST_LIMIT).clamp(1, INBOX_LIST_LIMIT);
+    let inbox = local
+        .list_inbox(limit)
+        .map(|messages| messages.into_iter().map(InboxMessageDto::summary).collect())
+        .map_err(safe_mail_error)?;
+    let drafts = local
+        .list_drafts()
+        .map(|drafts| drafts.into_iter().map(Into::into).collect())
+        .map_err(safe_mail_error)?;
+    let outbox = local
+        .list_outbox()
+        .map(|items| items.into_iter().map(Into::into).collect())
+        .map_err(safe_mail_error)?;
+    Ok(AccountMailboxSnapshotDto {
+        account_id,
+        inbox,
+        drafts,
+        outbox,
+    })
+}
+
 #[tauri::command]
 fn get_desktop_settings(
     app: AppHandle,
@@ -519,6 +569,28 @@ fn get_desktop_settings(
         false
     });
     runtime.settings_dto(autostart_enabled)
+}
+
+#[tauri::command]
+fn get_new_mail_notification(
+    runtime: State<'_, DesktopRuntime>,
+) -> CommandResult<Option<NewMailNotificationDto>> {
+    runtime.latest_new_mail_notification()
+}
+
+#[tauri::command]
+fn dismiss_new_mail_notification(app: AppHandle, notification_id: u64) -> CommandResult<bool> {
+    desktop::dismiss_new_mail_notification(&app, notification_id)
+}
+
+#[tauri::command]
+fn open_new_mail_notification(
+    app: AppHandle,
+    notification_id: u64,
+    uid: u32,
+    account_id: String,
+) -> CommandResult<bool> {
+    desktop::open_new_mail_notification(&app, notification_id, uid, account_id)
 }
 
 #[tauri::command]
@@ -557,7 +629,9 @@ fn update_desktop_settings(
 
     runtime.update_settings(settings)?;
 
-    let autostart_enabled = if let Some(enabled) = settings.autostart_enabled {
+    let autostart_enabled = if let Some(enabled) =
+        requested_autostart_change(previous_autostart, settings.autostart_enabled)
+    {
         if set_autostart_enabled(&app, enabled).is_err() {
             let local_rollback_failed = runtime.update_settings(previous_settings).is_err();
             let system_rollback_failed = set_autostart_enabled(&app, previous_autostart).is_err();
@@ -582,12 +656,22 @@ fn update_desktop_settings(
 
 fn set_autostart_enabled(app: &AppHandle, enabled: bool) -> CommandResult<()> {
     let autostart = app.autolaunch();
+    let current = autostart
+        .is_enabled()
+        .map_err(|_| "The system startup setting could not be read.".to_owned())?;
+    if current == enabled {
+        return Ok(());
+    }
     if enabled {
         autostart.enable()
     } else {
         autostart.disable()
     }
     .map_err(|_| "The system startup setting could not be updated.".to_owned())
+}
+
+fn requested_autostart_change(current: bool, requested: Option<bool>) -> Option<bool> {
+    requested.filter(|requested| *requested != current)
 }
 
 #[tauri::command]
@@ -634,16 +718,55 @@ async fn configure_account(
     request: ConfigureAccountRequest,
 ) -> CommandResult<AccountStatusDto> {
     let _sync_guard = desktop_runtime.acquire_sync_gate().await;
-    let (status, account_changed) = account.configure(&backend, request).await?;
-    if account_changed && let Err(error) = desktop_runtime.reset_notification_baseline() {
-        // Account credentials, metadata and backend have already switched
-        // successfully. Keep that result authoritative, retain the safe
-        // in-memory reset, and expose the persistence problem as a desktop
-        // diagnostic instead of falsely reporting account failure.
+    let (status, _account_changed) = account.configure(&backend, request).await?;
+    let _ = app.emit("mail:account-updated", status.clone());
+    desktop::request_sync(&app, true);
+    Ok(status)
+}
+
+#[tauri::command]
+async fn connect_google_account(
+    app: AppHandle,
+    account: State<'_, AccountRuntime>,
+    backend: State<'_, BackendState>,
+    desktop_runtime: State<'_, DesktopRuntime>,
+) -> CommandResult<AccountStatusDto> {
+    let _sync_guard = desktop_runtime.acquire_sync_gate().await;
+    let (status, _account_changed) = account.connect_google(&backend).await?;
+    let _ = app.emit("mail:account-updated", status.clone());
+    desktop::request_sync(&app, true);
+    Ok(status)
+}
+
+#[tauri::command]
+fn switch_account(
+    app: AppHandle,
+    account: State<'_, AccountRuntime>,
+    backend: State<'_, BackendState>,
+    account_id: String,
+) -> CommandResult<AccountStatusDto> {
+    let status = account.switch_account(&backend, &account_id)?;
+    let _ = app.emit("mail:account-updated", status.clone());
+    Ok(status)
+}
+
+#[tauri::command]
+async fn remove_account(
+    app: AppHandle,
+    account: State<'_, AccountRuntime>,
+    backend: State<'_, BackendState>,
+    desktop_runtime: State<'_, DesktopRuntime>,
+    account_id: String,
+) -> CommandResult<AccountStatusDto> {
+    let _sync_guard = desktop_runtime.acquire_sync_gate().await;
+    let status = account.remove_account(&backend, &account_id)?;
+    if let Err(error) = desktop_runtime.remove_notification_baseline(&account_id) {
         desktop_runtime.record_startup_error(error);
     }
     let _ = app.emit("mail:account-updated", status.clone());
-    desktop::request_sync(&app, true);
+    if status.configured {
+        desktop::request_sync(&app, true);
+    }
     Ok(status)
 }
 
@@ -747,7 +870,6 @@ pub fn run() {
                 desktop::show_main_window(app, true);
             }
         }))
-        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
             Some(vec!["--background"]),
@@ -755,6 +877,14 @@ pub fn run() {
         .setup(initialize_state)
         .on_window_event(|window, event| match event {
             WindowEvent::CloseRequested { api, .. } => {
+                if window.label() == "new-mail-notification" {
+                    api.prevent_close();
+                    let _ = window.hide();
+                    return;
+                }
+                if window.label() != "main" {
+                    return;
+                }
                 if let Some(runtime) = window.app_handle().try_state::<DesktopRuntime>() {
                     if runtime.is_exit_committed() {
                         return;
@@ -770,13 +900,18 @@ pub fn run() {
                     }
                 }
             }
-            WindowEvent::Focused(true) => desktop::request_sync(window.app_handle(), false),
+            WindowEvent::Focused(true) if window.label() == "main" => {
+                desktop::request_sync(window.app_handle(), false)
+            }
             _ => {}
         })
         .invoke_handler(tauri::generate_handler![
             get_account_status,
             list_account_presets,
             configure_account,
+            connect_google_account,
+            switch_account,
+            remove_account,
             check_connections,
             sync_inbox,
             sync_all,
@@ -790,8 +925,12 @@ pub fn run() {
             send_draft,
             retry_outbox,
             list_outbox,
+            get_account_mailbox_snapshot,
             get_desktop_settings,
             update_desktop_settings,
+            get_new_mail_notification,
+            dismiss_new_mail_notification,
+            open_new_mail_notification,
             list_profile_avatars,
             save_profile_avatar,
             delete_profile_avatar,
@@ -829,7 +968,7 @@ pub fn run() {
 mod tests {
     use mine_mail::InboxMessage;
 
-    use super::{InboxMessageDto, validate_external_url};
+    use super::{InboxMessageDto, requested_autostart_change, validate_external_url};
 
     fn rich_message() -> InboxMessage {
         InboxMessage {
@@ -859,6 +998,15 @@ mod tests {
             raw_rfc822: Vec::new(),
             synced_at: "2026-07-15T00:00:00Z".to_owned(),
         }
+    }
+
+    #[test]
+    fn unchanged_autostart_requests_are_no_ops() {
+        assert_eq!(requested_autostart_change(false, Some(false)), None);
+        assert_eq!(requested_autostart_change(true, Some(true)), None);
+        assert_eq!(requested_autostart_change(false, None), None);
+        assert_eq!(requested_autostart_change(false, Some(true)), Some(true));
+        assert_eq!(requested_autostart_change(true, Some(false)), Some(false));
     }
 
     #[test]

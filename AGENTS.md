@@ -9,7 +9,7 @@ Cross-platform desktop mail client. Product decisions in this file are durable; 
 - Never log or return authorization secrets, raw credentials, or complete RFC822 messages to React.
 - Preserve offline-first startup: render SQLite immediately, then synchronize in Rust.
 - Inbox summaries must not carry raw RFC822 or full HTML. Paint a local preview immediately, hydrate the selected body silently, and prefetch recent bounded-size bodies after sync.
-- Keep one reader scrollbar. Simple HTML with a readable text alternative uses the native themed reader; complex sender-designed HTML stays sanitized and isolated in a no-script iframe whose height is owned by the outer reader.
+- Keep one reader scrollbar. Simple HTML with a readable text alternative uses the native themed reader; this includes compact, text-dominant notification/profile templates whose ornamental CSS and small flat table can be discarded without losing meaning. Complex sender-designed HTML stays sanitized and isolated in a no-script iframe whose height is owned by the outer reader.
 - Render recognized reply history as sibling collapsible cards from newest to oldest; show subject, sender → recipient, and time when parsed, use a numbered fallback, and never recursively nest quote panels.
 - Parse replies in Rust into ordered authored/quoted segments. Prefer standards and reply headers, then maintained client adapters (NetEase, Gmail, Outlook); never delete low-confidence content. High-confidence history is collapsed in a themed quote surface with an original-format fallback.
 - The HTML boundary is deterministic: wrapper-only HTML with a readable text alternative stays plain regardless of redundant wrapper count or depth. Native semantic HTML strips sender styles and layout attributes and is limited to 32 KiB of structural markup, 100 elements, depth 10, and 3 images; a small DOM without class/id styling hooks may discard an otherwise unused style block. One unnested signature table may use the native reader when it has at most 4 rows, 8 cells, no merged cells, no style block, and no background or positioning layout; it uses a depth limit of 24. Other tables, styled DOM, media/forms, and anything outside those limits use the no-script iframe.
@@ -18,6 +18,7 @@ Cross-platform desktop mail client. Product decisions in this file are durable; 
 
 - Inbox sync runs at startup, tray **刷新**, and manual wake; polling is user-selectable at 1/3/5 minutes and defaults to 5 minutes.
 - First historical import establishes a notification baseline. Later unread arrivals notify with sender + subject, never body text.
+- New-mail alerts use Mine Mail's theme-aware, always-on-top lower-right desktop card rather than the PowerShell-identified development toast. Popup, foreground delivery, sound, and sound preset remain user-configurable; clicking the card opens that local message.
 - Closing the window hides it to the tray while background mode is active. Tray labels are exactly **打开 / 刷新 / 退出**.
 - Login autostart is a setting and defaults off.
 - Remote images are user-selectable as automatic/ask/blocked and default to automatic loading. The setting includes a nearby help affordance explaining the privacy risk of automatic remote requests.
@@ -25,7 +26,9 @@ Cross-platform desktop mail client. Product decisions in this file are durable; 
 - Closing or pressing Escape never forces a draft save. For a new compose session, close removes any recovery draft created by that session; for an existing draft, close leaves the previously persisted draft intact. Minimize keeps the editing session active.
 - Draft editor writes must carry the SQLite `local_version`; stale edits become conflict copies and stale deletes never remove the newer canonical draft. HTML/attachment drafts remain read-only until that MIME is supported.
 - Sending binds exact-recipient confirmation and Outbox state to one draft `local_version`. Preserve newer edits, supersede safe older retry items, and never automatically retry `delivery_unknown` items.
-- Import the development account from `password.txt` once into the OS credential store. Keep provider presets (163, Gmail, Outlook) and a custom IMAP/SMTP option; users supply account and authorization secret.
+- Import the development account from `password.txt` once into the OS credential store. Keep provider presets (163, Gmail, Outlook) and a custom IMAP/SMTP option; password-based providers use an account and authorization secret, while Gmail uses Google OAuth.
+- Gmail uses Google OAuth 2.0 Authorization Code + PKCE in the system browser with a random loopback callback; IMAP and SMTP authenticate through XOAUTH2, and refresh/access tokens stay in the OS credential store and Rust runtime.
+- Support up to three connected accounts. One account is active in the interface at a time, while startup, tray, manual, and scheduled synchronization cover every connected account with per-account caches and notification baselines.
 
 ## Visual baseline
 
