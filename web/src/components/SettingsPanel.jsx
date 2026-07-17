@@ -318,12 +318,12 @@ export function SettingsPanel({
                 <div className="settings-preference-card">
                   <label className="settings-preference-row" htmlFor="settings-sync-interval">
                     <span>
-                      <strong>自动同步</strong>
-                      <small>应用运行时按此频率检查新邮件。</small>
+                      <strong>实时同步</strong>
+                      <small>优先使用服务器推送；按此间隔完整校准删除和状态变化。</small>
                     </span>
                     <SettingsSelect
                       id="settings-sync-interval"
-                      label="自动同步间隔"
+                      label="完整校准间隔"
                       value={value.pollingIntervalMinutes}
                       onChange={(event) =>
                         setValue((current) => ({

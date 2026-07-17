@@ -25,7 +25,8 @@ Mine Mail 使用 **Tauri 2 + React 19 + Rust + SQLite** 构建。项目希望在
 - 本地 Outbox、完整收件人确认、SMTP 投递状态与人工安全重试。
 - 写信、回复、转发、Cc/Bcc、可拖动和缩放的玻璃拟态写信面板。
 - Daylight、Night、Dusk、Forest 四套主题和本地自定义头像。
-- 1/3/5 分钟后台轮询、托盘运行、可选开机启动。
+- IMAP IDLE 实时推送；不支持 IDLE 的服务器使用持久连接轻量探测。
+- 1/3/5 分钟完整校准、托盘运行、可选开机启动。
 - 可配置的新邮件声音，以及主题化的桌面右下角通知卡片。
 
 ### 仍在开发
@@ -35,7 +36,6 @@ Mine Mail 使用 **Tauri 2 + React 19 + Rust + SQLite** 构建。项目希望在
 - 更早邮件的分页回填。
 - 富文本写信、内嵌图片和完整附件收发流程。
 - 已读、星标、归档、垃圾箱、已发送等服务器操作的完整闭环。
-- IMAP IDLE 推送；当前使用定时轮询。
 - macOS/Linux 实机适配、签名、公证和发行包验收。
 
 ## 架构
@@ -47,7 +47,8 @@ React UI
    ▼
 Tauri desktop runtime
    ├─ tray / notifications / autostart
-   ├─ background scheduler
+   ├─ per-account IDLE / lightweight monitor
+   ├─ reconciliation scheduler
    └─ OS credential store
    │
    ▼
@@ -60,6 +61,8 @@ Rust MailBackend
 ```
 
 Rust 与 SQLite 是邮件状态的事实来源。React 只通过窄范围 Tauri command 读取本地状态和发起用户操作，不直接访问 IMAP、SMTP、凭据或数据库。
+
+收件箱采用“推送优先、校准兜底”：运行时根据服务器实际公布的 IMAP 能力选择策略。支持标准 `IDLE` 的服务器由长连接即时唤醒；163 等不公布 `IDLE` 的服务器复用认证连接，在前台约每 15 秒、后台约每 30 秒读取邮箱计数。只有检测到变化才拉取新 UID 并提交 SQLite；用户选择的 1/3/5 分钟间隔用于完整校准删除、旗标和异常状态。启动、手动刷新和托盘刷新仍立即执行同步。
 
 项目没有另一套可连接真实邮箱的 Web 运行时。Vite 页面只用于前端构建、自动化测试和可选的无网络 UI 演示。
 

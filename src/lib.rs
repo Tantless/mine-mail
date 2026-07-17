@@ -13,7 +13,7 @@ mod mime;
 mod models;
 mod smtp_client;
 
-pub use backend::MailBackend;
+pub use backend::{InboxMonitor, InboxMonitorMode, MailBackend};
 pub use config::{AccountConfig, AuthenticationKind, ServerConfig, SmtpSecurity};
 pub use error::{MailError, Result};
 pub use models::{

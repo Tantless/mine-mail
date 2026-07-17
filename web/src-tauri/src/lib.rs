@@ -842,6 +842,7 @@ fn initialize_state(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Erro
             false
         }
     };
+    desktop::start_inbox_monitor_supervisor(app.handle().clone(), shutdown_rx.clone());
     desktop::start_background_loop(app.handle().clone(), sync_rx, shutdown_rx);
 
     if is_background_launch(std::env::args())

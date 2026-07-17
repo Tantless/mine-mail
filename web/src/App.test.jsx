@@ -519,7 +519,7 @@ describe("Mine Mail MVP", () => {
       screen.getByRole("button", { name: "了解自动加载远程图片的隐私风险" }),
     ).toBeTruthy();
     expect(screen.getByRole("tooltip").textContent).toContain("邮件打开时间");
-    await user.selectOptions(screen.getByRole("combobox", { name: "自动同步间隔" }), "3");
+    await user.selectOptions(screen.getByRole("combobox", { name: "完整校准间隔" }), "3");
     await user.click(screen.getByRole("checkbox", { name: /前台也提醒/ }));
     await user.selectOptions(
       screen.getByRole("combobox", { name: "通知声音类型" }),

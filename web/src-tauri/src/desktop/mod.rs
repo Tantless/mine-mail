@@ -1,6 +1,7 @@
 mod settings;
 
 use std::{
+    collections::{HashMap, HashSet},
     fs,
     path::Path,
     sync::{
@@ -10,7 +11,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use mine_mail::{DraftSyncReport, InboxMessage, SyncReport};
+use mine_mail::{DraftSyncReport, InboxMessage, InboxMonitorMode, SyncReport};
 use serde::Serialize;
 use tauri::{
     App, AppHandle, Emitter, Manager, PhysicalPosition, WebviewWindow,
@@ -32,6 +33,11 @@ use settings::{
 
 const MINIMUM_AUTOMATIC_SYNC_GAP: Duration = Duration::from_secs(30);
 const DRAFT_SYNC_INTERVAL: Duration = Duration::from_secs(5 * 60);
+const MONITOR_SUPERVISOR_INTERVAL: Duration = Duration::from_secs(2);
+const IDLE_MAINTENANCE_INTERVAL: Duration = Duration::from_secs(28 * 60);
+const FOREGROUND_LIGHTWEIGHT_POLL_INTERVAL: Duration = Duration::from_secs(15);
+const BACKGROUND_LIGHTWEIGHT_POLL_INTERVAL: Duration = Duration::from_secs(30);
+const MONITOR_RECONNECT_BACKOFF_SECONDS: [u64; 7] = [2, 5, 15, 30, 60, 120, 300];
 const EXIT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 const SETTINGS_DATABASE_NAME: &str = "desktop-runtime.sqlite3";
 const NEW_MAIL_NOTIFICATION_WINDOW: &str = "new-mail-notification";
@@ -56,9 +62,10 @@ struct OpenMessageEvent {
     account_id: String,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(crate) enum BackgroundRequest {
     Sync { force: bool },
+    InboxChanged { account_id: String },
     ScheduleChanged,
 }
 
@@ -92,6 +99,7 @@ pub(crate) struct DesktopRuntime {
     shutdown_tx: watch::Sender<bool>,
     sync_gate: AsyncMutex<()>,
     last_sync_started: StdMutex<Option<Instant>>,
+    pending_inbox_syncs: StdMutex<HashSet<String>>,
     exit_handshake: StdMutex<ExitHandshakeState>,
     notification_sequence: AtomicU64,
     notification_popup: StdMutex<Option<NewMailNotificationDto>>,
@@ -134,7 +142,9 @@ impl DesktopRuntime {
                 ),
             }
         };
-        let (sync_tx, sync_rx) = mpsc::channel(8);
+        // Leave room for a short burst of per-account IDLE events while the
+        // serialized SQLite/IMAP synchronization actor is busy.
+        let (sync_tx, sync_rx) = mpsc::channel(32);
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
         (
@@ -146,6 +156,7 @@ impl DesktopRuntime {
                 shutdown_tx,
                 sync_gate: AsyncMutex::new(()),
                 last_sync_started: StdMutex::new(None),
+                pending_inbox_syncs: StdMutex::new(HashSet::new()),
                 exit_handshake: StdMutex::new(ExitHandshakeState::default()),
                 notification_sequence: AtomicU64::new(0),
                 notification_popup: StdMutex::new(None),
@@ -329,6 +340,30 @@ impl DesktopRuntime {
 
     pub(crate) fn request_sync(&self, force: bool) {
         let _ = self.sync_tx.try_send(BackgroundRequest::Sync { force });
+    }
+
+    fn request_incremental_inbox_sync(&self, account_id: String) {
+        let Ok(mut pending) = self.pending_inbox_syncs.lock() else {
+            return;
+        };
+        if !pending.insert(account_id.clone()) {
+            return;
+        }
+        if self
+            .sync_tx
+            .try_send(BackgroundRequest::InboxChanged {
+                account_id: account_id.clone(),
+            })
+            .is_err()
+        {
+            pending.remove(&account_id);
+        }
+    }
+
+    fn begin_incremental_inbox_sync(&self, account_id: &str) {
+        if let Ok(mut pending) = self.pending_inbox_syncs.lock() {
+            pending.remove(account_id);
+        }
     }
 
     pub(crate) fn background_enabled(&self) -> bool {
@@ -579,6 +614,158 @@ impl DraftsUpdatedEvent {
     }
 }
 
+/// Keep one capability-driven Inbox monitor per configured account. IDLE is
+/// selected at runtime when advertised; other servers retain one authenticated
+/// connection and perform counter-only probes instead of full synchronization.
+pub(crate) fn start_inbox_monitor_supervisor(
+    app: AppHandle,
+    mut shutdown_rx: watch::Receiver<bool>,
+) {
+    tauri::async_runtime::spawn(async move {
+        let mut monitors: HashMap<String, tauri::async_runtime::JoinHandle<()>> = HashMap::new();
+        loop {
+            let account_ids: HashSet<String> = app
+                .state::<AccountRuntime>()
+                .account_ids()
+                .into_iter()
+                .collect();
+
+            monitors.retain(|account_id, task| {
+                let keep = account_ids.contains(account_id) && !task.inner().is_finished();
+                if !keep {
+                    task.abort();
+                }
+                keep
+            });
+            for account_id in account_ids {
+                monitors.entry(account_id.clone()).or_insert_with(|| {
+                    let app = app.clone();
+                    let shutdown_rx = shutdown_rx.clone();
+                    tauri::async_runtime::spawn(run_inbox_monitor(app, account_id, shutdown_rx))
+                });
+            }
+
+            tokio::select! {
+                _ = tokio::time::sleep(MONITOR_SUPERVISOR_INTERVAL) => {}
+                changed = shutdown_rx.changed() => {
+                    if changed.is_err() || *shutdown_rx.borrow() {
+                        for (_, task) in monitors.drain() {
+                            task.abort();
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+    });
+}
+
+async fn run_inbox_monitor(
+    app: AppHandle,
+    account_id: String,
+    mut shutdown_rx: watch::Receiver<bool>,
+) {
+    let mut failures = 0usize;
+    loop {
+        if *shutdown_rx.borrow() {
+            return;
+        }
+        let backend = match app.state::<BackendState>().network_for(&account_id) {
+            Ok(backend) => backend,
+            Err(_) => {
+                if wait_for_monitor_retry(&mut shutdown_rx, failures).await {
+                    return;
+                }
+                failures = failures.saturating_add(1);
+                continue;
+            }
+        };
+        let mut monitor = match backend.connect_inbox_monitor().await {
+            Ok(monitor) => {
+                failures = 0;
+                monitor
+            }
+            Err(_) => {
+                if wait_for_monitor_retry(&mut shutdown_rx, failures).await {
+                    return;
+                }
+                failures = failures.saturating_add(1);
+                continue;
+            }
+        };
+
+        let result = match monitor.mode() {
+            InboxMonitorMode::Idle => loop {
+                let changed = tokio::select! {
+                    result = monitor.wait_for_idle_change(IDLE_MAINTENANCE_INTERVAL) => result,
+                    shutdown = shutdown_rx.changed() => {
+                        if shutdown.is_err() || *shutdown_rx.borrow() {
+                            return;
+                        }
+                        continue;
+                    }
+                };
+                match changed {
+                    Ok(true) => app
+                        .state::<DesktopRuntime>()
+                        .request_incremental_inbox_sync(account_id.clone()),
+                    // Reconnect before the RFC 2177 29-minute ceiling. This
+                    // also picks up a refreshed OAuth backend instance.
+                    Ok(false) => break Ok(()),
+                    Err(error) => break Err(error),
+                }
+            },
+            InboxMonitorMode::LightweightPoll => loop {
+                let delay = lightweight_poll_interval(&app);
+                tokio::select! {
+                    _ = tokio::time::sleep(delay) => {}
+                    shutdown = shutdown_rx.changed() => {
+                        if shutdown.is_err() || *shutdown_rx.borrow() {
+                            return;
+                        }
+                        continue;
+                    }
+                }
+                match monitor.poll_for_change().await {
+                    Ok(true) => app
+                        .state::<DesktopRuntime>()
+                        .request_incremental_inbox_sync(account_id.clone()),
+                    Ok(false) => {}
+                    Err(error) => break Err(error),
+                }
+            },
+        };
+
+        if result.is_err() {
+            if wait_for_monitor_retry(&mut shutdown_rx, failures).await {
+                return;
+            }
+            failures = failures.saturating_add(1);
+        }
+    }
+}
+
+fn lightweight_poll_interval(app: &AppHandle) -> Duration {
+    let visible = app
+        .get_webview_window("main")
+        .and_then(|window| window.is_visible().ok())
+        .unwrap_or(false);
+    if visible {
+        FOREGROUND_LIGHTWEIGHT_POLL_INTERVAL
+    } else {
+        BACKGROUND_LIGHTWEIGHT_POLL_INTERVAL
+    }
+}
+
+async fn wait_for_monitor_retry(shutdown_rx: &mut watch::Receiver<bool>, failures: usize) -> bool {
+    let seconds = MONITOR_RECONNECT_BACKOFF_SECONDS
+        [failures.min(MONITOR_RECONNECT_BACKOFF_SECONDS.len().saturating_sub(1))];
+    tokio::select! {
+        _ = tokio::time::sleep(Duration::from_secs(seconds)) => false,
+        changed = shutdown_rx.changed() => changed.is_err() || *shutdown_rx.borrow(),
+    }
+}
+
 pub(crate) fn start_background_loop(
     app: AppHandle,
     mut sync_rx: mpsc::Receiver<BackgroundRequest>,
@@ -591,7 +778,7 @@ pub(crate) fn start_background_loop(
         loop {
             tokio::select! {
                 _ = tokio::time::sleep_until(inbox_deadline) => {
-                    if let Err(error) = perform_inbox_sync(&app).await {
+                    if let Err(error) = perform_inbox_reconciliation_all(&app).await {
                         emit_sync_error(&app, "inbox", error);
                     }
                     inbox_deadline = TokioInstant::now() + app.state::<DesktopRuntime>().poll_duration();
@@ -604,12 +791,7 @@ pub(crate) fn start_background_loop(
                 }
                 request = sync_rx.recv() => {
                     match request {
-                        Some(BackgroundRequest::Sync { mut force }) => {
-                            while let Ok(queued) = sync_rx.try_recv() {
-                                if let BackgroundRequest::Sync { force: queued_force } = queued {
-                                    force |= queued_force;
-                                }
-                            }
+                        Some(BackgroundRequest::Sync { force }) => {
                             if let Err(error) = perform_sync_all(&app, force).await {
                                 emit_sync_error(&app, "all", error);
                             }
@@ -618,6 +800,12 @@ pub(crate) fn start_background_loop(
                         }
                         Some(BackgroundRequest::ScheduleChanged) => {
                             inbox_deadline = TokioInstant::now() + app.state::<DesktopRuntime>().poll_duration();
+                        }
+                        Some(BackgroundRequest::InboxChanged { account_id }) => {
+                            app.state::<DesktopRuntime>().begin_incremental_inbox_sync(&account_id);
+                            if let Err(error) = perform_incremental_inbox_sync(&app, &account_id).await {
+                                emit_sync_error(&app, "inbox", error);
+                            }
                         }
                         None => break,
                     }
@@ -707,6 +895,49 @@ pub(crate) async fn perform_sync_all(
     }))
 }
 
+async fn perform_inbox_reconciliation_all(app: &AppHandle) -> Result<(), String> {
+    let runtime = app.state::<DesktopRuntime>();
+    let _guard = runtime.sync_gate.lock().await;
+    runtime.record_sync_start()?;
+    let account_runtime = app.state::<AccountRuntime>();
+    let backend_state = app.state::<BackendState>();
+    let refresh_error = account_runtime
+        .refresh_oauth_backends(&backend_state)
+        .await
+        .err();
+    let mut errors = Vec::new();
+    for account_id in account_runtime.account_ids() {
+        if let Err(error) = sync_inbox_for(app, &account_id).await {
+            errors.push(format!("{account_id} Inbox: {error}"));
+        }
+    }
+    if let Some(error) = refresh_error {
+        errors.push(error);
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "Some account Inbox reconciliation failed: {}",
+            errors.join(" ")
+        ))
+    }
+}
+
+async fn perform_incremental_inbox_sync(
+    app: &AppHandle,
+    account_id: &str,
+) -> Result<SyncReport, String> {
+    let runtime = app.state::<DesktopRuntime>();
+    let _guard = runtime.sync_gate.lock().await;
+    let account_runtime = app.state::<AccountRuntime>();
+    let backend_state = app.state::<BackendState>();
+    // Usually a no-op; it ensures a monitor event near OAuth expiry uses the
+    // refreshed backend before opening the short-lived incremental session.
+    let _ = account_runtime.refresh_oauth_backends(&backend_state).await;
+    sync_new_inbox_for(app, account_id).await
+}
+
 pub(crate) async fn perform_inbox_sync(app: &AppHandle) -> Result<SyncReport, String> {
     let runtime = app.state::<DesktopRuntime>();
     let _guard = runtime.sync_gate.lock().await;
@@ -743,6 +974,24 @@ async fn sync_inbox_for(app: &AppHandle, account_id: &str) -> Result<SyncReport,
         .await
         .map_err(crate::safe_mail_error)?;
 
+    finish_inbox_sync(app, account_id, backend, report)
+}
+
+async fn sync_new_inbox_for(app: &AppHandle, account_id: &str) -> Result<SyncReport, String> {
+    let backend = app.state::<BackendState>().network_for(account_id)?;
+    let report = backend
+        .sync_new_inbox(crate::INBOX_SYNC_LIMIT)
+        .await
+        .map_err(crate::safe_mail_error)?;
+    finish_inbox_sync(app, account_id, backend, report)
+}
+
+fn finish_inbox_sync(
+    app: &AppHandle,
+    account_id: &str,
+    backend: std::sync::Arc<mine_mail::MailBackend>,
+    report: SyncReport,
+) -> Result<SyncReport, String> {
     if let Ok(messages) = backend.list_inbox(crate::INBOX_LIST_LIMIT) {
         update_notification_baseline_and_notify(app, account_id, &report, &messages);
     }

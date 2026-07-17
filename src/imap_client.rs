@@ -2,6 +2,7 @@ use std::{collections::BTreeSet, time::Duration};
 
 use async_imap::{
     Session,
+    extensions::idle::IdleResponse,
     types::{Flag, NameAttribute},
 };
 use async_native_tls::TlsStream;
@@ -22,6 +23,13 @@ pub(crate) struct MailboxSnapshot {
     pub uid_next: Option<u32>,
     pub highest_modseq: Option<u64>,
     pub all_uids: Vec<u32>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct MailboxHint {
+    pub exists: u32,
+    pub uid_validity: Option<u32>,
+    pub uid_next: Option<u32>,
 }
 
 #[derive(Clone, Debug)]
@@ -49,6 +57,7 @@ pub(crate) struct RemoteDraftSnapshot {
 pub(crate) struct ImapConnection {
     session: ImapSession,
     supports_uidplus: bool,
+    supports_idle: bool,
 }
 
 impl ImapConnection {
@@ -120,7 +129,8 @@ impl ImapConnection {
         // NetEase documents/uses RFC 2971 client identification. Sending it
         // after LOGIN and before SELECT avoids the provider's “Unsafe Login”
         // path while containing no user data.
-        if capabilities.has_str("ID") {
+        let supports_id = capabilities.has_str("ID");
+        if supports_id {
             timeout(
                 COMMAND_TIMEOUT,
                 session.id([
@@ -136,11 +146,30 @@ impl ImapConnection {
             .map_err(|error| MailError::Imap(error.to_string()))?;
         }
 
+        // Some providers adjust their advertised extensions after RFC 2971
+        // identification, so capability-driven behavior must use a fresh
+        // post-ID snapshot rather than a provider-name allowlist.
+        let capabilities = if supports_id {
+            timeout(COMMAND_TIMEOUT, session.capabilities())
+                .await
+                .map_err(|_| MailError::Timeout {
+                    operation: "IMAP CAPABILITY",
+                })?
+                .map_err(|error| MailError::Imap(error.to_string()))?
+        } else {
+            capabilities
+        };
         let supports_uidplus = capabilities.has_str("UIDPLUS");
+        let supports_idle = capabilities.has_str("IDLE");
         Ok(Self {
             session,
             supports_uidplus,
+            supports_idle,
         })
+    }
+
+    pub fn supports_idle(&self) -> bool {
+        self.supports_idle
     }
 
     pub async fn probe(mut self) -> Result<()> {
@@ -199,6 +228,83 @@ impl ImapConnection {
             highest_modseq: selected.highest_modseq,
             all_uids,
         })
+    }
+
+    /// Select INBOX without enumerating UIDs. This is intentionally cheap and
+    /// is used by the long-lived change monitor and the incremental sync path.
+    pub async fn select_inbox_hint(&mut self) -> Result<MailboxHint> {
+        let selected = timeout(COMMAND_TIMEOUT, self.session.select("INBOX"))
+            .await
+            .map_err(|_| MailError::Timeout {
+                operation: "IMAP SELECT INBOX",
+            })?
+            .map_err(|error| MailError::Imap(error.to_string()))?;
+        Ok(MailboxHint {
+            exists: selected.exists,
+            uid_validity: selected.uid_validity,
+            uid_next: selected.uid_next,
+        })
+    }
+
+    pub async fn search_uids_after(&mut self, highest_uid: u32) -> Result<Vec<u32>> {
+        let first = highest_uid.saturating_add(1);
+        if first == 0 {
+            return Ok(Vec::new());
+        }
+        let query = format!("UID {first}:*");
+        let uids = timeout(COMMAND_TIMEOUT, self.session.uid_search(query))
+            .await
+            .map_err(|_| MailError::Timeout {
+                operation: "IMAP incremental UID SEARCH",
+            })?
+            .map_err(|error| MailError::Imap(error.to_string()))?;
+        let mut uids: Vec<u32> = uids
+            .into_iter()
+            // An empty range expressed as n:* is interpreted differently by
+            // some IMAP implementations. Filtering makes the cursor strict.
+            .filter(|uid| *uid > highest_uid)
+            .collect();
+        uids.sort_unstable();
+        Ok(uids)
+    }
+
+    /// Enter one bounded IDLE cycle and restore the session with DONE before
+    /// returning. The caller reconnects on any error or maintenance timeout.
+    pub async fn wait_for_idle_change(self, duration: Duration) -> Result<(Self, bool)> {
+        let supports_uidplus = self.supports_uidplus;
+        let supports_idle = self.supports_idle;
+        if !supports_idle {
+            return Err(MailError::Validation(
+                "the IMAP server does not advertise IDLE".to_owned(),
+            ));
+        }
+
+        let mut handle = self.session.idle();
+        timeout(COMMAND_TIMEOUT, handle.init())
+            .await
+            .map_err(|_| MailError::Timeout {
+                operation: "IMAP IDLE initialization",
+            })?
+            .map_err(|error| MailError::Imap(error.to_string()))?;
+        let response = {
+            let (wait, _interrupt) = handle.wait_with_timeout(duration);
+            wait.await
+                .map_err(|error| MailError::Imap(error.to_string()))?
+        };
+        let session = timeout(COMMAND_TIMEOUT, handle.done())
+            .await
+            .map_err(|_| MailError::Timeout {
+                operation: "IMAP IDLE completion",
+            })?
+            .map_err(|error| MailError::Imap(error.to_string()))?;
+        Ok((
+            Self {
+                session,
+                supports_uidplus,
+                supports_idle,
+            },
+            matches!(response, IdleResponse::NewData(_)),
+        ))
     }
 
     /// Selects INBOX for a known-UID body fetch without the full UID SEARCH

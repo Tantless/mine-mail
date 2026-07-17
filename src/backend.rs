@@ -12,7 +12,7 @@ use crate::{
     AccountConfig, ComposeRequest, ConnectionReport, Draft, DraftDeleteKind, DraftSaveKind,
     DraftSaveOutcome, InboxMessage, MailError, OutboxItem, OutboxStatus, Result, SyncReport,
     database::{DraftRecord, MailboxState, Repository},
-    imap_client::{ImapConnection, RemoteMessage},
+    imap_client::{ImapConnection, MailboxHint, RemoteMessage},
     mime::{
         IncomingMetadata, build_draft_message_revision, build_outgoing_message,
         parse_draft_message, parse_incoming_message, parse_incoming_summary_or_fallback,
@@ -32,6 +32,61 @@ const BODY_IMAP_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(60);
 struct BodyImapSession {
     connection: ImapConnection,
     last_used: Instant,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InboxMonitorMode {
+    Idle,
+    LightweightPoll,
+}
+
+/// One authenticated, selected IMAP connection dedicated to detecting Inbox
+/// changes. It never writes SQLite and never crosses the Tauri command layer.
+pub struct InboxMonitor {
+    connection: Option<ImapConnection>,
+    mode: InboxMonitorMode,
+    last_hint: MailboxHint,
+}
+
+impl InboxMonitor {
+    pub fn mode(&self) -> InboxMonitorMode {
+        self.mode
+    }
+
+    /// Wait for one server-pushed IDLE event. The connection is restored with
+    /// DONE before returning so a subsequent cycle can safely begin.
+    pub async fn wait_for_idle_change(&mut self, duration: Duration) -> Result<bool> {
+        if self.mode != InboxMonitorMode::Idle {
+            return Err(MailError::Validation(
+                "this Inbox monitor does not support IDLE".to_owned(),
+            ));
+        }
+        let connection = self.connection.take().ok_or_else(|| {
+            MailError::Imap("the Inbox monitor connection is unavailable".to_owned())
+        })?;
+        let (connection, changed) = connection.wait_for_idle_change(duration).await?;
+        self.connection = Some(connection);
+        Ok(changed)
+    }
+
+    /// Probe a non-IDLE server over the existing authenticated connection.
+    /// NOOP keeps the session healthy; SELECT reads only mailbox counters and
+    /// does not enumerate or download messages.
+    pub async fn poll_for_change(&mut self) -> Result<bool> {
+        if self.mode != InboxMonitorMode::LightweightPoll {
+            return Err(MailError::Validation(
+                "this Inbox monitor uses IDLE instead of polling".to_owned(),
+            ));
+        }
+        let connection = self.connection.as_mut().ok_or_else(|| {
+            MailError::Imap("the Inbox monitor connection is unavailable".to_owned())
+        })?;
+        connection.noop().await?;
+        let next = connection.select_inbox_hint().await?;
+        let changed = mailbox_hint_changed(self.last_hint, next);
+        self.last_hint = next;
+        Ok(changed)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -107,6 +162,21 @@ impl MailBackend {
         self.repository.recover_queued_as_retryable()?;
         self.repository.recover_sending_as_delivery_unknown()?;
         Ok(())
+    }
+
+    pub async fn connect_inbox_monitor(&self) -> Result<InboxMonitor> {
+        let mut connection = ImapConnection::connect(&self.config).await?;
+        let last_hint = connection.select_inbox_hint().await?;
+        let mode = if connection.supports_idle() {
+            InboxMonitorMode::Idle
+        } else {
+            InboxMonitorMode::LightweightPoll
+        };
+        Ok(InboxMonitor {
+            connection: Some(connection),
+            mode,
+            last_hint,
+        })
     }
 
     pub async fn check_connections(&self) -> Result<ConnectionReport> {
@@ -271,6 +341,89 @@ impl MailBackend {
             removed,
             cached_total,
             uid_validity_reset,
+        })
+    }
+
+    /// Fetch only UIDs newer than the committed SQLite cursor. Deletions,
+    /// historical flag changes, and UIDVALIDITY recovery intentionally remain
+    /// the job of the periodic full reconciliation in [`Self::sync_inbox`].
+    pub async fn sync_new_inbox(&self, initial_limit: usize) -> Result<SyncReport> {
+        if initial_limit == 0 {
+            return Err(MailError::Validation(
+                "initial sync limit must be greater than zero".to_owned(),
+            ));
+        }
+
+        let guard = self.imap_gate.lock().await;
+        let mut connection = ImapConnection::connect(&self.config).await?;
+        let hint = connection.select_inbox_hint().await?;
+        let previous_state = self
+            .repository
+            .mailbox_state(&self.config.account_id, INBOX)?;
+        let needs_full_sync = previous_state.as_ref().is_none_or(|state| {
+            state.highest_uid.is_none()
+                || classify_inbox_uid_scope(state.uid_validity, hint.uid_validity)
+                    != InboxUidScope::Current
+        });
+        if needs_full_sync {
+            let _ = connection.logout().await;
+            drop(guard);
+            return self.sync_inbox(initial_limit).await;
+        }
+
+        let previous_state = previous_state.expect("full sync fallback handles a missing cursor");
+        let previous_highest_uid = previous_state
+            .highest_uid
+            .expect("full sync fallback handles a missing highest UID");
+        let requested = connection.search_uids_after(previous_highest_uid).await?;
+        let mut fetched = 0;
+        for batch in requested.chunks(SUMMARY_BATCH_SIZE) {
+            for remote in connection.fetch_summaries(batch).await? {
+                let message = parse_incoming_summary_or_fallback(
+                    &remote.raw,
+                    IncomingMetadata {
+                        account_id: &self.config.account_id,
+                        mailbox: INBOX,
+                        uid: remote.uid,
+                        flags: remote.flags,
+                        internal_date: remote.internal_date,
+                        size_bytes: remote.size_bytes,
+                        synced_at: now(),
+                        body_fetched: false,
+                    },
+                );
+                self.repository.upsert_message(&message)?;
+                fetched += 1;
+            }
+        }
+
+        let highest_uid = requested
+            .last()
+            .copied()
+            .unwrap_or(previous_highest_uid)
+            .max(previous_highest_uid);
+        self.repository.upsert_mailbox_state(&MailboxState {
+            account_id: self.config.account_id.clone(),
+            mailbox: INBOX.to_owned(),
+            uid_validity: hint.uid_validity.or(previous_state.uid_validity),
+            uid_next: hint.uid_next,
+            highest_uid: Some(highest_uid),
+            highest_modseq: previous_state.highest_modseq,
+            last_synced_at: Some(now()),
+        })?;
+        let cached_total = self
+            .repository
+            .count_messages(&self.config.account_id, INBOX)?;
+        let _ = connection.logout().await;
+
+        Ok(SyncReport {
+            mailbox: INBOX.to_owned(),
+            remote_total: hint.exists,
+            fetched,
+            updated_flags: 0,
+            removed: 0,
+            cached_total,
+            uid_validity_reset: false,
         })
     }
 
@@ -1410,6 +1563,12 @@ fn classify_inbox_uid_scope(
     }
 }
 
+fn mailbox_hint_changed(previous: MailboxHint, current: MailboxHint) -> bool {
+    previous.exists != current.exists
+        || previous.uid_next != current.uid_next
+        || previous.uid_validity != current.uid_validity
+}
+
 fn remote_candidates_equivalent(left: &RemoteDraftCandidate, right: &RemoteDraftCandidate) -> bool {
     left.revision == right.revision
         && left.request == right.request
@@ -1534,14 +1693,14 @@ mod tests {
     use super::{
         DraftReconciliation, INBOX, InboxUidScope, MailBackend, RemoteDraftCandidate,
         RemoteForkPreservation, classify_draft_reconciliation, classify_inbox_uid_scope,
-        draft_record_matches_remote, remote_candidates_equivalent, remote_draft_candidate,
-        validate_manual_retry,
+        draft_record_matches_remote, mailbox_hint_changed, remote_candidates_equivalent,
+        remote_draft_candidate, validate_manual_retry,
     };
     use crate::{
         AccountConfig, ComposeRequest, Draft, DraftDeleteKind, DraftSaveKind, InboxMessage,
         MailError, OutboxItem, OutboxStatus,
         database::{DraftRecord, Repository},
-        imap_client::RemoteMessage,
+        imap_client::{MailboxHint, RemoteMessage},
         mime::parse_draft_message,
     };
 
@@ -2257,6 +2416,31 @@ mod tests {
             classify_inbox_uid_scope(Some(91), None),
             InboxUidScope::Changed
         );
+    }
+
+    #[test]
+    fn inbox_monitor_detects_new_uid_and_mailbox_epoch_changes() {
+        let baseline = MailboxHint {
+            exists: 10,
+            uid_validity: Some(91),
+            uid_next: Some(42),
+        };
+        assert!(!mailbox_hint_changed(baseline, baseline));
+        assert!(mailbox_hint_changed(
+            baseline,
+            MailboxHint {
+                exists: 11,
+                uid_next: Some(43),
+                ..baseline
+            }
+        ));
+        assert!(mailbox_hint_changed(
+            baseline,
+            MailboxHint {
+                uid_validity: Some(92),
+                ..baseline
+            }
+        ));
     }
 
     #[test]

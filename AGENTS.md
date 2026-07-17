@@ -16,7 +16,7 @@ Cross-platform desktop mail client. Product decisions in this file are durable; 
 
 ## MVP behavior
 
-- Inbox sync runs at startup, tray **刷新**, and manual wake; polling is user-selectable at 1/3/5 minutes and defaults to 5 minutes.
+- Inbox sync runs at startup, tray **刷新**, and manual wake. Runtime capability detection prefers standard IMAP IDLE with a pre-29-minute reconnect; non-IDLE servers keep an authenticated connection and probe mailbox counters every 15 seconds while visible or 30 seconds while hidden. Only a detected change fetches new UIDs. User-selectable 1/3/5 minutes (default 5) is the full reconciliation cadence for deletions, flags, and recovery.
 - First historical import establishes a notification baseline. Later unread arrivals notify with sender + subject, never body text.
 - New-mail alerts use Mine Mail's theme-aware, always-on-top lower-right desktop card rather than the PowerShell-identified development toast. Popup, foreground delivery, sound, and sound preset remain user-configurable; clicking the card opens that local message.
 - Closing the window hides it to the tray while background mode is active. Tray labels are exactly **打开 / 刷新 / 退出**.
