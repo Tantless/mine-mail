@@ -1,0 +1,3 @@
+# Tauri regenerates capability schemas with LF on every platform. Keeping the
+# checked-out form identical prevents a clean Windows build from appearing dirty.
+/web/src-tauri/gen/schemas/*.json text eol=lf

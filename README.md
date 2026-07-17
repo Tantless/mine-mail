@@ -1,207 +1,275 @@
 # Mine Mail
 
-Mine Mail 是一个本地优先的跨平台桌面邮件客户端 MVP，技术栈为 **Rust + React + Tauri 2 + SQLite**。当前版本已经打通 163 邮箱的收件箱增量同步、双向草稿同步、SMTP 发信、后台轮询、系统通知、托盘和系统密钥环。
+> 一个本地优先、专注邮件本身的跨平台桌面邮箱客户端。
 
-> 当前版本用于本机产品验证，尚未达到可公开分发的生产质量。
+Mine Mail 使用 **Tauri 2 + React 19 + Rust + SQLite** 构建。项目希望在保留 IMAP/SMTP 邮件核心能力的同时，提供更轻、更快、更安静，也更适合个性化主题的桌面体验。
 
-## 当前 MVP
+> [!IMPORTANT]
+> Mine Mail 目前是开发预览版（MVP），尚未提供经过签名的公开安装包，也未达到生产环境所需的完整兼容性与安全审计标准。当前实机开发和验收平台为 Windows 11；macOS 与 Linux 是目标平台，但仍需要真实设备验证。
 
-### 收件箱与后台运行
+<p align="center">
+  <img src="design-qa/reply-forward-accent-current.png" alt="Mine Mail 夜间主题界面" width="100%" />
+</p>
 
-- 启动时先从 SQLite 显示缓存，再在 Rust 后台立即同步。
-- 后续按 UID 增量同步 INBOX，并更新 Flags、处理 UIDVALIDITY 变化和远端删除。
-- 单封畸形邮件头会保存安全占位摘要，不会阻断后续邮件；按需下载正文前会再次校验 UIDVALIDITY，防止 UID 被复用后读错邮件。
-- 用户可选择 `1 / 3 / 5` 分钟轮询，默认 `5` 分钟。
-- 启动、托盘“刷新”、手动刷新、窗口重新唤起时立即同步。
-- 第一次历史导入只建立通知基线，不弹出大量旧邮件通知。
-- 后续后台收到新未读邮件时发送系统通知，只显示发件人和主题，不显示正文。
-- 关闭窗口时隐藏到托盘；托盘菜单固定为 **打开 / 刷新 / 退出**。
-- 开机自启是用户设置，默认关闭。
+## 当前进度
 
-### 草稿与发信
+### 已实现
 
-- 编辑内容先保存到本地 SQLite，React 停止输入约 900 ms 后执行本地保存。
-- Rust 每五分钟将草稿与服务器 Drafts 文件夹双向同步。
-- 本地和远端草稿使用稳定 ID；支持远端草稿导入、删除同步及确定性的冲突副本。
-- 编辑器通过独立的 SQLite `local_version` 做乐观并发控制；远端变化不会静默覆盖正在编辑的内容，过期编辑会保留为冲突副本，过期删除不会误删新版本。
-- 含 HTML、附件、inline 内容或无法可靠解析的远端草稿会保守显示为只读，当前版本不会用纯文本内容覆盖它们。
-- 手动保存会立即尝试远端同步。
-- 发信前要求确认完整的 To/Cc/Bcc 收件人集合。
-- 完整 MIME 邮件先进入本地 Outbox，再通过 SMTP 发送。
-- 发送状态区分 `queued`、`sending`、`sent`、`retryable`、`rejected` 和 `delivery_unknown`；不自动重试结果不确定的邮件。
-- `retryable` 可由用户在发件队列中明确点击重试；重试复用已经落盘的原始 MIME 和完整 SMTP envelope，不读取后来变化的草稿。
-- 收件人确认、邮件内容和 Outbox 绑定同一个草稿版本；发送期间产生的新编辑会保留。旧的安全重试版本被新版发送取代后不可再次投递，`delivery_unknown` 会阻止任何隐式重发。
+- 163 邮箱 IMAP 增量同步与 SMTP 发信。
+- Gmail OAuth 2.0、XOAUTH2 IMAP/SMTP 与令牌刷新。
+- 自定义 IMAP/SMTP 账户；最多连接 3 个账户并逐账户同步。
+- SQLite 本地缓存，启动时先显示本地邮件，再在 Rust 后台同步。
+- 收件箱摘要、按需正文获取、最近正文预取与本地搜索。
+- 纯文本阅读，以及经过清理和隔离的 HTML 邮件阅读。
+- 简单 HTML 使用主题化原生阅读器；复杂发件人排版使用无脚本隔离 iframe。
+- 远程图片自动加载、询问或阻止策略。
+- 常见回复格式识别；正文和引用历史分离为同级可折叠卡片。
+- 本地草稿、每 5 分钟远端同步、远端草稿导入与版本冲突保护。
+- 本地 Outbox、完整收件人确认、SMTP 投递状态与人工安全重试。
+- 写信、回复、转发、Cc/Bcc、可拖动和缩放的玻璃拟态写信面板。
+- Daylight、Night、Dusk、Forest 四套主题和本地自定义头像。
+- 1/3/5 分钟后台轮询、托盘运行、可选开机启动。
+- 可配置的新邮件声音，以及主题化的桌面右下角通知卡片。
 
-### 账户与凭据
+### 仍在开发
 
-- 授权密码与 Google OAuth 令牌只保存在按账户身份隔离的操作系统密钥环条目中，不写入 SQLite、React 状态、本地存储或账户配置文件。
-- 密钥环临时不可用时仍可读取本地收件箱、草稿与发件队列；同步、未缓存正文、发送和重试会保持禁用并提示修复账户。
-- 内置 163、Gmail、Outlook 和自定义 IMAP/SMTP 入口。
-- 163 预填服务器地址并使用客户端授权密码；Gmail 通过系统浏览器完成 Google OAuth 2.0 登录，IMAP 与 SMTP 使用 XOAUTH2。
-- 自定义账户可填写 IMAP、SMTP 主机/端口，并选择 SMTP 隐式 TLS 或 STARTTLS。
-- Outlook 入口目前会说明并阻止配置，因为正式支持需要 OAuth 2.0 / Modern Auth，不能安全地只依赖账号密码。
-- 最多可连接 3 个账户。界面一次显示一个活动账户，启动、托盘刷新、手动刷新与定时轮询会同步全部已连接账户；切换账户时立即读取各自 SQLite 缓存。
-- Google 登录使用桌面应用 Authorization Code + PKCE 与随机 loopback 回调；短期 access token 自动刷新，refresh token 不会跨越 Rust/React 边界。
-
-### 配置 Google 登录
-
-1. 在 Google Cloud Console 配置 OAuth consent screen，并创建类型为 **Desktop app** 的 OAuth client。
-2. 为 consent screen 加入 `openid`、`email` 与 `https://mail.google.com/` scope。后者是 Gmail IMAP/SMTP 所需的受限 scope；面向测试用户以外发布前需要按 Google 要求完成验证。
-3. Mine Mail 已内置项目的 Desktop OAuth client ID；最终用户无需设置环境变量或提供 client secret，点击 **使用 Google 登录** 即会打开系统默认浏览器。
-
-Google Cloud 项目处于 Testing 状态时，只有 Audience 中列出的测试用户可以授权；包含 Gmail scope 的测试授权及 refresh token 通常会在 7 天后失效，需要重新登录。
-
-### 界面
-
-- 三栏桌面布局，共享一张连续的非写实风景背景。
-- Daylight、Night、Dusk、Forest 四套主题。
-- 无边框标题栏融入主题，保留最小化、最大化和关闭操作。
-- 本地搜索/筛选、纯文本正文阅读、写信、回复、转发、草稿与 Outbox 状态。
+- Outlook OAuth 2.0 / Modern Auth。
+- 多账户统一收件箱。
+- 更早邮件的分页回填。
+- 富文本写信、内嵌图片和完整附件收发流程。
+- 已读、星标、归档、垃圾箱、已发送等服务器操作的完整闭环。
+- IMAP IDLE 推送；当前使用定时轮询。
+- macOS/Linux 实机适配、签名、公证和发行包验收。
 
 ## 架构
 
 ```text
 React UI
-   |
-   | narrow Tauri commands / desktop events
-   v
+   │
+   │ narrow Tauri commands / desktop events
+   ▼
 Tauri desktop runtime
-   |
-   +-- background scheduler / tray / notifications / autostart
-   +-- OS keyring and non-secret account metadata
-   v
+   ├─ tray / notifications / autostart
+   ├─ background scheduler
+   └─ OS credential store
+   │
+   ▼
 Rust MailBackend
-   |
-   +-- IMAP sync and MIME parsing
-   +-- SMTP and Outbox
-   +-- bidirectional Drafts sync
-   `-- SQLite repository
+   ├─ IMAP synchronization
+   ├─ SMTP + Outbox
+   ├─ MIME / safe HTML processing
+   ├─ bidirectional draft synchronization
+   └─ SQLite repositories
 ```
 
-- Rust 与 SQLite 是邮件状态的唯一事实来源；React 不直接访问 IMAP、SMTP、凭据文件或数据库。
-- UI 启动不等待网络，网络错误不会阻止读取已有缓存。
-- 邮件摘要优先同步，正文打开时按需获取并缓存。
-- Tauri 只向 React 返回界面需要的数据，不返回授权密码或完整原始 RFC822 邮件。
-- Web/Vite 仅用于前端构建和自动化测试，不再维护一套可连接邮箱的 Web 运行时。
+Rust 与 SQLite 是邮件状态的事实来源。React 只通过窄范围 Tauri command 读取本地状态和发起用户操作，不直接访问 IMAP、SMTP、凭据或数据库。
 
-## 本地开发账户迁移
+项目没有另一套可连接真实邮箱的 Web 运行时。Vite 页面只用于前端构建、自动化测试和可选的无网络 UI 演示。
 
-仓库已有的 `password.txt` 使用两行格式：
+## 仓库结构
+
+```text
+mine-mail/
+├─ src/                       # 独立 Rust 邮件核心与 CLI
+├─ web/
+│  ├─ src/                   # React UI
+│  ├─ src-tauri/             # Tauri 桌面 runtime
+│  └─ design/                # 设计参考与历史 QA 图
+├─ design-qa/                # 当前产品视觉验收记录
+├─ Cargo.toml                # Rust 邮件核心
+├─ rust-toolchain.toml       # 项目 Rust 工具链
+└─ AGENTS.md                 # 持久架构和产品约束
+```
+
+## 快速开始
+
+### 1. 安装开发环境
+
+需要准备：
+
+- [Git](https://git-scm.com/)
+- [Node.js 24 LTS](https://nodejs.org/)
+- [Rustup](https://rust-lang.org/tools/install/)
+- 当前操作系统对应的 [Tauri 2 系统依赖](https://v2.tauri.app/start/prerequisites/)
+
+Windows 需要 Microsoft C++ Build Tools 和 Microsoft Edge WebView2；macOS 需要 Xcode Command Line Tools；Linux 所需的 WebKitGTK、编译工具和系统库随发行版而异，请以 Tauri 官方依赖清单为准。
+
+本仓库固定使用 Rust 1.97，并包含 `rustfmt` 和 `clippy`。首次开发前建议显式安装：
+
+```powershell
+rustup toolchain install 1.97.0 --profile minimal
+rustup component add rustfmt clippy --toolchain 1.97.0
+```
+
+### 2. 克隆并安装前端依赖
+
+```powershell
+git clone https://github.com/Tantless/mine-mail.git
+cd mine-mail
+cd web
+npm ci
+```
+
+使用 `npm ci` 可以严格按照 `package-lock.json` 安装依赖。首次安装与首次 Rust 编译需要联网。
+
+### 3. 启动桌面开发版
+
+在 `web` 目录运行：
+
+```powershell
+npm run tauri:dev
+```
+
+Tauri 会启动 Vite、编译 Rust 桌面 runtime 并打开 Mine Mail。第一次编译可能需要较长时间，并产生数 GB 的 Cargo 构建缓存；后续增量构建会明显更快。
+
+应用可以在没有 `password.txt` 的情况下启动。首次进入后可从账户设置添加 163、Gmail 或自定义 IMAP/SMTP 账户。
+
+### 4. 只开发 React 界面（可选）
+
+该模式不连接真实邮箱，只提供演示数据：
+
+```powershell
+cd web
+$env:VITE_MINE_MAIL_DEMO = "1"
+npm run dev
+```
+
+打开终端中显示的本地地址即可。需要验证托盘、通知、密钥环、窗口和真实邮件功能时，必须使用 `npm run tauri:dev`。
+
+## 邮箱联调
+
+### 163 邮箱
+
+推荐直接从应用的账户设置添加 163 邮箱，填写邮箱地址和客户端授权密码。不要使用网页登录密码。
+
+项目仍保留开发账户的一次性迁移入口：在仓库根目录创建不会被 Git 追踪的 `password.txt`：
 
 ```text
 your-account@163.com
 your-163-authorization-code
 ```
 
-首次启动桌面应用且尚无账户配置时，开发版本会读取该文件，验证账户并把授权密码导入系统密钥环；后续运行从密钥环读取。文件不会被程序自动删除。确认迁移成功后可自行移走该明文文件。
+桌面应用首次启动且没有账户配置时，会验证该账户并把授权密码导入操作系统凭据存储。确认迁移成功后应移走明文文件。
 
-`password.txt`、SQLite 数据库、WAL 文件和构建产物均应保持在 Git 之外。不要把授权密码写进源码、前端环境变量、日志、截图或 issue。
+### Gmail
 
-## 运行桌面应用
+仓库不包含 Google OAuth client secret。没有本地 OAuth JSON 时项目仍然可以编译和开发，但 Gmail 登录入口不可用。
 
-需要 Rust、Node.js 和 Tauri 对应平台的系统依赖。
+有权使用 Mine Mail Google Cloud 项目的协作者，可将 Desktop app OAuth JSON 保存为：
 
-```powershell
-cd Z:\mine-mail\web
-npm install
-npm run tauri:dev
+```text
+web/src-tauri/google-oauth-client.json
 ```
 
-桌面端账户配置保存在操作系统应用数据目录；公开账户元数据与密钥环凭据分离，每个账户使用不含明文邮箱地址的哈希数据库文件名。根目录 CLI 的 `data/mine-mail.db` 与桌面数据库相互独立。
+该文件已被 `.gitignore` 排除，严禁提交、粘贴到 issue 或写入日志。当前构建脚本会校验它是否匹配项目内置的 OAuth client ID；普通 fork 如需使用自己的 Google Cloud 项目，需要同步调整 OAuth 构建配置。
 
-本地构建：
+Google Cloud 项目处于 Testing 状态时，还需要把测试邮箱加入 OAuth consent screen 的测试用户列表。
+
+### Outlook 与自定义服务器
+
+Outlook 目前只展示能力说明，不允许使用不安全的传统账号密码配置；正式接入需要完成 Microsoft OAuth 2.0 / Modern Auth。
+
+自定义账户可以填写 IMAP/SMTP 主机、端口和 TLS 模式。服务器兼容性尚未经过完整矩阵测试。
+
+## 常用开发命令
+
+### React
 
 ```powershell
-cd Z:\mine-mail\web
-npm run tauri:build
+cd web
+npm test -- --run
+npm run build
 ```
 
-构建成功不代表安装包已经完成 Windows 签名、macOS 签名/公证或 Linux 发行版兼容验收。
-
-## 后端 CLI 验收
-
-CLI 使用根目录 `password.txt` 和 `data/mine-mail.db`，所有常规输出都会省略凭据、正文和原始邮件。
+### Rust 邮件核心
 
 ```powershell
-cd Z:\mine-mail
-
-# 验证 IMAP 与 SMTP 登录
-cargo run -- check
-
-# 增量同步收件箱
-cargo run -- sync-inbox --initial-limit 50
-
-# 只查看本地缓存摘要
-cargo run -- list-inbox --limit 20
-
-# 按 IMAP UID 获取并缓存正文
-cargo run -- fetch-message 123
-
-# 本地保存并同步一封草稿
-cargo run -- draft-save --to recipient@example.com --subject "测试草稿" --body "测试正文"
-cargo run -- draft-sync <DRAFT_ID>
-
-# 发信时确认集合必须与 To/Cc/Bcc 完全一致
-cargo run -- send --to recipient@example.com --subject "测试邮件" --body "测试正文" --confirm-recipient recipient@example.com
-
-# 查看安全的 Outbox 状态摘要
-cargo run -- outbox
-
-# 仅人工重试状态为 retryable 的已落盘邮件
-cargo run -- retry-outbox <OUTBOX_ID>
-```
-
-命令行 `--body` 参数可能进入终端历史，不应用于敏感正文。桌面端通过进程内命令传递正文。
-
-## 验证命令
-
-Rust 邮件核心：
-
-```powershell
-cd Z:\mine-mail
 cargo fmt --check
 cargo test --all-targets
 cargo clippy --all-targets -- -D warnings
 ```
 
-React：
+### Tauri runtime
 
 ```powershell
-cd Z:\mine-mail\web
-npm test -- --run
-npm run build
-```
-
-Tauri runtime：
-
-```powershell
-cd Z:\mine-mail\web\src-tauri
+cd web/src-tauri
 cargo fmt --check
 cargo test
 cargo clippy --all-targets -- -D warnings
+cargo check
 ```
 
-自动化测试不会自行向真实地址发信。真实 SMTP 验收必须使用明确的测试主题，并仅发送到用户授权的地址。
+### 构建桌面安装包
 
-## 已完成的真实验收
+```powershell
+cd web
+npm run tauri:build
+```
 
-- 163 IMAP 与 SMTP 鉴权均成功。
-- 当前服务器 INBOX 为 761 封，本地缓存 103 封摘要；连续两次同步均获取 0 封新摘要且 UIDVALIDITY 未变化，证明增量同步幂等。
-- 一封带唯一时间戳主题的草稿已成功上传服务器 Drafts，随后发送成功并从草稿同步状态中清理。
-- Tauri 桌面运行时成功读取系统密钥环；非秘密账户配置中未出现授权密码。
-- 关闭窗口后进程继续存活且窗口隐藏；启动第二实例会唤起已有窗口。
-- 开机自启默认关闭；默认轮询为 5 分钟；通知历史基线已经建立。
-- 自动化回归当前为 Rust 49 项、React 35 项、Tauri 13 项；生产前端构建以及两套 Rust 严格 Clippy 均通过。
+产物位于 `web/src-tauri/target/release/bundle/`。本地构建成功不代表安装包已经完成 Windows 签名、macOS 签名/公证或 Linux 发行版兼容验收。
 
-## 当前限制
+## 后端 CLI
 
-- 目前最多连接 3 个账户，并逐账户同步；尚无把多个账户混排在一起的统一收件箱。
-- Outlook OAuth 2.0 / Modern Auth 尚未实现。
-- 首次同步当前只缓存最近 100 封摘要，尚无向更早邮件翻页/回填的界面。
-- 邮件仅支持纯文本显示和撰写；尚无安全 HTML 渲染、远程图片控制、富文本、附件上传/下载。含这些内容的远端草稿会只读保护。
-- 已读、星标、归档、垃圾箱、已发送等服务器文件夹操作尚未形成完整闭环。
-- 当前使用定时轮询而非 IMAP IDLE。
-- `retryable` 只支持用户明确触发的人工重试，尚无自动重试 worker；`delivery_unknown` 按设计永不自动重试。
-- 后台新邮件通知的代码路径、权限、基线和窗口生命周期已有测试；本轮没有为了触发通知而额外向 163 测试账户发送一封入站邮件。
-- 当前只在 Windows 11 上完成实机联调；macOS 与 Linux 尚需真实设备、密钥环、通知、托盘和安装包验收。
-- 当前 SQLite 明文保存邮件正文、草稿和 Outbox MIME；它防止授权密码落库，但不防御能够读取本机用户文件的攻击者。
+根目录还提供不依赖 React 的邮件核心 CLI，使用根目录 `password.txt` 和 `data/mine-mail.db`：
+
+```powershell
+# 验证 IMAP/SMTP 登录
+cargo run -- check
+
+# 增量同步并读取本地摘要
+cargo run -- sync-inbox --initial-limit 50
+cargo run -- list-inbox --limit 20
+
+# 获取并缓存指定 IMAP UID 的正文
+cargo run -- fetch-message 123
+
+# 查看本地 Outbox
+cargo run -- outbox
+```
+
+CLI 的 `--body` 参数会进入终端历史，不应用于敏感正文。自动化测试不会自行向真实地址发送邮件。
+
+## 本地数据与安全边界
+
+- 邮箱授权密码和 OAuth token 保存在操作系统凭据存储中。
+- 非秘密账户元数据、邮件摘要、正文缓存、草稿和 Outbox 保存在桌面应用数据目录的 SQLite 数据库中。
+- 当前 SQLite 数据库未做整库加密，无法防御能够读取本机用户文件的攻击者。
+- HTML 邮件按不可信输入处理：清理危险内容、禁止脚本，并对复杂结构使用隔离 iframe。
+- `password.txt`、OAuth JSON、数据库、日志、构建目录和前端依赖目录均不应提交 Git。
+
+提交代码前请检查：
+
+```powershell
+git status
+git diff --check
+```
+
+## 磁盘空间
+
+GitHub 仓库本身主要由代码、主题资源和设计 QA 图片组成。开发目录变大通常来自两套 Cargo `target`、前端依赖和打包产物，而不是 Git 下载内容。
+
+需要释放本地编译缓存时可以分别执行：
+
+```powershell
+# 根目录 Rust 核心
+cargo clean
+
+# Tauri runtime
+cd web/src-tauri
+cargo clean
+```
+
+这不会删除源码、账户数据库或 Git 历史，但下一次编译会重新下载/构建必要依赖。
+
+## 开发约束
+
+- 保持本地优先：React 先显示 SQLite，再由 Rust 后台同步。
+- 不在 React、日志、错误信息或 Git 中暴露凭据和完整 RFC822 原文。
+- 不让 UI 直接等待 IMAP/SMTP。
+- 邮件 HTML 必须经过 Rust 清理和结构判定。
+- 同步、草稿和发送逻辑必须支持失败恢复，并避免隐式重复投递。
+- 修改产品的持久架构或交互约束前，请先阅读 `AGENTS.md`。
+
+## 发布状态与许可证
+
+Mine Mail 目前没有正式 Release，仓库也尚未提供面向终端用户的安装支持。两个 Cargo package 当前声明为 MIT；正式对外分发前仍需补充仓库级 `LICENSE`、贡献规范、CI 和平台签名流程。
