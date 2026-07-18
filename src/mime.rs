@@ -224,6 +224,28 @@ pub(crate) fn restore_outbox_envelope(
         .map_err(|error| MailError::Mime(format!("persisted SMTP envelope is invalid: {error}")))
 }
 
+pub(crate) fn outbox_subject(raw_rfc822: &[u8]) -> Option<String> {
+    MessageParser::default()
+        .parse(raw_rfc822)
+        .and_then(|message| message.subject().map(str::to_owned))
+}
+
+pub(crate) fn outbox_preview(raw_rfc822: &[u8]) -> Option<String> {
+    MessageParser::default()
+        .parse(raw_rfc822)
+        .and_then(|message| {
+            message
+                .body_preview(180)
+                .map(|preview| preview.into_owned())
+        })
+}
+
+pub(crate) fn outbox_body_text(raw_rfc822: &[u8]) -> Option<String> {
+    MessageParser::default()
+        .parse(raw_rfc822)
+        .and_then(|message| message.body_text(0).map(|body| body.into_owned()))
+}
+
 fn build_rfc822(
     from: &str,
     request: &ComposeRequest,
@@ -542,8 +564,9 @@ fn map_address(address: &mail_parser::Addr<'_>) -> Option<MailAddress> {
 mod tests {
     use super::{
         IncomingMetadata, build_draft_message_revision, build_outgoing_message,
-        draft_has_unsupported_content, parse_draft_message, parse_incoming_message,
-        parse_incoming_summary_or_fallback, render_message_html, restore_outbox_envelope,
+        draft_has_unsupported_content, outbox_body_text, outbox_preview, outbox_subject,
+        parse_draft_message, parse_incoming_message, parse_incoming_summary_or_fallback,
+        render_message_html, restore_outbox_envelope,
     };
     use crate::ComposeRequest;
 
@@ -563,6 +586,18 @@ mod tests {
         let text = String::from_utf8_lossy(&outgoing.raw_rfc822);
 
         assert_eq!(outgoing.recipients.len(), 2);
+        assert_eq!(
+            outbox_subject(&outgoing.raw_rfc822).as_deref(),
+            Some("中文主题")
+        );
+        assert_eq!(
+            outbox_preview(&outgoing.raw_rfc822).as_deref(),
+            Some("Hello, 世界")
+        );
+        assert_eq!(
+            outbox_body_text(&outgoing.raw_rfc822).as_deref(),
+            Some("Hello, 世界")
+        );
         assert!(!text.lines().any(|line| line.starts_with("Bcc:")));
         assert!(!text.contains("hidden@example.com"));
     }

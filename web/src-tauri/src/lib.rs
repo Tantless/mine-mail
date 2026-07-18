@@ -6,7 +6,8 @@ use std::{env, path::PathBuf};
 
 use mine_mail::{
     ComposeRequest, ConnectionReport, Draft, DraftDeleteKind, DraftSaveKind, DraftSaveOutcome,
-    InboxMessage, MailAddress, OutboxItem, OutboxStatus, SyncReport,
+    InboxMessage, MailAddress, OutboxItem, OutboxStatus, SyncReport, outbox_body_text,
+    outbox_preview, outbox_subject,
 };
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WindowEvent};
@@ -329,11 +330,21 @@ struct OutboxItemDto {
     id: String,
     draft_id: Option<String>,
     recipients: Vec<String>,
+    subject: String,
+    preview: String,
     status: OutboxStatus,
     attempts: u32,
     last_error: Option<String>,
     created_at: String,
     sent_at: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct OutboxMessageDto {
+    id: String,
+    subject: String,
+    body_text: String,
+    body_fetched: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -346,15 +357,30 @@ struct AccountMailboxSnapshotDto {
 
 impl From<OutboxItem> for OutboxItemDto {
     fn from(value: OutboxItem) -> Self {
+        let subject = outbox_subject(&value).unwrap_or_default();
+        let preview = outbox_preview(&value).unwrap_or_default();
         Self {
             id: value.id,
             draft_id: value.draft_id,
             recipients: value.recipients,
+            subject,
+            preview,
             status: value.status,
             attempts: value.attempts,
             last_error: value.last_error,
             created_at: value.created_at,
             sent_at: value.sent_at,
+        }
+    }
+}
+
+impl From<OutboxItem> for OutboxMessageDto {
+    fn from(value: OutboxItem) -> Self {
+        Self {
+            id: value.id.clone(),
+            subject: outbox_subject(&value).unwrap_or_default(),
+            body_text: outbox_body_text(&value).unwrap_or_default(),
+            body_fetched: true,
         }
     }
 }
@@ -522,6 +548,20 @@ fn list_outbox(backend: State<'_, BackendState>) -> CommandResult<Vec<OutboxItem
     backend
         .list_outbox()
         .map(|items| items.into_iter().map(Into::into).collect())
+        .map_err(safe_mail_error)
+}
+
+/// Hydrates only the selected local Outbox body. Raw RFC822 bytes never cross
+/// the desktop boundary, and list responses remain bounded summaries.
+#[tauri::command]
+fn fetch_outbox_message(
+    backend: State<'_, BackendState>,
+    outbox_id: String,
+) -> CommandResult<OutboxMessageDto> {
+    let backend = backend.local()?;
+    backend
+        .outbox_message(&outbox_id)
+        .map(Into::into)
         .map_err(safe_mail_error)
 }
 
@@ -926,6 +966,7 @@ pub fn run() {
             send_draft,
             retry_outbox,
             list_outbox,
+            fetch_outbox_message,
             get_account_mailbox_snapshot,
             get_desktop_settings,
             update_desktop_settings,
@@ -967,9 +1008,12 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use mine_mail::InboxMessage;
+    use mine_mail::{InboxMessage, OutboxItem, OutboxStatus};
 
-    use super::{InboxMessageDto, requested_autostart_change, validate_external_url};
+    use super::{
+        InboxMessageDto, OutboxItemDto, OutboxMessageDto, requested_autostart_change,
+        validate_external_url,
+    };
 
     fn rich_message() -> InboxMessage {
         InboxMessage {
@@ -999,6 +1043,40 @@ mod tests {
             raw_rfc822: Vec::new(),
             synced_at: "2026-07-15T00:00:00Z".to_owned(),
         }
+    }
+
+    fn outbox_item() -> OutboxItem {
+        OutboxItem {
+            id: "outbox-1".to_owned(),
+            account_id: "primary".to_owned(),
+            draft_id: None,
+            draft_revision: None,
+            draft_local_version: None,
+            recipients: vec!["receiver@example.com".to_owned()],
+            status: OutboxStatus::Sent,
+            attempts: 1,
+            last_error: None,
+            created_at: "2026-07-18T00:00:00Z".to_owned(),
+            sent_at: Some("2026-07-18T00:00:01Z".to_owned()),
+            raw_rfc822: b"From: sender@example.com\r\nTo: receiver@example.com\r\nSubject: Re: Actual subject\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nActual sent body".to_vec(),
+        }
+    }
+
+    #[test]
+    fn outbox_summaries_and_selected_bodies_cross_separate_safe_boundaries() {
+        let summary = serde_json::to_value(OutboxItemDto::from(outbox_item()))
+            .expect("serialize Outbox summary");
+        assert_eq!(summary["subject"], "Re: Actual subject");
+        assert_eq!(summary["preview"], "Actual sent body");
+        assert!(summary.get("body_text").is_none());
+        assert!(summary.get("raw_rfc822").is_none());
+
+        let selected = serde_json::to_value(OutboxMessageDto::from(outbox_item()))
+            .expect("serialize selected Outbox body");
+        assert_eq!(selected["subject"], "Re: Actual subject");
+        assert_eq!(selected["body_text"], "Actual sent body");
+        assert_eq!(selected["body_fetched"], true);
+        assert!(selected.get("raw_rfc822").is_none());
     }
 
     #[test]
