@@ -147,6 +147,7 @@ describe("mailApi desktop IPC contract", () => {
     await mailApi.completeExit(404);
     await mailApi.cancelExit(405);
     await mailApi.listOutbox();
+    await mailApi.fetchOutboxMessage("outbox-4");
     await mailApi.retryOutbox("outbox-4");
     await mailApi.deleteDraft("draft-8", 3);
     const unlisten = await mailApi.onMailEvent("mail:inbox-updated", handler);
@@ -161,10 +162,13 @@ describe("mailApi desktop IPC contract", () => {
       requestId: 405,
     });
     expect(ipc.invoke).toHaveBeenNthCalledWith(6, "list_outbox", undefined);
-    expect(ipc.invoke).toHaveBeenNthCalledWith(7, "retry_outbox", {
+    expect(ipc.invoke).toHaveBeenNthCalledWith(7, "fetch_outbox_message", {
       outboxId: "outbox-4",
     });
-    expect(ipc.invoke).toHaveBeenNthCalledWith(8, "delete_draft", {
+    expect(ipc.invoke).toHaveBeenNthCalledWith(8, "retry_outbox", {
+      outboxId: "outbox-4",
+    });
+    expect(ipc.invoke).toHaveBeenNthCalledWith(9, "delete_draft", {
       draftId: "draft-8",
       expectedLocalVersion: 3,
     });

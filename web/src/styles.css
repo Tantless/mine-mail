@@ -2182,6 +2182,11 @@ html[data-surface="new-mail-notification"] #root {
   font-size: 12px;
 }
 
+.delivery-status {
+  max-width: 760px;
+  margin-bottom: 18px;
+}
+
 .attachments {
   max-width: 760px;
   padding: 18px 0 24px;
