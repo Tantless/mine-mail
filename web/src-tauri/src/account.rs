@@ -670,28 +670,14 @@ pub(crate) struct AccountRuntime {
 }
 
 impl AccountRuntime {
-    pub(crate) fn open(
-        app_data: &Path,
-        legacy_credentials: Option<&Path>,
-    ) -> Result<(Self, BackendState), String> {
+    pub(crate) fn open(app_data: &Path) -> Result<(Self, BackendState), String> {
         fs::create_dir_all(app_data)
             .map_err(|_| "The application data directory is unavailable.".to_owned())?;
         let store = AccountStore::new(app_data.join(ACCOUNT_METADATA_FILE));
-        let (mut stored, mut startup_error) = match store.load() {
+        let (stored, mut startup_error) = match store.load() {
             Ok(stored) => (stored, None),
             Err(error) => (StoredAccounts::default(), Some(error)),
         };
-
-        if startup_error.is_none()
-            && stored.accounts.is_empty()
-            && let Some(path) = legacy_credentials
-            && path.is_file()
-        {
-            match migrate_legacy_163(&store, path) {
-                Ok(migrated) => stored = migrated,
-                Err(error) => startup_error = Some(error),
-            }
-        }
 
         let mut backends = Vec::new();
         for metadata in &stored.accounts {
@@ -1226,51 +1212,6 @@ fn record_startup_error(slot: &mut Option<String>, error: String) {
     if slot.is_none() {
         *slot = Some(error);
     }
-}
-
-fn migrate_legacy_163(store: &AccountStore, path: &Path) -> Result<StoredAccounts, String> {
-    let contents = Zeroizing::new(
-        fs::read_to_string(path)
-            .map_err(|_| "The legacy 163 credential file could not be read.".to_owned())?,
-    );
-    let values: Vec<&str> = contents
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .collect();
-    if values.len() != 2 {
-        return Err(
-            "The legacy credential file must contain one email and one authorization password."
-                .to_owned(),
-        );
-    }
-    if !values[0].to_ascii_lowercase().ends_with("@163.com") {
-        return Err("The legacy credential file does not contain a 163 address.".to_owned());
-    }
-
-    let mut metadata = AccountMetadata::preset(AccountProvider::NetEase163, values[0].to_owned())?;
-    metadata.account_id = LEGACY_KEYRING_USERNAME.to_owned();
-    let password = Zeroizing::new(values[1].to_owned());
-    metadata.account_config(password.as_str())?;
-    let entry = keyring_entry(&metadata)?;
-    let previous_password = read_previous_credential(&entry)?;
-    entry
-        .set_password(password.as_str())
-        .map_err(|_| "The OS credential store could not import the legacy account.".to_owned())?;
-    let stored = StoredAccounts {
-        schema_version: ACCOUNT_STORE_VERSION,
-        active_account_id: Some(metadata.account_id.clone()),
-        accounts: vec![metadata],
-    };
-    if let Err(error) = store.save(&stored) {
-        if restore_previous_credential(&entry, previous_password.as_ref()).is_err() {
-            return Err(format!(
-                "{error} The previous OS credential could not be restored."
-            ));
-        }
-        return Err(error);
-    }
-    Ok(stored)
 }
 
 fn keyring_entry(metadata: &AccountMetadata) -> Result<Entry, String> {

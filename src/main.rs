@@ -20,7 +20,7 @@ use serde_json::{Value, json};
 )]
 struct Cli {
     /// Two-line 163 credentials file: email followed by authorization password.
-    #[arg(long, default_value = "password.txt", value_name = "PATH")]
+    #[arg(long, value_name = "PATH")]
     credentials: PathBuf,
 
     /// Local SQLite database path.
@@ -404,7 +404,11 @@ fn error_json(error: &MailError) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{ComposeRequest, require_exact_recipient_confirmation};
+    use std::path::PathBuf;
+
+    use clap::Parser;
+
+    use super::{Cli, ComposeRequest, require_exact_recipient_confirmation};
 
     fn request() -> ComposeRequest {
         ComposeRequest {
@@ -441,6 +445,22 @@ mod tests {
                 ]
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn cli_requires_an_explicit_credentials_path() {
+        assert!(Cli::try_parse_from(["mine-mail", "check"]).is_err());
+        let parsed = Cli::try_parse_from([
+            "mine-mail",
+            "--credentials",
+            "C:/private/mine-mail-credentials.txt",
+            "check",
+        ])
+        .expect("explicit credentials path");
+        assert_eq!(
+            parsed.credentials,
+            PathBuf::from("C:/private/mine-mail-credentials.txt")
         );
     }
 }

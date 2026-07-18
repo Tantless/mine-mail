@@ -122,7 +122,7 @@ npm run tauri:dev
 
 Tauri 会启动 Vite、编译 Rust 桌面 runtime 并打开 Mine Mail。第一次编译可能需要较长时间，并产生数 GB 的 Cargo 构建缓存；后续增量构建会明显更快。
 
-应用可以在没有 `password.txt` 的情况下启动。首次进入后可从账户设置添加 163、Gmail 或自定义 IMAP/SMTP 账户。
+桌面应用不会读取仓库内的凭据或笔记文件。首次进入后从账户设置添加 163、Gmail 或自定义 IMAP/SMTP 账户。
 
 ### 4. 只开发 React 界面（可选）
 
@@ -141,15 +141,6 @@ npm run dev
 ### 163 邮箱
 
 推荐直接从应用的账户设置添加 163 邮箱，填写邮箱地址和客户端授权密码。不要使用网页登录密码。
-
-项目仍保留开发账户的一次性迁移入口：在仓库根目录创建不会被 Git 追踪的 `password.txt`：
-
-```text
-your-account@163.com
-your-163-authorization-code
-```
-
-桌面应用首次启动且没有账户配置时，会验证该账户并把授权密码导入操作系统凭据存储。确认迁移成功后应移走明文文件。
 
 ### Gmail
 
@@ -210,21 +201,23 @@ npm run tauri:build
 
 ## 后端 CLI
 
-根目录还提供不依赖 React 的邮件核心 CLI，使用根目录 `password.txt` 和 `data/mine-mail.db`：
+根目录还提供不依赖 React 的邮件核心 CLI。真实邮箱联调必须通过 `--credentials` 显式传入仓库外的私有两行凭据文件（邮箱地址、客户端授权密码）；本地数据库默认使用 `data/mine-mail.db`：
 
 ```powershell
+$credentials = "C:\private\mine-mail-credentials.txt"
+
 # 验证 IMAP/SMTP 登录
-cargo run -- check
+cargo run -- --credentials $credentials check
 
 # 增量同步并读取本地摘要
-cargo run -- sync-inbox --initial-limit 50
-cargo run -- list-inbox --limit 20
+cargo run -- --credentials $credentials sync-inbox --initial-limit 50
+cargo run -- --credentials $credentials list-inbox --limit 20
 
 # 获取并缓存指定 IMAP UID 的正文
-cargo run -- fetch-message 123
+cargo run -- --credentials $credentials fetch-message 123
 
 # 查看本地 Outbox
-cargo run -- outbox
+cargo run -- --credentials $credentials outbox
 ```
 
 CLI 的 `--body` 参数会进入终端历史，不应用于敏感正文。自动化测试不会自行向真实地址发送邮件。
@@ -235,7 +228,7 @@ CLI 的 `--body` 参数会进入终端历史，不应用于敏感正文。自动
 - 非秘密账户元数据、邮件摘要、正文缓存、草稿和 Outbox 保存在桌面应用数据目录的 SQLite 数据库中。
 - 当前 SQLite 数据库未做整库加密，无法防御能够读取本机用户文件的攻击者。
 - HTML 邮件按不可信输入处理：清理危险内容、禁止脚本，并对复杂结构使用隔离 iframe。
-- `password.txt`、OAuth JSON、数据库、日志、构建目录和前端依赖目录均不应提交 Git。
+- 私人凭据或笔记文件、OAuth JSON、数据库、日志、构建目录和前端依赖目录均不应提交 Git。
 
 提交代码前请检查：
 

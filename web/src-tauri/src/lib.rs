@@ -2,7 +2,7 @@ mod account;
 mod desktop;
 mod mail_html;
 
-use std::{env, path::PathBuf};
+use std::env;
 
 use mine_mail::{
     ComposeRequest, ConnectionReport, Draft, DraftDeleteKind, DraftSaveKind, DraftSaveOutcome,
@@ -787,24 +787,6 @@ fn safe_mail_error(error: mine_mail::MailError) -> String {
     }
 }
 
-fn legacy_credentials_file() -> Option<PathBuf> {
-    if let Some(value) = env::var_os("MINE_MAIL_CREDENTIALS_FILE")
-        && !value.is_empty()
-    {
-        return Some(PathBuf::from(value));
-    }
-
-    #[cfg(debug_assertions)]
-    {
-        Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../password.txt"))
-    }
-
-    #[cfg(not(debug_assertions))]
-    {
-        None
-    }
-}
-
 fn initialize_state(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let (app_data, path_error) = match app.path().app_local_data_dir() {
         Ok(path) => (path, None),
@@ -819,8 +801,7 @@ fn initialize_state(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Erro
     let (account, backend) = if let Some(error) = path_error.as_ref() {
         AccountRuntime::fallback(&app_data, error.clone())
     } else {
-        let legacy_credentials = legacy_credentials_file();
-        AccountRuntime::open(&app_data, legacy_credentials.as_deref())
+        AccountRuntime::open(&app_data)
             .unwrap_or_else(|error| AccountRuntime::fallback(&app_data, error))
     };
     let local_backend_ready = backend.is_local_ready();
