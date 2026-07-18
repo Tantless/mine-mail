@@ -769,24 +769,24 @@ html[data-surface="new-mail-notification"] #root {
 .brand {
   display: flex;
   align-items: center;
-  gap: 11px;
-  height: 34px;
-  margin: 0 2px 18px;
-  font-size: 18px;
-  font-weight: 650;
-  letter-spacing: -0.02em;
+  gap: 28px;
+  height: 38px;
+  margin: 0 2px 20px;
 }
 
 .brand__mark {
-  display: grid;
-  width: 30px;
-  height: 30px;
+  display: block;
+  width: 36px;
+  height: 36px;
   flex: 0 0 auto;
-  place-items: center;
-  border: 1px solid rgba(255, 255, 255, 0.32);
-  border-radius: 9px;
-  background: rgba(255, 255, 255, 0.22);
-  box-shadow: 0 5px 18px rgba(24, 42, 49, 0.1);
+}
+
+.brand__name {
+  font-family: "Nunito Variable", "Arial Rounded MT Bold", sans-serif;
+  font-size: 22px;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: -0.035em;
 }
 
 .brand-logo {
@@ -798,8 +798,8 @@ html[data-surface="new-mail-notification"] #root {
 }
 
 .brand__mark .brand-logo {
-  width: 27px;
-  height: 27px;
+  width: 36px;
+  height: 36px;
 }
 
 .compose-button {

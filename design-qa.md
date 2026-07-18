@@ -62,6 +62,56 @@ final result: passed
 
 ---
 
+# Sidebar Brand Lockup Design QA — 2026-07-18
+
+- Source visual truth: `C:\Users\tantl\.codex\generated_images\019f74e7-709f-7251-8f0f-3f102fc9078b\exec-5629226b-fe45-46be-bece-0cb2e7312d03.png`
+- Browser-rendered implementation screenshot: `Z:\mine-mail\web\design\qa\mine-mail-brand-lockup-implemented-final.png`
+- Focused implementation crop: `Z:\mine-mail\web\design\qa\mine-mail-brand-lockup-focus-final.png`
+- Focused side-by-side comparison: `Z:\mine-mail\web\design\qa\mine-mail-brand-lockup-comparison-final.png`
+- Viewport: 1536 × 791 logical pixels, Chrome local desktop preview.
+- State: daylight theme, demo desktop shell, theme menu closed.
+
+## Full-view Comparison Evidence
+
+The full desktop capture confirms that the enlarged brand lockup still fits the existing sidebar rail, remains aligned with the compose control, and does not displace the folder navigation or window controls. The approved wallpaper and continuous sidebar material are unchanged.
+
+## Focused Region Comparison Evidence
+
+The side-by-side focused comparison shows the selected rounded wordmark direction, transparent fox treatment, and deliberately airy logo-to-name gap on the actual app background. The implementation scales the concept down to the compact sidebar while preserving the reference's approximate one-logo-width visual separation.
+
+## Required Fidelity Surfaces
+
+- Fonts and typography: `Nunito Variable` is bundled locally and used only for the wordmark at 22 px, weight 800, line-height 1, and tightened display tracking. The exact `Mine Mail` copy remains on one line without clipping or synthetic fallback.
+- Spacing and layout rhythm: the fox is 36 × 36 px, the brand row is 38 px high, and the final 28 px CSS gap produces the approved airy separation. The compose button remains aligned below the brand row without overlap.
+- Colors and visual tokens: the wordmark continues to inherit the active sidebar foreground color in every theme. No new color surface or non-semantic theme override was introduced.
+- Image quality and asset fidelity: the existing approved transparent fox PNG is used directly. The former border, white glass plate, corner radius, and container shadow are absent; the browser reports a transparent background, zero border, and no shadow.
+- Copy and content: the only brand text remains exactly `Mine Mail`; no surrounding labels or navigation copy changed.
+
+## Findings
+
+No actionable P0, P1, or P2 mismatch remains.
+
+## Comparison History
+
+- Pass 1: the first implementation used a 16 px gap. The focused comparison showed that it was still noticeably tighter than the user-approved reference.
+- Fix: increased the logo-to-wordmark gap to 28 px while keeping the logo, type size, sidebar alignment, and surrounding layout unchanged.
+- Pass 2: the focused comparison shows the final visual gap at approximately one visible fox width, matching the selected direction without pushing the wordmark outside the sidebar.
+
+## Interaction and Console Checks
+
+- Opened and closed the theme menu in the browser-rendered app; the sidebar remained stable.
+- Browser console warnings/errors: none.
+- React verification: 79 tests passed.
+- Production Vite build passed.
+
+## Follow-up Polish
+
+No P3 follow-up is required for this focused brand change.
+
+final result: passed
+
+---
+
 # Sidebar Account Selected-State Design QA — 2026-07-17
 
 - Source visual truth: `C:\Users\tantl\Documents\xwechat_files\wxid_0qqrc78n3hvm12_adc0\temp\InputTemp\8b691e37-ef4c-45a0-b84b-7e6e5879af4f.png`
