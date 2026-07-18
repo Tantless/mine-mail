@@ -133,6 +133,18 @@ export function MessageView({
           </div>
         </div>
 
+        {message.kind === "outbox" && message.outbox?.status !== "sent" ? (
+          <aside className="message-error delivery-status" role="status">
+            <strong>投递状态：{message.delivery_status_label}</strong>
+            {message.outbox?.last_error ? (
+              <span>说明：{message.outbox.last_error}</span>
+            ) : null}
+            {message.outbox?.status === "delivery_unknown" ? (
+              <span>请先到邮箱服务器确认投递结果，不要立即重复发送。</span>
+            ) : null}
+          </aside>
+        ) : null}
+
         <article
           className={`message-body${
             hasBodySegments

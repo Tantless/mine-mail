@@ -116,28 +116,21 @@ function toOutboxMessage(item, drafts) {
   const draft = drafts.find((candidate) => candidate.id === item.draft_id);
   const status = outboxCopy[item.status] || item.status || "状态未知";
   const recipients = item.recipients || [];
+  const recipientLabel = recipients.join(", ") || "未知收件人";
   return {
     id: item.id,
     uid: `outbox-${item.id}`,
     kind: "outbox",
-    subject: draft?.subject || status,
-    sender: { name: "Mine Mail", email: status },
+    subject: item.subject || draft?.subject || status,
+    sender: { name: recipientLabel, email: recipients[0] || "" },
     to: recipients.map((email) => ({ name: null, email })),
     sent_at: item.sent_at || item.created_at,
     flags: ["\\Seen"],
-    preview: `${status} · ${recipients.join(", ")}`,
-    body_text: [
-      `状态：${status}`,
-      `收件人：${recipients.join(", ") || "未知"}`,
-      item.last_error ? `说明：${item.last_error}` : null,
-      item.status === "delivery_unknown"
-        ? "请先到邮箱服务器确认投递结果，不要立即重复发送。"
-        : null,
-    ]
-      .filter(Boolean)
-      .join("\n\n"),
+    preview: item.preview || "",
+    body_text: null,
+    body_fetched: false,
+    delivery_status_label: status,
     attachment_names: [],
-    body_fetched: true,
     outbox: item,
   };
 }
@@ -390,11 +383,38 @@ export function App() {
       const needsHtmlHydration =
         displayMessage.body_html_available === true &&
         displayMessage.body_html_loaded !== true;
-      if (
-        displayMessage.kind === "outbox" ||
-        (!forceFetch && displayMessage.body_fetched && !needsHtmlHydration)
-      ) {
+      if (!forceFetch && displayMessage.body_fetched && !needsHtmlHydration) {
         setIsMessageLoading(false);
+        return;
+      }
+
+      if (displayMessage.kind === "outbox") {
+        setIsMessageLoading(!displayMessage.preview?.trim());
+        try {
+          const hydrated = {
+            ...displayMessage,
+            ...(await mailApi.fetchOutboxMessage(message.outbox.id)),
+          };
+          if (
+            selectionRequestRef.current !== requestId ||
+            selectedUidRef.current !== message.uid
+          ) {
+            return;
+          }
+          messageBodyCacheRef.current.set(
+            messageCacheKey(message, accountId),
+            bodySnapshot(hydrated),
+          );
+          setSelectedMessage(hydrated);
+        } catch (error) {
+          if (selectionRequestRef.current === requestId) {
+            const messageText = describeError(error, "已发送邮件正文加载失败");
+            setMessageError(messageText);
+            showToast(messageText, "error");
+          }
+        } finally {
+          if (selectionRequestRef.current === requestId) setIsMessageLoading(false);
+        }
         return;
       }
 
@@ -535,7 +555,11 @@ export function App() {
     setSelectedMessage((current) => {
       if (current?.kind !== "outbox") return current;
       const freshItem = items.find((item) => item.id === current.outbox?.id);
-      return freshItem ? toOutboxMessage(freshItem, draftsRef.current) : current;
+      if (!freshItem) return current;
+      const summary = toOutboxMessage(freshItem, draftsRef.current);
+      return current.body_fetched
+        ? { ...summary, ...bodySnapshot(current) }
+        : summary;
     });
     return items;
   }, []);

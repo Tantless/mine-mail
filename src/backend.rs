@@ -1391,6 +1391,19 @@ impl MailBackend {
         self.repository.list_outbox(&self.config.account_id)
     }
 
+    /// Loads one immutable Outbox message for local body hydration while
+    /// preserving the active-account boundary.
+    pub fn outbox_message(&self, outbox_id: &str) -> Result<OutboxItem> {
+        let item = self.repository.get_outbox(outbox_id)?;
+        if item.account_id != self.config.account_id {
+            return Err(MailError::NotFound {
+                entity: "outbox item",
+                id: outbox_id.to_owned(),
+            });
+        }
+        Ok(item)
+    }
+
     /// Manually retries one previously persisted SMTP attempt.
     ///
     /// Only the `retryable` state is accepted. In particular, an ambiguous

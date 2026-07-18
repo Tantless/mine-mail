@@ -28,3 +28,22 @@ pub use models::{
 pub fn render_message_html(message: &InboxMessage) -> Option<String> {
     mime::render_message_html(message)
 }
+
+/// Reads only the decoded subject from an immutable Outbox message. This lets
+/// desktop callers render sent-mail metadata without exposing the persisted
+/// RFC822 payload across the UI boundary or depending on a mutable draft row.
+pub fn outbox_subject(item: &OutboxItem) -> Option<String> {
+    mime::outbox_subject(&item.raw_rfc822)
+}
+
+/// Builds a bounded text preview for an Outbox list row without returning the
+/// complete message body or any RFC822 bytes.
+pub fn outbox_preview(item: &OutboxItem) -> Option<String> {
+    mime::outbox_preview(&item.raw_rfc822)
+}
+
+/// Reads the plain-text body from one locally generated Outbox message. This
+/// is intended for a narrow, selected-message desktop command.
+pub fn outbox_body_text(item: &OutboxItem) -> Option<String> {
+    mime::outbox_body_text(&item.raw_rfc822)
+}

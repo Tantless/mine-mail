@@ -26,6 +26,7 @@ const desktop = vi.hoisted(() => {
       completeExit: vi.fn(),
       cancelExit: vi.fn(),
       listOutbox: vi.fn(),
+      fetchOutboxMessage: vi.fn(),
       getAccountMailboxSnapshot: vi.fn(),
       retryOutbox: vi.fn(),
       sendDraft: vi.fn(),
@@ -183,6 +184,12 @@ describe("Mine Mail desktop state bridge", () => {
     desktop.mailApi.fetchMessage.mockImplementation(async (uid) => ({
       ...summary(uid, "First mail"),
       body_text: "Loaded body",
+      body_fetched: true,
+    }));
+    desktop.mailApi.fetchOutboxMessage.mockImplementation(async (outboxId) => ({
+      id: outboxId,
+      subject: "Outbox subject",
+      body_text: "Actual Outbox body",
       body_fetched: true,
     }));
     desktop.mailApi.openExternalUrl.mockResolvedValue(true);
@@ -444,6 +451,51 @@ describe("Mine Mail desktop state bridge", () => {
     expect(screen.getByText("引用邮件 1")).toBeTruthy();
     expect(container.querySelector("details.quoted-message").open).toBe(false);
     expect(container.querySelector("iframe")).toBeNull();
+  });
+
+  it("shows the immutable reply subject and recipient for sent mail", async () => {
+    desktop.mailApi.listDrafts.mockResolvedValue([]);
+    desktop.mailApi.listOutbox.mockResolvedValue([
+      {
+        id: "sent-reply",
+        draft_id: null,
+        recipients: ["sender1@example.com"],
+        subject: "Re: First mail",
+        preview: "Thanks for the update.",
+        status: "sent",
+        attempts: 1,
+        last_error: null,
+        created_at: "2026-07-14T09:10:00Z",
+        sent_at: "2026-07-14T09:10:01Z",
+      },
+    ]);
+    desktop.mailApi.fetchOutboxMessage.mockResolvedValue({
+      id: "sent-reply",
+      subject: "Re: First mail",
+      body_text: "Thanks for the update.\n\n—— 原邮件 ——\nOriginal body.",
+      body_fetched: true,
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findAllByText("First mail");
+
+    await user.click(screen.getByRole("button", { name: /已发送/ }));
+
+    const sentList = screen.getByLabelText("已发送邮件列表");
+    expect(within(sentList).getByText("Re: First mail")).toBeTruthy();
+    expect(within(sentList).getByText("sender1@example.com")).toBeTruthy();
+    expect(within(sentList).queryByText("Mine Mail")).toBeNull();
+
+    await user.click(within(sentList).getByText("Re: First mail"));
+
+    expect(
+      await screen.findByText("Thanks for the update.", { selector: ".message-body span" }),
+    ).toBeTruthy();
+    expect(screen.getByText("Original body.")).toBeTruthy();
+    expect(desktop.mailApi.fetchOutboxMessage).toHaveBeenCalledWith("sent-reply");
+    const reader = screen.getByLabelText("邮件阅读区");
+    expect(within(reader).queryByText(/状态：已发送/)).toBeNull();
+    expect(within(reader).queryByText(/收件人：sender1@example.com/)).toBeNull();
   });
 
   it("renders bounded semantic HTML directly on the themed reader material", async () => {
@@ -876,9 +928,9 @@ describe("Mine Mail desktop state bridge", () => {
     await screen.findAllByText("First mail");
 
     await user.click(screen.getByText("发件队列"));
-    await user.click(screen.getByText("等待处理 · first@example.com"));
+    await user.click(screen.getByText("first@example.com"));
     await user.click(screen.getByRole("button", { name: "重试发送" }));
-    await user.click(screen.getByText("等待处理 · second@example.com"));
+    await user.click(screen.getByText("second@example.com"));
 
     const retryButton = screen.getByRole("button", { name: "正在重试…" });
     expect(retryButton.disabled).toBe(true);

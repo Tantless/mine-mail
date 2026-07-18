@@ -380,6 +380,21 @@ export const mailApi = {
     return webOnly(() => structuredClone(webOutbox))();
   },
 
+  async fetchOutboxMessage(outboxId) {
+    if (isTauri) return desktopInvoke("fetch_outbox_message", { outboxId });
+    return webOnly(() => {
+      const item = webOutbox.find((candidate) => candidate.id === outboxId);
+      if (!item) throw new Error("发件队列中的邮件不存在。");
+      const draft = webDrafts.find((candidate) => candidate.id === item.draft_id);
+      return structuredClone({
+        id: item.id,
+        subject: item.subject || draft?.subject || "",
+        body_text: item.body_text ?? draft?.body_text ?? "",
+        body_fetched: true,
+      });
+    })();
+  },
+
   async getAccountMailboxSnapshot(accountId, limit = 50) {
     if (isTauri) {
       return desktopInvoke("get_account_mailbox_snapshot", { accountId, limit });
