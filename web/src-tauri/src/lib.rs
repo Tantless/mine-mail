@@ -8,7 +8,8 @@ use std::{env, time::Instant};
 use mine_mail::{
     ComposeRequest, ConnectionReport, Draft, DraftDeleteKind, DraftSaveKind, DraftSaveOutcome,
     InboxMessage, MailAddress, MailBackend, OutboxItem, OutboxStatus, ReplyContext, SyncReport,
-    outbox_body_text, outbox_message_id, outbox_preview, outbox_sent_at, outbox_subject,
+    outbox_body_html, outbox_body_text, outbox_has_reply_headers, outbox_message_id,
+    outbox_preview, outbox_sent_at, outbox_subject,
 };
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WindowEvent};
@@ -25,7 +26,8 @@ use desktop::{
 use diagnostics::{ErrorKind as DiagnosticErrorKind, Fields as DiagnosticFields};
 use mail_html::{
     MailBodySegmentConfidence, MailBodySegmentKind, MailBodySegmentMetadata, MailHtmlStructure,
-    SanitizedMailBodySegment, sanitize_mail_html, segment_mail_body_with_metadata,
+    SanitizedMailBodySegment, authored_body_preview, sanitize_mail_html,
+    segment_mail_body_with_metadata,
 };
 
 const INBOX_SYNC_LIMIT: usize = 100;
@@ -260,6 +262,16 @@ impl InboxMessageDto {
             false,
             false,
         )
+    }
+
+    fn sent_summary(mut value: InboxMessage) -> Self {
+        let has_reply_headers = !value.in_reply_to.is_empty() || !value.references.is_empty();
+        value.preview = authored_body_preview(
+            value.body_text.as_deref(),
+            has_reply_headers,
+            &value.preview,
+        );
+        Self::summary(value)
     }
 
     fn full(value: InboxMessage) -> Self {
@@ -516,6 +528,12 @@ struct OutboxMessageDto {
     id: String,
     subject: String,
     body_text: String,
+    body_html: Option<String>,
+    body_render_mode: BodyRenderMode,
+    body_segments: Vec<BodySegmentDto>,
+    body_html_available: bool,
+    body_html_loaded: bool,
+    has_remote_images: bool,
     body_fetched: bool,
 }
 
@@ -553,10 +571,56 @@ impl From<OutboxItem> for OutboxItemDto {
 
 impl From<OutboxItem> for OutboxMessageDto {
     fn from(value: OutboxItem) -> Self {
+        let subject = outbox_subject(&value).unwrap_or_default();
+        let body_text = outbox_body_text(&value).unwrap_or_default();
+        let raw_body_html = outbox_body_html(&value);
+        let body_html_available = raw_body_html.is_some();
+        let has_reply_headers = outbox_has_reply_headers(&value);
+        let quote_metadata = has_reply_headers.then(|| MailBodySegmentMetadata {
+            subject: reply_parent_subject(&subject),
+            sender: value.recipients.first().cloned(),
+            recipient: None,
+            sent_at: None,
+        });
+        let body_segments = segment_mail_body_with_metadata(
+            Some(&body_text),
+            raw_body_html.as_deref(),
+            has_reply_headers,
+            quote_metadata.as_ref(),
+        )
+        .into_iter()
+        .map(Into::into)
+        .collect();
+        let sanitized = raw_body_html.as_deref().map(sanitize_mail_html);
+        let has_remote_images = sanitized
+            .as_ref()
+            .is_some_and(|html| html.has_remote_images);
+        let (body_html, body_render_mode) = match sanitized {
+            None => (None, BodyRenderMode::Plain),
+            Some(html) if body_text.trim().is_empty() => {
+                (Some(html.fragment), BodyRenderMode::IsolatedHtml)
+            }
+            Some(html) => match html.structure {
+                MailHtmlStructure::PlainEquivalent => (None, BodyRenderMode::Plain),
+                MailHtmlStructure::Native => match html.native_fragment {
+                    Some(fragment) => (Some(fragment), BodyRenderMode::NativeHtml),
+                    None => (Some(html.fragment), BodyRenderMode::IsolatedHtml),
+                },
+                MailHtmlStructure::Isolated => {
+                    (Some(html.fragment), BodyRenderMode::IsolatedHtml)
+                }
+            },
+        };
         Self {
             id: value.id.clone(),
-            subject: outbox_subject(&value).unwrap_or_default(),
-            body_text: outbox_body_text(&value).unwrap_or_default(),
+            subject,
+            body_text,
+            body_html,
+            body_render_mode,
+            body_segments,
+            body_html_available,
+            body_html_loaded: true,
+            has_remote_images,
             body_fetched: true,
         }
     }
@@ -604,7 +668,12 @@ fn list_sent(
     let limit = limit.unwrap_or(SENT_LIST_LIMIT).clamp(1, SENT_LIST_LIMIT);
     backend
         .list_sent(limit)
-        .map(|messages| messages.into_iter().map(InboxMessageDto::summary).collect())
+        .map(|messages| {
+            messages
+                .into_iter()
+                .map(InboxMessageDto::sent_summary)
+                .collect()
+        })
         .map_err(safe_mail_error)
 }
 
@@ -998,7 +1067,12 @@ fn get_account_mailbox_snapshot(
         .map_err(safe_mail_error)?;
     let sent = local
         .list_sent(SENT_LIST_LIMIT)
-        .map(|messages| messages.into_iter().map(InboxMessageDto::summary).collect())
+        .map(|messages| {
+            messages
+                .into_iter()
+                .map(InboxMessageDto::sent_summary)
+                .collect()
+        })
         .map_err(safe_mail_error)?;
     let drafts = local
         .list_drafts()
@@ -1510,6 +1584,12 @@ mod tests {
         }
     }
 
+    fn reply_outbox_item() -> OutboxItem {
+        let mut item = outbox_item();
+        item.raw_rfc822 = b"From: sender@example.com\r\nTo: receiver@example.com\r\nSubject: Re: Actual subject\r\nIn-Reply-To: <parent@example.com>\r\nX-Mine-Mail-Reply-Format: 1\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nFresh reply\r\n\r\nAt 2026-07-17 09:54:29 +08:00, \"Receiver\" <receiver@example.com> wrote:\r\n> Original body".to_vec();
+        item
+    }
+
     #[test]
     fn outbox_summaries_and_selected_bodies_cross_separate_safe_boundaries() {
         let summary = serde_json::to_value(OutboxItemDto::from(outbox_item()))
@@ -1523,8 +1603,28 @@ mod tests {
             .expect("serialize selected Outbox body");
         assert_eq!(selected["subject"], "Re: Actual subject");
         assert_eq!(selected["body_text"], "Actual sent body");
+        assert_eq!(selected["body_render_mode"], "plain");
+        assert_eq!(selected["body_segments"].as_array().unwrap().len(), 0);
         assert_eq!(selected["body_fetched"], true);
         assert!(selected.get("raw_rfc822").is_none());
+    }
+
+    #[test]
+    fn selected_outbox_reply_uses_the_same_segmented_reader_as_remote_sent_mail() {
+        let summary = serde_json::to_value(OutboxItemDto::from(reply_outbox_item()))
+            .expect("serialize reply Outbox summary");
+        assert_eq!(summary["preview"], "Fresh reply");
+
+        let selected = serde_json::to_value(OutboxMessageDto::from(reply_outbox_item()))
+            .expect("serialize selected reply Outbox body");
+        let segments = selected["body_segments"].as_array().expect("body segments");
+        assert_eq!(segments.len(), 2);
+        assert_eq!(segments[0]["kind"], "authored");
+        assert_eq!(segments[0]["content"], "Fresh reply");
+        assert_eq!(segments[1]["kind"], "quoted");
+        assert_eq!(segments[1]["content"], "Original body");
+        assert_eq!(segments[1]["quote_metadata"]["subject"], "Actual subject");
+        assert!(!segments[0]["content"].as_str().unwrap().contains("At 2026"));
     }
 
     #[test]
@@ -1546,6 +1646,23 @@ mod tests {
         assert!(json["body_html"].is_null());
         assert!(json["body_render_mode"].is_null());
         assert!(json.get("raw_rfc822").is_none());
+    }
+
+    #[test]
+    fn sent_summaries_exclude_recognized_reply_history_from_the_preview() {
+        let mut message = rich_message();
+        message.mailbox = "Sent".to_owned();
+        message.in_reply_to = vec!["parent@example.com".to_owned()];
+        message.preview = "测试222 At 2026-07-17 09:54:29 +08:00, tantless wrote: 3".to_owned();
+        message.body_text = Some(
+            "测试222\n\nAt 2026-07-17 09:54:29 +08:00, \"tantless\" <1193894851@qq.com> wrote:\n> 3"
+                .to_owned(),
+        );
+
+        let json = serde_json::to_value(InboxMessageDto::sent_summary(message))
+            .expect("serialize Sent summary");
+
+        assert_eq!(json["preview"], "测试222");
     }
 
     #[test]

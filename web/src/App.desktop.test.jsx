@@ -491,6 +491,26 @@ describe("Mine Mail desktop state bridge", () => {
       id: "sent-reply",
       subject: "Re: First mail",
       body_text: "Thanks for the update.\n\n—— 原邮件 ——\nOriginal body.",
+      body_render_mode: "plain",
+      body_segments: [
+        {
+          kind: "authored",
+          content: "Thanks for the update.",
+          render_mode: "plain",
+          quote_depth: 0,
+          confidence: "high",
+        },
+        {
+          kind: "quoted",
+          content: "Original body.",
+          render_mode: "plain",
+          quote_depth: 1,
+          confidence: "high",
+        },
+      ],
+      body_html_available: false,
+      body_html_loaded: true,
+      has_remote_images: false,
       body_fetched: true,
     });
     const user = userEvent.setup();
@@ -510,8 +530,11 @@ describe("Mine Mail desktop state bridge", () => {
       await screen.findByText("Thanks for the update.", { selector: ".message-body span" }),
     ).toBeTruthy();
     expect(screen.getByText("Original body.")).toBeTruthy();
+    expect(screen.getByText("引用邮件 1")).toBeTruthy();
+    expect(screen.queryByText(/At 2026/)).toBeNull();
     expect(desktop.mailApi.fetchOutboxMessage).toHaveBeenCalledWith("sent-reply");
     const reader = screen.getByLabelText("邮件阅读区");
+    expect(within(reader).getByText("SENT")).toBeTruthy();
     expect(within(reader).queryByText(/状态：已发送/)).toBeNull();
     expect(within(reader).queryByText(/收件人：sender1@example.com/)).toBeNull();
   });

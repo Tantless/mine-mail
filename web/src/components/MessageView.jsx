@@ -105,7 +105,9 @@ export function MessageView({
             {message.kind === "sent"
               ? "SENT"
               : message.kind === "outbox"
-                ? "OUTBOX"
+                ? message.outbox?.status === "sent"
+                  ? "SENT"
+                  : "OUTBOX"
                 : "INBOX"}
           </p>
           <h2>{message.subject || "（无主题）"}</h2>

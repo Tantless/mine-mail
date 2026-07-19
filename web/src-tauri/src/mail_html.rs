@@ -150,6 +150,38 @@ pub(crate) fn segment_mail_body_with_metadata(
     plain_segments.or(html_segments).unwrap_or_default()
 }
 
+/// Builds a bounded list-row preview from only the portions authored in the
+/// current message. Recognized reply introductions and quoted history are
+/// deliberately omitted; ambiguous content falls back unchanged.
+pub(crate) fn authored_body_preview(
+    body_text: Option<&str>,
+    has_reply_headers: bool,
+    fallback: &str,
+) -> String {
+    let authored = body_text
+        .and_then(|text| split_plain_reply(text, has_reply_headers, None))
+        .map(|segments| {
+            segments
+                .into_iter()
+                .filter(|segment| segment.kind == MailBodySegmentKind::Authored)
+                .map(|segment| segment.content)
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .filter(|text| !text.trim().is_empty());
+    compact_preview(authored.as_deref().unwrap_or(fallback), 180)
+}
+
+fn compact_preview(value: &str, max_chars: usize) -> String {
+    value
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(max_chars)
+        .collect()
+}
+
 fn should_use_plain_authored_segment(
     rich: &SanitizedMailBodySegment,
     plain: &SanitizedMailBodySegment,
@@ -1455,7 +1487,8 @@ fn sanitize_html_segment(
 mod tests {
     use super::{
         MailBodySegmentConfidence, MailBodySegmentKind, MailBodySegmentMetadata, MailHtmlStructure,
-        sanitize_mail_html, segment_mail_body, segment_mail_body_with_metadata,
+        authored_body_preview, sanitize_mail_html, segment_mail_body,
+        segment_mail_body_with_metadata,
     };
 
     #[test]
@@ -1757,6 +1790,20 @@ mod tests {
                 .as_ref()
                 .and_then(|metadata| metadata.sender.as_deref()),
             Some("\"Sender\" <sender@example.com>")
+        );
+    }
+
+    #[test]
+    fn sent_preview_keeps_only_authored_reply_text() {
+        let text = "测试222\n\nAt 2026-07-17 09:54:29 +08:00, \"tantless\" <1193894851@qq.com> wrote:\n> 3\n>\n> tantless\n> 1193894851@qq.com";
+
+        assert_eq!(
+            authored_body_preview(Some(text), true, "unsafe fallback"),
+            "测试222"
+        );
+        assert_eq!(
+            authored_body_preview(Some("ordinary message"), false, "Normal preview"),
+            "Normal preview"
         );
     }
 

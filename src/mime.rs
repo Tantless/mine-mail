@@ -364,6 +364,15 @@ pub(crate) fn outbox_preview(raw_rfc822: &[u8]) -> Option<String> {
     MessageParser::default()
         .parse(raw_rfc822)
         .and_then(|message| {
+            let body = message.body_text(0).map(|body| body.into_owned());
+            let is_mine_mail_reply = text_header(&message, MINE_MAIL_REPLY_FORMAT_HEADER)
+                .is_some_and(|value| value == MINE_MAIL_REPLY_FORMAT_VERSION);
+            if is_mine_mail_reply
+                && let Some(body) = body.as_deref()
+                && let Ok((authored, _)) = parse_mine_mail_reply_draft(&message, body)
+            {
+                return Some(compact_text_preview(&authored, 180));
+            }
             message
                 .body_preview(180)
                 .map(|preview| preview.into_owned())
@@ -374,6 +383,33 @@ pub(crate) fn outbox_body_text(raw_rfc822: &[u8]) -> Option<String> {
     MessageParser::default()
         .parse(raw_rfc822)
         .and_then(|message| message.body_text(0).map(|body| body.into_owned()))
+}
+
+pub(crate) fn outbox_body_html(raw_rfc822: &[u8]) -> Option<String> {
+    MessageParser::default()
+        .parse(raw_rfc822)
+        .and_then(|message| extract_renderable_html(&message))
+}
+
+pub(crate) fn outbox_has_reply_headers(raw_rfc822: &[u8]) -> bool {
+    MessageParser::default()
+        .parse(raw_rfc822)
+        .is_some_and(|message| {
+            !message_ids(message.in_reply_to()).is_empty()
+                || !message_ids(message.references()).is_empty()
+                || text_header(&message, MINE_MAIL_REPLY_FORMAT_HEADER)
+                    .is_some_and(|value| value == MINE_MAIL_REPLY_FORMAT_VERSION)
+        })
+}
+
+fn compact_text_preview(value: &str, max_chars: usize) -> String {
+    value
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(max_chars)
+        .collect()
 }
 
 pub(crate) fn outbox_message_id(raw_rfc822: &[u8]) -> Option<String> {
@@ -1009,10 +1045,10 @@ mod tests {
 
     use super::{
         IncomingMetadata, build_draft_message_revision, build_outgoing_message,
-        draft_has_unsupported_content, extract_renderable_html, outbox_body_text,
-        outbox_message_id, outbox_preview, outbox_sent_at, outbox_subject, parse_draft_message,
-        parse_incoming_message, parse_incoming_summary_or_fallback, render_message_html,
-        restore_outbox_envelope,
+        draft_has_unsupported_content, extract_renderable_html, outbox_body_html, outbox_body_text,
+        outbox_has_reply_headers, outbox_message_id, outbox_preview, outbox_sent_at,
+        outbox_subject, parse_draft_message, parse_incoming_message,
+        parse_incoming_summary_or_fallback, render_message_html, restore_outbox_envelope,
     };
     use crate::{ComposeRequest, MailAddress, ReplyContext};
 
@@ -1079,6 +1115,15 @@ mod tests {
 
         let outgoing = build_outgoing_message("sender@example.com", &request).expect("reply");
         let raw = String::from_utf8_lossy(&outgoing.raw_rfc822);
+
+        assert_eq!(
+            outbox_preview(&outgoing.raw_rfc822).as_deref(),
+            Some("这是回复内容")
+        );
+        assert!(outbox_has_reply_headers(&outgoing.raw_rfc822));
+        let outbox_html = outbox_body_html(&outgoing.raw_rfc822).expect("Outbox HTML body");
+        assert!(outbox_html.contains("href=\"https://paa.moe\""));
+        assert!(outbox_html.contains("src=\"data:image/png;base64,AQID\""));
 
         assert!(raw.contains("In-Reply-To: <parent@example.com>\r\n"));
         assert!(raw.contains("References: <root@example.com> <parent@example.com>\r\n"));

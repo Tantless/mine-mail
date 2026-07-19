@@ -48,6 +48,18 @@ pub fn outbox_body_text(item: &OutboxItem) -> Option<String> {
     mime::outbox_body_text(&item.raw_rfc822)
 }
 
+/// Rebuilds the selected Outbox message's HTML alternative, including safe
+/// inline Content-ID images. Desktop callers must still sanitize this value.
+pub fn outbox_body_html(item: &OutboxItem) -> Option<String> {
+    mime::outbox_body_html(&item.raw_rfc822)
+}
+
+/// Reports whether the immutable Outbox message carries standard or Mine Mail
+/// reply metadata, without exposing any headers to the UI.
+pub fn outbox_has_reply_headers(item: &OutboxItem) -> bool {
+    mime::outbox_has_reply_headers(&item.raw_rfc822)
+}
+
 /// Reads the stable RFC Message-ID from an immutable Outbox item. It is used
 /// only as non-secret metadata when merging the local delivery record with the
 /// provider's copy in the Sent mailbox.
