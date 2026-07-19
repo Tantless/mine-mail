@@ -68,7 +68,7 @@ export function MessageView({
   const hasBodySegments = Boolean(message.body_segments?.length);
 
   return (
-    <section className="reader-panel" aria-label="邮件阅读区">
+    <section className="reader-panel reader-panel--message" aria-label="邮件阅读区">
       <header className="reader-toolbar">
         <div className="reader-toolbar__group">
           <IconButton label="返回邮件列表" className="reader-back" onClick={onClose}>

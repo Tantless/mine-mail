@@ -1512,6 +1512,22 @@ html[data-surface="new-mail-notification"] #root {
   animation: reader-in var(--motion-normal) ease-out;
 }
 
+.reader-panel--message {
+  display: flex;
+  height: fit-content;
+  max-height: 100%;
+  align-self: start;
+  flex-direction: column;
+}
+
+.reader-panel--message .reader-toolbar {
+  flex: 0 0 64px;
+}
+
+.reader-panel--message .reader-scroll {
+  flex: 0 1 auto;
+}
+
 .reader-panel--empty {
   display: grid;
   place-content: center;
@@ -4003,6 +4019,16 @@ html[data-surface="new-mail-notification"] #root {
 
   .reader-scroll {
     padding: 26px 22px 38px;
+  }
+
+  .reader-panel--message {
+    height: 100%;
+    max-height: none;
+    align-self: stretch;
+  }
+
+  .reader-panel--message .reader-scroll {
+    flex: 1 1 auto;
   }
 
   .sender-card time {

@@ -79,7 +79,9 @@ describe("Mine Mail MVP", () => {
     const reply = await screen.findByRole("button", { name: "回复" });
     const forward = screen.getByRole("button", { name: "转发" });
     const actions = reply.closest(".message-actions");
+    const reader = screen.getByRole("region", { name: "邮件阅读区" });
 
+    expect(reader.classList.contains("reader-panel--message")).toBe(true);
     expect(reply.classList.contains("message-action-button")).toBe(true);
     expect(reply.classList.contains("message-action-button--reply")).toBe(true);
     expect(forward.classList.contains("message-forward-button")).toBe(true);
