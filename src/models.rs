@@ -36,6 +36,11 @@ pub struct ReplyContext {
     pub recipients: Vec<MailAddress>,
     pub sent_at: Option<String>,
     pub quoted_text: String,
+    /// Optional rich alternative for the quoted body. Desktop callers must
+    /// sanitize this fragment before it crosses into React; the plain text is
+    /// always retained as the interoperability and accessibility fallback.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quoted_html: Option<String>,
 }
 
 impl ComposeRequest {

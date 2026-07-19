@@ -12,6 +12,8 @@ import {
   X,
 } from "@phosphor-icons/react";
 import { IconButton } from "./IconButton.jsx";
+import { HtmlMessageBody } from "./HtmlMessageBody.jsx";
+import { NativeHtmlMessageBody } from "./NativeHtmlMessageBody.jsx";
 import { splitAddresses } from "../utils/formatters.js";
 
 const composeMargin = 22;
@@ -152,6 +154,8 @@ export function ComposePanel({
   onSaveDraft,
   onRequestSend,
   sendShortcut,
+  remoteImageMode = "automatic",
+  onOpenExternalLink,
 }) {
   const [showCopies, setShowCopies] = useState(
     Boolean(value.cc?.length || value.bcc?.length),
@@ -530,9 +534,31 @@ export function ComposePanel({
                   />
                 </button>
                 {isReplyExpanded ? (
-                  <pre className="compose-reply-context__body">
-                    {replyContext.quoted_text}
-                  </pre>
+                  <div className="compose-reply-context__body">
+                    {replyContext.quoted_render_mode === "native_html" &&
+                    replyContext.quoted_html ? (
+                      <NativeHtmlMessageBody
+                        html={replyContext.quoted_html}
+                        hasRemoteImages={replyContext.has_remote_images}
+                        remoteImageMode={remoteImageMode}
+                        onOpenLink={onOpenExternalLink}
+                      />
+                    ) : replyContext.quoted_render_mode === "isolated_html" &&
+                      replyContext.quoted_html ? (
+                      <HtmlMessageBody
+                        cacheKey={`compose-reply:${replyContext.parent_message_id || replyContext.sent_at || replyContext.subject}`}
+                        html={replyContext.quoted_html}
+                        hasRemoteImages={replyContext.has_remote_images}
+                        remoteImageMode={remoteImageMode}
+                        title={`${replyContext.subject || "原邮件"}引用内容`}
+                        onOpenLink={onOpenExternalLink}
+                      />
+                    ) : (
+                      <pre className="compose-reply-context__plain">
+                        {replyContext.quoted_text}
+                      </pre>
+                    )}
+                  </div>
                 ) : null}
               </aside>
             ) : null}

@@ -28,6 +28,7 @@ const SUMMARY_BATCH_SIZE: usize = 100;
 const FLAG_BATCH_SIZE: usize = 250;
 const MAX_CACHED_MESSAGE_BYTES: u32 = 50 * 1024 * 1024;
 const MAX_REPLY_QUOTED_TEXT_BYTES: usize = 2 * 1024 * 1024;
+const MAX_REPLY_QUOTED_HTML_BYTES: usize = 12 * 1024 * 1024;
 const MAX_LOCAL_DRAFT_CAS_RETRIES: usize = 32;
 const BODY_IMAP_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(60);
 
@@ -605,6 +606,10 @@ impl MailBackend {
                 "this message is too large to include as quoted reply text".to_owned(),
             ));
         }
+        let quoted_html = message
+            .body_html
+            .clone()
+            .filter(|html| !html.trim().is_empty() && html.len() <= MAX_REPLY_QUOTED_HTML_BYTES);
 
         let authored_by_account = message
             .sender
@@ -640,6 +645,7 @@ impl MailBackend {
                 recipients: message.to,
                 sent_at: message.sent_at.or(message.internal_date),
                 quoted_text,
+                quoted_html,
             }),
         })
     }
@@ -2143,7 +2149,10 @@ mod tests {
             size_bytes: 100,
             preview: "Original".to_owned(),
             body_text: Some("Complete original body".to_owned()),
-            body_html: None,
+            body_html: Some(
+                r#"<p>Complete <a href="https://paa.moe">original body</a></p><img alt="avatar" src="data:image/png;base64,AQID">"#
+                    .to_owned(),
+            ),
             attachment_names: Vec::new(),
             body_fetched: true,
             raw_rfc822: Vec::new(),
@@ -2180,6 +2189,12 @@ mod tests {
         assert_eq!(context.references, ["root@example.com"]);
         assert_eq!(context.subject, "Earlier note");
         assert_eq!(context.quoted_text, "Complete original body");
+        assert!(
+            context
+                .quoted_html
+                .as_deref()
+                .is_some_and(|html| html.contains("https://paa.moe"))
+        );
 
         let mut legacy_reply = message;
         legacy_reply.id = 0;

@@ -610,6 +610,50 @@ describe("Mine Mail desktop state bridge", () => {
     expect(within(reader).queryByText("Myo myo@paa.moe")).toBeNull();
   });
 
+  it("keeps links and inline images in the read-only reply context", async () => {
+    const richSummary = {
+      ...summary(8, "Hey tantless"),
+      body_text: "Hey tantless A mail from paa.moe!",
+      body_fetched: true,
+    };
+    desktop.mailApi.listInbox.mockResolvedValue([richSummary]);
+    desktop.mailApi.fetchMessage.mockResolvedValue(richSummary);
+    desktop.mailApi.prepareReply.mockResolvedValue({
+      to: ["sender8@example.com"],
+      cc: [],
+      bcc: [],
+      subject: "Re: Hey tantless",
+      body_text: "",
+      reply_context: {
+        parent_message_id: "hey-tantless@example.com",
+        references: [],
+        subject: "Hey tantless",
+        sender: richSummary.sender,
+        recipients: [{ name: "Mine Mail", email: "me@163.com" }],
+        sent_at: richSummary.sent_at,
+        quoted_text: richSummary.body_text,
+        quoted_html:
+          '<p>Hey tantless</p><p>A mail from <a href="https://paa.moe">paa.moe</a>!</p><img alt="Myo avatar" src="data:image/png;base64,AQID">',
+        quoted_render_mode: "native_html",
+        has_remote_images: false,
+      },
+    });
+    const user = userEvent.setup();
+
+    render(<App />);
+    await user.click(await screen.findByText("Hey tantless"));
+    await user.click(await screen.findByRole("button", { name: "回复" }));
+    const composer = await screen.findByRole("dialog", { name: "新邮件" });
+    await user.click(
+      within(composer).getByRole("button", { name: /Hey tantless/ }),
+    );
+
+    const link = within(composer).getByRole("link", { name: "paa.moe" });
+    expect(within(composer).getByAltText("Myo avatar")).toBeTruthy();
+    await user.click(link);
+    expect(desktop.mailApi.openExternalUrl).toHaveBeenCalledWith("https://paa.moe");
+  });
+
   it("flushes the final composer revision before completing desktop exit", async () => {
     const user = userEvent.setup();
     render(<App />);

@@ -110,6 +110,90 @@ struct BodySegmentMetadataDto {
     sent_at: Option<String>,
 }
 
+#[derive(Clone, Debug, Serialize)]
+struct ReplyContextDto {
+    parent_message_id: Option<String>,
+    references: Vec<String>,
+    subject: String,
+    sender: Option<MailAddressDto>,
+    recipients: Vec<MailAddressDto>,
+    sent_at: Option<String>,
+    quoted_text: String,
+    quoted_html: Option<String>,
+    quoted_render_mode: Option<BodyRenderMode>,
+    has_remote_images: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct ComposeRequestDto {
+    to: Vec<String>,
+    cc: Vec<String>,
+    bcc: Vec<String>,
+    subject: String,
+    body_text: String,
+    reply_context: Option<ReplyContextDto>,
+}
+
+fn sanitize_reply_html(source: Option<&str>) -> (Option<String>, Option<BodyRenderMode>, bool) {
+    let Some(source) = source.filter(|html| !html.trim().is_empty()) else {
+        return (None, None, false);
+    };
+    let sanitized = sanitize_mail_html(source);
+    let has_remote_images = sanitized.has_remote_images;
+    match sanitized.structure {
+        MailHtmlStructure::PlainEquivalent => (None, None, has_remote_images),
+        MailHtmlStructure::Native => (
+            sanitized.native_fragment.or(Some(sanitized.fragment)),
+            Some(BodyRenderMode::NativeHtml),
+            has_remote_images,
+        ),
+        MailHtmlStructure::Isolated => (
+            Some(sanitized.fragment),
+            Some(BodyRenderMode::IsolatedHtml),
+            has_remote_images,
+        ),
+    }
+}
+
+impl From<ReplyContext> for ReplyContextDto {
+    fn from(value: ReplyContext) -> Self {
+        let (quoted_html, quoted_render_mode, has_remote_images) =
+            sanitize_reply_html(value.quoted_html.as_deref());
+        Self {
+            parent_message_id: value.parent_message_id,
+            references: value.references,
+            subject: value.subject,
+            sender: value.sender.map(Into::into),
+            recipients: value.recipients.into_iter().map(Into::into).collect(),
+            sent_at: value.sent_at,
+            quoted_text: value.quoted_text,
+            quoted_html,
+            quoted_render_mode,
+            has_remote_images,
+        }
+    }
+}
+
+impl From<ComposeRequest> for ComposeRequestDto {
+    fn from(value: ComposeRequest) -> Self {
+        Self {
+            to: value.to,
+            cc: value.cc,
+            bcc: value.bcc,
+            subject: value.subject,
+            body_text: value.body_text,
+            reply_context: value.reply_context.map(Into::into),
+        }
+    }
+}
+
+fn sanitize_compose_request(mut request: ComposeRequest) -> ComposeRequest {
+    if let Some(context) = request.reply_context.as_mut() {
+        context.quoted_html = sanitize_reply_html(context.quoted_html.as_deref()).0;
+    }
+    request
+}
+
 impl From<MailBodySegmentMetadata> for BodySegmentMetadataDto {
     fn from(value: MailBodySegmentMetadata) -> Self {
         Self {
@@ -360,7 +444,7 @@ struct DraftDto {
     bcc: Vec<String>,
     subject: String,
     body_text: String,
-    reply_context: Option<ReplyContext>,
+    reply_context: Option<ReplyContextDto>,
     status: String,
     remote_mailbox: Option<String>,
     remote_uid: Option<u32>,
@@ -379,7 +463,7 @@ impl From<Draft> for DraftDto {
             bcc: value.bcc,
             subject: value.subject,
             body_text: value.body_text,
-            reply_context: value.reply_context,
+            reply_context: value.reply_context.map(Into::into),
             status: value.status,
             remote_mailbox: value.remote_mailbox,
             remote_uid: value.remote_uid,
@@ -599,9 +683,12 @@ async fn fetch_sent_message(
 fn prepare_reply(
     backend: State<'_, BackendState>,
     message_id: i64,
-) -> CommandResult<ComposeRequest> {
+) -> CommandResult<ComposeRequestDto> {
     let backend = backend.local()?;
-    backend.prepare_reply(message_id).map_err(safe_mail_error)
+    backend
+        .prepare_reply(message_id)
+        .map(Into::into)
+        .map_err(safe_mail_error)
 }
 
 #[tauri::command]
@@ -612,6 +699,7 @@ fn save_draft(
     draft_id: Option<String>,
     expected_local_version: Option<u64>,
 ) -> CommandResult<DraftSaveOutcomeDto> {
+    let request = sanitize_compose_request(request);
     let account_id = backend.active_account_id();
     let backend = match backend.local() {
         Ok(backend) => backend,
@@ -1368,11 +1456,11 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use mine_mail::{InboxMessage, MailAddress, OutboxItem, OutboxStatus};
+    use mine_mail::{InboxMessage, MailAddress, OutboxItem, OutboxStatus, ReplyContext};
 
     use super::{
-        InboxMessageDto, OutboxItemDto, OutboxMessageDto, requested_autostart_change,
-        validate_external_url,
+        InboxMessageDto, OutboxItemDto, OutboxMessageDto, ReplyContextDto,
+        requested_autostart_change, validate_external_url,
     };
 
     fn rich_message() -> InboxMessage {
@@ -1476,6 +1564,34 @@ mod tests {
     }
 
     #[test]
+    fn rich_reply_context_crosses_only_as_sanitized_renderable_html() {
+        let dto = ReplyContextDto::from(ReplyContext {
+            parent_message_id: Some("parent@example.com".to_owned()),
+            references: Vec::new(),
+            subject: "Hey tantless".to_owned(),
+            sender: Some(MailAddress {
+                name: Some("myouo".to_owned()),
+                email: "dev@myouo.me".to_owned(),
+            }),
+            recipients: Vec::new(),
+            sent_at: Some("2026-07-13T13:06:24Z".to_owned()),
+            quoted_text: "Hey tantless A mail from paa.moe!".to_owned(),
+            quoted_html: Some(
+                r#"<p onclick="alert(1)">Hey tantless</p><a href="https://paa.moe">paa.moe</a><img alt="avatar" src="data:image/png;base64,AQID">"#
+                    .to_owned(),
+            ),
+        });
+        let json = serde_json::to_value(dto).expect("serialize reply context");
+        let html = json["quoted_html"].as_str().expect("safe quoted HTML");
+
+        assert!(html.contains("href=\"https://paa.moe\""));
+        assert!(html.contains("data:image/png;base64,AQID"));
+        assert!(!html.contains("onclick"));
+        assert_eq!(json["quoted_render_mode"], "native_html");
+        assert_eq!(json["has_remote_images"], false);
+    }
+
+    #[test]
     fn reply_bodies_cross_as_safe_authored_and_quoted_segments() {
         let mut message = rich_message();
         message.in_reply_to = vec!["parent@example.com".to_owned()];
@@ -1555,6 +1671,12 @@ mod tests {
         assert_eq!(segments[0]["content"], "123");
         assert_eq!(segments[0]["render_mode"], "plain");
         assert!(!segments[0]["content"].as_str().unwrap().contains("At 2026"));
+        assert!(
+            segments[1]["content"]
+                .as_str()
+                .unwrap()
+                .contains("Original body")
+        );
         assert_eq!(segments[1]["quote_metadata"]["subject"], "1");
         assert_eq!(
             segments[1]["quote_metadata"]["sender"],

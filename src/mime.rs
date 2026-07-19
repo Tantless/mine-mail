@@ -3,7 +3,7 @@ use chrono::DateTime;
 use lettre::{
     Address, Message,
     address::Envelope,
-    message::{Mailbox, MultiPart, SinglePart, header::ContentType},
+    message::{Attachment, Mailbox, MultiPart, SinglePart, header::ContentType},
 };
 use mail_parser::{Address as ParsedAddress, HeaderValue, MessageParser, MimeHeaders, PartType};
 use uuid::Uuid;
@@ -13,6 +13,7 @@ use crate::{ComposeRequest, InboxMessage, MailAddress, MailError, ReplyContext, 
 const MINE_MAIL_REPLY_FORMAT_HEADER: &str = "X-Mine-Mail-Reply-Format";
 const MINE_MAIL_REPLY_FORMAT_VERSION: &str = "1";
 const MAX_QUOTED_TEXT_BYTES: usize = 2 * 1024 * 1024;
+const MAX_QUOTED_HTML_BYTES: usize = 12 * 1024 * 1024;
 
 pub(crate) struct OutgoingMessage {
     pub raw_rfc822: Vec<u8>,
@@ -156,6 +157,7 @@ fn parse_mine_mail_reply_draft(
             recipients: map_addresses(message.from()),
             sent_at: intro.sent_at,
             quoted_text: quoted,
+            quoted_html: None,
         },
     ))
 }
@@ -412,20 +414,33 @@ fn build_rfc822(
 
     let plain_body = reply_plain_body(request)?;
     let message = if allow_html_reply && request.reply_context.is_some() {
+        let (html_body, inline_images) = reply_html_body(request)?;
+        let plain_part = SinglePart::builder()
+            .header(ContentType::TEXT_PLAIN)
+            .body(plain_body);
+        let html_part = SinglePart::builder()
+            .header(ContentType::TEXT_HTML)
+            .body(html_body);
+        let alternative = if inline_images.is_empty() {
+            MultiPart::alternative()
+                .singlepart(plain_part)
+                .singlepart(html_part)
+        } else {
+            let mut related = MultiPart::related().singlepart(html_part);
+            for image in inline_images {
+                let content_type = ContentType::parse(image.media_type).map_err(|error| {
+                    MailError::Mime(format!("cannot encode quoted inline image: {error}"))
+                })?;
+                related = related.singlepart(
+                    Attachment::new_inline(image.content_id).body(image.bytes, content_type),
+                );
+            }
+            MultiPart::alternative()
+                .singlepart(plain_part)
+                .multipart(related)
+        };
         builder
-            .multipart(
-                MultiPart::alternative()
-                    .singlepart(
-                        SinglePart::builder()
-                            .header(ContentType::TEXT_PLAIN)
-                            .body(plain_body),
-                    )
-                    .singlepart(
-                        SinglePart::builder()
-                            .header(ContentType::TEXT_HTML)
-                            .body(reply_html_body(request)?),
-                    ),
-            )
+            .multipart(alternative)
             .map_err(|error| MailError::Mime(format!("cannot build message: {error}")))?
     } else {
         builder
@@ -488,6 +503,15 @@ fn validate_reply_context(context: &ReplyContext) -> Result<()> {
     if context.quoted_text.len() > MAX_QUOTED_TEXT_BYTES {
         return Err(MailError::Validation(
             "the quoted message is too large to include in a reply".to_owned(),
+        ));
+    }
+    if context
+        .quoted_html
+        .as_ref()
+        .is_some_and(|html| html.len() > MAX_QUOTED_HTML_BYTES)
+    {
+        return Err(MailError::Validation(
+            "the quoted HTML message is too large to include in a reply".to_owned(),
         ));
     }
     if let Some(sender) = context.sender.as_ref() {
@@ -564,7 +588,13 @@ fn reply_plain_body(request: &ComposeRequest) -> Result<String> {
     })
 }
 
-fn reply_html_body(request: &ComposeRequest) -> Result<String> {
+struct InlineReplyImage {
+    content_id: String,
+    media_type: &'static str,
+    bytes: Vec<u8>,
+}
+
+fn reply_html_body(request: &ComposeRequest) -> Result<(String, Vec<InlineReplyImage>)> {
     let context = request
         .reply_context
         .as_ref()
@@ -572,10 +602,80 @@ fn reply_html_body(request: &ComposeRequest) -> Result<String> {
     validate_reply_context(context)?;
     let authored = html_text(&request.body_text);
     let intro = html_escape(&reply_intro(context));
-    let quoted = html_text(&context.quoted_text);
-    Ok(format!(
+    let quoted = context
+        .quoted_html
+        .as_deref()
+        .filter(|html| !html.trim().is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| html_text(&context.quoted_text));
+    let html = format!(
         "<div class=\"mine-mail-authored\">{authored}</div><br><div class=\"mine-mail-quote\"><div>{intro}</div><blockquote id=\"isReplyContent\" type=\"cite\">{quoted}</blockquote></div>"
-    ))
+    );
+    Ok(extract_reply_inline_images(html))
+}
+
+fn extract_reply_inline_images(mut html: String) -> (String, Vec<InlineReplyImage>) {
+    let mut images = Vec::new();
+    let mut search_from = 0usize;
+    let mut total_bytes = 0usize;
+
+    while images.len() < 32 && search_from < html.len() {
+        let lower = html[search_from..].to_ascii_lowercase();
+        let Some(relative_start) = lower.find("data:image/") else {
+            break;
+        };
+        let start = search_from + relative_start;
+        let candidate = &html[start..];
+        let lower_candidate = candidate.to_ascii_lowercase();
+        let Some(header_end) = lower_candidate.find(";base64,") else {
+            search_from = start.saturating_add("data:image/".len());
+            continue;
+        };
+        let media_type = match &lower_candidate[..header_end] {
+            "data:image/png" => "image/png",
+            "data:image/jpeg" => "image/jpeg",
+            "data:image/gif" => "image/gif",
+            "data:image/webp" => "image/webp",
+            _ => {
+                search_from = start.saturating_add("data:image/".len());
+                continue;
+            }
+        };
+        let payload_start = start + header_end + ";base64,".len();
+        let payload_len = html[payload_start..]
+            .bytes()
+            .take_while(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'='))
+            .count();
+        if payload_len == 0 {
+            search_from = payload_start;
+            continue;
+        }
+        let payload_end = payload_start + payload_len;
+        let Ok(bytes) = BASE64.decode(&html[payload_start..payload_end]) else {
+            search_from = payload_end;
+            continue;
+        };
+        if bytes.is_empty()
+            || bytes.len() > MAX_INLINE_IMAGE_BYTES
+            || total_bytes.saturating_add(bytes.len()) > MAX_TOTAL_INLINE_IMAGE_BYTES
+        {
+            search_from = payload_end;
+            continue;
+        }
+
+        total_bytes += bytes.len();
+        let content_id = format!("mine-mail-quote-{}@mine-mail.invalid", images.len() + 1);
+        let replacement = format!("cid:{content_id}");
+        html.replace_range(start..payload_end, &replacement);
+        search_from = start + replacement.len();
+        images.push(InlineReplyImage {
+            content_id,
+            media_type,
+            bytes,
+        });
+    }
+
+    (html, images)
 }
 
 fn reply_intro(context: &ReplyContext) -> String {
@@ -909,9 +1009,10 @@ mod tests {
 
     use super::{
         IncomingMetadata, build_draft_message_revision, build_outgoing_message,
-        draft_has_unsupported_content, outbox_body_text, outbox_message_id, outbox_preview,
-        outbox_sent_at, outbox_subject, parse_draft_message, parse_incoming_message,
-        parse_incoming_summary_or_fallback, render_message_html, restore_outbox_envelope,
+        draft_has_unsupported_content, extract_renderable_html, outbox_body_text,
+        outbox_message_id, outbox_preview, outbox_sent_at, outbox_subject, parse_draft_message,
+        parse_incoming_message, parse_incoming_summary_or_fallback, render_message_html,
+        restore_outbox_envelope,
     };
     use crate::{ComposeRequest, MailAddress, ReplyContext};
 
@@ -970,6 +1071,10 @@ mod tests {
             }],
             sent_at: Some("2026-07-17T09:54:29+08:00".to_owned()),
             quoted_text: "Original body\nSecond line".to_owned(),
+            quoted_html: Some(
+                r#"<p>Original <a href="https://paa.moe">linked body</a></p><img alt="avatar" src="data:image/png;base64,AQID">"#
+                    .to_owned(),
+            ),
         });
 
         let outgoing = build_outgoing_message("sender@example.com", &request).expect("reply");
@@ -980,6 +1085,8 @@ mod tests {
         assert!(raw.contains("Content-Type: multipart/alternative"));
         assert!(raw.contains("Content-Type: text/plain"));
         assert!(raw.contains("Content-Type: text/html"));
+        assert!(raw.contains("Content-Type: multipart/related"));
+        assert!(raw.contains("Content-ID: <mine-mail-quote-1@mine-mail.invalid>"));
 
         let parsed = MessageParser::default()
             .parse(&outgoing.raw_rfc822)
@@ -1002,7 +1109,11 @@ mod tests {
         };
         assert!(html.contains("blockquote id=\"isReplyContent\" type=\"cite\""));
         assert!(html.contains("这是回复内容"));
-        assert!(html.contains("Original body<br>Second line"));
+        assert!(html.contains("href=\"https://paa.moe\""));
+        assert!(html.contains("src=\"cid:mine-mail-quote-1@mine-mail.invalid\""));
+        let renderable = extract_renderable_html(&parsed).expect("renderable rich reply");
+        assert!(renderable.contains("href=\"https://paa.moe\""));
+        assert!(renderable.contains("src=\"data:image/png;base64,AQID\""));
     }
 
     #[test]
@@ -1024,6 +1135,7 @@ mod tests {
             }],
             sent_at: Some("2026-07-17T09:54:29+08:00".to_owned()),
             quoted_text: "Original body".to_owned(),
+            quoted_html: None,
         });
 
         let raw = build_draft_message_revision("sender@example.com", &request, "draft-123", 4)

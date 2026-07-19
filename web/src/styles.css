@@ -2862,7 +2862,6 @@ html[data-surface="new-mail-notification"] #root {
 
 .compose-reply-context__body {
   max-height: 190px;
-  margin: 0;
   overflow: auto;
   padding: 12px 16px 16px;
   border-top: 1px solid var(--compose-divider);
@@ -2870,8 +2869,22 @@ html[data-surface="new-mail-notification"] #root {
   font: inherit;
   font-size: 11px;
   line-height: 1.65;
+}
+
+.compose-reply-context__plain {
+  margin: 0;
+  font: inherit;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.compose-reply-context__body .native-html-message__content {
+  color: var(--color-text-muted);
+  font-size: 11px;
+}
+
+.compose-reply-context__body .html-message__frame {
+  min-height: 0;
 }
 
 .compose-footer {

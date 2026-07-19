@@ -320,6 +320,11 @@ export const mailApi = {
           recipients: [...(message.to || [])],
           sent_at: message.sent_at || message.internal_date || null,
           quoted_text: message.body_text || message.preview || "",
+          quoted_html: message.body_html || null,
+          quoted_render_mode: message.body_html
+            ? message.body_render_mode || "isolated_html"
+            : null,
+          has_remote_images: message.has_remote_images === true,
         },
       };
     })();

@@ -1972,6 +1972,8 @@ export function App() {
           onSaveDraft={() => void handleSaveDraftAndClose()}
           onRequestSend={() => void handleRequestSend()}
           sendShortcut={platform === "mac" ? "⌘ ↵" : "Ctrl ↵"}
+          remoteImageMode={settings.remoteImageMode}
+          onOpenExternalLink={handleOpenExternalLink}
         />
       ) : null}
 

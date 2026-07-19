@@ -88,8 +88,9 @@ describe("segmented message body", () => {
         },
         {
           kind: "quoted",
-          content: "Original body",
-          render_mode: "plain",
+          content:
+            '<div>Original <a href="https://paa.moe">linked body</a></div><img alt="Myo avatar" src="data:image/png;base64,AQID">',
+          render_mode: "native_html",
           quote_depth: 1,
           confidence: "high",
           quote_metadata: {
@@ -115,6 +116,9 @@ describe("segmented message body", () => {
     expect(screen.getByText("Mine Mail <receiver@example.com>")).toBeTruthy();
     expect(screen.queryByText(/At 2026-07-17/)).toBeNull();
     expect(container.querySelector("iframe")).toBeNull();
+    fireEvent.click(screen.getByText("1").closest("summary"));
+    expect(screen.getByRole("link", { name: "linked body" })).toBeTruthy();
+    expect(screen.getByAltText("Myo avatar")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "按原始格式查看" }));
     expect(container.querySelector("iframe")).toBeTruthy();

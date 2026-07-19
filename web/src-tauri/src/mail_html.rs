@@ -70,7 +70,7 @@ impl MailBodySegmentMetadata {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SanitizedMailBodySegment {
     pub kind: MailBodySegmentKind,
     pub content: String,
@@ -91,9 +91,9 @@ struct PlainBodySegment {
 }
 
 /// Splits replies into authored and quoted regions without discarding either.
-/// Plain alternatives are preferred because reply clients tend to preserve
-/// quote boundaries there even when their HTML template is layout-heavy. HTML
-/// DOM detection is the fallback for HTML-only messages.
+/// Strong provider HTML boundaries are preferred so links, images, and
+/// semantic structure survive inside quote cards. Plain alternatives remain
+/// the fallback for ambiguous HTML and preserve ordered inline replies.
 #[cfg(test)]
 pub(crate) fn segment_mail_body(
     body_text: Option<&str>,
@@ -109,26 +109,56 @@ pub(crate) fn segment_mail_body_with_metadata(
     has_reply_headers: bool,
     parent_metadata: Option<&MailBodySegmentMetadata>,
 ) -> Vec<SanitizedMailBodySegment> {
-    if let Some(text) = body_text
-        && let Some(segments) = split_plain_reply(text, has_reply_headers, parent_metadata)
-    {
-        return segments
-            .into_iter()
-            .map(|segment| SanitizedMailBodySegment {
-                kind: segment.kind,
-                content: segment.content,
-                is_html: false,
-                structure: MailHtmlStructure::PlainEquivalent,
-                quote_depth: segment.quote_depth,
-                confidence: segment.confidence,
-                quote_metadata: segment.quote_metadata,
-            })
-            .collect();
+    let html_segments =
+        body_html.and_then(|html| split_html_reply(html, has_reply_headers, parent_metadata));
+    let plain_segments = body_text
+        .and_then(|text| split_plain_reply(text, has_reply_headers, parent_metadata))
+        .map(|segments| {
+            segments
+                .into_iter()
+                .map(|segment| SanitizedMailBodySegment {
+                    kind: segment.kind,
+                    content: segment.content,
+                    is_html: false,
+                    structure: MailHtmlStructure::PlainEquivalent,
+                    quote_depth: segment.quote_depth,
+                    confidence: segment.confidence,
+                    quote_metadata: segment.quote_metadata,
+                })
+                .collect::<Vec<_>>()
+        });
+    if html_segments.as_ref().is_some_and(|segments| {
+        let has_strong_boundary = segments
+            .iter()
+            .any(|segment| segment.confidence == MailBodySegmentConfidence::High);
+        let keeps_all_detected_history = plain_segments
+            .as_ref()
+            .is_none_or(|plain| segments.len() >= plain.len());
+        has_strong_boundary && keeps_all_detected_history
+    }) {
+        let mut preferred = html_segments.expect("preferred HTML segments were just checked");
+        if let Some(plain) = plain_segments.as_ref() {
+            for (rich_segment, plain_segment) in preferred.iter_mut().zip(plain) {
+                if should_use_plain_authored_segment(rich_segment, plain_segment) {
+                    *rich_segment = plain_segment.clone();
+                }
+            }
+        }
+        return preferred;
     }
 
-    body_html
-        .and_then(|html| split_html_reply(html, has_reply_headers, parent_metadata))
-        .unwrap_or_default()
+    plain_segments.or(html_segments).unwrap_or_default()
+}
+
+fn should_use_plain_authored_segment(
+    rich: &SanitizedMailBodySegment,
+    plain: &SanitizedMailBodySegment,
+) -> bool {
+    rich.kind == MailBodySegmentKind::Authored
+        && plain.kind == MailBodySegmentKind::Authored
+        && rich.structure == MailHtmlStructure::Isolated
+        && !plain.content.trim().is_empty()
+        && !analyze_html(&rich.content).has_meaningful_semantics
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -1752,11 +1782,11 @@ mod tests {
     }
 
     #[test]
-    fn netease_at_wrote_reply_uses_parent_metadata_and_transparent_plain_segments() {
+    fn netease_at_wrote_reply_keeps_rich_original_content_with_parent_metadata() {
         let text = "\n\n123\n\n\nAt 2026-07-17 09:54:29, \"tantless\" <sender@example.com> wrote:\n\n1\nEarlier reply";
         let html = r#"<div style="background:#aaa"><div style="font-size:14px">123</div></div>
             <p>At 2026-07-17 09:54:29, &quot;tantless&quot; &lt;sender@example.com&gt; wrote:</p>
-            <blockquote id="isReplyContent" style="margin:0"><div>1</div><div>Earlier reply</div></blockquote>"#;
+            <blockquote id="isReplyContent" style="margin:0"><div>1</div><div>Earlier <a href="https://paa.moe">linked reply</a></div><img alt="avatar" src="data:image/png;base64,AQID"></blockquote>"#;
         let parent = MailBodySegmentMetadata {
             subject: Some("1".to_owned()),
             sender: Some("tantless <sender@example.com>".to_owned()),
@@ -1772,7 +1802,10 @@ mod tests {
         assert!(!segments[0].is_html);
         assert_eq!(segments[0].structure, MailHtmlStructure::PlainEquivalent);
         assert_eq!(segments[1].kind, MailBodySegmentKind::Quoted);
+        assert!(segments[1].is_html);
         assert!(!segments[1].content.contains("At 2026"));
+        assert!(segments[1].content.contains("href=\"https://paa.moe\""));
+        assert!(segments[1].content.contains("data:image/png;base64,AQID"));
         assert_eq!(segments[1].quote_metadata.as_ref(), Some(&parent));
     }
 
