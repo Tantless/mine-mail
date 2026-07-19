@@ -62,6 +62,54 @@ final result: passed
 
 ---
 
+# Sidebar Brand Size and Position QA — 2026-07-19
+
+- Source visual truth: user-provided current-state screenshot and `Z:\mine-mail\web\design\qa\mine-mail-brand-lockup-focus-final.png`
+- Running implementation screenshot: `Z:\mine-mail\web\design\qa\mine-mail-brand-lockup-larger-current.png`
+- Focused implementation crop: `Z:\mine-mail\web\design\qa\mine-mail-brand-lockup-larger-focus.png`
+- Focused before/after comparison: `Z:\mine-mail\web\design\qa\mine-mail-brand-lockup-larger-comparison.png`
+- Viewport: 1453 × 908 physical pixels, DPI-aware capture of the running Tauri window.
+- State: daylight theme, existing local mailbox, sidebar fully expanded.
+
+## Full-view Comparison Evidence
+
+The running desktop capture shows the enlarged brand lockup fitting within the existing sidebar width and transparent top safe area. The compose button remains at its previous layout position, and the larger fox and wordmark do not collide with the mail list, window controls, or navigation.
+
+## Focused Comparison Evidence
+
+The focused before/after image places the previous approved lockup beside the revised implementation. The fox grows from 36 to 44 CSS pixels, the wordmark grows from 22 to 25 CSS pixels, and the complete lockup moves upward by 4 CSS pixels. The existing airy horizontal spacing is retained and increased slightly from 28 to 30 CSS pixels.
+
+## Required Fidelity Surfaces
+
+- Fonts and typography: the approved local `Nunito Variable` wordmark remains unchanged in family, weight, line height, tracking, and copy; only its size increases to 25 px.
+- Spacing and layout rhythm: brand row height and bottom margin compensate for one another, so the compose control and following navigation do not shift. The lockup uses a controlled -4 px vertical offset.
+- Colors and visual tokens: theme-aware sidebar text color and all material tokens remain unchanged.
+- Image quality and asset fidelity: the approved transparent fox PNG is reused directly at 44 × 44 px with no frame, replacement, or generated approximation.
+- Copy and content: `Mine Mail` remains the only brand copy; no navigation or mailbox content changes.
+
+## Findings
+
+No actionable P0, P1, or P2 mismatch remains. The requested larger and slightly higher brand treatment is visible without introducing layout overlap.
+
+## Comparison History
+
+- Pass 1: the revised full-view and focused comparison show the requested scale and vertical lift while preserving the compose-button position. No additional visual fix was required after comparison.
+
+## Interaction and Build Checks
+
+- The running Tauri window remained responsive and the sidebar retained its expanded desktop layout.
+- React verification: 79 tests passed.
+- Production Vite build passed.
+- The browser-control runtime was unavailable, so visual evidence was captured from the actual running Tauri window.
+
+## Follow-up Polish
+
+No P3 follow-up is required. The six `--sidebar-brand-*` variables at the top of `web/src/styles.css` provide a single manual adjustment point.
+
+final result: passed
+
+---
+
 # Sidebar Brand Lockup Design QA — 2026-07-18
 
 - Source visual truth: `C:\Users\tantl\.codex\generated_images\019f74e7-709f-7251-8f0f-3f102fc9078b\exec-5629226b-fe45-46be-bece-0cb2e7312d03.png`

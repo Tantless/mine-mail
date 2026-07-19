@@ -11,6 +11,13 @@
   --window-edge: clamp(12px, 1vw, 18px);
   --titlebar-height: 38px;
   --content-top: calc(var(--titlebar-height) + 14px);
+  /* Sidebar brand controls: edit these values to tune the logo lockup. */
+  --sidebar-brand-logo-size: 60px;
+  --sidebar-brand-name-size: 35px;
+  --sidebar-brand-gap: 10px;
+  --sidebar-brand-offset-y: -20px;
+  --sidebar-brand-row-height: 44px;
+  --sidebar-brand-margin-bottom: 14px;
   --window-radius: 14px;
   --panel-radius: 12px;
   --control-radius: 9px;
@@ -769,24 +776,28 @@ html[data-surface="new-mail-notification"] #root {
 .brand {
   display: flex;
   align-items: center;
-  gap: 28px;
-  height: 38px;
-  margin: 0 2px 20px;
+  gap: var(--sidebar-brand-gap);
+  height: var(--sidebar-brand-row-height);
+  margin: 0 2px var(--sidebar-brand-margin-bottom);
+  transform: translateY(var(--sidebar-brand-offset-y));
 }
 
 .brand__mark {
   display: block;
-  width: 36px;
-  height: 36px;
+  width: var(--sidebar-brand-logo-size);
+  height: var(--sidebar-brand-logo-size);
   flex: 0 0 auto;
 }
 
 .brand__name {
   font-family: "Nunito Variable", "Arial Rounded MT Bold", sans-serif;
-  font-size: 22px;
+  font-size: var(--sidebar-brand-name-size);
   font-weight: 800;
   line-height: 1;
   letter-spacing: -0.035em;
+  cursor: default;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .brand-logo {
@@ -798,8 +809,8 @@ html[data-surface="new-mail-notification"] #root {
 }
 
 .brand__mark .brand-logo {
-  width: 36px;
-  height: 36px;
+  width: var(--sidebar-brand-logo-size);
+  height: var(--sidebar-brand-logo-size);
 }
 
 .compose-button {
