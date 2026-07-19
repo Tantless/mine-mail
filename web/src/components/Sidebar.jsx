@@ -67,6 +67,7 @@ export function Sidebar({
   const accounts = connectedAccounts(accountStatus);
   const maxAccounts = Math.max(accountStatus?.maxAccounts || 3, accounts.length);
   const emptySlots = Math.max(0, maxAccounts - accounts.length);
+  const hasAvailableAccountSlot = emptySlots > 0;
   const activeAccountId = accountStatus?.activeAccountId || accountStatus?.accountId;
 
   return (
@@ -111,18 +112,17 @@ export function Sidebar({
         <div className="sidebar__spacer" />
 
         <div className="account-switcher" aria-label="已登录邮箱账户">
-          {Array.from({ length: emptySlots }, (_, index) => (
+          {hasAvailableAccountSlot ? (
             <button
-              key={`empty-account-slot-${index}`}
               type="button"
               className="account-add-slot"
-              aria-label={`添加邮箱账户，空位 ${index + 1}/${emptySlots}`}
+              aria-label={`添加邮箱账户，还可添加 ${emptySlots} 个`}
               onClick={onAddAccount}
             >
               <Plus size={16} weight="bold" aria-hidden="true" />
               <span>添加账号</span>
             </button>
-          ))}
+          ) : null}
 
           {accounts.map((account) => {
             const accountLabel = providerNames[account.provider] || "邮箱账户";

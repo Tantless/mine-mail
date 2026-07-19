@@ -223,6 +223,9 @@ function draftToRequest(draft) {
     bcc: [...(draft?.bcc || [])],
     subject: draft?.subject || "",
     body_text: draft?.body_text || "",
+    reply_context: draft?.reply_context
+      ? structuredClone(draft.reply_context)
+      : null,
   };
 }
 
@@ -414,6 +417,9 @@ export function App() {
             bcc: message.draft.bcc || [],
             subject: message.draft.subject || "",
             body_text: message.draft.body_text || "",
+            reply_context: message.draft.reply_context
+              ? structuredClone(message.draft.reply_context)
+              : null,
           },
           message.draft.id,
           message.draft,
@@ -1787,17 +1793,18 @@ export function App() {
     [showToast],
   );
 
-  const openReply = () => {
+  const openReply = async () => {
     if (!selectedMessage) return;
-    openComposer({
-      to: selectedMessage.sender?.email ? [selectedMessage.sender.email] : [],
-      cc: [],
-      bcc: [],
-      subject: selectedMessage.subject.startsWith("Re:")
-        ? selectedMessage.subject
-        : `Re: ${selectedMessage.subject}`,
-      body_text: `\n\n—— 原邮件 ——\n${selectedMessage.body_text || selectedMessage.preview}`,
-    });
+    if (isMessageLoading || !selectedMessage.body_fetched) {
+      showToast("请等待邮件正文加载完成后再回复", "error");
+      return;
+    }
+    try {
+      const request = await mailApi.prepareReply(selectedMessage.id);
+      openComposer(request);
+    } catch (error) {
+      showToast(describeError(error, "无法准备回复邮件"), "error");
+    }
   };
 
   const openForward = () => {

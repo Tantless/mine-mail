@@ -24,30 +24,32 @@ const accounts = [
 function renderSidebar(accountCount, overrides = {}) {
   const onAccountSwitch = vi.fn();
   const onAddAccount = vi.fn();
-  render(
-    <Sidebar
-      activeFolder="inbox"
-      onFolderChange={vi.fn()}
-      onCompose={vi.fn()}
-      theme="dusk"
-      onThemeChange={vi.fn()}
-      isThemeMenuOpen={false}
-      onThemeMenuToggle={vi.fn()}
-      counts={{}}
-      accountStatus={{
-        configured: true,
-        accounts: accounts.slice(0, accountCount),
-        activeAccountId: accounts[0].accountId,
-        maxAccounts: 3,
-      }}
-      accountAvatarFor={vi.fn(() => null)}
-      onAccountSwitch={onAccountSwitch}
-      onAddAccount={onAddAccount}
-      onOpenSettings={vi.fn()}
-      {...overrides}
-    />,
-  );
-  return { onAccountSwitch, onAddAccount };
+  const baseProps = {
+    activeFolder: "inbox",
+    onFolderChange: vi.fn(),
+    onCompose: vi.fn(),
+    theme: "dusk",
+    onThemeChange: vi.fn(),
+    isThemeMenuOpen: false,
+    onThemeMenuToggle: vi.fn(),
+    counts: {},
+    accountStatus: {
+      configured: true,
+      accounts: accounts.slice(0, accountCount),
+      activeAccountId: accounts[0]?.accountId,
+      maxAccounts: 3,
+    },
+    accountAvatarFor: vi.fn(() => null),
+    onAccountSwitch,
+    onAddAccount,
+    onOpenSettings: vi.fn(),
+  };
+  const renderResult = render(<Sidebar {...baseProps} {...overrides} />);
+  const rerenderSidebar = (nextOverrides = {}) =>
+    renderResult.rerender(
+      <Sidebar {...baseProps} {...overrides} {...nextOverrides} />,
+    );
+  return { onAccountSwitch, onAddAccount, rerenderSidebar };
 }
 
 describe("Sidebar account switcher", () => {
@@ -60,10 +62,11 @@ describe("Sidebar account switcher", () => {
   });
 
   it.each([
-    [1, 2],
+    [0, 1],
+    [1, 1],
     [2, 1],
     [3, 0],
-  ])("renders %i accounts with %i remaining add slots", (accountCount, slotCount) => {
+  ])("renders %i accounts with %i progressive add slot", (accountCount, slotCount) => {
     renderSidebar(accountCount);
     expect(screen.queryAllByRole("button", { name: /添加邮箱账户/ })).toHaveLength(
       slotCount,
@@ -80,5 +83,28 @@ describe("Sidebar account switcher", () => {
 
     await user.click(screen.getByRole("button", { name: /添加邮箱账户/ }));
     expect(onAddAccount).toHaveBeenCalledOnce();
+  });
+
+  it("moves the selected state between connected accounts", () => {
+    const { rerenderSidebar } = renderSidebar(2);
+    const firstAccount = screen.getByRole("button", { name: "当前账户 first@163.com" });
+    const googleAccount = screen.getByRole("button", { name: "切换到 second@gmail.com" });
+
+    expect(firstAccount.dataset.active).toBe("true");
+    expect(googleAccount.dataset.active).toBe("false");
+    expect(firstAccount.getAttribute("aria-pressed")).toBe("true");
+
+    rerenderSidebar({
+      accountStatus: {
+        configured: true,
+        accounts: accounts.slice(0, 2),
+        activeAccountId: "google",
+        maxAccounts: 3,
+      },
+    });
+
+    expect(firstAccount.dataset.active).toBe("false");
+    expect(googleAccount.dataset.active).toBe("true");
+    expect(googleAccount.getAttribute("aria-pressed")).toBe("true");
   });
 });

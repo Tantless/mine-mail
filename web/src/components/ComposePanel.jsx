@@ -6,6 +6,7 @@ import {
   Minus,
   Paperclip,
   PaperPlaneTilt,
+  Quotes,
   Trash,
   UserPlus,
   X,
@@ -22,6 +23,26 @@ const composeMinimizedHeight = 44;
 const composeMinimizedBottom = 18;
 const composeGeometryStorageKey = "mine-mail-compose-geometry-v1";
 const resizeDirections = ["n", "ne", "e", "se", "s", "sw", "w", "nw"];
+
+function formatReplyAddress(address) {
+  if (!address?.email) return "未知发件人";
+  return address.name?.trim()
+    ? `${address.name.trim()} <${address.email}>`
+    : address.email;
+}
+
+function formatReplyTime(value) {
+  if (!value) return "时间未知";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? value
+    : date.toLocaleString("zh-CN", { hour12: false });
+}
+
+function formatReplyRecipients(recipients) {
+  const value = (recipients || []).map(formatReplyAddress).join(", ");
+  return value || "未知收件人";
+}
 
 function viewportSize() {
   return { width: window.innerWidth, height: window.innerHeight };
@@ -137,6 +158,7 @@ export function ComposePanel({
   );
   const [geometry, setGeometry] = useState(loadInitialGeometry);
   const [isMinimized, setIsMinimized] = useState(false);
+  const [isReplyExpanded, setIsReplyExpanded] = useState(false);
   const interactionRef = useRef(null);
   const geometryRef = useRef(geometry);
   const minimizedGeometryRef = useRef(null);
@@ -297,6 +319,7 @@ export function ComposePanel({
   }, [value.bcc, value.cc, value.to]);
   const isBusy = locked || isSending;
   const controlsDisabled = isBusy || readOnly;
+  const replyContext = value.reply_context || null;
 
   useEffect(() => {
     const onKeyDown = (event) => {
@@ -478,6 +501,41 @@ export function ComposePanel({
               aria-label="邮件正文"
               disabled={controlsDisabled}
             />
+
+            {replyContext ? (
+              <aside className="compose-reply-context" data-expanded={isReplyExpanded}>
+                <button
+                  className="compose-reply-context__summary"
+                  type="button"
+                  aria-expanded={isReplyExpanded}
+                  onClick={() => setIsReplyExpanded((current) => !current)}
+                >
+                  <span className="compose-reply-context__icon" aria-hidden="true">
+                    <Quotes size={17} weight="fill" />
+                  </span>
+                  <span className="compose-reply-context__copy">
+                    <strong>{replyContext.subject || "原邮件"}</strong>
+                    <small>
+                      {formatReplyAddress(replyContext.sender)}
+                      {" → "}
+                      {formatReplyRecipients(replyContext.recipients)}
+                      {" · "}
+                      {formatReplyTime(replyContext.sent_at)}
+                    </small>
+                  </span>
+                  <CaretDown
+                    className="compose-reply-context__caret"
+                    size={15}
+                    weight="bold"
+                  />
+                </button>
+                {isReplyExpanded ? (
+                  <pre className="compose-reply-context__body">
+                    {replyContext.quoted_text}
+                  </pre>
+                ) : null}
+              </aside>
+            ) : null}
 
             <footer className="compose-footer">
               <div className="compose-footer__left">

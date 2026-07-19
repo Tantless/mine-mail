@@ -17,6 +17,25 @@ pub struct ComposeRequest {
     pub bcc: Vec<String>,
     pub subject: String,
     pub body_text: String,
+    #[serde(default)]
+    pub reply_context: Option<ReplyContext>,
+}
+
+/// Immutable context captured when a reply composer is created. The editable
+/// body remains separate so quoted history cannot accidentally become ordinary
+/// authored text. Rust uses this snapshot to build standards-compliant reply
+/// headers and MIME at send time.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct ReplyContext {
+    pub parent_message_id: Option<String>,
+    #[serde(default)]
+    pub references: Vec<String>,
+    pub subject: String,
+    pub sender: Option<MailAddress>,
+    #[serde(default)]
+    pub recipients: Vec<MailAddress>,
+    pub sent_at: Option<String>,
+    pub quoted_text: String,
 }
 
 impl ComposeRequest {
@@ -90,6 +109,7 @@ pub struct Draft {
     pub bcc: Vec<String>,
     pub subject: String,
     pub body_text: String,
+    pub reply_context: Option<ReplyContext>,
     pub status: String,
     pub remote_mailbox: Option<String>,
     pub remote_uid: Option<u32>,
@@ -131,6 +151,7 @@ impl Draft {
             bcc: self.bcc.clone(),
             subject: self.subject.clone(),
             body_text: self.body_text.clone(),
+            reply_context: self.reply_context.clone(),
         }
     }
 }

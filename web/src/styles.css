@@ -52,23 +52,18 @@
   --account-card-hover-surface: rgba(255, 255, 255, 0.17);
   --account-card-active-surface: color-mix(
     in srgb,
-    var(--color-primary) 14%,
-    rgba(255, 255, 255, 0.28)
+    var(--color-primary) 12%,
+    rgba(255, 255, 255, 0.18)
   );
   --account-card-active-hover: color-mix(
     in srgb,
     var(--color-primary) 16%,
-    rgba(255, 255, 255, 0.33)
+    rgba(255, 255, 255, 0.23)
   );
   --account-card-active-edge: color-mix(
     in srgb,
-    var(--color-primary) 32%,
-    rgba(255, 255, 255, 0.54)
-  );
-  --account-card-active-accent: color-mix(
-    in srgb,
-    var(--color-primary) 68%,
-    white
+    var(--color-primary) 42%,
+    rgba(255, 255, 255, 0.32)
   );
   --sidebar-scrim-top: rgba(241, 249, 252, 0.44);
   --sidebar-scrim-bottom: rgba(216, 231, 232, 0.42);
@@ -987,7 +982,7 @@ html[data-surface="new-mail-notification"] #root {
 
 .account-switcher {
   display: grid;
-  gap: 8px;
+  gap: 9px;
   margin-bottom: 8px;
 }
 
@@ -1010,28 +1005,44 @@ html[data-surface="new-mail-notification"] #root {
   background: var(--account-card-surface);
   text-align: left;
   cursor: pointer;
-  transition: background var(--motion-fast), border-color var(--motion-fast),
-    box-shadow var(--motion-fast), transform 80ms;
+  transform: translate3d(0, 0, 0) scale(1);
+  transition: background 200ms ease, border-color 200ms ease,
+    box-shadow 240ms cubic-bezier(0.16, 1, 0.3, 1),
+    transform 260ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .account-card:hover {
   background: var(--account-card-hover-surface);
+  box-shadow: 0 10px 22px rgba(21, 41, 48, 0.11),
+    inset 0 1px 0 rgba(255, 255, 255, 0.16);
+  transform: translate3d(0, -1px, 0) scale(1.012);
 }
 
 .account-card:active {
-  transform: translateY(1px);
+  box-shadow: 0 2px 6px rgba(21, 41, 48, 0.08),
+    inset 0 2px 5px rgba(16, 38, 55, 0.14);
+  transform: translate3d(0, 1px, 0) scale(0.985);
+  transition-duration: 75ms;
 }
 
 .account-card[data-active="true"] {
   border-color: var(--account-card-active-edge);
   background: var(--account-card-active-surface);
-  box-shadow: inset 3px 0 0 var(--account-card-active-accent),
-    inset 0 1px 0 rgba(255, 255, 255, 0.16),
-    0 7px 18px rgba(21, 41, 48, 0.12);
+  box-shadow: none;
+  transform: translate3d(0, 0, 0) scale(1.006);
 }
 
 .account-card[data-active="true"]:hover {
   background: var(--account-card-active-hover);
+  box-shadow: 0 11px 24px color-mix(in srgb, var(--color-primary) 13%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.18);
+  transform: translate3d(0, -1px, 0) scale(1.012);
+}
+
+.account-card[data-active="true"]:active {
+  box-shadow: inset 0 2px 5px color-mix(in srgb, var(--color-primary) 15%, transparent);
+  transform: translate3d(0, 1px, 0) scale(0.985);
+  transition-duration: 75ms;
 }
 
 .account-card:focus-visible,
@@ -1052,14 +1063,41 @@ html[data-surface="new-mail-notification"] #root {
   font-size: 11px;
   font-weight: 600;
   cursor: pointer;
-  transition: background var(--motion-fast), border-color var(--motion-fast),
-    color var(--motion-fast);
+  transform: translate3d(0, 0, 0) scale(1);
+  transition: background 180ms ease, border-color 180ms ease,
+    box-shadow 240ms cubic-bezier(0.16, 1, 0.3, 1), color 180ms ease,
+    transform 260ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .account-add-slot:hover {
   border-color: rgba(255, 255, 255, 0.68);
   background: var(--sidebar-hover);
   color: var(--sidebar-text);
+  box-shadow: 0 9px 20px rgba(21, 41, 48, 0.09),
+    inset 0 1px 0 rgba(255, 255, 255, 0.14);
+  transform: translate3d(0, -1px, 0) scale(1.012);
+}
+
+.account-add-slot:active {
+  border-color: color-mix(in srgb, var(--color-primary) 28%, rgba(255, 255, 255, 0.52));
+  border-style: solid;
+  background: color-mix(in srgb, var(--color-primary) 8%, var(--sidebar-hover));
+  box-shadow: inset 0 2px 5px rgba(16, 38, 55, 0.12);
+  transform: translate3d(0, 1px, 0) scale(0.985);
+  transition-duration: 75ms;
+}
+
+.account-add-slot > svg {
+  transition: transform 260ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.account-add-slot:hover > svg {
+  transform: rotate(90deg) scale(1.08);
+}
+
+.account-add-slot:active > svg {
+  transform: rotate(90deg) scale(0.92);
+  transition-duration: 75ms;
 }
 
 .account-card__avatar {
@@ -1068,10 +1106,13 @@ html[data-surface="new-mail-notification"] #root {
   height: 32px;
   place-items: center;
   border-radius: 9px;
+  border: 1px solid transparent;
   background: rgba(255, 255, 255, 0.76);
   color: #244354;
   font-size: 13px;
   font-weight: 700;
+  transform: translate3d(0, 0, 0) scale(1);
+  transition: border-color 200ms ease, transform 240ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .account-card__copy {
@@ -1096,6 +1137,20 @@ html[data-surface="new-mail-notification"] #root {
 
 .account-card[data-active="true"] .account-card__copy small {
   color: color-mix(in srgb, var(--sidebar-text) 82%, transparent);
+}
+
+.account-card[data-active="true"] .account-card__avatar {
+  border-color: color-mix(in srgb, var(--account-card-active-edge) 76%, transparent);
+  transform: translate3d(0, 0, 0) scale(1.02);
+}
+
+.account-card:hover .account-card__avatar {
+  transform: translate3d(0, 0, 0) scale(1.035);
+}
+
+.account-card:active .account-card__avatar {
+  transform: translate3d(0, 0.5px, 0) scale(0.98);
+  transition-duration: 75ms;
 }
 
 .theme-control {
@@ -2733,6 +2788,92 @@ html[data-surface="new-mail-notification"] #root {
   color: var(--color-text-muted);
 }
 
+.compose-reply-context {
+  flex: 0 0 auto;
+  max-height: 38%;
+  margin: 0 14px 12px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--color-primary) 20%, var(--compose-divider));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--compose-content-surface) 82%, transparent);
+  backdrop-filter: blur(12px) saturate(1.04);
+  -webkit-backdrop-filter: blur(12px) saturate(1.04);
+}
+
+.compose-reply-context__summary {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) 22px;
+  width: 100%;
+  min-height: 58px;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-secondary);
+  text-align: left;
+}
+
+.compose-reply-context__summary:hover {
+  background: var(--compose-control-hover);
+}
+
+.compose-reply-context__icon {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--color-primary) 14%, var(--compose-control-surface));
+  color: var(--color-primary);
+}
+
+.compose-reply-context__copy {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.compose-reply-context__copy strong,
+.compose-reply-context__copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.compose-reply-context__copy strong {
+  font-size: 12px;
+  font-weight: 680;
+}
+
+.compose-reply-context__copy small {
+  color: var(--color-text-muted);
+  font-size: 10px;
+}
+
+.compose-reply-context__caret {
+  color: var(--color-text-muted);
+  transition: transform var(--motion-fast);
+}
+
+.compose-reply-context[data-expanded="true"] .compose-reply-context__caret {
+  transform: rotate(180deg);
+}
+
+.compose-reply-context__body {
+  max-height: 190px;
+  margin: 0;
+  overflow: auto;
+  padding: 12px 16px 16px;
+  border-top: 1px solid var(--compose-divider);
+  color: var(--color-text-muted);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .compose-footer {
   display: flex;
   flex: 0 0 62px;
@@ -4278,6 +4419,21 @@ html[data-surface="new-mail-notification"] #root {
   .compose-button:hover > span,
   .compose-button:active > svg,
   .compose-button:active > span {
+    transform: none;
+  }
+
+  .account-card,
+  .account-card:hover,
+  .account-card:active,
+  .account-card[data-active="true"],
+  .account-card[data-active="true"]:hover,
+  .account-card[data-active="true"]:active,
+  .account-add-slot,
+  .account-add-slot:hover,
+  .account-add-slot:active,
+  .account-add-slot:hover > svg,
+  .account-add-slot:active > svg,
+  .account-card .account-card__avatar {
     transform: none;
   }
 }

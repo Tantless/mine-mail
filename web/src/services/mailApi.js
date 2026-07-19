@@ -298,6 +298,33 @@ export const mailApi = {
     return webOnly(() => undefined)();
   },
 
+  async prepareReply(messageId) {
+    if (isTauri) return desktopInvoke("prepare_reply", { messageId });
+    return webOnly(() => {
+      const message = webMessages.find((mail) => mail.id === messageId);
+      if (!message) throw new Error("找不到要回复的邮件");
+      const subject = /^re:/i.test(message.subject || "")
+        ? message.subject
+        : `Re: ${message.subject || ""}`;
+      return {
+        to: message.sender?.email ? [message.sender.email] : [],
+        cc: [],
+        bcc: [],
+        subject,
+        body_text: "",
+        reply_context: {
+          parent_message_id: message.message_id || null,
+          references: [...(message.references || [])],
+          subject: message.subject || "",
+          sender: message.sender || null,
+          recipients: [...(message.to || [])],
+          sent_at: message.sent_at || message.internal_date || null,
+          quoted_text: message.body_text || message.preview || "",
+        },
+      };
+    })();
+  },
+
   async openExternalUrl(url) {
     if (isTauri) return desktopInvoke("open_external_url", { url });
     return webOnly(() => {

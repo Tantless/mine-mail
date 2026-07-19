@@ -55,6 +55,22 @@ describe("mailApi desktop IPC contract", () => {
     });
   });
 
+  it("prepares a structured reply by local message id", async () => {
+    const reply = {
+      to: ["sender@example.com"],
+      cc: [],
+      bcc: [],
+      subject: "Re: Earlier",
+      body_text: "",
+      reply_context: { parent_message_id: "parent@example.com" },
+    };
+    ipc.invoke.mockResolvedValueOnce(reply);
+    const { mailApi } = await import("./mailApi.js");
+
+    await expect(mailApi.prepareReply(42)).resolves.toEqual(reply);
+    expect(ipc.invoke).toHaveBeenCalledWith("prepare_reply", { messageId: 42 });
+  });
+
   it("maps desktop settings and account commands without persisting a secret", async () => {
     ipc.invoke
       .mockResolvedValueOnce({

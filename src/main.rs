@@ -146,6 +146,7 @@ impl From<ComposeArgs> for ComposeRequest {
             bcc: args.bcc,
             subject: args.subject,
             body_text: args.body,
+            reply_context: None,
         }
     }
 }
@@ -417,6 +418,7 @@ mod tests {
             bcc: Vec::new(),
             subject: "test".to_owned(),
             body_text: "body".to_owned(),
+            reply_context: None,
         }
     }
 

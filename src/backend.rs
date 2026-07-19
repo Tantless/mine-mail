@@ -10,7 +10,8 @@ use uuid::Uuid;
 
 use crate::{
     AccountConfig, ComposeRequest, ConnectionReport, Draft, DraftDeleteKind, DraftSaveKind,
-    DraftSaveOutcome, InboxMessage, MailError, OutboxItem, OutboxStatus, Result, SyncReport,
+    DraftSaveOutcome, InboxMessage, MailError, OutboxItem, OutboxStatus, ReplyContext, Result,
+    SyncReport,
     database::{DraftRecord, MailboxState, Repository},
     imap_client::{ImapConnection, MailboxHint, RemoteMessage},
     mime::{
@@ -26,6 +27,7 @@ const INBOX: &str = "INBOX";
 const SUMMARY_BATCH_SIZE: usize = 100;
 const FLAG_BATCH_SIZE: usize = 250;
 const MAX_CACHED_MESSAGE_BYTES: u32 = 50 * 1024 * 1024;
+const MAX_REPLY_QUOTED_TEXT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_LOCAL_DRAFT_CAS_RETRIES: usize = 32;
 const BODY_IMAP_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(60);
 
@@ -521,7 +523,125 @@ impl MailBackend {
                 return Ok(Some(parent));
             }
         }
-        Ok(None)
+        self.cached_legacy_reply_parent(message)
+    }
+
+    fn cached_legacy_reply_parent(&self, message: &InboxMessage) -> Result<Option<InboxMessage>> {
+        let Some(quoted) = legacy_mine_mail_quoted_text(message.body_text.as_deref()) else {
+            return Ok(None);
+        };
+        let Some(current_sender) = message.sender.as_ref() else {
+            return Ok(None);
+        };
+        let current_recipients = message
+            .to
+            .iter()
+            .chain(&message.cc)
+            .map(|address| address.email.to_ascii_lowercase())
+            .collect::<HashSet<_>>();
+        let quoted = normalize_legacy_reply_text(quoted);
+        let subject = normalized_reply_subject(&message.subject);
+        let candidates = self.repository.legacy_reply_parent_candidates(
+            &self.config.account_id,
+            message.id,
+            250,
+        )?;
+        let mut matches = candidates
+            .into_iter()
+            .filter(|candidate| normalized_reply_subject(&candidate.subject) == subject)
+            .filter(|candidate| {
+                let Some(sender) = candidate.sender.as_ref() else {
+                    return false;
+                };
+                current_recipients.contains(&sender.email.to_ascii_lowercase())
+                    && candidate.to.iter().chain(&candidate.cc).any(|recipient| {
+                        recipient.email.eq_ignore_ascii_case(&current_sender.email)
+                    })
+            })
+            .filter(|candidate| {
+                candidate
+                    .body_text
+                    .as_deref()
+                    .is_some_and(|body| normalize_legacy_reply_text(body) == quoted)
+            })
+            .collect::<Vec<_>>();
+        matches.dedup_by(|left, right| {
+            left.message_id
+                .as_deref()
+                .zip(right.message_id.as_deref())
+                .is_some_and(|(left, right)| left.eq_ignore_ascii_case(right))
+        });
+        Ok((matches.len() == 1).then(|| matches.remove(0)))
+    }
+
+    /// Creates a reply request from one fully cached local message. React gets
+    /// only the narrow editable request and immutable quote metadata; raw
+    /// RFC822 never crosses the desktop boundary.
+    pub fn prepare_reply(&self, message_row_id: i64) -> Result<ComposeRequest> {
+        let message = self.repository.get_message(message_row_id)?;
+        if message.account_id != self.config.account_id {
+            return Err(MailError::NotFound {
+                entity: "message",
+                id: message_row_id.to_string(),
+            });
+        }
+        if !message.body_fetched {
+            return Err(MailError::Validation(
+                "wait for the complete message body before replying".to_owned(),
+            ));
+        }
+        let quoted_text = message
+            .body_text
+            .clone()
+            .filter(|body| !body.trim().is_empty())
+            .unwrap_or_else(|| message.preview.clone());
+        if quoted_text.trim().is_empty() {
+            return Err(MailError::Validation(
+                "this message has no readable text to quote".to_owned(),
+            ));
+        }
+        if quoted_text.len() > MAX_REPLY_QUOTED_TEXT_BYTES {
+            return Err(MailError::Validation(
+                "this message is too large to include as quoted reply text".to_owned(),
+            ));
+        }
+
+        let authored_by_account = message
+            .sender
+            .as_ref()
+            .is_some_and(|sender| sender.email.eq_ignore_ascii_case(&self.config.email));
+        let reply_target = if authored_by_account {
+            message
+                .to
+                .iter()
+                .find(|address| !address.email.eq_ignore_ascii_case(&self.config.email))
+        } else {
+            message.sender.as_ref()
+        }
+        .ok_or_else(|| MailError::Validation("this message has no reply recipient".to_owned()))?;
+
+        let references = if message.references.is_empty() {
+            message.in_reply_to.clone()
+        } else {
+            message.references.clone()
+        };
+        let subject = reply_subject(&message.subject);
+        Ok(ComposeRequest {
+            to: vec![reply_target.email.clone()],
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject,
+            body_text: String::new(),
+            reply_context: Some(ReplyContext {
+                parent_message_id: message.message_id.clone(),
+                references,
+                subject: message.subject,
+                sender: message.sender,
+                recipients: message.to,
+                sent_at: message.sent_at.or(message.internal_date),
+                quoted_text,
+            }),
+        })
     }
 
     fn cached_mailbox_message(&self, mailbox: &str, uid: u32) -> Result<InboxMessage> {
@@ -798,6 +918,7 @@ impl MailBackend {
                     replacement.draft.bcc = request.bcc.clone();
                     replacement.draft.subject = request.subject.clone();
                     replacement.draft.body_text = request.body_text.clone();
+                    replacement.draft.reply_context = request.reply_context.clone();
                     replacement.draft.status = "local".to_owned();
                     replacement.draft.updated_at = now();
                     replacement.is_deleted = false;
@@ -888,6 +1009,7 @@ impl MailBackend {
                     replacement.draft.bcc = request.bcc.clone();
                     replacement.draft.subject = request.subject.clone();
                     replacement.draft.body_text = request.body_text.clone();
+                    replacement.draft.reply_context = request.reply_context.clone();
                     replacement.draft.status = "local".to_owned();
                     replacement.draft.updated_at = now();
                     replacement.is_deleted = false;
@@ -962,6 +1084,7 @@ impl MailBackend {
                     bcc: request.bcc.clone(),
                     subject: request.subject.clone(),
                     body_text: request.body_text.clone(),
+                    reply_context: request.reply_context.clone(),
                     status: status.to_owned(),
                     remote_mailbox: None,
                     remote_uid: None,
@@ -1370,6 +1493,7 @@ impl MailBackend {
                 bcc: remote.request.bcc.clone(),
                 subject: remote.request.subject.clone(),
                 body_text: remote.request.body_text.clone(),
+                reply_context: remote.request.reply_context.clone(),
                 status: "conflict".to_owned(),
                 remote_mailbox: None,
                 remote_uid: None,
@@ -1411,6 +1535,7 @@ impl MailBackend {
                 bcc: remote.request.bcc.clone(),
                 subject: remote.request.subject.clone(),
                 body_text: remote.request.body_text.clone(),
+                reply_context: remote.request.reply_context.clone(),
                 status: "synced".to_owned(),
                 remote_mailbox: Some(mailbox.to_owned()),
                 remote_uid: Some(remote.uid),
@@ -1446,6 +1571,7 @@ impl MailBackend {
                 bcc: request.bcc.clone(),
                 subject: request.subject.clone(),
                 body_text: request.body_text.clone(),
+                reply_context: request.reply_context.clone(),
                 status: "conflict".to_owned(),
                 remote_mailbox: None,
                 remote_uid: None,
@@ -1669,6 +1795,58 @@ fn validate_manual_retry(item: &OutboxItem, account_id: &str) -> Result<()> {
     Ok(())
 }
 
+fn reply_subject(subject: &str) -> String {
+    let subject = subject.trim();
+    if subject
+        .get(..3)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("re:"))
+        || subject.starts_with("回复：")
+        || subject.starts_with("回复:")
+    {
+        subject.to_owned()
+    } else {
+        format!("Re: {subject}")
+    }
+}
+
+fn legacy_mine_mail_quoted_text(body: Option<&str>) -> Option<&str> {
+    let body = body?;
+    let marker = "—— 原邮件 ——";
+    let mut offset = 0usize;
+    for line in body.split_inclusive('\n') {
+        let content = line.trim_end_matches(['\r', '\n']);
+        if content.trim() == marker {
+            let quoted = body.get(offset + line.len()..)?.trim();
+            return (!quoted.is_empty()).then_some(quoted);
+        }
+        offset += line.len();
+    }
+    None
+}
+
+fn normalize_legacy_reply_text(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn normalized_reply_subject(subject: &str) -> String {
+    let mut subject = subject.trim();
+    loop {
+        if subject
+            .get(..3)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("re:"))
+        {
+            subject = subject[3..].trim_start();
+        } else if let Some(value) = subject.strip_prefix("回复：") {
+            subject = value.trim_start();
+        } else if let Some(value) = subject.strip_prefix("回复:") {
+            subject = value.trim_start();
+        } else {
+            break;
+        }
+    }
+    subject.to_lowercase()
+}
+
 fn require_exact_recipient_confirmation(
     request: &ComposeRequest,
     confirmations: &[String],
@@ -1771,6 +1949,7 @@ fn remote_draft_candidate(
                 bcc: Vec::new(),
                 subject: String::new(),
                 body_text: String::new(),
+                reply_context: None,
             },
             true,
         ),
@@ -1847,7 +2026,7 @@ mod tests {
     };
     use crate::{
         AccountConfig, ComposeRequest, Draft, DraftDeleteKind, DraftSaveKind, InboxMessage,
-        MailError, OutboxItem, OutboxStatus,
+        MailAddress, MailError, OutboxItem, OutboxStatus,
         database::{DraftRecord, Repository},
         imap_client::{MailboxHint, RemoteMessage},
         mime::parse_draft_message,
@@ -1860,6 +2039,7 @@ mod tests {
             bcc: Vec::new(),
             subject: subject.to_owned(),
             body_text: body_text.to_owned(),
+            reply_context: None,
         }
     }
 
@@ -1880,6 +2060,7 @@ mod tests {
                 bcc: Vec::new(),
                 subject: subject.to_owned(),
                 body_text: "body".to_owned(),
+                reply_context: None,
                 status: "local".to_owned(),
                 remote_mailbox: Some("Drafts".to_owned()),
                 remote_uid: Some(10),
@@ -1923,11 +2104,117 @@ mod tests {
                 bcc: Vec::new(),
                 subject: "unfinished".to_owned(),
                 body_text: "local text".to_owned(),
+                reply_context: None,
             })
             .expect("save draft");
 
         assert_eq!(saved.status, "local");
         assert_eq!(backend.list_drafts().expect("drafts").len(), 1);
+    }
+
+    #[test]
+    fn prepares_a_structured_reply_from_the_cached_message() {
+        let directory = tempdir().expect("tempdir");
+        let config =
+            AccountConfig::from_163_lines(["demo@163.com", "not-a-real-secret"]).expect("config");
+        let backend = MailBackend::open(config, directory.path().join("mail.db")).expect("backend");
+        backend.initialize().expect("initialize");
+        let message = InboxMessage {
+            id: 0,
+            account_id: backend.config.account_id.clone(),
+            mailbox: INBOX.to_owned(),
+            uid: 41,
+            message_id: Some("parent@example.com".to_owned()),
+            in_reply_to: vec!["root@example.com".to_owned()],
+            references: vec!["root@example.com".to_owned()],
+            subject: "Earlier note".to_owned(),
+            sender: Some(MailAddress {
+                name: Some("Sender".to_owned()),
+                email: "sender@example.com".to_owned(),
+            }),
+            to: vec![MailAddress {
+                name: None,
+                email: "demo@163.com".to_owned(),
+            }],
+            cc: Vec::new(),
+            sent_at: Some("2026-07-17T09:54:29+08:00".to_owned()),
+            internal_date: None,
+            flags: Vec::new(),
+            size_bytes: 100,
+            preview: "Original".to_owned(),
+            body_text: Some("Complete original body".to_owned()),
+            body_html: None,
+            attachment_names: Vec::new(),
+            body_fetched: true,
+            raw_rfc822: Vec::new(),
+            synced_at: "2026-07-17T10:00:00+08:00".to_owned(),
+        };
+        let row_id = backend
+            .repository
+            .upsert_message(&message)
+            .expect("cache message");
+
+        let reply = backend.prepare_reply(row_id).expect("prepare reply");
+
+        assert_eq!(reply.to, ["sender@example.com"]);
+        assert_eq!(reply.subject, "Re: Earlier note");
+        assert!(reply.body_text.is_empty());
+        let saved = backend
+            .save_draft(reply.clone())
+            .expect("persist reply draft");
+        assert_eq!(
+            backend
+                .list_drafts()
+                .expect("reload reply draft")
+                .into_iter()
+                .find(|draft| draft.id == saved.id)
+                .and_then(|draft| draft.reply_context)
+                .map(|context| context.quoted_text),
+            Some("Complete original body".to_owned())
+        );
+        let context = reply.reply_context.expect("reply context");
+        assert_eq!(
+            context.parent_message_id.as_deref(),
+            Some("parent@example.com")
+        );
+        assert_eq!(context.references, ["root@example.com"]);
+        assert_eq!(context.subject, "Earlier note");
+        assert_eq!(context.quoted_text, "Complete original body");
+
+        let mut legacy_reply = message;
+        legacy_reply.id = 0;
+        legacy_reply.uid = 42;
+        legacy_reply.mailbox = "Sent".to_owned();
+        legacy_reply.message_id = Some("legacy-reply@example.com".to_owned());
+        legacy_reply.in_reply_to.clear();
+        legacy_reply.references.clear();
+        legacy_reply.subject = "Re: Earlier note".to_owned();
+        legacy_reply.sender = Some(MailAddress {
+            name: Some("Me".to_owned()),
+            email: "demo@163.com".to_owned(),
+        });
+        legacy_reply.to = vec![MailAddress {
+            name: Some("Sender".to_owned()),
+            email: "sender@example.com".to_owned(),
+        }];
+        legacy_reply.body_text =
+            Some("Legacy reply\n\n—— 原邮件 ——\nComplete original body".to_owned());
+        let legacy_id = backend
+            .repository
+            .upsert_message(&legacy_reply)
+            .expect("cache legacy reply");
+        let legacy_reply = backend
+            .repository
+            .get_message(legacy_id)
+            .expect("load legacy reply");
+        assert_eq!(
+            backend
+                .cached_reply_parent(&legacy_reply)
+                .expect("resolve legacy parent")
+                .and_then(|parent| parent.message_id)
+                .as_deref(),
+            Some("parent@example.com")
+        );
     }
 
     #[test]

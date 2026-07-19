@@ -1,13 +1,18 @@
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use chrono::DateTime;
 use lettre::{
     Address, Message,
     address::Envelope,
-    message::{Mailbox, header::ContentType},
+    message::{Mailbox, MultiPart, SinglePart, header::ContentType},
 };
 use mail_parser::{Address as ParsedAddress, HeaderValue, MessageParser, MimeHeaders, PartType};
 use uuid::Uuid;
 
-use crate::{ComposeRequest, InboxMessage, MailAddress, MailError, Result};
+use crate::{ComposeRequest, InboxMessage, MailAddress, MailError, ReplyContext, Result};
+
+const MINE_MAIL_REPLY_FORMAT_HEADER: &str = "X-Mine-Mail-Reply-Format";
+const MINE_MAIL_REPLY_FORMAT_VERSION: &str = "1";
+const MAX_QUOTED_TEXT_BYTES: usize = 2 * 1024 * 1024;
 
 pub(crate) struct OutgoingMessage {
     pub raw_rfc822: Vec<u8>,
@@ -33,7 +38,9 @@ pub(crate) fn build_outgoing_message(
     // Sent mailbox and lets the desktop merge both views without guessing.
     // The reserved `.invalid` TLD avoids disclosing the local host name.
     let message_id = format!("<{}@mine-mail.invalid>", Uuid::now_v7());
-    let raw_rfc822 = build_rfc822(from, request, &[("Message-ID", &message_id)], false)?;
+    let mut headers = vec![("Message-ID".to_owned(), message_id)];
+    headers.extend(reply_headers(request)?);
+    let raw_rfc822 = build_rfc822(from, request, &headers, false, true)?;
     let (envelope, recipients) = build_envelope(from, request)?;
     Ok(OutgoingMessage {
         raw_rfc822,
@@ -61,15 +68,12 @@ pub(crate) fn build_draft_message_revision(
     }
 
     let revision = revision.to_string();
-    let mut raw = build_rfc822(
-        from,
-        &request_with_destination,
-        &[
-            ("X-Mine-Mail-Draft-Id", draft_id),
-            ("X-Mine-Mail-Draft-Revision", revision.as_str()),
-        ],
-        true,
-    )?;
+    let mut headers = vec![
+        ("X-Mine-Mail-Draft-Id".to_owned(), draft_id.to_owned()),
+        ("X-Mine-Mail-Draft-Revision".to_owned(), revision),
+    ];
+    headers.extend(reply_headers(&request_with_destination)?);
+    let mut raw = build_rfc822(from, &request_with_destination, &headers, true, false)?;
     if needs_placeholder {
         remove_exact_header_line(&mut raw, &format!("To: {PLACEHOLDER}\r\n"))?;
     }
@@ -86,6 +90,19 @@ pub(crate) fn parse_draft_message(raw: &[u8]) -> Result<ParsedDraftMessage> {
         .and_then(|value| value.parse::<u64>().ok())
         .filter(|revision| *revision > 0)
         .unwrap_or(1);
+    let encoded_body = message
+        .body_text(0)
+        .map(|body| body.into_owned())
+        .unwrap_or_default();
+    let mine_mail_reply = text_header(&message, MINE_MAIL_REPLY_FORMAT_HEADER)
+        .is_some_and(|value| value == MINE_MAIL_REPLY_FORMAT_VERSION);
+    let parsed_reply = mine_mail_reply
+        .then(|| parse_mine_mail_reply_draft(&message, &encoded_body))
+        .transpose()?;
+    let (body_text, reply_context) = match parsed_reply {
+        Some((body_text, reply_context)) => (body_text, Some(reply_context)),
+        None => (encoded_body, None),
+    };
 
     Ok(ParsedDraftMessage {
         draft_id,
@@ -96,12 +113,51 @@ pub(crate) fn parse_draft_message(raw: &[u8]) -> Result<ParsedDraftMessage> {
             cc: map_compose_addresses(message.cc()),
             bcc: map_compose_addresses(message.bcc()),
             subject: message.subject().unwrap_or_default().to_owned(),
-            body_text: message
-                .body_text(0)
-                .map(|body| body.into_owned())
-                .unwrap_or_default(),
+            body_text,
+            reply_context,
         },
     })
+}
+
+fn parse_mine_mail_reply_draft(
+    message: &mail_parser::Message<'_>,
+    body: &str,
+) -> Result<(String, ReplyContext)> {
+    let lines = body.lines().collect::<Vec<_>>();
+    let separator = lines
+        .iter()
+        .position(|line| parse_reply_intro(line).is_some())
+        .ok_or_else(|| {
+            MailError::Mime(
+                "Mine Mail reply draft lost its quoted-message boundary; it cannot be edited safely"
+                    .to_owned(),
+            )
+        })?;
+    let intro = parse_reply_intro(lines[separator]).expect("reply boundary was just validated");
+    let authored = lines[..separator].join("\n").trim_end().to_owned();
+    let quoted = strip_one_quote_level(&lines[separator + 1..]);
+    if quoted.trim().is_empty() {
+        return Err(MailError::Mime(
+            "Mine Mail reply draft has no quoted message body".to_owned(),
+        ));
+    }
+    let mut references = message_ids(message.references());
+    let parent_message_id = message_ids(message.in_reply_to()).pop();
+    if let Some(parent) = parent_message_id.as_deref() {
+        references.retain(|value| !value.eq_ignore_ascii_case(parent));
+    }
+    Ok((
+        authored,
+        ReplyContext {
+            parent_message_id,
+            references,
+            subject: reply_parent_subject(message.subject().unwrap_or_default()),
+            sender: intro.sender,
+            recipients: map_addresses(message.from()),
+            sent_at: intro.sent_at,
+            quoted_text: quoted,
+        },
+    ))
 }
 
 /// Returns true unless the raw draft is one parseable, undecorated text/plain
@@ -160,6 +216,72 @@ fn map_compose_addresses(addresses: Option<&ParsedAddress<'_>>) -> Vec<String> {
         .flat_map(ParsedAddress::iter)
         .filter_map(|address| address.address().map(str::to_owned))
         .collect()
+}
+
+#[derive(Debug)]
+struct ParsedReplyIntro {
+    sender: Option<MailAddress>,
+    sent_at: Option<String>,
+}
+
+fn parse_reply_intro(line: &str) -> Option<ParsedReplyIntro> {
+    let remainder = line.trim().strip_prefix("At ")?.strip_suffix(" wrote:")?;
+    let (sent_at, sender) = remainder.split_once(", ")?;
+    let parsed_time = if sent_at == "unknown time" {
+        Some(None)
+    } else {
+        DateTime::parse_from_str(sent_at, "%Y-%m-%d %H:%M:%S %:z")
+            .or_else(|_| DateTime::parse_from_str(sent_at, "%Y-%m-%d %H:%M:%S %z"))
+            .ok()
+            .map(|value| Some(value.to_rfc3339()))
+    }?;
+    let sender = if sender == "unknown sender" {
+        None
+    } else {
+        Some(parse_reply_sender(sender)?)
+    };
+    Some(ParsedReplyIntro {
+        sender,
+        sent_at: parsed_time,
+    })
+}
+
+fn parse_reply_sender(value: &str) -> Option<MailAddress> {
+    let value = value.trim();
+    let (name, email) = if let Some(open) = value.rfind('<') {
+        let email = value.get(open + 1..)?.strip_suffix('>')?.trim();
+        let name = value[..open].trim().trim_matches('"').trim().to_owned();
+        ((!name.is_empty()).then_some(name), email)
+    } else {
+        (None, value)
+    };
+    email.parse::<Address>().ok()?;
+    Some(MailAddress {
+        name,
+        email: email.to_owned(),
+    })
+}
+
+fn strip_one_quote_level(lines: &[&str]) -> String {
+    lines
+        .iter()
+        .map(|line| {
+            let line = line.strip_prefix('>').unwrap_or(line);
+            line.strip_prefix(' ').unwrap_or(line)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim_end()
+        .to_owned()
+}
+
+fn reply_parent_subject(subject: &str) -> String {
+    let subject = subject.trim();
+    let subject = subject
+        .get(..3)
+        .filter(|prefix| prefix.eq_ignore_ascii_case("re:"))
+        .map_or(subject, |_| subject[3..].trim_start());
+    subject.to_owned()
 }
 
 pub(crate) fn build_envelope(
@@ -267,8 +389,9 @@ pub(crate) fn outbox_sent_at(raw_rfc822: &[u8]) -> Option<String> {
 fn build_rfc822(
     from: &str,
     request: &ComposeRequest,
-    custom_headers: &[(&str, &str)],
+    custom_headers: &[(String, String)],
     include_bcc_header: bool,
+    allow_html_reply: bool,
 ) -> Result<Vec<u8>> {
     let mut builder = Message::builder()
         .from(parse_mailbox(from, "sender")?)
@@ -287,14 +410,216 @@ fn build_rfc822(
         builder = builder.keep_bcc();
     }
 
-    let message = builder
-        .header(ContentType::TEXT_PLAIN)
-        .body(request.body_text.clone())
-        .map_err(|error| MailError::Mime(format!("cannot build message: {error}")))?;
+    let plain_body = reply_plain_body(request)?;
+    let message = if allow_html_reply && request.reply_context.is_some() {
+        builder
+            .multipart(
+                MultiPart::alternative()
+                    .singlepart(
+                        SinglePart::builder()
+                            .header(ContentType::TEXT_PLAIN)
+                            .body(plain_body),
+                    )
+                    .singlepart(
+                        SinglePart::builder()
+                            .header(ContentType::TEXT_HTML)
+                            .body(reply_html_body(request)?),
+                    ),
+            )
+            .map_err(|error| MailError::Mime(format!("cannot build message: {error}")))?
+    } else {
+        builder
+            .header(ContentType::TEXT_PLAIN)
+            .body(plain_body)
+            .map_err(|error| MailError::Mime(format!("cannot build message: {error}")))?
+    };
 
     let mut raw = message.formatted();
     insert_custom_headers(&mut raw, custom_headers)?;
     Ok(raw)
+}
+
+fn reply_headers(request: &ComposeRequest) -> Result<Vec<(String, String)>> {
+    let Some(context) = request.reply_context.as_ref() else {
+        return Ok(Vec::new());
+    };
+    validate_reply_context(context)?;
+    let mut headers = vec![(
+        MINE_MAIL_REPLY_FORMAT_HEADER.to_owned(),
+        MINE_MAIL_REPLY_FORMAT_VERSION.to_owned(),
+    )];
+    let parent = context
+        .parent_message_id
+        .as_deref()
+        .and_then(normalize_message_id);
+    if let Some(parent) = parent.as_ref() {
+        headers.push(("In-Reply-To".to_owned(), format!("<{parent}>")));
+    }
+
+    let mut references = context
+        .references
+        .iter()
+        .filter_map(|value| normalize_message_id(value))
+        .collect::<Vec<_>>();
+    if let Some(parent) = parent {
+        references.retain(|value| !value.eq_ignore_ascii_case(&parent));
+        references.push(parent);
+    }
+    references = bounded_reference_chain(references);
+    if !references.is_empty() {
+        headers.push((
+            "References".to_owned(),
+            references
+                .into_iter()
+                .map(|value| format!("<{value}>"))
+                .collect::<Vec<_>>()
+                .join(" "),
+        ));
+    }
+    Ok(headers)
+}
+
+fn validate_reply_context(context: &ReplyContext) -> Result<()> {
+    if context.quoted_text.trim().is_empty() {
+        return Err(MailError::Validation(
+            "a reply must retain the quoted message body".to_owned(),
+        ));
+    }
+    if context.quoted_text.len() > MAX_QUOTED_TEXT_BYTES {
+        return Err(MailError::Validation(
+            "the quoted message is too large to include in a reply".to_owned(),
+        ));
+    }
+    if let Some(sender) = context.sender.as_ref() {
+        sender.email.parse::<Address>().map_err(|error| {
+            MailError::Validation(format!("invalid quoted-message sender: {error}"))
+        })?;
+    }
+    if context
+        .parent_message_id
+        .as_deref()
+        .is_some_and(|value| normalize_message_id(value).is_none())
+        || context
+            .references
+            .iter()
+            .any(|value| normalize_message_id(value).is_none())
+    {
+        return Err(MailError::Validation(
+            "reply message identifiers contain invalid characters".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn normalize_message_id(value: &str) -> Option<String> {
+    let value = value.trim().trim_start_matches('<').trim_end_matches('>');
+    (!value.is_empty()
+        && value.len() <= 512
+        && value.is_ascii()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_graphic() && !matches!(byte, b'<' | b'>')))
+    .then(|| value.to_owned())
+}
+
+fn bounded_reference_chain(mut references: Vec<String>) -> Vec<String> {
+    references.dedup_by(|left, right| left.eq_ignore_ascii_case(right));
+    let mut total = 0usize;
+    let mut kept = Vec::new();
+    for reference in references.into_iter().rev() {
+        let encoded_len = reference.len().saturating_add(3);
+        if !kept.is_empty() && total.saturating_add(encoded_len) > 850 {
+            break;
+        }
+        total = total.saturating_add(encoded_len);
+        kept.push(reference);
+    }
+    kept.reverse();
+    kept
+}
+
+fn reply_plain_body(request: &ComposeRequest) -> Result<String> {
+    let Some(context) = request.reply_context.as_ref() else {
+        return Ok(request.body_text.clone());
+    };
+    validate_reply_context(context)?;
+    let intro = reply_intro(context);
+    let quoted = context
+        .quoted_text
+        .lines()
+        .map(|line| {
+            if line.is_empty() {
+                ">".to_owned()
+            } else {
+                format!("> {line}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let authored = request.body_text.trim_end();
+    Ok(if authored.is_empty() {
+        format!("{intro}\n{quoted}")
+    } else {
+        format!("{authored}\n\n{intro}\n{quoted}")
+    })
+}
+
+fn reply_html_body(request: &ComposeRequest) -> Result<String> {
+    let context = request
+        .reply_context
+        .as_ref()
+        .ok_or_else(|| MailError::Mime("HTML reply requested without reply context".to_owned()))?;
+    validate_reply_context(context)?;
+    let authored = html_text(&request.body_text);
+    let intro = html_escape(&reply_intro(context));
+    let quoted = html_text(&context.quoted_text);
+    Ok(format!(
+        "<div class=\"mine-mail-authored\">{authored}</div><br><div class=\"mine-mail-quote\"><div>{intro}</div><blockquote id=\"isReplyContent\" type=\"cite\">{quoted}</blockquote></div>"
+    ))
+}
+
+fn reply_intro(context: &ReplyContext) -> String {
+    let sent_at = context
+        .sent_at
+        .as_deref()
+        .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+        .map(|value| value.format("%Y-%m-%d %H:%M:%S %:z").to_string())
+        .unwrap_or_else(|| "unknown time".to_owned());
+    let sender = context
+        .sender
+        .as_ref()
+        .map(format_reply_address)
+        .unwrap_or_else(|| "unknown sender".to_owned());
+    format!("At {sent_at}, {sender} wrote:")
+}
+
+fn format_reply_address(address: &MailAddress) -> String {
+    let name = address
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(|name| name.replace(['\r', '\n', '"'], "'"));
+    match name {
+        Some(name) => format!("\"{name}\" <{}>", address.email),
+        None => format!("<{}>", address.email),
+    }
+}
+
+fn html_text(value: &str) -> String {
+    html_escape(value)
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .replace('\n', "<br>")
+}
+
+fn html_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
 }
 
 fn parse_mailbox(value: &str, label: &str) -> Result<Mailbox> {
@@ -303,7 +628,7 @@ fn parse_mailbox(value: &str, label: &str) -> Result<Mailbox> {
         .map_err(|error| MailError::Validation(format!("invalid {label}: {error}")))
 }
 
-fn insert_custom_headers(raw: &mut Vec<u8>, headers: &[(&str, &str)]) -> Result<()> {
+fn insert_custom_headers(raw: &mut Vec<u8>, headers: &[(String, String)]) -> Result<()> {
     if headers.is_empty() {
         return Ok(());
     }
@@ -580,13 +905,15 @@ fn map_address(address: &mail_parser::Addr<'_>) -> Option<MailAddress> {
 
 #[cfg(test)]
 mod tests {
+    use mail_parser::{MessageParser, PartType};
+
     use super::{
         IncomingMetadata, build_draft_message_revision, build_outgoing_message,
         draft_has_unsupported_content, outbox_body_text, outbox_message_id, outbox_preview,
         outbox_sent_at, outbox_subject, parse_draft_message, parse_incoming_message,
         parse_incoming_summary_or_fallback, render_message_html, restore_outbox_envelope,
     };
-    use crate::ComposeRequest;
+    use crate::{ComposeRequest, MailAddress, ReplyContext};
 
     fn compose() -> ComposeRequest {
         ComposeRequest {
@@ -595,6 +922,7 @@ mod tests {
             bcc: vec!["hidden@example.com".to_owned()],
             subject: "中文主题".to_owned(),
             body_text: "Hello, 世界".to_owned(),
+            reply_context: None,
         }
     }
 
@@ -621,6 +949,104 @@ mod tests {
         assert!(outbox_sent_at(&outgoing.raw_rfc822).is_some());
         assert!(!text.lines().any(|line| line.starts_with("Bcc:")));
         assert!(!text.contains("hidden@example.com"));
+    }
+
+    #[test]
+    fn reply_message_uses_standard_headers_and_plain_html_alternatives() {
+        let mut request = compose();
+        request.subject = "Re: Earlier note".to_owned();
+        request.body_text = "这是回复内容".to_owned();
+        request.reply_context = Some(ReplyContext {
+            parent_message_id: Some("parent@example.com".to_owned()),
+            references: vec!["root@example.com".to_owned()],
+            subject: "Earlier note".to_owned(),
+            sender: Some(MailAddress {
+                name: Some("tantless".to_owned()),
+                email: "sender@example.com".to_owned(),
+            }),
+            recipients: vec![MailAddress {
+                name: None,
+                email: "sender@example.com".to_owned(),
+            }],
+            sent_at: Some("2026-07-17T09:54:29+08:00".to_owned()),
+            quoted_text: "Original body\nSecond line".to_owned(),
+        });
+
+        let outgoing = build_outgoing_message("sender@example.com", &request).expect("reply");
+        let raw = String::from_utf8_lossy(&outgoing.raw_rfc822);
+
+        assert!(raw.contains("In-Reply-To: <parent@example.com>\r\n"));
+        assert!(raw.contains("References: <root@example.com> <parent@example.com>\r\n"));
+        assert!(raw.contains("Content-Type: multipart/alternative"));
+        assert!(raw.contains("Content-Type: text/plain"));
+        assert!(raw.contains("Content-Type: text/html"));
+
+        let parsed = MessageParser::default()
+            .parse(&outgoing.raw_rfc822)
+            .expect("parse reply");
+        let plain = parsed.body_text(0).expect("plain body");
+        assert!(plain.starts_with("这是回复内容"));
+        assert!(
+            plain.contains(
+                "At 2026-07-17 09:54:29 +08:00, \"tantless\" <sender@example.com> wrote:"
+            )
+        );
+        assert!(
+            plain
+                .replace("\r\n", "\n")
+                .contains("> Original body\n> Second line")
+        );
+        let html = match &parsed.html_part(0).expect("HTML body").body {
+            PartType::Html(html) => html.as_ref(),
+            other => panic!("expected HTML leaf, got {other:?}"),
+        };
+        assert!(html.contains("blockquote id=\"isReplyContent\" type=\"cite\""));
+        assert!(html.contains("这是回复内容"));
+        assert!(html.contains("Original body<br>Second line"));
+    }
+
+    #[test]
+    fn reply_draft_round_trips_as_editable_plain_text_with_structured_context() {
+        let mut request = compose();
+        request.subject = "Re: Earlier note".to_owned();
+        request.body_text = "Drafted reply".to_owned();
+        request.reply_context = Some(ReplyContext {
+            parent_message_id: Some("parent@example.com".to_owned()),
+            references: vec!["root@example.com".to_owned()],
+            subject: "Earlier note".to_owned(),
+            sender: Some(MailAddress {
+                name: Some("Sender".to_owned()),
+                email: "receiver@example.com".to_owned(),
+            }),
+            recipients: vec![MailAddress {
+                name: None,
+                email: "sender@example.com".to_owned(),
+            }],
+            sent_at: Some("2026-07-17T09:54:29+08:00".to_owned()),
+            quoted_text: "Original body".to_owned(),
+        });
+
+        let raw = build_draft_message_revision("sender@example.com", &request, "draft-123", 4)
+            .expect("draft MIME");
+        let raw_text = String::from_utf8_lossy(&raw);
+        assert!(raw_text.contains("Content-Type: text/plain"));
+        assert!(!raw_text.contains("multipart/alternative"));
+
+        let parsed = parse_draft_message(&raw).expect("parse own reply draft");
+        assert!(!parsed.has_unsupported_content);
+        assert_eq!(parsed.request.body_text, "Drafted reply");
+        let context = parsed.request.reply_context.expect("reply context");
+        assert_eq!(
+            context.parent_message_id.as_deref(),
+            Some("parent@example.com")
+        );
+        assert_eq!(context.references, ["root@example.com"]);
+        assert_eq!(context.subject, "Earlier note");
+        assert_eq!(context.quoted_text, "Original body");
+        assert_eq!(
+            context.sender.and_then(|sender| sender.name).as_deref(),
+            Some("Sender")
+        );
     }
 
     #[test]

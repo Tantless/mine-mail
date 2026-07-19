@@ -26,11 +26,12 @@ const MESSAGE_SUMMARY_COLUMNS: &str = "id, account_id, mailbox, uid, message_id,
     size_bytes, preview, body_text, CASE WHEN body_html IS NULL THEN NULL ELSE '' END, \
     attachment_names_json, body_fetched, X'', synced_at";
 const DRAFT_COLUMNS: &str = "id, account_id, to_json, cc_json, bcc_json, subject, \
-    body_text, status, remote_mailbox, remote_uid, created_at, updated_at, raw_rfc822, local_version, \
-    has_unsupported_content";
+    body_text, reply_context_json, status, remote_mailbox, remote_uid, created_at, updated_at, \
+    raw_rfc822, local_version, has_unsupported_content";
 const DRAFT_SYNC_COLUMNS: &str = "id, account_id, to_json, cc_json, bcc_json, subject, \
-    body_text, status, remote_mailbox, remote_uid, created_at, updated_at, raw_rfc822, \
-    local_version, has_unsupported_content, revision, synced_revision, remote_uid_validity, is_deleted";
+    body_text, reply_context_json, status, remote_mailbox, remote_uid, created_at, updated_at, \
+    raw_rfc822, local_version, has_unsupported_content, revision, synced_revision, \
+    remote_uid_validity, is_deleted";
 const OUTBOX_COLUMNS: &str = "id, account_id, draft_id, draft_revision, draft_local_version, \
     recipients_json, status, attempts, last_error, created_at, sent_at, raw_rfc822";
 
@@ -152,6 +153,7 @@ impl Repository {
                  bcc_json TEXT NOT NULL DEFAULT '[]',
                  subject TEXT NOT NULL DEFAULT '',
                  body_text TEXT NOT NULL DEFAULT '',
+                 reply_context_json TEXT,
                  status TEXT NOT NULL,
                  remote_mailbox TEXT,
                  remote_uid INTEGER,
@@ -197,10 +199,11 @@ impl Repository {
         migrate_outbox_v3(&connection)?;
         migrate_drafts_v4(&connection)?;
         migrate_messages_v5(&connection)?;
+        migrate_drafts_v7(&connection)?;
         connection.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_drafts_remote_identity
                  ON drafts(account_id, remote_mailbox, remote_uid);
-             PRAGMA user_version = 6;",
+             PRAGMA user_version = 7;",
         )?;
         Ok(repository)
     }
@@ -540,7 +543,6 @@ impl Repository {
             .map_err(Into::into)
     }
 
-    #[cfg(test)]
     pub(crate) fn get_message(&self, id: i64) -> Result<InboxMessage> {
         let connection = self.connection()?;
         let sql = format!("SELECT {MESSAGE_COLUMNS} FROM messages WHERE id = ?1");
@@ -593,6 +595,28 @@ impl Repository {
             .map_err(Into::into)
     }
 
+    pub(crate) fn legacy_reply_parent_candidates(
+        &self,
+        account_id: &str,
+        excluded_id: i64,
+        limit: usize,
+    ) -> Result<Vec<InboxMessage>> {
+        let connection = self.connection()?;
+        let sql = format!(
+            "SELECT {MESSAGE_SUMMARY_COLUMNS} FROM messages
+             WHERE account_id = ?1 AND id <> ?2 AND body_text IS NOT NULL
+             ORDER BY COALESCE(internal_date, sent_at, synced_at) DESC, uid DESC
+             LIMIT ?3"
+        );
+        let mut statement = connection.prepare(&sql)?;
+        let rows = statement.query_map(
+            params![account_id, excluded_id, usize_to_i64(limit)],
+            row_to_message,
+        )?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
     pub(crate) fn mailbox_body_prefetch_candidates(
         &self,
         account_id: &str,
@@ -635,13 +659,13 @@ impl Repository {
         let connection = self.connection()?;
         connection.execute(
             "INSERT INTO drafts (
-                 id, account_id, to_json, cc_json, bcc_json, subject, body_text,
+                 id, account_id, to_json, cc_json, bcc_json, subject, body_text, reply_context_json,
                  status, remote_mailbox, remote_uid, created_at, updated_at, raw_rfc822,
                  local_version, has_unsupported_content, revision, synced_revision,
                  remote_uid_validity, is_deleted
              ) VALUES (
                  ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-                 ?14, ?15, ?16, ?17, ?18, ?19
+                 ?14, ?15, ?16, ?17, ?18, ?19, ?20
              )
              ON CONFLICT(id) DO UPDATE SET
                  account_id = excluded.account_id,
@@ -650,6 +674,7 @@ impl Repository {
                  bcc_json = excluded.bcc_json,
                  subject = excluded.subject,
                  body_text = excluded.body_text,
+                 reply_context_json = excluded.reply_context_json,
                  status = excluded.status,
                  remote_mailbox = excluded.remote_mailbox,
                  remote_uid = excluded.remote_uid,
@@ -669,6 +694,7 @@ impl Repository {
                 encode_json(&draft.bcc)?,
                 draft.subject,
                 draft.body_text,
+                draft.reply_context.as_ref().map(encode_json).transpose()?,
                 draft.status,
                 draft.remote_mailbox,
                 draft.remote_uid,
@@ -723,6 +749,7 @@ impl Repository {
                  bcc_json = :bcc_json,
                  subject = :subject,
                  body_text = :body_text,
+                 reply_context_json = :reply_context_json,
                  status = :replacement_status,
                  remote_mailbox = :replacement_mailbox,
                  remote_uid = :replacement_uid,
@@ -752,6 +779,12 @@ impl Repository {
                 ":bcc_json": bcc_json,
                 ":subject": replacement.draft.subject,
                 ":body_text": replacement.draft.body_text,
+                ":reply_context_json": replacement
+                    .draft
+                    .reply_context
+                    .as_ref()
+                    .map(encode_json)
+                    .transpose()?,
                 ":replacement_status": replacement.draft.status,
                 ":replacement_mailbox": replacement.draft.remote_mailbox,
                 ":replacement_uid": replacement.draft.remote_uid,
@@ -1413,6 +1446,13 @@ fn migrate_messages_v5(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn migrate_drafts_v7(connection: &Connection) -> Result<()> {
+    if !table_has_column(connection, "drafts", "reply_context_json")? {
+        connection.execute_batch("ALTER TABLE drafts ADD COLUMN reply_context_json TEXT;")?;
+    }
+    Ok(())
+}
+
 fn table_has_column(connection: &Connection, table: &str, column: &str) -> Result<bool> {
     debug_assert!(
         table
@@ -1516,13 +1556,13 @@ fn insert_draft_record_if_absent(connection: &Connection, record: &DraftRecord) 
     connection
         .execute(
             "INSERT INTO drafts (
-                 id, account_id, to_json, cc_json, bcc_json, subject, body_text,
+                 id, account_id, to_json, cc_json, bcc_json, subject, body_text, reply_context_json,
              status, remote_mailbox, remote_uid, created_at, updated_at, raw_rfc822,
                  local_version, has_unsupported_content, revision, synced_revision,
                  remote_uid_validity, is_deleted
              ) VALUES (
                  ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-                 ?14, ?15, ?16, ?17, ?18, ?19
+                 ?14, ?15, ?16, ?17, ?18, ?19, ?20
              )
              ON CONFLICT(id) DO NOTHING",
             params![
@@ -1533,6 +1573,7 @@ fn insert_draft_record_if_absent(connection: &Connection, record: &DraftRecord) 
                 encode_json(&draft.bcc)?,
                 draft.subject,
                 draft.body_text,
+                draft.reply_context.as_ref().map(encode_json).transpose()?,
                 draft.status,
                 draft.remote_mailbox,
                 draft.remote_uid,
@@ -1608,22 +1649,27 @@ fn row_to_message(row: &Row<'_>) -> rusqlite::Result<InboxMessage> {
 }
 
 fn row_to_draft(row: &Row<'_>) -> rusqlite::Result<Draft> {
+    let reply_context_json: Option<String> = row.get(7)?;
     Ok(Draft {
         id: row.get(0)?,
-        local_version: decode_u64(13, row.get(13)?)?,
-        has_unsupported_content: row.get(14)?,
+        local_version: decode_u64(14, row.get(14)?)?,
+        has_unsupported_content: row.get(15)?,
         account_id: row.get(1)?,
         to: decode_json(2, &row.get::<_, String>(2)?)?,
         cc: decode_json(3, &row.get::<_, String>(3)?)?,
         bcc: decode_json(4, &row.get::<_, String>(4)?)?,
         subject: row.get(5)?,
         body_text: row.get(6)?,
-        status: row.get(7)?,
-        remote_mailbox: row.get(8)?,
-        remote_uid: row.get(9)?,
-        created_at: row.get(10)?,
-        updated_at: row.get(11)?,
-        raw_rfc822: row.get(12)?,
+        reply_context: reply_context_json
+            .as_deref()
+            .map(|json| decode_json(7, json))
+            .transpose()?,
+        status: row.get(8)?,
+        remote_mailbox: row.get(9)?,
+        remote_uid: row.get(10)?,
+        created_at: row.get(11)?,
+        updated_at: row.get(12)?,
+        raw_rfc822: row.get(13)?,
     })
 }
 
@@ -1633,10 +1679,10 @@ fn row_to_draft_record(row: &Row<'_>) -> rusqlite::Result<DraftRecord> {
     Ok(DraftRecord {
         draft,
         local_version,
-        revision: decode_u64(15, row.get(15)?)?,
-        synced_revision: decode_u64(16, row.get(16)?)?,
-        remote_uid_validity: row.get(17)?,
-        is_deleted: row.get(18)?,
+        revision: decode_u64(16, row.get(16)?)?,
+        synced_revision: decode_u64(17, row.get(17)?)?,
+        remote_uid_validity: row.get(18)?,
+        is_deleted: row.get(19)?,
     })
 }
 
@@ -1769,6 +1815,7 @@ mod tests {
                 bcc: vec![],
                 subject: subject.to_owned(),
                 body_text: format!("body for {subject}"),
+                reply_context: None,
                 status: if revision == synced_revision {
                     "synced".to_owned()
                 } else {
@@ -1970,6 +2017,7 @@ mod tests {
             bcc: vec![],
             subject: "Draft".to_owned(),
             body_text: "Body".to_owned(),
+            reply_context: None,
             status: "local".to_owned(),
             remote_mailbox: None,
             remote_uid: None,
@@ -2287,6 +2335,7 @@ mod tests {
             bcc: vec![],
             subject: "Retry draft".to_owned(),
             body_text: "Exact persisted body".to_owned(),
+            reply_context: None,
             status: "local".to_owned(),
             remote_mailbox: None,
             remote_uid: None,
@@ -2629,7 +2678,7 @@ Body' AS BLOB)
         let version: u32 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("schema version");
-        assert_eq!(version, 6);
+        assert_eq!(version, 7);
         for column in [
             "local_version",
             "has_unsupported_content",
@@ -2637,6 +2686,7 @@ Body' AS BLOB)
             "synced_revision",
             "remote_uid_validity",
             "is_deleted",
+            "reply_context_json",
         ] {
             assert!(super::table_has_column(&connection, "drafts", column).unwrap());
         }

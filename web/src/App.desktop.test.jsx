@@ -19,6 +19,7 @@ const desktop = vi.hoisted(() => {
       fetchMessage: vi.fn(),
       listSent: vi.fn(),
       fetchSentMessage: vi.fn(),
+      prepareReply: vi.fn(),
       openExternalUrl: vi.fn(),
       listDrafts: vi.fn(),
       saveDraft: vi.fn(),

@@ -7,8 +7,8 @@ use std::{env, time::Instant};
 
 use mine_mail::{
     ComposeRequest, ConnectionReport, Draft, DraftDeleteKind, DraftSaveKind, DraftSaveOutcome,
-    InboxMessage, MailAddress, MailBackend, OutboxItem, OutboxStatus, SyncReport, outbox_body_text,
-    outbox_message_id, outbox_preview, outbox_sent_at, outbox_subject,
+    InboxMessage, MailAddress, MailBackend, OutboxItem, OutboxStatus, ReplyContext, SyncReport,
+    outbox_body_text, outbox_message_id, outbox_preview, outbox_sent_at, outbox_subject,
 };
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WindowEvent};
@@ -360,6 +360,7 @@ struct DraftDto {
     bcc: Vec<String>,
     subject: String,
     body_text: String,
+    reply_context: Option<ReplyContext>,
     status: String,
     remote_mailbox: Option<String>,
     remote_uid: Option<u32>,
@@ -378,6 +379,7 @@ impl From<Draft> for DraftDto {
             bcc: value.bcc,
             subject: value.subject,
             body_text: value.body_text,
+            reply_context: value.reply_context,
             status: value.status,
             remote_mailbox: value.remote_mailbox,
             remote_uid: value.remote_uid,
@@ -591,6 +593,15 @@ async fn fetch_sent_message(
                 .map_err(|_| network_error)
         }
     }
+}
+
+#[tauri::command]
+fn prepare_reply(
+    backend: State<'_, BackendState>,
+    message_id: i64,
+) -> CommandResult<ComposeRequest> {
+    let backend = backend.local()?;
+    backend.prepare_reply(message_id).map_err(safe_mail_error)
 }
 
 #[tauri::command]
@@ -1301,6 +1312,7 @@ pub fn run() {
             list_sent,
             fetch_message,
             fetch_sent_message,
+            prepare_reply,
             open_external_url,
             save_draft,
             list_drafts,

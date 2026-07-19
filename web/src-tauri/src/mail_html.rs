@@ -804,27 +804,77 @@ fn split_netease_at_wrote_reply(
         parse_netease_at_wrote_metadata(line).map(|metadata| (index, metadata))
     })?;
     let authored = lines[..separator].join("\n").trim().to_owned();
-    let quoted = lines[separator + 1..].join("\n").trim().to_owned();
+    let quoted = strip_uniform_quote_level(&lines[separator + 1..]);
     if authored.is_empty() || quoted.is_empty() {
         return None;
     }
     let quote_metadata = merge_quote_metadata(parent_metadata, Some(intro_metadata));
-    Some(vec![
-        PlainBodySegment {
-            kind: MailBodySegmentKind::Authored,
-            content: authored,
-            quote_depth: 0,
-            confidence: MailBodySegmentConfidence::High,
-            quote_metadata: None,
-        },
-        PlainBodySegment {
-            kind: MailBodySegmentKind::Quoted,
-            content: quoted,
-            quote_depth: 1,
-            confidence: MailBodySegmentConfidence::High,
-            quote_metadata,
-        },
-    ])
+    let mut segments = vec![PlainBodySegment {
+        kind: MailBodySegmentKind::Authored,
+        content: authored,
+        quote_depth: 0,
+        confidence: MailBodySegmentConfidence::High,
+        quote_metadata: None,
+    }];
+    append_at_wrote_history(quoted, 1, quote_metadata, &mut segments);
+    (segments.len() > 1).then_some(segments)
+}
+
+fn strip_uniform_quote_level(lines: &[&str]) -> String {
+    if lines
+        .iter()
+        .filter(|line| !line.trim().is_empty())
+        .all(|line| line.trim_start().starts_with('>'))
+    {
+        strip_quote_prefix(lines)
+    } else {
+        lines.join("\n").trim().to_owned()
+    }
+}
+
+fn append_at_wrote_history(
+    mut remaining: String,
+    mut depth: u8,
+    mut metadata: Option<MailBodySegmentMetadata>,
+    segments: &mut Vec<PlainBodySegment>,
+) {
+    loop {
+        let lines = remaining.lines().collect::<Vec<_>>();
+        let Some((separator, intro_metadata)) =
+            lines.iter().enumerate().find_map(|(index, line)| {
+                parse_netease_at_wrote_metadata(line).map(|metadata| (index, metadata))
+            })
+        else {
+            let content = remaining.trim().to_owned();
+            if !content.is_empty() {
+                segments.push(PlainBodySegment {
+                    kind: MailBodySegmentKind::Quoted,
+                    content,
+                    quote_depth: depth,
+                    confidence: MailBodySegmentConfidence::High,
+                    quote_metadata: metadata,
+                });
+            }
+            return;
+        };
+
+        let current = lines[..separator].join("\n").trim().to_owned();
+        if !current.is_empty() {
+            segments.push(PlainBodySegment {
+                kind: MailBodySegmentKind::Quoted,
+                content: current,
+                quote_depth: depth,
+                confidence: MailBodySegmentConfidence::High,
+                quote_metadata: metadata.take(),
+            });
+        }
+        remaining = strip_uniform_quote_level(&lines[separator + 1..]);
+        if remaining.is_empty() {
+            return;
+        }
+        depth = depth.saturating_add(1);
+        metadata = merge_quote_metadata(None, Some(intro_metadata));
+    }
 }
 
 fn parse_netease_at_wrote_metadata(line: &str) -> Option<MailBodySegmentMetadata> {
@@ -847,14 +897,29 @@ fn parse_netease_at_wrote_metadata(line: &str) -> Option<MailBodySegmentMetadata
 }
 
 fn is_netease_reply_timestamp(value: &str) -> bool {
-    if value.len() != 19 {
+    let (date_time, offset) = match value.len() {
+        19 => (value, None),
+        26 if value.as_bytes().get(19) == Some(&b' ') => (&value[..19], Some(&value[20..])),
+        _ => return false,
+    };
+    let date_time_valid = date_time
+        .bytes()
+        .enumerate()
+        .all(|(index, byte)| match index {
+            4 | 7 => byte == b'-',
+            10 => byte == b' ',
+            13 | 16 => byte == b':',
+            _ => byte.is_ascii_digit(),
+        });
+    if !date_time_valid {
         return false;
     }
-    value.bytes().enumerate().all(|(index, byte)| match index {
-        4 | 7 => byte == b'-',
-        10 => byte == b' ',
-        13 | 16 => byte == b':',
-        _ => byte.is_ascii_digit(),
+    offset.is_none_or(|offset| {
+        offset.len() == 6
+            && matches!(offset.as_bytes()[0], b'+' | b'-')
+            && offset.as_bytes()[1..3].iter().all(u8::is_ascii_digit)
+            && offset.as_bytes()[3] == b':'
+            && offset.as_bytes()[4..6].iter().all(u8::is_ascii_digit)
     })
 }
 
@@ -930,6 +995,11 @@ fn append_quoted_history(
 }
 
 fn is_strong_reply_separator(line: &str) -> bool {
+    // Compatibility for Mine Mail replies sent before structured reply MIME.
+    // Keep this exact so ordinary prose containing “原邮件” is never hidden.
+    if line.trim() == "—— 原邮件 ——" {
+        return true;
+    }
     let normalized = line
         .trim()
         .trim_matches(|character: char| {
@@ -1625,6 +1695,60 @@ mod tests {
             Some("receiver@example.com")
         );
         assert!(!segments[2].content.starts_with('|'));
+    }
+
+    #[test]
+    fn legacy_mine_mail_separator_is_folded_without_matching_ordinary_prose() {
+        let legacy = "这是回复内容\n\n—— 原邮件 ——\n原来的正文";
+        let prose = "这是回复内容\n\n我正在讨论原邮件，但这仍然属于正文。";
+
+        let segments = segment_mail_body(Some(legacy), None, false);
+        assert_eq!(segments.len(), 2);
+        assert_eq!(segments[0].kind, MailBodySegmentKind::Authored);
+        assert_eq!(segments[0].content, "这是回复内容");
+        assert_eq!(segments[1].kind, MailBodySegmentKind::Quoted);
+        assert_eq!(segments[1].content, "原来的正文");
+        assert!(segment_mail_body(Some(prose), None, false).is_empty());
+    }
+
+    #[test]
+    fn mine_mail_at_wrote_reply_strips_the_plain_quote_prefix() {
+        let text = "New reply\n\nAt 2026-07-17 09:54:29 +08:00, \"Sender\" <sender@example.com> wrote:\n> Original body\n> Second line";
+
+        let segments = segment_mail_body(Some(text), None, true);
+
+        assert_eq!(segments.len(), 2);
+        assert_eq!(segments[0].content, "New reply");
+        assert_eq!(segments[1].content, "Original body\nSecond line");
+        assert_eq!(segments[1].kind, MailBodySegmentKind::Quoted);
+        assert_eq!(
+            segments[1]
+                .quote_metadata
+                .as_ref()
+                .and_then(|metadata| metadata.sender.as_deref()),
+            Some("\"Sender\" <sender@example.com>")
+        );
+    }
+
+    #[test]
+    fn mine_mail_nested_at_wrote_history_becomes_sibling_cards() {
+        let text = "Newest reply\n\nAt 2026-07-17 09:54:29 +08:00, \"Sender\" <sender@example.com> wrote:\n> Parent reply\n>\n> At 2026-07-16 08:30:00 +08:00, \"Older\" <older@example.com> wrote:\n> > Oldest body";
+
+        let segments = segment_mail_body(Some(text), None, true);
+
+        assert_eq!(segments.len(), 3);
+        assert_eq!(segments[0].content, "Newest reply");
+        assert_eq!(segments[1].content, "Parent reply");
+        assert_eq!(segments[1].quote_depth, 1);
+        assert_eq!(segments[2].content, "Oldest body");
+        assert_eq!(segments[2].quote_depth, 2);
+        assert_eq!(
+            segments[2]
+                .quote_metadata
+                .as_ref()
+                .and_then(|metadata| metadata.sender.as_deref()),
+            Some("\"Older\" <older@example.com>")
+        );
     }
 
     #[test]

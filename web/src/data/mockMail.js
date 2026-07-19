@@ -209,4 +209,5 @@ export const emptyCompose = {
   bcc: [],
   subject: "",
   body_text: "",
+  reply_context: null,
 };

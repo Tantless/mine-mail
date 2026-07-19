@@ -1784,6 +1784,7 @@ mod tests {
                     bcc: vec![],
                     subject: "Offline draft".to_owned(),
                     body_text: "Saved without a credential".to_owned(),
+                    reply_context: None,
                 },
             )
             .expect("save local draft");

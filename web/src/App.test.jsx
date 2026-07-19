@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { App } from "./App.jsx";
 import { mailApi } from "./services/mailApi.js";
@@ -91,6 +91,28 @@ describe("Mine Mail MVP", () => {
     expect(actions.lastElementChild).toBe(forward);
   });
 
+  it("keeps authored reply text separate from the read-only quoted message", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: "回复" }));
+    const composer = await screen.findByRole("dialog", { name: "新邮件" });
+    const body = within(composer).getByLabelText("邮件正文");
+    expect(body.value).toBe("");
+    expect(body.value).not.toContain("原邮件");
+
+    const quote = within(composer).getByRole("button", {
+      name: /欢迎来到 Mine Mail/,
+    });
+    expect(quote.getAttribute("aria-expanded")).toBe("false");
+    await user.click(quote);
+    expect(quote.getAttribute("aria-expanded")).toBe("true");
+    expect(within(composer).getByText(/我们希望它是一间安静的邮件工作室/)).toBeTruthy();
+
+    await user.type(body, "这是回复内容");
+    expect(body.value).toBe("这是回复内容");
+  });
+
   it("keeps routine backend health details out of the main interface", async () => {
     render(<App />);
 
@@ -107,7 +129,7 @@ describe("Mine Mail MVP", () => {
 
     await screen.findByText("demo@163.com");
     const addSlots = screen.getAllByRole("button", { name: /添加邮箱账户/ });
-    expect(addSlots).toHaveLength(2);
+    expect(addSlots).toHaveLength(1);
     await user.click(addSlots[0]);
 
     expect(await screen.findByRole("dialog", { name: "设置" })).toBeTruthy();
@@ -597,7 +619,7 @@ describe("Mine Mail MVP", () => {
     });
 
     expect(saveDraft).toHaveBeenCalledWith(
-      { to: [], cc: [], bcc: [], subject: "", body_text: "" },
+      { to: [], cc: [], bcc: [], subject: "", body_text: "", reply_context: null },
       "draft-welcome",
       1,
     );
