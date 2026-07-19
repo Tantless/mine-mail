@@ -4,7 +4,7 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     sync::{Arc, RwLock},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -19,6 +19,8 @@ use tokio::{
 };
 use uuid::Uuid;
 use zeroize::{Zeroize, Zeroizing};
+
+use crate::diagnostics::{self, ErrorKind as DiagnosticErrorKind, Fields as DiagnosticFields};
 
 include!(concat!(env!("OUT_DIR"), "/google_oauth_config.rs"));
 
@@ -1061,24 +1063,72 @@ impl AccountRuntime {
         {
             return Ok(());
         }
-        let client_id = google_client_id()?;
-        let client_secret = google_client_secret()?;
+        let started = Instant::now();
+        diagnostics::info(
+            "oauth_refresh_started",
+            DiagnosticFields::default()
+                .account(&metadata.account_id)
+                .operation("google_oauth_refresh"),
+        );
+        let client_id = google_client_id().inspect_err(|_| {
+            log_oauth_refresh_failure(&metadata.account_id, started);
+        })?;
+        let client_secret = google_client_secret().inspect_err(|_| {
+            log_oauth_refresh_failure(&metadata.account_id, started);
+        })?;
         let refreshed =
-            refresh_google_tokens(&client_id, client_secret, &tokens.refresh_token).await?;
+            match refresh_google_tokens(&client_id, client_secret, &tokens.refresh_token).await {
+                Ok(refreshed) => refreshed,
+                Err(error) => {
+                    log_oauth_refresh_failure(&metadata.account_id, started);
+                    return Err(error);
+                }
+            };
         tokens.access_token.zeroize();
         tokens.access_token = refreshed.access_token;
         tokens.expires_at_unix = now.saturating_add(refreshed.expires_in);
-        let encoded = Zeroizing::new(
-            serde_json::to_string(&tokens)
-                .map_err(|_| "Google credentials could not be encoded.".to_owned())?,
-        );
+        let encoded = Zeroizing::new(serde_json::to_string(&tokens).map_err(|_| {
+            log_oauth_refresh_failure(&metadata.account_id, started);
+            "Google credentials could not be encoded.".to_owned()
+        })?);
         entry.set_password(encoded.as_str()).map_err(|_| {
+            log_oauth_refresh_failure(&metadata.account_id, started);
             "The OS credential store could not update Google authorization.".to_owned()
         })?;
         let database_path = account_database_path(&self.app_data, metadata);
-        let network = open_backend(metadata, &database_path, &tokens.access_token)?;
-        backend_state.replace_network(&metadata.account_id, network, true)
+        let network =
+            open_backend(metadata, &database_path, &tokens.access_token).inspect_err(|_| {
+                log_oauth_refresh_failure(&metadata.account_id, started);
+            })?;
+        match backend_state.replace_network(&metadata.account_id, network, true) {
+            Ok(()) => {
+                diagnostics::info(
+                    "oauth_refresh_completed",
+                    DiagnosticFields::default()
+                        .account(&metadata.account_id)
+                        .operation("google_oauth_refresh")
+                        .outcome("completed")
+                        .duration(started.elapsed()),
+                );
+                Ok(())
+            }
+            Err(error) => {
+                log_oauth_refresh_failure(&metadata.account_id, started);
+                Err(error)
+            }
+        }
     }
+}
+
+fn log_oauth_refresh_failure(account_id: &str, started: Instant) {
+    diagnostics::error(
+        "oauth_refresh_failed",
+        DiagnosticFields::default()
+            .account(account_id)
+            .operation("google_oauth_refresh")
+            .error(DiagnosticErrorKind::Runtime)
+            .duration(started.elapsed()),
+    );
 }
 
 async fn verify_connections(backend: &MailBackend) -> Result<(), String> {

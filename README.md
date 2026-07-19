@@ -230,6 +230,26 @@ CLI 的 `--body` 参数会进入终端历史，不应用于敏感正文。自动
 - HTML 邮件按不可信输入处理：清理危险内容、禁止脚本，并对复杂结构使用隔离 iframe。
 - 私人凭据或笔记文件、OAuth JSON、数据库、日志、构建目录和前端依赖目录均不应提交 Git。
 
+### 本地诊断日志
+
+桌面版会写入适合交给 AI 排查的 JSON Lines 诊断日志；根目录 CLI 和 React 页面不会写入这套日志，也没有向前端开放日志权限。Windows 日志目录为：
+
+```text
+%LOCALAPPDATA%\com.minemail.desktop\logs
+```
+
+macOS 与 Linux 使用 Tauri 对应的系统应用日志目录。当前文件名为 `mine-mail.log`，达到 5 MiB 后轮转，最多保留 3 个历史文件；启动时还会删除 7 天前的历史文件，并把日志总空间约束在 20 MiB 以内。日志清理或目录不可用不会阻止应用启动。
+
+日志只记录启动、存储初始化、同步/监控模式、OAuth 刷新结果、草稿版本冲突、发送与 Outbox 状态等操作事件和计数。账户、草稿和 Outbox 标识会先转换成短哈希引用。以下内容不得写入日志：密码或授权码、OAuth token/URL、邮箱地址、主题、发件人/收件人、正文/HTML、完整 RFC822、数据库内容、`account.json`、`password.txt` 和完整本地路径。
+
+Windows 上排查问题时，可以先完全退出 Mine Mail，再打开日志目录，把问题发生时段对应的 `mine-mail*.log` 提供给 AI：
+
+```powershell
+explorer "$env:LOCALAPPDATA\com.minemail.desktop\logs"
+```
+
+日志默认仅为 `info` 级别，没有常驻 `debug` 模式，也不会为 15/30 秒一次且未发现变化的邮箱探测逐次写记录；相同监控或同步错误在 60 秒内会被合并，以控制磁盘写入和重复噪音。
+
 提交代码前请检查：
 
 ```powershell

@@ -1,8 +1,9 @@
 mod account;
 mod desktop;
+mod diagnostics;
 mod mail_html;
 
-use std::env;
+use std::{env, time::Instant};
 
 use mine_mail::{
     ComposeRequest, ConnectionReport, Draft, DraftDeleteKind, DraftSaveKind, DraftSaveOutcome,
@@ -21,6 +22,7 @@ use desktop::{
     DeleteProfileAvatarRequest, DesktopRuntime, DesktopSettingsDto, DesktopSettingsUpdate,
     NewMailNotificationDto, ProfileAvatarDto, SaveProfileAvatarRequest,
 };
+use diagnostics::{ErrorKind as DiagnosticErrorKind, Fields as DiagnosticFields};
 use mail_html::{
     MailBodySegmentConfidence, MailBodySegmentKind, MailBodySegmentMetadata, MailHtmlStructure,
     SanitizedMailBodySegment, sanitize_mail_html, segment_mail_body,
@@ -467,11 +469,51 @@ fn save_draft(
     draft_id: Option<String>,
     expected_local_version: Option<u64>,
 ) -> CommandResult<DraftSaveOutcomeDto> {
-    let backend = backend.local()?;
-    let outcome = backend
-        .save_draft_optimistic(draft_id.as_deref(), expected_local_version, request)
-        .map(Into::into)
-        .map_err(safe_mail_error)?;
+    let account_id = backend.active_account_id();
+    let backend = match backend.local() {
+        Ok(backend) => backend,
+        Err(error) => {
+            diagnostics::limited_failure(
+                "draft_save_failed",
+                "draft_save",
+                account_id.as_deref(),
+                DiagnosticErrorKind::Runtime,
+            );
+            return Err(error);
+        }
+    };
+    let outcome =
+        match backend.save_draft_optimistic(draft_id.as_deref(), expected_local_version, request) {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                let error_kind = diagnostics::mail_error_kind(&error);
+                diagnostics::limited_failure(
+                    "draft_save_failed",
+                    "draft_save",
+                    account_id.as_deref(),
+                    error_kind,
+                );
+                return Err(safe_mail_error(error));
+            }
+        };
+    diagnostics::limited_recovery(
+        "draft_save_failed",
+        "draft_save_recovered",
+        "draft_save",
+        account_id.as_deref(),
+    );
+    if outcome.kind == DraftSaveKind::ConflictCopy {
+        let mut fields = DiagnosticFields::default()
+            .operation("draft_save")
+            .item("draft", &outcome.draft.id)
+            .outcome("conflict_copy")
+            .draft_version(outcome.draft.local_version);
+        if let Some(account_id) = account_id.as_deref() {
+            fields = fields.account(account_id);
+        }
+        diagnostics::warn("draft_conflict_created", fields);
+    }
+    let outcome = outcome.into();
     let _ = app.emit("mail:drafts-updated", desktop::DraftsUpdatedEvent::saved());
     Ok(outcome)
 }
@@ -492,10 +534,42 @@ fn delete_draft(
     draft_id: String,
     expected_local_version: u64,
 ) -> CommandResult<DraftDeleteOutcomeDto> {
-    let backend = backend.local()?;
-    let kind = backend
-        .delete_draft_optimistic(&draft_id, expected_local_version)
-        .map_err(safe_mail_error)?;
+    let operation_id = diagnostics::operation_id();
+    let account_id = backend.active_account_id();
+    let mut fields = DiagnosticFields::default()
+        .operation_id(operation_id)
+        .operation("draft_delete")
+        .item("draft", &draft_id)
+        .draft_version(expected_local_version);
+    if let Some(account_id) = account_id.as_deref() {
+        fields = fields.account(account_id);
+    }
+    diagnostics::info("draft_delete_started", fields.clone());
+    let backend = match backend.local() {
+        Ok(backend) => backend,
+        Err(error) => {
+            diagnostics::error(
+                "draft_delete_failed",
+                fields.error(DiagnosticErrorKind::Runtime),
+            );
+            return Err(error);
+        }
+    };
+    let kind = match backend.delete_draft_optimistic(&draft_id, expected_local_version) {
+        Ok(kind) => kind,
+        Err(error) => {
+            let error_kind = diagnostics::mail_error_kind(&error);
+            diagnostics::error("draft_delete_failed", fields.error(error_kind));
+            return Err(safe_mail_error(error));
+        }
+    };
+    diagnostics::info(
+        "draft_delete_completed",
+        fields.outcome(match kind {
+            DraftDeleteKind::Deleted => "deleted",
+            DraftDeleteKind::Stale => "stale_version",
+        }),
+    );
     if kind == DraftDeleteKind::Deleted {
         let _ = app.emit(
             "mail:drafts-updated",
@@ -515,13 +589,65 @@ async fn send_draft(
     expected_local_version: u64,
     confirmed_recipients: Vec<String>,
 ) -> CommandResult<OutboxItemDto> {
-    account.refresh_active_oauth_backend(&backend).await?;
-    let backend = backend.network()?;
-    backend
+    let started = Instant::now();
+    let operation_id = diagnostics::operation_id();
+    let account_id = backend.active_account_id();
+    let mut fields = DiagnosticFields::default()
+        .operation_id(operation_id)
+        .operation("send")
+        .item("draft", &draft_id)
+        .draft_version(expected_local_version);
+    if let Some(account_id) = account_id.as_deref() {
+        fields = fields.account(account_id);
+    }
+    diagnostics::info("send_started", fields.clone());
+    if let Err(error) = account.refresh_active_oauth_backend(&backend).await {
+        diagnostics::error(
+            "send_failed",
+            fields
+                .clone()
+                .error(DiagnosticErrorKind::Runtime)
+                .outcome("oauth_refresh_failed")
+                .duration(started.elapsed()),
+        );
+        return Err(error);
+    }
+    let backend = match backend.network() {
+        Ok(backend) => backend,
+        Err(error) => {
+            diagnostics::error(
+                "send_failed",
+                fields
+                    .error(DiagnosticErrorKind::Runtime)
+                    .outcome("backend_unavailable")
+                    .duration(started.elapsed()),
+            );
+            return Err(error);
+        }
+    };
+    match backend
         .send_draft(&draft_id, expected_local_version, &confirmed_recipients)
         .await
-        .map(Into::into)
-        .map_err(safe_mail_error)
+    {
+        Ok(item) => {
+            diagnostics::info(
+                "send_completed",
+                fields
+                    .item("outbox", &item.id)
+                    .outcome(outbox_status_name(item.status))
+                    .duration(started.elapsed()),
+            );
+            Ok(item.into())
+        }
+        Err(error) => {
+            let error_kind = diagnostics::mail_error_kind(&error);
+            diagnostics::error(
+                "send_failed",
+                fields.error(error_kind).duration(started.elapsed()),
+            );
+            Err(safe_mail_error(error))
+        }
+    }
 }
 
 /// A manual retry reuses the immutable RFC822 message and SMTP envelope that
@@ -533,13 +659,71 @@ async fn retry_outbox(
     backend: State<'_, BackendState>,
     outbox_id: String,
 ) -> CommandResult<OutboxItemDto> {
-    account.refresh_active_oauth_backend(&backend).await?;
-    let backend = backend.network()?;
-    backend
-        .retry_outbox(&outbox_id)
-        .await
-        .map(Into::into)
-        .map_err(safe_mail_error)
+    let started = Instant::now();
+    let operation_id = diagnostics::operation_id();
+    let account_id = backend.active_account_id();
+    let mut fields = DiagnosticFields::default()
+        .operation_id(operation_id)
+        .operation("outbox_retry")
+        .item("outbox", &outbox_id);
+    if let Some(account_id) = account_id.as_deref() {
+        fields = fields.account(account_id);
+    }
+    diagnostics::info("outbox_retry_started", fields.clone());
+    if let Err(error) = account.refresh_active_oauth_backend(&backend).await {
+        diagnostics::error(
+            "outbox_retry_failed",
+            fields
+                .clone()
+                .error(DiagnosticErrorKind::Runtime)
+                .outcome("oauth_refresh_failed")
+                .duration(started.elapsed()),
+        );
+        return Err(error);
+    }
+    let backend = match backend.network() {
+        Ok(backend) => backend,
+        Err(error) => {
+            diagnostics::error(
+                "outbox_retry_failed",
+                fields
+                    .error(DiagnosticErrorKind::Runtime)
+                    .outcome("backend_unavailable")
+                    .duration(started.elapsed()),
+            );
+            return Err(error);
+        }
+    };
+    match backend.retry_outbox(&outbox_id).await {
+        Ok(item) => {
+            diagnostics::info(
+                "outbox_retry_completed",
+                fields
+                    .outcome(outbox_status_name(item.status))
+                    .duration(started.elapsed()),
+            );
+            Ok(item.into())
+        }
+        Err(error) => {
+            let error_kind = diagnostics::mail_error_kind(&error);
+            diagnostics::error(
+                "outbox_retry_failed",
+                fields.error(error_kind).duration(started.elapsed()),
+            );
+            Err(safe_mail_error(error))
+        }
+    }
+}
+
+fn outbox_status_name(status: OutboxStatus) -> &'static str {
+    match status {
+        OutboxStatus::Queued => "queued",
+        OutboxStatus::Sending => "sending",
+        OutboxStatus::Sent => "sent",
+        OutboxStatus::Retryable => "retryable",
+        OutboxStatus::Rejected => "rejected",
+        OutboxStatus::DeliveryUnknown => "delivery_unknown",
+    }
 }
 
 #[tauri::command]
@@ -726,7 +910,7 @@ fn cancel_exit(app: AppHandle, request_id: u64) -> CommandResult<bool> {
 
 #[tauri::command]
 async fn sync_all(app: AppHandle) -> CommandResult<desktop::SyncAllReport> {
-    desktop::perform_sync_all(&app, true)
+    desktop::perform_sync_all(&app, true, "manual")
         .await?
         .ok_or_else(|| "The requested synchronization was skipped.".to_owned())
 }
@@ -760,7 +944,7 @@ async fn configure_account(
     let _sync_guard = desktop_runtime.acquire_sync_gate().await;
     let (status, _account_changed) = account.configure(&backend, request).await?;
     let _ = app.emit("mail:account-updated", status.clone());
-    desktop::request_sync(&app, true);
+    desktop::request_sync(&app, true, "account_change");
     Ok(status)
 }
 
@@ -774,7 +958,7 @@ async fn connect_google_account(
     let _sync_guard = desktop_runtime.acquire_sync_gate().await;
     let (status, _account_changed) = account.connect_google(&backend).await?;
     let _ = app.emit("mail:account-updated", status.clone());
-    desktop::request_sync(&app, true);
+    desktop::request_sync(&app, true, "account_change");
     Ok(status)
 }
 
@@ -805,7 +989,7 @@ async fn remove_account(
     }
     let _ = app.emit("mail:account-updated", status.clone());
     if status.configured {
-        desktop::request_sync(&app, true);
+        desktop::request_sync(&app, true, "account_change");
     }
     Ok(status)
 }
@@ -828,6 +1012,16 @@ fn safe_mail_error(error: mine_mail::MailError) -> String {
 }
 
 fn initialize_state(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+    diagnostics::cleanup_on_startup(app.handle());
+    let background_launch = is_background_launch(std::env::args());
+    diagnostics::info(
+        "app_starting",
+        DiagnosticFields::default().mode(if background_launch {
+            "background"
+        } else {
+            "foreground"
+        }),
+    );
     let (app_data, path_error) = match app.path().app_local_data_dir() {
         Ok(path) => (path, None),
         Err(_) => (
@@ -838,12 +1032,29 @@ fn initialize_state(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Erro
             ),
         ),
     };
-    let (account, backend) = if let Some(error) = path_error.as_ref() {
-        AccountRuntime::fallback(&app_data, error.clone())
+    let path_degraded = path_error.is_some();
+    let (account, backend, account_degraded) = if let Some(error) = path_error.as_ref() {
+        let (account, backend) = AccountRuntime::fallback(&app_data, error.clone());
+        (account, backend, true)
     } else {
-        AccountRuntime::open(&app_data)
-            .unwrap_or_else(|error| AccountRuntime::fallback(&app_data, error))
+        match AccountRuntime::open(&app_data) {
+            Ok((account, backend)) => (account, backend, false),
+            Err(error) => {
+                diagnostics::error(
+                    "account_store_open_failed",
+                    DiagnosticFields::default().error(DiagnosticErrorKind::Runtime),
+                );
+                let (account, backend) = AccountRuntime::fallback(&app_data, error);
+                (account, backend, true)
+            }
+        }
     };
+    if path_degraded {
+        diagnostics::error(
+            "app_data_directory_unavailable",
+            DiagnosticFields::default().error(DiagnosticErrorKind::Io),
+        );
+    }
     let local_backend_ready = backend.is_local_ready();
     let (desktop, sync_rx, shutdown_rx) = DesktopRuntime::open(&app_data);
     if let Some(error) = path_error {
@@ -855,8 +1066,15 @@ fn initialize_state(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Erro
     app.manage(backend);
     app.manage(desktop);
     let tray_available = match desktop::build_tray(app) {
-        Ok(()) => true,
+        Ok(()) => {
+            diagnostics::info("tray_initialized", DiagnosticFields::default());
+            true
+        }
         Err(_) => {
+            diagnostics::error(
+                "tray_initialization_failed",
+                DiagnosticFields::default().error(DiagnosticErrorKind::Runtime),
+            );
             app.state::<DesktopRuntime>().record_startup_error(
                 "The system tray could not be initialized; Mine Mail will remain visible.",
             );
@@ -866,12 +1084,15 @@ fn initialize_state(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Erro
     desktop::start_inbox_monitor_supervisor(app.handle().clone(), shutdown_rx.clone());
     desktop::start_background_loop(app.handle().clone(), sync_rx, shutdown_rx);
 
-    if is_background_launch(std::env::args())
-        && tray_available
-        && local_backend_ready
-        && !startup_degraded
-    {
-        desktop::request_sync(app.handle(), true);
+    diagnostics::info(
+        "app_ready",
+        DiagnosticFields::default()
+            .accounts(app.state::<AccountRuntime>().account_ids().len())
+            .degraded(path_degraded || account_degraded || startup_degraded || !tray_available),
+    );
+
+    if background_launch && tray_available && local_backend_ready && !startup_degraded {
+        desktop::request_sync(app.handle(), true, "startup");
     } else {
         desktop::show_main_window(app.handle(), true);
     }
@@ -887,11 +1108,12 @@ pub fn run() {
         // The single-instance plugin must remain the first plugin registered.
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             if is_background_launch(args) {
-                desktop::request_sync(app, true);
+                desktop::request_sync(app, true, "single_instance");
             } else {
                 desktop::show_main_window(app, true);
             }
         }))
+        .plugin(diagnostics::plugin())
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
             Some(vec!["--background"]),
@@ -923,7 +1145,7 @@ pub fn run() {
                 }
             }
             WindowEvent::Focused(true) if window.label() == "main" => {
-                desktop::request_sync(window.app_handle(), false)
+                desktop::request_sync(window.app_handle(), false, "window_focus")
             }
             _ => {}
         })
@@ -964,10 +1186,14 @@ pub fn run() {
         .expect("Mine Mail desktop runtime failed");
 
     app.run(|app, event| match event {
-        RunEvent::Resumed => desktop::request_sync(app, false),
+        RunEvent::Resumed => desktop::request_sync(app, false, "resume"),
         #[cfg(target_os = "macos")]
         RunEvent::Reopen { .. } => desktop::show_main_window(app, false),
         RunEvent::ExitRequested { api, .. } => {
+            diagnostics::info(
+                "shutdown_requested",
+                DiagnosticFields::default().operation("app_exit"),
+            );
             if let Some(runtime) = app.try_state::<DesktopRuntime>() {
                 if runtime.is_exit_committed() {
                     return;
@@ -979,6 +1205,7 @@ pub fn run() {
             }
         }
         RunEvent::Exit => {
+            diagnostics::info("app_exit", DiagnosticFields::default().outcome("completed"));
             if let Some(runtime) = app.try_state::<DesktopRuntime>() {
                 runtime.finish_quit();
             }

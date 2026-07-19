@@ -24,6 +24,7 @@ base64 = "0.22"
 ego-tree = "0.11"
 html5ever = "0.39"
 keyring = "4.1.4"
+log = "0.4"
 mine-mail = { path = "../.." }
 reqwest = { version = "0.13", features = ["form", "json"] }
 rusqlite = { version = "0.40.1", features = ["bundled"] }
@@ -32,6 +33,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-log = "2.8.0"
 tempfile = "3"
 tokio = { version = "1", features = ["io-util", "net", "sync", "time"] }
 uuid = { version = "1.23", features = ["v4"] }

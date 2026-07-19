@@ -21,7 +21,10 @@ use tauri::{
 use tokio::sync::{Mutex as AsyncMutex, MutexGuard as AsyncMutexGuard, mpsc, watch};
 use tokio::time::Instant as TokioInstant;
 
-use crate::account::{AccountRuntime, BackendState};
+use crate::{
+    account::{AccountRuntime, BackendState},
+    diagnostics::{self, ErrorKind, Fields},
+};
 
 pub(crate) use settings::{
     DeleteProfileAvatarRequest, DesktopSettingsDto, DesktopSettingsUpdate, ProfileAvatarDto,
@@ -64,7 +67,7 @@ struct OpenMessageEvent {
 
 #[derive(Clone, Debug)]
 pub(crate) enum BackgroundRequest {
-    Sync { force: bool },
+    Sync { force: bool, trigger: &'static str },
     InboxChanged { account_id: String },
     ScheduleChanged,
 }
@@ -114,6 +117,10 @@ impl DesktopRuntime {
         watch::Receiver<bool>,
     ) {
         let (store, settings, startup_error) = if fs::create_dir_all(app_data).is_err() {
+            diagnostics::error(
+                "settings_store_open_failed",
+                Fields::default().error(ErrorKind::Io),
+            );
             (
                 None,
                 StoredDesktopSettings::default(),
@@ -122,24 +129,42 @@ impl DesktopRuntime {
         } else {
             match DesktopSettingsStore::open(app_data.join(SETTINGS_DATABASE_NAME)) {
                 Ok(store) => match store.load() {
-                    Ok(settings) => (Some(store), settings, None),
-                    Err(_) => (
+                    Ok(settings) => {
+                        diagnostics::info(
+                            "settings_store_opened",
+                            Fields::default().outcome("ready"),
+                        );
+                        (Some(store), settings, None)
+                    }
+                    Err(_) => {
+                        diagnostics::error(
+                            "settings_store_open_failed",
+                            Fields::default().error(ErrorKind::Database),
+                        );
+                        (
+                            None,
+                            StoredDesktopSettings::default(),
+                            Some(
+                                "Desktop settings could not be loaded; safe in-memory defaults are active."
+                                    .to_owned(),
+                            ),
+                        )
+                    }
+                },
+                Err(_) => {
+                    diagnostics::error(
+                        "settings_store_open_failed",
+                        Fields::default().error(ErrorKind::Database),
+                    );
+                    (
                         None,
                         StoredDesktopSettings::default(),
                         Some(
-                            "Desktop settings could not be loaded; safe in-memory defaults are active."
+                            "Desktop settings could not be initialized; safe in-memory defaults are active."
                                 .to_owned(),
                         ),
-                    ),
-                },
-                Err(_) => (
-                    None,
-                    StoredDesktopSettings::default(),
-                    Some(
-                        "Desktop settings could not be initialized; safe in-memory defaults are active."
-                            .to_owned(),
-                    ),
-                ),
+                    )
+                }
             }
         };
         // Leave room for a short burst of per-account IDLE events while the
@@ -338,8 +363,10 @@ impl DesktopRuntime {
             .unwrap_or(true)
     }
 
-    pub(crate) fn request_sync(&self, force: bool) {
-        let _ = self.sync_tx.try_send(BackgroundRequest::Sync { force });
+    pub(crate) fn request_sync(&self, force: bool, trigger: &'static str) {
+        let _ = self
+            .sync_tx
+            .try_send(BackgroundRequest::Sync { force, trigger });
     }
 
     fn request_incremental_inbox_sync(&self, account_id: String) {
@@ -665,14 +692,32 @@ async fn run_inbox_monitor(
     account_id: String,
     mut shutdown_rx: watch::Receiver<bool>,
 ) {
+    diagnostics::info(
+        "inbox_monitor_started",
+        Fields::default().account(&account_id),
+    );
     let mut failures = 0usize;
     loop {
         if *shutdown_rx.borrow() {
             return;
         }
         let backend = match app.state::<BackendState>().network_for(&account_id) {
-            Ok(backend) => backend,
+            Ok(backend) => {
+                diagnostics::limited_recovery(
+                    "inbox_monitor_failed",
+                    "inbox_monitor_recovered",
+                    "backend_access",
+                    Some(&account_id),
+                );
+                backend
+            }
             Err(_) => {
+                diagnostics::limited_failure(
+                    "inbox_monitor_failed",
+                    "backend_access",
+                    Some(&account_id),
+                    ErrorKind::Runtime,
+                );
                 if wait_for_monitor_retry(&mut shutdown_rx, failures).await {
                     return;
                 }
@@ -682,10 +727,28 @@ async fn run_inbox_monitor(
         };
         let mut monitor = match backend.connect_inbox_monitor().await {
             Ok(monitor) => {
+                diagnostics::limited_recovery(
+                    "inbox_monitor_failed",
+                    "inbox_monitor_recovered",
+                    "monitor_connect",
+                    Some(&account_id),
+                );
+                diagnostics::limited_recovery(
+                    "inbox_monitor_failed",
+                    "inbox_monitor_recovered",
+                    "monitor_session",
+                    Some(&account_id),
+                );
                 failures = 0;
                 monitor
             }
-            Err(_) => {
+            Err(error) => {
+                diagnostics::limited_failure(
+                    "inbox_monitor_failed",
+                    "monitor_connect",
+                    Some(&account_id),
+                    diagnostics::mail_error_kind(&error),
+                );
                 if wait_for_monitor_retry(&mut shutdown_rx, failures).await {
                     return;
                 }
@@ -694,7 +757,17 @@ async fn run_inbox_monitor(
             }
         };
 
-        let result = match monitor.mode() {
+        let monitor_mode = monitor.mode();
+        diagnostics::info(
+            "inbox_monitor_connected",
+            Fields::default()
+                .account(&account_id)
+                .mode(match monitor_mode {
+                    InboxMonitorMode::Idle => "idle",
+                    InboxMonitorMode::LightweightPoll => "lightweight_poll",
+                }),
+        );
+        let result = match monitor_mode {
             InboxMonitorMode::Idle => loop {
                 let changed = tokio::select! {
                     result = monitor.wait_for_idle_change(IDLE_MAINTENANCE_INTERVAL) => result,
@@ -736,7 +809,13 @@ async fn run_inbox_monitor(
             },
         };
 
-        if result.is_err() {
+        if let Err(error) = result {
+            diagnostics::limited_failure(
+                "inbox_monitor_failed",
+                "monitor_session",
+                Some(&account_id),
+                diagnostics::mail_error_kind(&error),
+            );
             if wait_for_monitor_retry(&mut shutdown_rx, failures).await {
                 return;
             }
@@ -791,8 +870,8 @@ pub(crate) fn start_background_loop(
                 }
                 request = sync_rx.recv() => {
                     match request {
-                        Some(BackgroundRequest::Sync { force }) => {
-                            if let Err(error) = perform_sync_all(&app, force).await {
+                        Some(BackgroundRequest::Sync { force, trigger }) => {
+                            if let Err(error) = perform_sync_all(&app, force, trigger).await {
                                 emit_sync_error(&app, "all", error);
                             }
                             inbox_deadline = TokioInstant::now() + app.state::<DesktopRuntime>().poll_duration();
@@ -827,12 +906,23 @@ fn emit_sync_error(app: &AppHandle, operation: &'static str, message: String) {
 pub(crate) async fn perform_sync_all(
     app: &AppHandle,
     force: bool,
+    trigger: &'static str,
 ) -> Result<Option<SyncAllReport>, String> {
+    let started = Instant::now();
     let runtime = app.state::<DesktopRuntime>();
     let _guard = runtime.sync_gate.lock().await;
     if !force && runtime.should_skip_automatic_sync()? {
         return Ok(None);
     }
+    let operation_id = diagnostics::operation_id();
+    diagnostics::info(
+        "sync_started",
+        Fields::default()
+            .operation_id(operation_id.clone())
+            .operation("all")
+            .trigger(trigger)
+            .force(force),
+    );
     runtime.record_sync_start()?;
 
     let account_runtime = app.state::<AccountRuntime>();
@@ -846,8 +936,19 @@ pub(crate) async fn perform_sync_all(
         .err();
     let account_ids = account_runtime.account_ids();
     if account_ids.is_empty() {
+        diagnostics::warn(
+            "sync_skipped",
+            Fields::default()
+                .operation_id(operation_id)
+                .operation("all")
+                .trigger(trigger)
+                .outcome("no_accounts")
+                .error(ErrorKind::Config)
+                .duration(started.elapsed()),
+        );
         return Err("No mail account is configured.".to_owned());
     }
+    let account_count = account_ids.len();
     let active_account_id = backend_state.active_account_id();
     let mut active_inbox = None;
     let mut active_drafts = None;
@@ -882,11 +983,36 @@ pub(crate) async fn perform_sync_all(
         errors.push(error);
     }
     if !errors.is_empty() {
+        diagnostics::limited_failure("sync_failed", "sync_all", None, ErrorKind::Runtime);
+        diagnostics::error(
+            "sync_completed",
+            Fields::default()
+                .operation_id(operation_id)
+                .operation("all")
+                .trigger(trigger)
+                .outcome("failed")
+                .accounts(account_count)
+                .successes(accounts_synced)
+                .failures(errors.len())
+                .duration(started.elapsed()),
+        );
         return Err(format!(
             "Some account synchronization failed: {}",
             errors.join(" ")
         ));
     }
+    diagnostics::limited_recovery("sync_failed", "sync_recovered", "sync_all", None);
+    diagnostics::info(
+        "sync_completed",
+        Fields::default()
+            .operation_id(operation_id)
+            .operation("all")
+            .trigger(trigger)
+            .outcome("completed")
+            .accounts(account_count)
+            .successes(accounts_synced)
+            .duration(started.elapsed()),
+    );
     Ok(Some(SyncAllReport {
         inbox: active_inbox.ok_or_else(|| "The active Inbox was not synchronized.".to_owned())?,
         drafts: active_drafts
@@ -968,22 +1094,70 @@ pub(crate) async fn perform_draft_sync(app: &AppHandle) -> Result<DraftSyncRepor
 }
 
 async fn sync_inbox_for(app: &AppHandle, account_id: &str) -> Result<SyncReport, String> {
-    let backend = app.state::<BackendState>().network_for(account_id)?;
-    let report = backend
-        .sync_inbox(crate::INBOX_SYNC_LIMIT)
-        .await
-        .map_err(crate::safe_mail_error)?;
+    sync_inbox_with_operation(app, account_id, false).await
+}
 
-    finish_inbox_sync(app, account_id, backend, report)
+async fn sync_inbox_with_operation(
+    app: &AppHandle,
+    account_id: &str,
+    incremental: bool,
+) -> Result<SyncReport, String> {
+    let started = Instant::now();
+    let operation = if incremental {
+        "inbox_incremental"
+    } else {
+        "inbox_reconciliation"
+    };
+    let backend = match app.state::<BackendState>().network_for(account_id) {
+        Ok(backend) => backend,
+        Err(error) => {
+            diagnostics::limited_failure(
+                "account_sync_failed",
+                operation,
+                Some(account_id),
+                ErrorKind::Runtime,
+            );
+            return Err(error);
+        }
+    };
+    let report = match if incremental {
+        backend.sync_new_inbox(crate::INBOX_SYNC_LIMIT).await
+    } else {
+        backend.sync_inbox(crate::INBOX_SYNC_LIMIT).await
+    } {
+        Ok(report) => report,
+        Err(error) => {
+            diagnostics::limited_failure(
+                "account_sync_failed",
+                operation,
+                Some(account_id),
+                diagnostics::mail_error_kind(&error),
+            );
+            return Err(crate::safe_mail_error(error));
+        }
+    };
+
+    let report = finish_inbox_sync(app, account_id, backend, report)?;
+    diagnostics::limited_recovery(
+        "account_sync_failed",
+        "account_sync_recovered",
+        operation,
+        Some(account_id),
+    );
+    diagnostics::info(
+        "account_sync_completed",
+        Fields::default()
+            .account(account_id)
+            .operation(operation)
+            .outcome("completed")
+            .duration(started.elapsed())
+            .inbox_counts(report.fetched, report.updated_flags, report.removed),
+    );
+    Ok(report)
 }
 
 async fn sync_new_inbox_for(app: &AppHandle, account_id: &str) -> Result<SyncReport, String> {
-    let backend = app.state::<BackendState>().network_for(account_id)?;
-    let report = backend
-        .sync_new_inbox(crate::INBOX_SYNC_LIMIT)
-        .await
-        .map_err(crate::safe_mail_error)?;
-    finish_inbox_sync(app, account_id, backend, report)
+    sync_inbox_with_operation(app, account_id, true).await
 }
 
 fn finish_inbox_sync(
@@ -1029,14 +1203,49 @@ fn finish_inbox_sync(
 }
 
 async fn sync_drafts_for(app: &AppHandle, account_id: &str) -> Result<DraftSyncReport, String> {
-    let backend = app.state::<BackendState>().network_for(account_id)?;
-    let report = backend
-        .sync_drafts(None)
-        .await
-        .map_err(crate::safe_mail_error)?;
+    let started = Instant::now();
+    let backend = match app.state::<BackendState>().network_for(account_id) {
+        Ok(backend) => backend,
+        Err(error) => {
+            diagnostics::limited_failure(
+                "account_sync_failed",
+                "drafts",
+                Some(account_id),
+                ErrorKind::Runtime,
+            );
+            return Err(error);
+        }
+    };
+    let report = match backend.sync_drafts(None).await {
+        Ok(report) => report,
+        Err(error) => {
+            diagnostics::limited_failure(
+                "account_sync_failed",
+                "drafts",
+                Some(account_id),
+                diagnostics::mail_error_kind(&error),
+            );
+            return Err(crate::safe_mail_error(error));
+        }
+    };
     let _ = app.emit(
         "mail:drafts-updated",
         DraftsUpdatedEvent::synced(report.clone()),
+    );
+    diagnostics::limited_recovery(
+        "account_sync_failed",
+        "account_sync_recovered",
+        "drafts",
+        Some(account_id),
+    );
+    diagnostics::info(
+        "account_sync_completed",
+        Fields::default()
+            .account(account_id)
+            .operation("drafts")
+            .outcome("completed")
+            .duration(started.elapsed())
+            .conflicts(report.conflicts),
     );
     Ok(report)
 }
@@ -1281,7 +1490,7 @@ pub(crate) fn build_tray(app: &App) -> tauri::Result<()> {
         .show_menu_on_left_click(!cfg!(target_os = "windows"))
         .on_menu_event(|app, event| match event.id.as_ref() {
             "open" => show_main_window(app, true),
-            "refresh" => request_sync(app, true),
+            "refresh" => request_sync(app, true, "tray"),
             "quit" => quit_app(app),
             _ => {}
         })
@@ -1308,7 +1517,7 @@ pub(crate) fn show_main_window(app: &AppHandle, force_sync: bool) {
         let _ = window.show();
         let _ = window.set_focus();
     }
-    request_sync(app, force_sync);
+    request_sync(app, force_sync, "window_open");
 }
 
 pub(crate) fn dismiss_new_mail_notification(
@@ -1350,9 +1559,9 @@ pub(crate) fn open_new_mail_notification(
     Ok(true)
 }
 
-pub(crate) fn request_sync(app: &AppHandle, force: bool) {
+pub(crate) fn request_sync(app: &AppHandle, force: bool, trigger: &'static str) {
     if let Some(runtime) = app.try_state::<DesktopRuntime>() {
-        runtime.request_sync(force);
+        runtime.request_sync(force, trigger);
     }
 }
 
@@ -1369,6 +1578,10 @@ pub(crate) fn quit_app(app: &AppHandle) {
             return;
         }
     };
+    diagnostics::info(
+        "shutdown_handshake_started",
+        Fields::default().operation("app_exit"),
+    );
 
     let _ = app.emit(
         "mail:before-exit",
@@ -1393,6 +1606,12 @@ pub(crate) fn complete_exit(app: &AppHandle, request_id: u64) -> Result<bool, St
         return Ok(false);
     }
     runtime.finish_quit();
+    diagnostics::info(
+        "shutdown_committed",
+        Fields::default()
+            .operation("app_exit")
+            .outcome("frontend_ready"),
+    );
     app.exit(0);
     Ok(true)
 }
@@ -1401,7 +1620,14 @@ pub(crate) fn cancel_exit(app: &AppHandle, request_id: u64) -> Result<bool, Stri
     let Some(runtime) = app.try_state::<DesktopRuntime>() else {
         return Ok(false);
     };
-    runtime.cancel_quit_handshake(request_id)
+    let cancelled = runtime.cancel_quit_handshake(request_id)?;
+    if cancelled {
+        diagnostics::info(
+            "shutdown_cancelled",
+            Fields::default().operation("app_exit"),
+        );
+    }
+    Ok(cancelled)
 }
 
 fn complete_exit_on_timeout(app: &AppHandle, ticket: ExitHandshakeTicket) {
@@ -1415,6 +1641,12 @@ fn complete_exit_on_timeout(app: &AppHandle, ticket: ExitHandshakeTicket) {
         return;
     }
     runtime.finish_quit();
+    diagnostics::warn(
+        "shutdown_committed",
+        Fields::default()
+            .operation("app_exit")
+            .outcome("frontend_timeout"),
+    );
     app.exit(0);
 }
 
