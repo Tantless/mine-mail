@@ -504,6 +504,26 @@ impl MailBackend {
         self.cached_mailbox_message(&mailbox, uid)
     }
 
+    /// Resolve the direct parent of a reply from SQLite without opening IMAP.
+    /// This supplies display metadata for provider reply templates that carry
+    /// only a Message-ID reference around their quoted body.
+    pub fn cached_reply_parent(&self, message: &InboxMessage) -> Result<Option<InboxMessage>> {
+        for message_id in message
+            .in_reply_to
+            .iter()
+            .chain(message.references.iter().rev())
+        {
+            if let Some(parent) = self
+                .repository
+                .find_message_by_message_id(&self.config.account_id, message_id)?
+                && parent.id != message.id
+            {
+                return Ok(Some(parent));
+            }
+        }
+        Ok(None)
+    }
+
     fn cached_mailbox_message(&self, mailbox: &str, uid: u32) -> Result<InboxMessage> {
         let message = self
             .repository

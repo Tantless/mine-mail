@@ -7,7 +7,7 @@ use std::{env, time::Instant};
 
 use mine_mail::{
     ComposeRequest, ConnectionReport, Draft, DraftDeleteKind, DraftSaveKind, DraftSaveOutcome,
-    InboxMessage, MailAddress, OutboxItem, OutboxStatus, SyncReport, outbox_body_text,
+    InboxMessage, MailAddress, MailBackend, OutboxItem, OutboxStatus, SyncReport, outbox_body_text,
     outbox_message_id, outbox_preview, outbox_sent_at, outbox_subject,
 };
 use serde::Serialize;
@@ -25,7 +25,7 @@ use desktop::{
 use diagnostics::{ErrorKind as DiagnosticErrorKind, Fields as DiagnosticFields};
 use mail_html::{
     MailBodySegmentConfidence, MailBodySegmentKind, MailBodySegmentMetadata, MailHtmlStructure,
-    SanitizedMailBodySegment, sanitize_mail_html, segment_mail_body,
+    SanitizedMailBodySegment, sanitize_mail_html, segment_mail_body_with_metadata,
 };
 
 const INBOX_SYNC_LIMIT: usize = 100;
@@ -179,6 +179,10 @@ impl InboxMessageDto {
     }
 
     fn full(value: InboxMessage) -> Self {
+        Self::full_with_parent(value, None)
+    }
+
+    fn full_with_parent(value: InboxMessage, parent: Option<&InboxMessage>) -> Self {
         // MIME extraction (including safe CID image resolution) already ran
         // when the body entered SQLite. Re-parsing raw RFC822 on every click
         // made cached HTML feel like a network operation.
@@ -188,10 +192,12 @@ impl InboxMessageDto {
             .as_ref()
             .is_some_and(|text| !text.trim().is_empty());
         let has_reply_headers = !value.in_reply_to.is_empty() || !value.references.is_empty();
-        let body_segments = segment_mail_body(
+        let quote_metadata = reply_quote_metadata(&value, parent, has_reply_headers);
+        let body_segments = segment_mail_body_with_metadata(
             value.body_text.as_deref(),
             value.body_html.as_deref(),
             has_reply_headers,
+            quote_metadata.as_ref(),
         )
         .into_iter()
         .map(Into::into)
@@ -262,6 +268,80 @@ impl InboxMessageDto {
             synced_at: value.synced_at,
         }
     }
+}
+
+fn reply_quote_metadata(
+    message: &InboxMessage,
+    parent: Option<&InboxMessage>,
+    has_reply_headers: bool,
+) -> Option<MailBodySegmentMetadata> {
+    if let Some(parent) = parent {
+        return Some(MailBodySegmentMetadata {
+            subject: nonempty(parent.subject.as_str()),
+            sender: parent.sender.as_ref().map(format_mail_address),
+            recipient: joined_mail_addresses(&parent.to),
+            sent_at: parent
+                .sent_at
+                .clone()
+                .or_else(|| parent.internal_date.clone()),
+        });
+    }
+    has_reply_headers.then(|| MailBodySegmentMetadata {
+        subject: reply_parent_subject(&message.subject),
+        // In both received and sent replies the current author was a
+        // recipient of the immediately quoted message.
+        sender: None,
+        recipient: message.sender.as_ref().map(format_mail_address),
+        sent_at: None,
+    })
+}
+
+fn nonempty(value: &str) -> Option<String> {
+    let value = value.trim();
+    (!value.is_empty()).then(|| value.to_owned())
+}
+
+fn reply_parent_subject(subject: &str) -> Option<String> {
+    let subject = subject.trim();
+    let without_prefix = if subject
+        .get(..3)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("re:"))
+    {
+        &subject[3..]
+    } else if let Some(subject) = subject.strip_prefix("回复：") {
+        subject
+    } else if let Some(subject) = subject.strip_prefix("回复:") {
+        subject
+    } else {
+        subject
+    };
+    nonempty(without_prefix)
+}
+
+fn format_mail_address(address: &MailAddress) -> String {
+    match address
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+    {
+        Some(name) => format!("{name} <{}>", address.email),
+        None => address.email.clone(),
+    }
+}
+
+fn joined_mail_addresses(addresses: &[MailAddress]) -> Option<String> {
+    let joined = addresses
+        .iter()
+        .map(format_mail_address)
+        .collect::<Vec<_>>()
+        .join(", ");
+    nonempty(&joined)
+}
+
+fn full_message_dto(backend: &MailBackend, message: InboxMessage) -> InboxMessageDto {
+    let parent = backend.cached_reply_parent(&message).ok().flatten();
+    InboxMessageDto::full_with_parent(message, parent.as_ref())
 }
 
 impl From<InboxMessage> for InboxMessageDto {
@@ -478,13 +558,15 @@ async fn fetch_message(
         Ok(network) => network
             .fetch_message(uid, false)
             .await
-            .map(Into::into)
+            .map(|message| full_message_dto(&network, message))
             .map_err(safe_mail_error),
-        Err(network_error) => backend
-            .local()?
-            .cached_inbox_message(uid)
-            .map(Into::into)
-            .map_err(|_| network_error),
+        Err(network_error) => {
+            let local = backend.local()?;
+            local
+                .cached_inbox_message(uid)
+                .map(|message| full_message_dto(&local, message))
+                .map_err(|_| network_error)
+        }
     }
 }
 
@@ -499,13 +581,15 @@ async fn fetch_sent_message(
         Ok(network) => network
             .fetch_sent_message(uid, false)
             .await
-            .map(Into::into)
+            .map(|message| full_message_dto(&network, message))
             .map_err(safe_mail_error),
-        Err(network_error) => backend
-            .local()?
-            .cached_sent_message(uid)
-            .map(Into::into)
-            .map_err(|_| network_error),
+        Err(network_error) => {
+            let local = backend.local()?;
+            local
+                .cached_sent_message(uid)
+                .map(|message| full_message_dto(&local, message))
+                .map_err(|_| network_error)
+        }
     }
 }
 
@@ -1272,7 +1356,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use mine_mail::{InboxMessage, OutboxItem, OutboxStatus};
+    use mine_mail::{InboxMessage, MailAddress, OutboxItem, OutboxStatus};
 
     use super::{
         InboxMessageDto, OutboxItemDto, OutboxMessageDto, requested_autostart_change,
@@ -1418,6 +1502,60 @@ mod tests {
         assert_eq!(segments[2]["content"], "Older body.");
         assert_eq!(segments[2]["quote_depth"], 2);
         assert!(json.get("raw_rfc822").is_none());
+    }
+
+    #[test]
+    fn netease_at_wrote_reply_uses_cached_parent_metadata_at_the_ui_boundary() {
+        let mut message = rich_message();
+        message.subject = "Re:1".to_owned();
+        message.in_reply_to = vec!["parent@example.com".to_owned()];
+        message.sender = Some(MailAddress {
+            name: Some("Mine Mail".to_owned()),
+            email: "receiver@example.com".to_owned(),
+        });
+        message.body_text = Some(
+            "\n\n123\n\nAt 2026-07-17 09:54:29, \"tantless\" <sender@example.com> wrote:\n\nOriginal body"
+                .to_owned(),
+        );
+        message.body_html = Some(
+            r#"<div style="background:#aaa">123</div>
+               <p>At 2026-07-17 09:54:29, &quot;tantless&quot; &lt;sender@example.com&gt; wrote:</p>
+               <blockquote id="isReplyContent" style="margin:0">Original body</blockquote>"#
+                .to_owned(),
+        );
+        let mut parent = rich_message();
+        parent.subject = "1".to_owned();
+        parent.sender = Some(MailAddress {
+            name: Some("tantless".to_owned()),
+            email: "sender@example.com".to_owned(),
+        });
+        parent.to = vec![MailAddress {
+            name: Some("Mine Mail".to_owned()),
+            email: "receiver@example.com".to_owned(),
+        }];
+        parent.sent_at = Some("2026-07-17T09:54:29+08:00".to_owned());
+
+        let dto = InboxMessageDto::full_with_parent(message, Some(&parent));
+        let json = serde_json::to_value(dto).expect("serialize NetEase reply");
+        let segments = json["body_segments"].as_array().expect("body segments");
+
+        assert_eq!(segments.len(), 2);
+        assert_eq!(segments[0]["content"], "123");
+        assert_eq!(segments[0]["render_mode"], "plain");
+        assert!(!segments[0]["content"].as_str().unwrap().contains("At 2026"));
+        assert_eq!(segments[1]["quote_metadata"]["subject"], "1");
+        assert_eq!(
+            segments[1]["quote_metadata"]["sender"],
+            "tantless <sender@example.com>"
+        );
+        assert_eq!(
+            segments[1]["quote_metadata"]["recipient"],
+            "Mine Mail <receiver@example.com>"
+        );
+        assert_eq!(
+            segments[1]["quote_metadata"]["sent_at"],
+            "2026-07-17T09:54:29+08:00"
+        );
     }
 
     #[test]

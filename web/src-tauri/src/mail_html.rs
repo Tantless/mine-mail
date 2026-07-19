@@ -94,13 +94,23 @@ struct PlainBodySegment {
 /// Plain alternatives are preferred because reply clients tend to preserve
 /// quote boundaries there even when their HTML template is layout-heavy. HTML
 /// DOM detection is the fallback for HTML-only messages.
+#[cfg(test)]
 pub(crate) fn segment_mail_body(
     body_text: Option<&str>,
     body_html: Option<&str>,
     has_reply_headers: bool,
 ) -> Vec<SanitizedMailBodySegment> {
+    segment_mail_body_with_metadata(body_text, body_html, has_reply_headers, None)
+}
+
+pub(crate) fn segment_mail_body_with_metadata(
+    body_text: Option<&str>,
+    body_html: Option<&str>,
+    has_reply_headers: bool,
+    parent_metadata: Option<&MailBodySegmentMetadata>,
+) -> Vec<SanitizedMailBodySegment> {
     if let Some(text) = body_text
-        && let Some(segments) = split_plain_reply(text, has_reply_headers)
+        && let Some(segments) = split_plain_reply(text, has_reply_headers, parent_metadata)
     {
         return segments
             .into_iter()
@@ -117,7 +127,7 @@ pub(crate) fn segment_mail_body(
     }
 
     body_html
-        .and_then(|html| split_html_reply(html, has_reply_headers))
+        .and_then(|html| split_html_reply(html, has_reply_headers, parent_metadata))
         .unwrap_or_default()
 }
 
@@ -722,10 +732,20 @@ fn is_safe_image_data_url(value: &str) -> bool {
     })
 }
 
-fn split_plain_reply(text: &str, has_reply_headers: bool) -> Option<Vec<PlainBodySegment>> {
+fn split_plain_reply(
+    text: &str,
+    has_reply_headers: bool,
+    parent_metadata: Option<&MailBodySegmentMetadata>,
+) -> Option<Vec<PlainBodySegment>> {
     let lines = text.lines().collect::<Vec<_>>();
     if lines.len() < 2 {
         return None;
+    }
+
+    if has_reply_headers
+        && let Some(segments) = split_netease_at_wrote_reply(&lines, parent_metadata)
+    {
+        return Some(segments);
     }
 
     if let Some(separator) = lines
@@ -774,6 +794,90 @@ fn split_plain_reply(text: &str, has_reply_headers: bool) -> Option<Vec<PlainBod
     }
 
     split_prefixed_plain_quotes(&lines, has_reply_headers)
+}
+
+fn split_netease_at_wrote_reply(
+    lines: &[&str],
+    parent_metadata: Option<&MailBodySegmentMetadata>,
+) -> Option<Vec<PlainBodySegment>> {
+    let (separator, intro_metadata) = lines.iter().enumerate().find_map(|(index, line)| {
+        parse_netease_at_wrote_metadata(line).map(|metadata| (index, metadata))
+    })?;
+    let authored = lines[..separator].join("\n").trim().to_owned();
+    let quoted = lines[separator + 1..].join("\n").trim().to_owned();
+    if authored.is_empty() || quoted.is_empty() {
+        return None;
+    }
+    let quote_metadata = merge_quote_metadata(parent_metadata, Some(intro_metadata));
+    Some(vec![
+        PlainBodySegment {
+            kind: MailBodySegmentKind::Authored,
+            content: authored,
+            quote_depth: 0,
+            confidence: MailBodySegmentConfidence::High,
+            quote_metadata: None,
+        },
+        PlainBodySegment {
+            kind: MailBodySegmentKind::Quoted,
+            content: quoted,
+            quote_depth: 1,
+            confidence: MailBodySegmentConfidence::High,
+            quote_metadata,
+        },
+    ])
+}
+
+fn parse_netease_at_wrote_metadata(line: &str) -> Option<MailBodySegmentMetadata> {
+    let line = line.trim();
+    let remainder = line.strip_prefix("At ")?.strip_suffix(" wrote:")?;
+    let (sent_at, sender) = remainder.split_once(", ")?;
+    if !is_netease_reply_timestamp(sent_at)
+        || !sender.contains('@')
+        || !sender.contains('<')
+        || !sender.ends_with('>')
+    {
+        return None;
+    }
+    Some(MailBodySegmentMetadata {
+        subject: None,
+        sender: clean_metadata_value(sender, 360),
+        recipient: None,
+        sent_at: clean_metadata_value(sent_at, 64),
+    })
+}
+
+fn is_netease_reply_timestamp(value: &str) -> bool {
+    if value.len() != 19 {
+        return false;
+    }
+    value.bytes().enumerate().all(|(index, byte)| match index {
+        4 | 7 => byte == b'-',
+        10 => byte == b' ',
+        13 | 16 => byte == b':',
+        _ => byte.is_ascii_digit(),
+    })
+}
+
+fn merge_quote_metadata(
+    preferred: Option<&MailBodySegmentMetadata>,
+    detected: Option<MailBodySegmentMetadata>,
+) -> Option<MailBodySegmentMetadata> {
+    let mut merged = preferred.cloned().unwrap_or_default();
+    if let Some(detected) = detected {
+        if merged.subject.is_none() {
+            merged.subject = detected.subject;
+        }
+        if merged.sender.is_none() {
+            merged.sender = detected.sender;
+        }
+        if merged.recipient.is_none() {
+            merged.recipient = detected.recipient;
+        }
+        if merged.sent_at.is_none() {
+            merged.sent_at = detected.sent_at;
+        }
+    }
+    (!merged.is_empty()).then_some(merged)
 }
 
 fn append_quoted_history(
@@ -1073,15 +1177,22 @@ fn strip_quote_prefix(lines: &[&str]) -> String {
 fn split_html_reply(
     source: &str,
     has_reply_headers: bool,
+    parent_metadata: Option<&MailBodySegmentMetadata>,
 ) -> Option<Vec<SanitizedMailBodySegment>> {
     if let Some((authored, quoted)) = split_outlook_html_suffix(source) {
-        return html_segments(authored, quoted, MailBodySegmentConfidence::High);
+        return html_segments(
+            authored,
+            quoted,
+            MailBodySegmentConfidence::High,
+            merge_quote_metadata(parent_metadata, None),
+        );
     }
 
     let document = Html::parse_fragment(source);
-    let strong_selector =
-        Selector::parse(".ntes-mailmaster-quote, .gmail_quote, [id^=\"divRplyFwdMsg\"]")
-            .expect("static provider quote selector");
+    let strong_selector = Selector::parse(
+        ".ntes-mailmaster-quote, .gmail_quote, [id^=\"divRplyFwdMsg\"], blockquote#isReplyContent",
+    )
+    .expect("static provider quote selector");
     let generic_selector = Selector::parse("blockquote[type=\"cite\"], blockquote")
         .expect("static generic quote selector");
     let mut candidates = document.select(&strong_selector).collect::<Vec<_>>();
@@ -1123,6 +1234,21 @@ fn split_html_reply(
         return None;
     }
 
+    let intro = outer.iter().find_map(|candidate| {
+        candidate
+            .prev_siblings()
+            .find(|sibling| node_has_visible_content(*sibling))
+            .and_then(|sibling| {
+                let element = ElementRef::wrap(sibling)?;
+                let text = element.text().collect::<String>();
+                parse_netease_at_wrote_metadata(&text).map(|metadata| (sibling.id(), metadata))
+            })
+    });
+    let quote_metadata = merge_quote_metadata(
+        parent_metadata,
+        intro.as_ref().map(|(_, metadata)| metadata.clone()),
+    );
+
     let quoted = outer
         .iter()
         .map(ElementRef::html)
@@ -1130,6 +1256,9 @@ fn split_html_reply(
         .join("\n");
     let mut authored_document = document.clone();
     let sink = HtmlTreeSink::new(authored_document);
+    if let Some((intro_id, _)) = intro {
+        sink.remove_from_parent(&intro_id);
+    }
     for candidate in outer {
         sink.remove_from_parent(&candidate.id());
     }
@@ -1140,7 +1269,7 @@ fn split_html_reply(
         .next()
         .map(|body| body.inner_html())
         .unwrap_or_else(|| authored_document.root_element().inner_html());
-    html_segments(&authored, &quoted, confidence)
+    html_segments(&authored, &quoted, confidence, quote_metadata)
 }
 
 fn split_outlook_html_suffix(source: &str) -> Option<(&str, &str)> {
@@ -1169,14 +1298,15 @@ fn html_segments(
     authored: &str,
     quoted: &str,
     confidence: MailBodySegmentConfidence,
+    quote_metadata: Option<MailBodySegmentMetadata>,
 ) -> Option<Vec<SanitizedMailBodySegment>> {
     if !html_has_visible_content(authored) || !html_has_visible_content(quoted) {
         return None;
     }
-    Some(vec![
-        sanitize_html_segment(MailBodySegmentKind::Authored, authored, 0, confidence),
-        sanitize_html_segment(MailBodySegmentKind::Quoted, quoted, 1, confidence),
-    ])
+    let authored = sanitize_html_segment(MailBodySegmentKind::Authored, authored, 0, confidence);
+    let mut quoted = sanitize_html_segment(MailBodySegmentKind::Quoted, quoted, 1, confidence);
+    quoted.quote_metadata = quote_metadata;
+    Some(vec![authored, quoted])
 }
 
 fn html_has_visible_content(source: &str) -> bool {
@@ -1224,8 +1354,8 @@ fn sanitize_html_segment(
 #[cfg(test)]
 mod tests {
     use super::{
-        MailBodySegmentConfidence, MailBodySegmentKind, MailHtmlStructure, sanitize_mail_html,
-        segment_mail_body,
+        MailBodySegmentConfidence, MailBodySegmentKind, MailBodySegmentMetadata, MailHtmlStructure,
+        sanitize_mail_html, segment_mail_body, segment_mail_body_with_metadata,
     };
 
     #[test]
@@ -1495,6 +1625,51 @@ mod tests {
             Some("receiver@example.com")
         );
         assert!(!segments[2].content.starts_with('|'));
+    }
+
+    #[test]
+    fn netease_at_wrote_reply_uses_parent_metadata_and_transparent_plain_segments() {
+        let text = "\n\n123\n\n\nAt 2026-07-17 09:54:29, \"tantless\" <sender@example.com> wrote:\n\n1\nEarlier reply";
+        let html = r#"<div style="background:#aaa"><div style="font-size:14px">123</div></div>
+            <p>At 2026-07-17 09:54:29, &quot;tantless&quot; &lt;sender@example.com&gt; wrote:</p>
+            <blockquote id="isReplyContent" style="margin:0"><div>1</div><div>Earlier reply</div></blockquote>"#;
+        let parent = MailBodySegmentMetadata {
+            subject: Some("1".to_owned()),
+            sender: Some("tantless <sender@example.com>".to_owned()),
+            recipient: Some("Mine Mail <receiver@example.com>".to_owned()),
+            sent_at: Some("2026-07-17T09:54:29+08:00".to_owned()),
+        };
+
+        let segments = segment_mail_body_with_metadata(Some(text), Some(html), true, Some(&parent));
+
+        assert_eq!(segments.len(), 2);
+        assert_eq!(segments[0].kind, MailBodySegmentKind::Authored);
+        assert_eq!(segments[0].content, "123");
+        assert!(!segments[0].is_html);
+        assert_eq!(segments[0].structure, MailHtmlStructure::PlainEquivalent);
+        assert_eq!(segments[1].kind, MailBodySegmentKind::Quoted);
+        assert!(!segments[1].content.contains("At 2026"));
+        assert_eq!(segments[1].quote_metadata.as_ref(), Some(&parent));
+    }
+
+    #[test]
+    fn netease_html_only_reply_removes_at_wrote_intro_from_authored_content() {
+        let html = r#"<div style="font-size:14px">Short reply</div>
+            <p>At 2026-07-17 09:54:29, &quot;tantless&quot; &lt;sender@example.com&gt; wrote:</p>
+            <blockquote id="isReplyContent" style="margin:0"><div>Original body</div></blockquote>"#;
+        let parent = MailBodySegmentMetadata {
+            subject: Some("Original subject".to_owned()),
+            sender: Some("sender@example.com".to_owned()),
+            recipient: Some("receiver@example.com".to_owned()),
+            sent_at: Some("2026-07-17T09:54:29+08:00".to_owned()),
+        };
+
+        let segments = segment_mail_body_with_metadata(None, Some(html), true, Some(&parent));
+
+        assert_eq!(segments.len(), 2);
+        assert!(!segments[0].content.contains("At 2026"));
+        assert_eq!(segments[1].quote_metadata.as_ref(), Some(&parent));
+        assert_eq!(segments[1].confidence, MailBodySegmentConfidence::High);
     }
 
     #[test]

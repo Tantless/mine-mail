@@ -573,6 +573,26 @@ impl Repository {
             })
     }
 
+    pub(crate) fn find_message_by_message_id(
+        &self,
+        account_id: &str,
+        message_id: &str,
+    ) -> Result<Option<InboxMessage>> {
+        let connection = self.connection()?;
+        let sql = format!(
+            "SELECT {MESSAGE_SUMMARY_COLUMNS} FROM messages
+             WHERE account_id = ?1
+               AND lower(trim(message_id, '<> ')) = lower(trim(?2, '<> '))
+             ORDER BY body_fetched DESC,
+                      COALESCE(internal_date, sent_at, synced_at) DESC
+             LIMIT 1"
+        );
+        connection
+            .query_row(&sql, params![account_id, message_id], row_to_message)
+            .optional()
+            .map_err(Into::into)
+    }
+
     pub(crate) fn mailbox_body_prefetch_candidates(
         &self,
         account_id: &str,
@@ -1849,6 +1869,22 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn reply_parent_lookup_normalizes_message_id_brackets_and_case() {
+        let (_directory, repository, account) = setup();
+        let parent = message(&account.account_id, true);
+        repository.upsert_message(&parent).expect("parent message");
+
+        let found = repository
+            .find_message_by_message_id(&account.account_id, "<MESSAGE-42@EXAMPLE.COM>")
+            .expect("parent lookup")
+            .expect("cached parent");
+
+        assert_eq!(found.uid, parent.uid);
+        assert_eq!(found.subject, parent.subject);
+        assert!(found.raw_rfc822.is_empty());
     }
 
     #[test]

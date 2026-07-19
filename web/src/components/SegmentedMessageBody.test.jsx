@@ -69,6 +69,57 @@ describe("segmented message body", () => {
     expect(screen.getByText("Original body.")).toBeTruthy();
   });
 
+  it("keeps NetEase At-wrote metadata out of the transparent default reader", () => {
+    const neteaseMessage = {
+      ...message,
+      subject: "Re:1",
+      body_text:
+        '123\n\nAt 2026-07-17 09:54:29, "tantless" <sender@example.com> wrote:\n\nOriginal body',
+      body_html:
+        '<div style="background:#aaa">123</div><p>At 2026-07-17 09:54:29, tantless wrote:</p><blockquote>Original body</blockquote>',
+      body_render_mode: "isolated_html",
+      body_segments: [
+        {
+          kind: "authored",
+          content: "123",
+          render_mode: "plain",
+          quote_depth: 0,
+          confidence: "high",
+        },
+        {
+          kind: "quoted",
+          content: "Original body",
+          render_mode: "plain",
+          quote_depth: 1,
+          confidence: "high",
+          quote_metadata: {
+            subject: "1",
+            sender: "tantless <sender@example.com>",
+            recipient: "Mine Mail <receiver@example.com>",
+            sent_at: "2026-07-17T09:54:29+08:00",
+          },
+        },
+      ],
+    };
+    const { container } = render(
+      <SegmentedMessageBody
+        message={neteaseMessage}
+        body={neteaseMessage.body_text}
+        bodyRenderMode={neteaseMessage.body_render_mode}
+      />,
+    );
+
+    expect(screen.getByText("123")).toBeTruthy();
+    expect(screen.getByText("1")).toBeTruthy();
+    expect(screen.getByText("tantless <sender@example.com>")).toBeTruthy();
+    expect(screen.getByText("Mine Mail <receiver@example.com>")).toBeTruthy();
+    expect(screen.queryByText(/At 2026-07-17/)).toBeNull();
+    expect(container.querySelector("iframe")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "按原始格式查看" }));
+    expect(container.querySelector("iframe")).toBeTruthy();
+  });
+
   it("shows every quoted message as an independent top-level collapsible card", () => {
     const nestedMessage = {
       ...message,
