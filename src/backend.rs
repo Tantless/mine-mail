@@ -219,26 +219,63 @@ impl MailBackend {
     /// Later runs fetch new UIDs, reconcile flags and remove locally cached UIDs
     /// that no longer exist on the server.
     pub async fn sync_inbox(&self, initial_limit: usize) -> Result<SyncReport> {
+        self.validate_sync_limit(initial_limit)?;
+
+        let _guard = self.imap_gate.lock().await;
+        let mut connection = ImapConnection::connect(&self.config).await?;
+        let report = self
+            .sync_selected_mailbox(&mut connection, INBOX, initial_limit)
+            .await;
+        let _ = connection.logout().await;
+        report
+    }
+
+    /// Synchronize the server-designated Sent mailbox. The discovered mailbox
+    /// name is persisted as a role so all later local reads stay offline-first
+    /// and do not have to guess provider-specific or localized folder names.
+    pub async fn sync_sent(&self, initial_limit: usize) -> Result<SyncReport> {
+        self.validate_sync_limit(initial_limit)?;
+
+        let _guard = self.imap_gate.lock().await;
+        let mut connection = ImapConnection::connect(&self.config).await?;
+        let mailbox = connection.discover_sent_mailbox().await?;
+        let report = self
+            .sync_selected_mailbox(&mut connection, &mailbox, initial_limit)
+            .await;
+        let _ = connection.logout().await;
+        let report = report?;
+        self.repository
+            .assign_mailbox_role(&self.config.account_id, "sent", &mailbox)?;
+        Ok(report)
+    }
+
+    fn validate_sync_limit(&self, initial_limit: usize) -> Result<()> {
         if initial_limit == 0 {
             return Err(MailError::Validation(
                 "initial sync limit must be greater than zero".to_owned(),
             ));
         }
+        Ok(())
+    }
 
-        let _guard = self.imap_gate.lock().await;
-        let mut connection = ImapConnection::connect(&self.config).await?;
-        let snapshot = connection.select_inbox().await?;
+    async fn sync_selected_mailbox(
+        &self,
+        connection: &mut ImapConnection,
+        mailbox: &str,
+        initial_limit: usize,
+    ) -> Result<SyncReport> {
+        let snapshot = connection.select_mailbox(mailbox).await?;
 
         if snapshot.exists > 0 && snapshot.all_uids.is_empty() {
             return Err(MailError::Imap(
-                "server reported Inbox messages but returned an empty UID search; local cache was left unchanged"
+                "server reported mailbox messages but returned an empty UID search; local cache was left unchanged"
                     .to_owned(),
             ));
         }
 
         let previous_state = self
             .repository
-            .mailbox_state(&self.config.account_id, INBOX)?;
+            .mailbox_state(&self.config.account_id, mailbox)?;
         let uid_validity_reset = previous_state
             .as_ref()
             .and_then(|state| state.uid_validity)
@@ -247,16 +284,16 @@ impl MailBackend {
 
         if uid_validity_reset {
             self.repository
-                .reset_mailbox(&self.config.account_id, INBOX)?;
+                .reset_mailbox(&self.config.account_id, mailbox)?;
         }
 
         let cached_uids = self
             .repository
-            .cached_uids(&self.config.account_id, INBOX)?;
+            .cached_uids(&self.config.account_id, mailbox)?;
         let remote_uids: HashSet<u32> = snapshot.all_uids.iter().copied().collect();
         let removed =
             self.repository
-                .delete_missing_uids(&self.config.account_id, INBOX, &remote_uids)?;
+                .delete_missing_uids(&self.config.account_id, mailbox, &remote_uids)?;
 
         let previous_highest_uid = if uid_validity_reset {
             None
@@ -289,7 +326,7 @@ impl MailBackend {
                     &remote.raw,
                     IncomingMetadata {
                         account_id: &self.config.account_id,
-                        mailbox: INBOX,
+                        mailbox,
                         uid: remote.uid,
                         flags: remote.flags,
                         internal_date: remote.internal_date,
@@ -310,7 +347,7 @@ impl MailBackend {
             for (uid, flags) in connection.fetch_flags(batch).await? {
                 self.repository.update_message_flags(
                     &self.config.account_id,
-                    INBOX,
+                    mailbox,
                     uid,
                     &flags,
                 )?;
@@ -320,7 +357,7 @@ impl MailBackend {
 
         self.repository.upsert_mailbox_state(&MailboxState {
             account_id: self.config.account_id.clone(),
-            mailbox: INBOX.to_owned(),
+            mailbox: mailbox.to_owned(),
             uid_validity: snapshot.uid_validity,
             uid_next: snapshot.uid_next,
             highest_uid: snapshot.all_uids.last().copied(),
@@ -330,11 +367,10 @@ impl MailBackend {
 
         let cached_total = self
             .repository
-            .count_messages(&self.config.account_id, INBOX)?;
-        let _ = connection.logout().await;
+            .count_messages(&self.config.account_id, mailbox)?;
 
         Ok(SyncReport {
-            mailbox: INBOX.to_owned(),
+            mailbox: mailbox.to_owned(),
             remote_total: snapshot.exists,
             fetched,
             updated_flags,
@@ -437,14 +473,45 @@ impl MailBackend {
             .list_inbox(&self.config.account_id, limit, 0)
     }
 
+    pub fn list_sent(&self, limit: usize) -> Result<Vec<InboxMessage>> {
+        if limit == 0 {
+            return Err(MailError::Validation(
+                "Sent list limit must be greater than zero".to_owned(),
+            ));
+        }
+        let mailbox = match self
+            .repository
+            .mailbox_for_role(&self.config.account_id, "sent")
+        {
+            Ok(mailbox) => mailbox,
+            // Before the first successful network sync there is no discovered
+            // role yet. An empty local view preserves offline-first startup.
+            Err(MailError::NotFound { .. }) => return Ok(Vec::new()),
+            Err(error) => return Err(error),
+        };
+        self.repository
+            .list_mailbox(&self.config.account_id, &mailbox, limit, 0)
+    }
+
     pub fn cached_inbox_message(&self, uid: u32) -> Result<InboxMessage> {
+        self.cached_mailbox_message(INBOX, uid)
+    }
+
+    pub fn cached_sent_message(&self, uid: u32) -> Result<InboxMessage> {
+        let mailbox = self
+            .repository
+            .mailbox_for_role(&self.config.account_id, "sent")?;
+        self.cached_mailbox_message(&mailbox, uid)
+    }
+
+    fn cached_mailbox_message(&self, mailbox: &str, uid: u32) -> Result<InboxMessage> {
         let message = self
             .repository
-            .get_message_by_uid(&self.config.account_id, INBOX, uid)?;
+            .get_message_by_uid(&self.config.account_id, mailbox, uid)?;
         if !message.body_fetched {
             return Err(MailError::NotFound {
                 entity: "cached message body",
-                id: uid.to_string(),
+                id: format!("{mailbox}/{uid}"),
             });
         }
         self.repair_cached_inline_images(message)
@@ -470,9 +537,10 @@ impl MailBackend {
             return Ok(message);
         }
         message.body_html = Some(rendered);
+        let mailbox = message.mailbox.clone();
         self.repository.upsert_message(&message)?;
         self.repository
-            .get_message_by_uid(&self.config.account_id, INBOX, message.uid)
+            .get_message_by_uid(&self.config.account_id, &mailbox, message.uid)
     }
 
     pub async fn prefetch_inbox_bodies(
@@ -481,11 +549,36 @@ impl MailBackend {
         max_total_bytes: u64,
         max_message_bytes: u32,
     ) -> Result<usize> {
+        self.prefetch_mailbox_bodies(INBOX, limit, max_total_bytes, max_message_bytes)
+            .await
+    }
+
+    pub async fn prefetch_sent_bodies(
+        &self,
+        limit: usize,
+        max_total_bytes: u64,
+        max_message_bytes: u32,
+    ) -> Result<usize> {
+        let mailbox = self
+            .repository
+            .mailbox_for_role(&self.config.account_id, "sent")?;
+        self.prefetch_mailbox_bodies(&mailbox, limit, max_total_bytes, max_message_bytes)
+            .await
+    }
+
+    async fn prefetch_mailbox_bodies(
+        &self,
+        mailbox: &str,
+        limit: usize,
+        max_total_bytes: u64,
+        max_message_bytes: u32,
+    ) -> Result<usize> {
         if limit == 0 || max_total_bytes == 0 || max_message_bytes == 0 {
             return Ok(0);
         }
-        let candidates = self.repository.inbox_body_prefetch_candidates(
+        let candidates = self.repository.mailbox_body_prefetch_candidates(
             &self.config.account_id,
+            mailbox,
             limit,
             max_message_bytes,
         )?;
@@ -496,7 +589,11 @@ impl MailBackend {
             if next_total > max_total_bytes {
                 continue;
             }
-            if self.fetch_message(uid, false).await.is_ok() {
+            if self
+                .fetch_mailbox_message(mailbox, uid, false)
+                .await
+                .is_ok()
+            {
                 total_bytes = next_total;
                 prefetched += 1;
             }
@@ -505,6 +602,22 @@ impl MailBackend {
     }
 
     pub async fn fetch_message(&self, uid: u32, force: bool) -> Result<InboxMessage> {
+        self.fetch_mailbox_message(INBOX, uid, force).await
+    }
+
+    pub async fn fetch_sent_message(&self, uid: u32, force: bool) -> Result<InboxMessage> {
+        let mailbox = self
+            .repository
+            .mailbox_for_role(&self.config.account_id, "sent")?;
+        self.fetch_mailbox_message(&mailbox, uid, force).await
+    }
+
+    async fn fetch_mailbox_message(
+        &self,
+        mailbox: &str,
+        uid: u32,
+        force: bool,
+    ) -> Result<InboxMessage> {
         if uid == 0 {
             return Err(MailError::Validation(
                 "message UID must be greater than zero".to_owned(),
@@ -513,7 +626,7 @@ impl MailBackend {
 
         match self
             .repository
-            .get_message_by_uid(&self.config.account_id, INBOX, uid)
+            .get_message_by_uid(&self.config.account_id, mailbox, uid)
         {
             Ok(message) if message.body_fetched && !force => {
                 return self.repair_cached_inline_images(message);
@@ -547,7 +660,7 @@ impl MailBackend {
         if !force
             && let Ok(message) =
                 self.repository
-                    .get_message_by_uid(&self.config.account_id, INBOX, uid)
+                    .get_message_by_uid(&self.config.account_id, mailbox, uid)
             && message.body_fetched
         {
             return self.repair_cached_inline_images(message);
@@ -557,25 +670,28 @@ impl MailBackend {
             .as_mut()
             .expect("body IMAP session is connected before use");
         let result = async {
-            let selected_uid_validity = session.connection.select_inbox_for_fetch().await?;
+            let selected_uid_validity = session
+                .connection
+                .select_mailbox_for_fetch(mailbox)
+                .await?;
             let local_uid_validity = self
                 .repository
-                .mailbox_state(&self.config.account_id, INBOX)?
+                .mailbox_state(&self.config.account_id, mailbox)?
                 .and_then(|state| state.uid_validity);
             match classify_inbox_uid_scope(local_uid_validity, selected_uid_validity) {
                 InboxUidScope::Current => {}
                 InboxUidScope::NeedsSync => {
                     return Err(MailError::Validation(
-                        "Inbox must be synchronized before downloading message bodies".to_owned(),
+                        "Mailbox must be synchronized before downloading message bodies".to_owned(),
                     ));
                 }
                 InboxUidScope::Changed => {
                     self.repository
-                        .reset_mailbox(&self.config.account_id, INBOX)?;
+                        .reset_mailbox(&self.config.account_id, mailbox)?;
                     return Err(MailError::Validation(
-                    "Inbox UIDVALIDITY changed; synchronize Inbox before downloading this message"
-                        .to_owned(),
-                ));
+                        "Mailbox UIDVALIDITY changed; synchronize the mailbox before downloading this message"
+                            .to_owned(),
+                    ));
                 }
             }
             let remote = session.connection.fetch_full_message(uid).await?;
@@ -590,7 +706,7 @@ impl MailBackend {
                 &remote.raw,
                 IncomingMetadata {
                     account_id: &self.config.account_id,
-                    mailbox: INBOX,
+                    mailbox,
                     uid: remote.uid,
                     flags: remote.flags,
                     internal_date: remote.internal_date,
@@ -601,7 +717,7 @@ impl MailBackend {
             )?;
             self.repository.upsert_message(&message)?;
             self.repository
-                .get_message_by_uid(&self.config.account_id, INBOX, uid)
+                .get_message_by_uid(&self.config.account_id, mailbox, uid)
         }
         .await;
         match result {

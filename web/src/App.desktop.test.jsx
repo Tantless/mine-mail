@@ -17,11 +17,14 @@ const desktop = vi.hoisted(() => {
     mailApi: {
       listInbox: vi.fn(),
       fetchMessage: vi.fn(),
+      listSent: vi.fn(),
+      fetchSentMessage: vi.fn(),
       openExternalUrl: vi.fn(),
       listDrafts: vi.fn(),
       saveDraft: vi.fn(),
       deleteDraft: vi.fn(),
       syncDrafts: vi.fn(),
+      syncSent: vi.fn(),
       syncAll: vi.fn(),
       completeExit: vi.fn(),
       cancelExit: vi.fn(),
@@ -118,6 +121,7 @@ describe("Mine Mail desktop state bridge", () => {
     desktop.listeners.clear();
     Object.values(desktop.mailApi).forEach((mock) => mock.mockClear());
     desktop.mailApi.listInbox.mockResolvedValue([summary(1, "First mail")]);
+    desktop.mailApi.listSent.mockResolvedValue([]);
     desktop.mailApi.listDrafts.mockResolvedValue([]);
     desktop.mailApi.listOutbox.mockResolvedValue([
       {
@@ -166,6 +170,7 @@ describe("Mine Mail desktop state bridge", () => {
       async (accountId) => ({
         account_id: accountId,
         inbox: await desktop.mailApi.listInbox(50),
+        sent: await desktop.mailApi.listSent(250),
         drafts: await desktop.mailApi.listDrafts(),
         outbox: await desktop.mailApi.listOutbox(),
       }),
@@ -186,6 +191,13 @@ describe("Mine Mail desktop state bridge", () => {
       body_text: "Loaded body",
       body_fetched: true,
     }));
+    desktop.mailApi.fetchSentMessage.mockImplementation(async (uid) => ({
+      ...summary(uid, "Sent mail"),
+      mailbox: "Sent",
+      to: [{ name: "Friend", email: "friend@example.com" }],
+      body_text: "Loaded sent body",
+      body_fetched: true,
+    }));
     desktop.mailApi.fetchOutboxMessage.mockImplementation(async (outboxId) => ({
       id: outboxId,
       subject: "Outbox subject",
@@ -194,6 +206,7 @@ describe("Mine Mail desktop state bridge", () => {
     }));
     desktop.mailApi.openExternalUrl.mockResolvedValue(true);
     desktop.mailApi.syncAll.mockResolvedValue({ inbox: { fetched: 0 } });
+    desktop.mailApi.syncSent.mockResolvedValue({ mailbox: "Sent", fetched: 0 });
     desktop.mailApi.deleteDraft.mockResolvedValue({ kind: "deleted" });
     desktop.mailApi.completeExit.mockResolvedValue(true);
     desktop.mailApi.cancelExit.mockResolvedValue(true);
@@ -222,6 +235,10 @@ describe("Mine Mail desktop state bridge", () => {
       );
       expect(desktop.mailApi.onMailEvent).toHaveBeenCalledWith(
         "mail:drafts-updated",
+        expect.any(Function),
+      );
+      expect(desktop.mailApi.onMailEvent).toHaveBeenCalledWith(
+        "mail:sent-updated",
         expect.any(Function),
       );
     });
@@ -496,6 +513,70 @@ describe("Mine Mail desktop state bridge", () => {
     const reader = screen.getByLabelText("邮件阅读区");
     expect(within(reader).queryByText(/状态：已发送/)).toBeNull();
     expect(within(reader).queryByText(/收件人：sender1@example.com/)).toBeNull();
+  });
+
+  it("merges remote Sent copies with local delivery records without duplicates", async () => {
+    const remoteExact = {
+      ...summary(71, "Exact remote copy"),
+      mailbox: "已发送",
+      message_id: "mine-71@mine-mail.invalid",
+      sender: { name: "Me", email: "me@163.com" },
+      to: [{ name: "Friend", email: "friend@example.com" }],
+      sent_at: "2026-07-14T09:20:00Z",
+    };
+    const remoteLegacy = {
+      ...summary(72, "Legacy remote copy"),
+      mailbox: "已发送",
+      message_id: "server-generated-72@163.com",
+      sender: { name: "Me", email: "me@163.com" },
+      to: [{ name: null, email: "friend@example.com" }],
+      sent_at: "2026-07-14T09:21:00Z",
+    };
+    desktop.mailApi.listSent.mockResolvedValue([remoteLegacy, remoteExact]);
+    desktop.mailApi.listOutbox.mockResolvedValue([
+      {
+        id: "local-exact",
+        recipients: ["friend@example.com"],
+        subject: "Exact remote copy",
+        preview: "Exact preview",
+        status: "sent",
+        attempts: 1,
+        created_at: "2026-07-14T09:19:59Z",
+        sent_at: "2026-07-14T09:20:01Z",
+        message_id: "<mine-71@mine-mail.invalid>",
+        message_date: "2026-07-14T09:20:00Z",
+      },
+      {
+        id: "local-legacy",
+        recipients: ["friend@example.com"],
+        subject: "Legacy remote copy",
+        preview: "Legacy preview",
+        status: "sent",
+        attempts: 1,
+        created_at: "2026-07-14T09:20:59Z",
+        sent_at: "2026-07-14T09:21:01Z",
+        message_id: null,
+        message_date: "2026-07-14T09:21:00Z",
+      },
+    ]);
+    desktop.mailApi.fetchSentMessage.mockResolvedValue({
+      ...remoteExact,
+      body_text: "Remote sent body",
+      body_fetched: true,
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findAllByText("First mail");
+
+    await user.click(screen.getByRole("button", { name: /已发送/ }));
+    const sentList = screen.getByLabelText("已发送邮件列表");
+    expect(within(sentList).getAllByText("Exact remote copy")).toHaveLength(1);
+    expect(within(sentList).getAllByText("Legacy remote copy")).toHaveLength(1);
+
+    await user.click(within(sentList).getByText("Exact remote copy"));
+    expect(await screen.findByText("Remote sent body")).toBeTruthy();
+    expect(desktop.mailApi.fetchSentMessage).toHaveBeenCalledWith(71);
+    expect(desktop.mailApi.fetchOutboxMessage).not.toHaveBeenCalledWith("local-exact");
   });
 
   it("renders bounded semantic HTML directly on the themed reader material", async () => {

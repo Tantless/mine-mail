@@ -288,6 +288,16 @@ export const mailApi = {
     )();
   },
 
+  async listSent(limit = 50) {
+    if (isTauri) return desktopInvoke("list_sent", { limit });
+    return webOnly(() => [])();
+  },
+
+  async fetchSentMessage(uid) {
+    if (isTauri) return desktopInvoke("fetch_sent_message", { uid });
+    return webOnly(() => undefined)();
+  },
+
   async openExternalUrl(url) {
     if (isTauri) return desktopInvoke("open_external_url", { url });
     return webOnly(() => {
@@ -335,6 +345,19 @@ export const mailApi = {
   async syncDrafts() {
     if (isTauri) return desktopInvoke("sync_drafts");
     return webOnly(() => ({ synced: webDrafts.length }))();
+  },
+
+  async syncSent() {
+    if (isTauri) return desktopInvoke("sync_sent");
+    return webOnly(() => ({
+      mailbox: "Sent",
+      remote_total: 0,
+      fetched: 0,
+      updated_flags: 0,
+      removed: 0,
+      cached_total: 0,
+      uid_validity_reset: false,
+    }))();
   },
 
   async syncAll() {
@@ -402,6 +425,7 @@ export const mailApi = {
     return webOnly(() => ({
       account_id: accountId,
       inbox: structuredClone(webMessages.slice(0, limit)),
+      sent: [],
       drafts: structuredClone(webDrafts),
       outbox: structuredClone(webOutbox),
     }))();

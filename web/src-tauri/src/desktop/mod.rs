@@ -589,12 +589,19 @@ impl DesktopRuntime {
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct SyncAllReport {
     pub inbox: SyncReport,
+    pub sent: SyncReport,
     pub drafts: DraftSyncReport,
     pub accounts_synced: usize,
 }
 
 #[derive(Clone, Debug, Serialize)]
 struct InboxUpdatedEvent {
+    account_id: String,
+    report: SyncReport,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct SentUpdatedEvent {
     account_id: String,
     report: SyncReport,
 }
@@ -951,12 +958,14 @@ pub(crate) async fn perform_sync_all(
     let account_count = account_ids.len();
     let active_account_id = backend_state.active_account_id();
     let mut active_inbox = None;
+    let mut active_sent = None;
     let mut active_drafts = None;
     let mut accounts_synced = 0;
     let mut errors = Vec::new();
 
     for account_id in account_ids {
         let inbox = sync_inbox_for(app, &account_id).await;
+        let sent = sync_sent_for(app, &account_id).await;
         let drafts = sync_drafts_for(app, &account_id).await;
         let is_active = active_account_id.as_deref() == Some(account_id.as_str());
         match inbox {
@@ -974,6 +983,14 @@ pub(crate) async fn perform_sync_all(
                 }
             }
             Err(error) => errors.push(format!("{account_id} Drafts: {error}")),
+        }
+        match sent {
+            Ok(report) => {
+                if is_active {
+                    active_sent = Some(report);
+                }
+            }
+            Err(error) => errors.push(format!("{account_id} Sent: {error}")),
         }
         if !errors.iter().any(|error| error.starts_with(&account_id)) {
             accounts_synced += 1;
@@ -1015,6 +1032,8 @@ pub(crate) async fn perform_sync_all(
     );
     Ok(Some(SyncAllReport {
         inbox: active_inbox.ok_or_else(|| "The active Inbox was not synchronized.".to_owned())?,
+        sent: active_sent
+            .ok_or_else(|| "The active Sent mailbox was not synchronized.".to_owned())?,
         drafts: active_drafts
             .ok_or_else(|| "The active Drafts mailbox was not synchronized.".to_owned())?,
         accounts_synced,
@@ -1036,6 +1055,9 @@ async fn perform_inbox_reconciliation_all(app: &AppHandle) -> Result<(), String>
         if let Err(error) = sync_inbox_for(app, &account_id).await {
             errors.push(format!("{account_id} Inbox: {error}"));
         }
+        if let Err(error) = sync_sent_for(app, &account_id).await {
+            errors.push(format!("{account_id} Sent: {error}"));
+        }
     }
     if let Some(error) = refresh_error {
         errors.push(error);
@@ -1044,7 +1066,7 @@ async fn perform_inbox_reconciliation_all(app: &AppHandle) -> Result<(), String>
         Ok(())
     } else {
         Err(format!(
-            "Some account Inbox reconciliation failed: {}",
+            "Some account mailbox reconciliation failed: {}",
             errors.join(" ")
         ))
     }
@@ -1077,6 +1099,21 @@ pub(crate) async fn perform_inbox_sync(app: &AppHandle) -> Result<SyncReport, St
         .active_account_id()
         .ok_or_else(|| "No mail account is selected.".to_owned())?;
     sync_inbox_for(app, &account_id).await
+}
+
+pub(crate) async fn perform_sent_sync(app: &AppHandle) -> Result<SyncReport, String> {
+    let runtime = app.state::<DesktopRuntime>();
+    let _guard = runtime.sync_gate.lock().await;
+    runtime.record_sync_start()?;
+    let account_runtime = app.state::<AccountRuntime>();
+    let backend_state = app.state::<BackendState>();
+    account_runtime
+        .refresh_active_oauth_backend(&backend_state)
+        .await?;
+    let account_id = backend_state
+        .active_account_id()
+        .ok_or_else(|| "No mail account is selected.".to_owned())?;
+    sync_sent_for(app, &account_id).await
 }
 
 pub(crate) async fn perform_draft_sync(app: &AppHandle) -> Result<DraftSyncReport, String> {
@@ -1158,6 +1195,81 @@ async fn sync_inbox_with_operation(
 
 async fn sync_new_inbox_for(app: &AppHandle, account_id: &str) -> Result<SyncReport, String> {
     sync_inbox_with_operation(app, account_id, true).await
+}
+
+async fn sync_sent_for(app: &AppHandle, account_id: &str) -> Result<SyncReport, String> {
+    let started = Instant::now();
+    let operation = "sent_reconciliation";
+    let backend = match app.state::<BackendState>().network_for(account_id) {
+        Ok(backend) => backend,
+        Err(error) => {
+            diagnostics::limited_failure(
+                "account_sync_failed",
+                operation,
+                Some(account_id),
+                ErrorKind::Runtime,
+            );
+            return Err(error);
+        }
+    };
+    let report = match backend.sync_sent(crate::SENT_SYNC_LIMIT).await {
+        Ok(report) => report,
+        Err(error) => {
+            diagnostics::limited_failure(
+                "account_sync_failed",
+                operation,
+                Some(account_id),
+                diagnostics::mail_error_kind(&error),
+            );
+            return Err(crate::safe_mail_error(error));
+        }
+    };
+    let _ = app.emit(
+        "mail:sent-updated",
+        SentUpdatedEvent {
+            account_id: account_id.to_owned(),
+            report: report.clone(),
+        },
+    );
+    let prefetch_backend = backend.clone();
+    let prefetch_app = app.clone();
+    let prefetch_report = report.clone();
+    let prefetch_account_id = account_id.to_owned();
+    tauri::async_runtime::spawn(async move {
+        if let Ok(prefetched) = prefetch_backend
+            .prefetch_sent_bodies(
+                crate::INBOX_PREFETCH_LIMIT,
+                crate::INBOX_PREFETCH_TOTAL_BYTES,
+                crate::INBOX_PREFETCH_MESSAGE_BYTES,
+            )
+            .await
+            && prefetched > 0
+        {
+            let _ = prefetch_app.emit(
+                "mail:sent-updated",
+                SentUpdatedEvent {
+                    account_id: prefetch_account_id,
+                    report: prefetch_report,
+                },
+            );
+        }
+    });
+    diagnostics::limited_recovery(
+        "account_sync_failed",
+        "account_sync_recovered",
+        operation,
+        Some(account_id),
+    );
+    diagnostics::info(
+        "account_sync_completed",
+        Fields::default()
+            .account(account_id)
+            .operation(operation)
+            .outcome("completed")
+            .duration(started.elapsed())
+            .inbox_counts(report.fetched, report.updated_flags, report.removed),
+    );
+    Ok(report)
 }
 
 fn finish_inbox_sync(

@@ -60,6 +60,7 @@ export function MessageView({
   }
 
   const sender = senderLabel(message);
+  const isOutgoing = message.kind === "outbox" || message.kind === "sent";
   const body = message.body_fetched
     ? message.body_text || "这封邮件没有纯文本正文。"
     : message.preview || "这封邮件没有纯文本正文。";
@@ -100,7 +101,13 @@ export function MessageView({
 
       <div className="reader-scroll">
         <div className="message-header">
-          <p className="eyebrow">{message.kind === "outbox" ? "OUTBOX" : "INBOX"}</p>
+          <p className="eyebrow">
+            {message.kind === "sent"
+              ? "SENT"
+              : message.kind === "outbox"
+                ? "OUTBOX"
+                : "INBOX"}
+          </p>
           <h2>{message.subject || "（无主题）"}</h2>
 
           <div className="sender-card">
@@ -126,7 +133,7 @@ export function MessageView({
               <strong>{sender}</strong>
               <span>{message.sender?.email}</span>
               <button type="button" className="recipient-toggle" disabled>
-                {message.kind === "outbox" ? "查看收件人" : "发送给我"} <CaretDown size={12} />
+                {isOutgoing ? "查看收件人" : "发送给我"} <CaretDown size={12} />
               </button>
             </div>
             <time dateTime={message.sent_at}>{formatFullDate(message.sent_at)}</time>

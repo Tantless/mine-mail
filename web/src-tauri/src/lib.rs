@@ -8,7 +8,7 @@ use std::{env, time::Instant};
 use mine_mail::{
     ComposeRequest, ConnectionReport, Draft, DraftDeleteKind, DraftSaveKind, DraftSaveOutcome,
     InboxMessage, MailAddress, OutboxItem, OutboxStatus, SyncReport, outbox_body_text,
-    outbox_preview, outbox_subject,
+    outbox_message_id, outbox_preview, outbox_sent_at, outbox_subject,
 };
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WindowEvent};
@@ -33,6 +33,8 @@ const INBOX_LIST_LIMIT: usize = 250;
 const INBOX_PREFETCH_LIMIT: usize = 20;
 const INBOX_PREFETCH_TOTAL_BYTES: u64 = 8 * 1024 * 1024;
 const INBOX_PREFETCH_MESSAGE_BYTES: u32 = 2 * 1024 * 1024;
+const SENT_SYNC_LIMIT: usize = 250;
+const SENT_LIST_LIMIT: usize = 250;
 
 type CommandResult<T> = Result<T, String>;
 
@@ -339,6 +341,8 @@ struct OutboxItemDto {
     last_error: Option<String>,
     created_at: String,
     sent_at: Option<String>,
+    message_id: Option<String>,
+    message_date: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -353,6 +357,7 @@ struct OutboxMessageDto {
 struct AccountMailboxSnapshotDto {
     account_id: String,
     inbox: Vec<InboxMessageDto>,
+    sent: Vec<InboxMessageDto>,
     drafts: Vec<DraftDto>,
     outbox: Vec<OutboxItemDto>,
 }
@@ -361,6 +366,8 @@ impl From<OutboxItem> for OutboxItemDto {
     fn from(value: OutboxItem) -> Self {
         let subject = outbox_subject(&value).unwrap_or_default();
         let preview = outbox_preview(&value).unwrap_or_default();
+        let message_id = outbox_message_id(&value);
+        let message_date = outbox_sent_at(&value);
         Self {
             id: value.id,
             draft_id: value.draft_id,
@@ -372,6 +379,8 @@ impl From<OutboxItem> for OutboxItemDto {
             last_error: value.last_error,
             created_at: value.created_at,
             sent_at: value.sent_at,
+            message_id,
+            message_date,
         }
     }
 }
@@ -403,6 +412,11 @@ async fn sync_inbox(app: AppHandle) -> CommandResult<SyncReport> {
 }
 
 #[tauri::command]
+async fn sync_sent(app: AppHandle) -> CommandResult<SyncReport> {
+    desktop::perform_sent_sync(&app).await
+}
+
+#[tauri::command]
 fn list_inbox(
     backend: State<'_, BackendState>,
     limit: Option<usize>,
@@ -411,6 +425,19 @@ fn list_inbox(
     let limit = limit.unwrap_or(INBOX_LIST_LIMIT).clamp(1, INBOX_LIST_LIMIT);
     backend
         .list_inbox(limit)
+        .map(|messages| messages.into_iter().map(InboxMessageDto::summary).collect())
+        .map_err(safe_mail_error)
+}
+
+#[tauri::command]
+fn list_sent(
+    backend: State<'_, BackendState>,
+    limit: Option<usize>,
+) -> CommandResult<Vec<InboxMessageDto>> {
+    let backend = backend.local()?;
+    let limit = limit.unwrap_or(SENT_LIST_LIMIT).clamp(1, SENT_LIST_LIMIT);
+    backend
+        .list_sent(limit)
         .map(|messages| messages.into_iter().map(InboxMessageDto::summary).collect())
         .map_err(safe_mail_error)
 }
@@ -456,6 +483,27 @@ async fn fetch_message(
         Err(network_error) => backend
             .local()?
             .cached_inbox_message(uid)
+            .map(Into::into)
+            .map_err(|_| network_error),
+    }
+}
+
+#[tauri::command]
+async fn fetch_sent_message(
+    account: State<'_, AccountRuntime>,
+    backend: State<'_, BackendState>,
+    uid: u32,
+) -> CommandResult<InboxMessageDto> {
+    let _ = account.refresh_active_oauth_backend(&backend).await;
+    match backend.network() {
+        Ok(network) => network
+            .fetch_sent_message(uid, false)
+            .await
+            .map(Into::into)
+            .map_err(safe_mail_error),
+        Err(network_error) => backend
+            .local()?
+            .cached_sent_message(uid)
             .map(Into::into)
             .map_err(|_| network_error),
     }
@@ -765,6 +813,10 @@ fn get_account_mailbox_snapshot(
         .list_inbox(limit)
         .map(|messages| messages.into_iter().map(InboxMessageDto::summary).collect())
         .map_err(safe_mail_error)?;
+    let sent = local
+        .list_sent(SENT_LIST_LIMIT)
+        .map(|messages| messages.into_iter().map(InboxMessageDto::summary).collect())
+        .map_err(safe_mail_error)?;
     let drafts = local
         .list_drafts()
         .map(|drafts| drafts.into_iter().map(Into::into).collect())
@@ -776,6 +828,7 @@ fn get_account_mailbox_snapshot(
     Ok(AccountMailboxSnapshotDto {
         account_id,
         inbox,
+        sent,
         drafts,
         outbox,
     })
@@ -1158,9 +1211,12 @@ pub fn run() {
             remove_account,
             check_connections,
             sync_inbox,
+            sync_sent,
             sync_all,
             list_inbox,
+            list_sent,
             fetch_message,
+            fetch_sent_message,
             open_external_url,
             save_draft,
             list_drafts,

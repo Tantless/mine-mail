@@ -83,7 +83,6 @@ export function Sidebar({
         <button className="compose-button" type="button" onClick={onCompose}>
           <PencilSimple size={19} weight="bold" />
           <span>写信</span>
-          <kbd>N</kbd>
         </button>
 
         <nav className="folder-nav">

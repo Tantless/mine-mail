@@ -47,3 +47,17 @@ pub fn outbox_preview(item: &OutboxItem) -> Option<String> {
 pub fn outbox_body_text(item: &OutboxItem) -> Option<String> {
     mime::outbox_body_text(&item.raw_rfc822)
 }
+
+/// Reads the stable RFC Message-ID from an immutable Outbox item. It is used
+/// only as non-secret metadata when merging the local delivery record with the
+/// provider's copy in the Sent mailbox.
+pub fn outbox_message_id(item: &OutboxItem) -> Option<String> {
+    mime::outbox_message_id(&item.raw_rfc822)
+}
+
+/// Reads the RFC Date header from a local Outbox item. Older messages created
+/// before Mine Mail added its own Message-ID use this timestamp as one part of
+/// a conservative duplicate check.
+pub fn outbox_sent_at(item: &OutboxItem) -> Option<String> {
+    mime::outbox_sent_at(&item.raw_rfc822)
+}

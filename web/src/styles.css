@@ -831,9 +831,13 @@ html[data-surface="new-mail-notification"] #root {
   font-weight: 650;
   backdrop-filter: blur(20px) saturate(1.18) brightness(1.03);
   -webkit-backdrop-filter: blur(20px) saturate(1.18) brightness(1.03);
-  transition: background var(--motion-fast), border-color var(--motion-fast),
-    box-shadow var(--motion-fast), transform 80ms;
+  transform: translate3d(0, 0, 0) scale(1);
+  transform-origin: center;
+  transition: background 180ms ease, border-color 180ms ease,
+    box-shadow 260ms cubic-bezier(0.16, 1, 0.3, 1),
+    transform 320ms cubic-bezier(0.16, 1, 0.3, 1);
   overflow: hidden;
+  will-change: transform;
 }
 
 .compose-button::before {
@@ -851,30 +855,81 @@ html[data-surface="new-mail-notification"] #root {
   pointer-events: none;
 }
 
+.compose-button::after {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background: radial-gradient(
+    85% 150% at 50% -58%,
+    rgba(255, 255, 255, 0.52) 0%,
+    rgba(255, 255, 255, 0.14) 38%,
+    transparent 68%
+  );
+  content: "";
+  opacity: 0.22;
+  pointer-events: none;
+  transform: translateY(-3px) scaleX(0.72);
+  transition: opacity 240ms ease,
+    transform 480ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
 .compose-button > * {
   position: relative;
   z-index: 1;
 }
 
+.compose-button > svg,
+.compose-button > span {
+  transition: filter 240ms ease,
+    transform 320ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
 .compose-button:hover {
   background: var(--compose-surface-hover);
   border-color: color-mix(in srgb, var(--compose-edge) 72%, #fff);
-  box-shadow: 0 11px 26px color-mix(in srgb, var(--color-primary) 21%, transparent),
-    0 2px 7px rgba(18, 35, 52, 0.08), inset 0 1px 0 var(--compose-highlight);
+  box-shadow: 0 16px 32px color-mix(in srgb, var(--color-primary) 25%, transparent),
+    0 5px 12px rgba(18, 35, 52, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.34);
+  transform: translate3d(0, -2px, 0) scale(1.025);
+}
+
+.compose-button:hover::after {
+  opacity: 0.78;
+  transform: translateY(0) scaleX(1.08);
+}
+
+.compose-button:hover > svg {
+  filter: drop-shadow(0 3px 4px rgba(0, 45, 104, 0.2));
+  transform: translate3d(0, -1px, 0) rotate(-6deg) scale(1.08);
+}
+
+.compose-button:hover > span {
+  transform: translate3d(1px, 0, 0);
 }
 
 .compose-button:active {
   background: var(--compose-surface-pressed);
-  transform: translateY(1px);
+  border-color: color-mix(in srgb, var(--compose-edge) 60%, transparent);
+  box-shadow: 0 3px 8px color-mix(in srgb, var(--color-primary-pressed) 20%, transparent),
+    inset 0 3px 7px rgba(0, 42, 94, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  transform: translate3d(0, 1px, 0) scale(0.975);
+  transition-duration: 70ms;
 }
 
-.compose-button kbd {
-  margin-left: auto;
-  padding: 4px 6px;
-  border: 1px solid rgba(255, 255, 255, 0.25);
-  border-radius: 5px;
-  background: rgba(255, 255, 255, 0.13);
-  color: rgba(255, 255, 255, 0.88);
+.compose-button:active::after {
+  opacity: 0.28;
+  transform: translateY(3px) scaleX(0.82);
+  transition-duration: 70ms;
+}
+
+.compose-button:active > svg,
+.compose-button:active > span {
+  filter: none;
+  transform: translate3d(0, 1px, 0) scale(0.96);
+  transition-duration: 70ms;
+}
+
+.compose-button:focus-visible:not(:active) {
+  box-shadow: var(--focus-ring), var(--compose-shadow);
 }
 
 .folder-nav {
@@ -3769,7 +3824,6 @@ html[data-surface="new-mail-notification"] #root {
 
   .brand__name,
   .compose-button span,
-  .compose-button kbd,
   .folder-nav__item > span:not(.folder-nav__count),
   .folder-nav__count,
   .account-card__copy,
@@ -3868,7 +3922,6 @@ html[data-surface="new-mail-notification"] #root {
 
   .brand__name,
   .compose-button span,
-  .compose-button kbd,
   .folder-nav__item > span:not(.folder-nav__count),
   .folder-nav__count,
   .account-card__copy,
@@ -3882,7 +3935,6 @@ html[data-surface="new-mail-notification"] #root {
     padding: 0 14px;
   }
 
-  .compose-button kbd,
   .folder-nav__count {
     margin-left: auto;
   }
@@ -4212,5 +4264,20 @@ html[data-surface="new-mail-notification"] #root {
     animation-duration: 1ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 1ms !important;
+  }
+
+  .compose-button {
+    will-change: auto;
+  }
+
+  .compose-button:hover,
+  .compose-button:active,
+  .compose-button:hover::after,
+  .compose-button:active::after,
+  .compose-button:hover > svg,
+  .compose-button:hover > span,
+  .compose-button:active > svg,
+  .compose-button:active > span {
+    transform: none;
   }
 }

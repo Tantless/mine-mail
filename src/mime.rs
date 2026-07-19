@@ -5,6 +5,7 @@ use lettre::{
     message::{Mailbox, header::ContentType},
 };
 use mail_parser::{Address as ParsedAddress, HeaderValue, MessageParser, MimeHeaders, PartType};
+use uuid::Uuid;
 
 use crate::{ComposeRequest, InboxMessage, MailAddress, MailError, Result};
 
@@ -27,7 +28,12 @@ pub(crate) fn build_outgoing_message(
     request: &ComposeRequest,
 ) -> Result<OutgoingMessage> {
     request.validate()?;
-    let raw_rfc822 = build_rfc822(from, request, &[], false)?;
+    // Use a stable, app-generated identifier for the exact bytes persisted in
+    // Outbox. The same identifier will later arrive through the provider's
+    // Sent mailbox and lets the desktop merge both views without guessing.
+    // The reserved `.invalid` TLD avoids disclosing the local host name.
+    let message_id = format!("<{}@mine-mail.invalid>", Uuid::now_v7());
+    let raw_rfc822 = build_rfc822(from, request, &[("Message-ID", &message_id)], false)?;
     let (envelope, recipients) = build_envelope(from, request)?;
     Ok(OutgoingMessage {
         raw_rfc822,
@@ -244,6 +250,18 @@ pub(crate) fn outbox_body_text(raw_rfc822: &[u8]) -> Option<String> {
     MessageParser::default()
         .parse(raw_rfc822)
         .and_then(|message| message.body_text(0).map(|body| body.into_owned()))
+}
+
+pub(crate) fn outbox_message_id(raw_rfc822: &[u8]) -> Option<String> {
+    MessageParser::default()
+        .parse(raw_rfc822)
+        .and_then(|message| message.message_id().map(str::to_owned))
+}
+
+pub(crate) fn outbox_sent_at(raw_rfc822: &[u8]) -> Option<String> {
+    MessageParser::default()
+        .parse(raw_rfc822)
+        .and_then(|message| message.date().map(|date| date.to_rfc3339()))
 }
 
 fn build_rfc822(
@@ -564,9 +582,9 @@ fn map_address(address: &mail_parser::Addr<'_>) -> Option<MailAddress> {
 mod tests {
     use super::{
         IncomingMetadata, build_draft_message_revision, build_outgoing_message,
-        draft_has_unsupported_content, outbox_body_text, outbox_preview, outbox_subject,
-        parse_draft_message, parse_incoming_message, parse_incoming_summary_or_fallback,
-        render_message_html, restore_outbox_envelope,
+        draft_has_unsupported_content, outbox_body_text, outbox_message_id, outbox_preview,
+        outbox_sent_at, outbox_subject, parse_draft_message, parse_incoming_message,
+        parse_incoming_summary_or_fallback, render_message_html, restore_outbox_envelope,
     };
     use crate::ComposeRequest;
 
@@ -598,6 +616,9 @@ mod tests {
             outbox_body_text(&outgoing.raw_rfc822).as_deref(),
             Some("Hello, 世界")
         );
+        let message_id = outbox_message_id(&outgoing.raw_rfc822).expect("Message-ID");
+        assert!(message_id.ends_with("@mine-mail.invalid"));
+        assert!(outbox_sent_at(&outgoing.raw_rfc822).is_some());
         assert!(!text.lines().any(|line| line.starts_with("Bcc:")));
         assert!(!text.contains("hidden@example.com"));
     }

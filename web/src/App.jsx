@@ -135,6 +135,57 @@ function toOutboxMessage(item, drafts) {
   };
 }
 
+function normalizeMessageId(value) {
+  const normalized = value?.trim().toLowerCase();
+  if (!normalized) return null;
+  return normalized.replace(/^</, "").replace(/>$/, "");
+}
+
+function toSentMessage(message) {
+  const recipients = [...(message.to || []), ...(message.cc || [])];
+  const firstRecipient = recipients[0] || null;
+  const recipientLabel =
+    recipients
+      .map((recipient) => recipient.name || recipient.email)
+      .filter(Boolean)
+      .join(", ") || "未知收件人";
+  return {
+    ...message,
+    kind: "sent",
+    sent_from: message.sender,
+    sender: {
+      name: recipientLabel,
+      email: firstRecipient?.email || "",
+    },
+  };
+}
+
+function sentMessageMatchesOutbox(message, item) {
+  const remoteMessageId = normalizeMessageId(message.message_id);
+  const localMessageId = normalizeMessageId(item.message_id);
+  if (remoteMessageId && localMessageId) return remoteMessageId === localMessageId;
+
+  // Compatibility for items sent before Mine Mail generated Message-ID. Keep
+  // this deliberately strict so two genuinely separate sends are not hidden.
+  if ((message.subject || "").trim() !== (item.subject || "").trim()) return false;
+  const remoteRecipients = [...(message.to || []), ...(message.cc || [])]
+    .map((recipient) => normalizeAvatarEmail(recipient.email))
+    .filter(Boolean);
+  const localRecipients = new Set(
+    (item.recipients || []).map(normalizeAvatarEmail).filter(Boolean),
+  );
+  if (!remoteRecipients.length || !remoteRecipients.every((email) => localRecipients.has(email))) {
+    return false;
+  }
+  const remoteTime = Date.parse(message.sent_at || message.internal_date || "");
+  const localTime = Date.parse(item.message_date || item.sent_at || item.created_at || "");
+  return (
+    Number.isFinite(remoteTime) &&
+    Number.isFinite(localTime) &&
+    Math.abs(remoteTime - localTime) <= 5_000
+  );
+}
+
 function hasDraftContent(value) {
   return Boolean(
     value &&
@@ -183,6 +234,7 @@ export function App() {
   const [theme, setTheme] = useState(getInitialTheme);
   const [activeFolder, setActiveFolder] = useState("inbox");
   const [messages, setMessages] = useState([]);
+  const [sentMessages, setSentMessages] = useState([]);
   const [drafts, setDrafts] = useState([]);
   const [outbox, setOutbox] = useState([]);
   const [selectedUid, setSelectedUid] = useState(null);
@@ -238,12 +290,13 @@ export function App() {
     if (!accountId) return;
     accountViewsRef.current.set(accountId, {
       messages,
+      sentMessages,
       drafts,
       outbox,
       selectedUid,
       selectedMessage,
     });
-  }, [drafts, messages, outbox, selectedMessage, selectedUid]);
+  }, [drafts, messages, outbox, selectedMessage, selectedUid, sentMessages]);
 
   const showToast = useCallback((message, tone = "success", persistent = false) => {
     setToast({ message, tone, persistent, id: Date.now() });
@@ -436,7 +489,14 @@ export function App() {
       );
       setIsMessageLoading(!hasImmediateCopy);
       try {
-        const fullMessage = await mailApi.fetchMessage(message.uid);
+        const fetchedMessage =
+          displayMessage.kind === "sent"
+            ? await mailApi.fetchSentMessage(message.uid)
+            : await mailApi.fetchMessage(message.uid);
+        const fullMessage =
+          displayMessage.kind === "sent" && fetchedMessage
+            ? toSentMessage(fetchedMessage)
+            : fetchedMessage;
         if (
           !fullMessage ||
           selectionRequestRef.current !== requestId ||
@@ -449,11 +509,19 @@ export function App() {
           bodySnapshot(fullMessage),
         );
         setSelectedMessage(fullMessage);
-        setMessages((current) =>
-          current.map((mail) =>
-            mail.uid === fullMessage.uid ? fullMessage : mail,
-          ),
-        );
+        if (displayMessage.kind === "sent") {
+          setSentMessages((current) =>
+            current.map((mail) =>
+              mail.uid === fullMessage.uid ? fullMessage : mail,
+            ),
+          );
+        } else {
+          setMessages((current) =>
+            current.map((mail) =>
+              mail.uid === fullMessage.uid ? fullMessage : mail,
+            ),
+          );
+        }
       } catch (error) {
         if (selectionRequestRef.current === requestId) {
           const messageText = describeError(error, "邮件正文加载失败");
@@ -505,6 +573,34 @@ export function App() {
     },
     [handleSelect],
   );
+
+  const refreshSent = useCallback(async () => {
+    const accountId = activeAccountIdRef.current || "unscoped";
+    const summaries = await mailApi.listSent(250);
+    const sent = summaries.map((summary) => {
+      const message = toSentMessage(summary);
+      const cachedBody = messageBodyCacheRef.current.get(
+        messageCacheKey(message, accountId),
+      );
+      return cachedBody ? { ...message, ...cachedBody } : message;
+    });
+    const existingView = accountViewsRef.current.get(accountId) || {};
+    accountViewsRef.current.set(accountId, { ...existingView, sentMessages: sent });
+    if (activeAccountIdRef.current !== accountId) return sent;
+    setSentMessages(sent);
+    setSelectedMessage((previous) => {
+      if (previous?.kind !== "sent") return previous;
+      const current = sent.find((message) => message.uid === previous.uid);
+      if (!current) return previous;
+      const preservedBody = bodySnapshot(previous);
+      messageBodyCacheRef.current.set(
+        messageCacheKey(current, accountId),
+        preservedBody,
+      );
+      return { ...previous, ...current, ...preservedBody };
+    });
+    return sent;
+  }, []);
 
   const refreshDrafts = useCallback(async () => {
     const accountId = activeAccountIdRef.current || "unscoped";
@@ -572,12 +668,24 @@ export function App() {
       );
       return cachedBody ? { ...message, ...cachedBody } : message;
     });
+    const sent = (snapshot?.sent || []).map((summary) => {
+      const message = toSentMessage(summary);
+      const cachedBody = messageBodyCacheRef.current.get(
+        messageCacheKey(message, accountId),
+      );
+      return cachedBody ? { ...message, ...cachedBody } : message;
+    });
     const selectedUid = previous.selectedUid ?? null;
     const selectedMessage = selectedUid
-      ? inbox.find((message) => message.uid === selectedUid) || previous.selectedMessage || null
+      ? (previous.selectedMessage?.kind === "sent"
+          ? sent.find((message) => message.uid === selectedUid)
+          : inbox.find((message) => message.uid === selectedUid)) ||
+        previous.selectedMessage ||
+        null
       : null;
     const view = {
       messages: inbox,
+      sentMessages: sent,
       drafts: snapshot?.drafts || [],
       outbox: snapshot?.outbox || [],
       selectedUid,
@@ -626,6 +734,7 @@ export function App() {
         const view = await loadAccountView(accountId, { force: true });
         if (activeAccountIdRef.current !== accountId) return view;
         setMessages(view.messages);
+        setSentMessages(view.sentMessages);
         draftsRef.current = view.drafts;
         setDrafts(view.drafts);
         setOutbox(view.outbox);
@@ -652,6 +761,7 @@ export function App() {
     (accountId, view, { selectFirst = true } = {}) => {
       const restored = view || {
         messages: [],
+        sentMessages: [],
         drafts: [],
         outbox: [],
         selectedUid: null,
@@ -660,6 +770,7 @@ export function App() {
       activeAccountIdRef.current = accountId;
       selectionRequestRef.current += 1;
       setMessages(restored.messages);
+      setSentMessages(restored.sentMessages || []);
       draftsRef.current = restored.drafts;
       setDrafts(restored.drafts);
       setOutbox(restored.outbox);
@@ -888,6 +999,17 @@ export function App() {
         if (cancelled) inboxUnlisten();
         else disposers.push(inboxUnlisten);
 
+        const sentUnlisten = await mailApi.onMailEvent(
+          "mail:sent-updated",
+          () => {
+            void refreshSent().catch((error) =>
+              reportEventError(error, "已发送刷新失败"),
+            );
+          },
+        );
+        if (cancelled) sentUnlisten();
+        else disposers.push(sentUnlisten);
+
         const openMessageUnlisten = await mailApi.onMailEvent(
           "mail:open-message",
           (event) => {
@@ -1043,6 +1165,7 @@ export function App() {
     refreshDrafts,
     refreshInbox,
     refreshOutbox,
+    refreshSent,
     saveDraftNow,
     showToast,
   ]);
@@ -1097,6 +1220,26 @@ export function App() {
     [drafts, outbox],
   );
 
+  const combinedSentMessages = useMemo(() => {
+    const seenRemoteIds = new Set();
+    const remote = sentMessages.filter((message) => {
+      const messageId = normalizeMessageId(message.message_id);
+      if (!messageId) return true;
+      if (seenRemoteIds.has(messageId)) return false;
+      seenRemoteIds.add(messageId);
+      return true;
+    });
+    const localFallbacks = outbox
+      .filter((item) => item.status === "sent")
+      .filter((item) => !remote.some((message) => sentMessageMatchesOutbox(message, item)))
+      .map((item) => toOutboxMessage(item, drafts));
+    return [...remote, ...localFallbacks].sort((left, right) => {
+      const leftTime = Date.parse(left.sent_at || "") || 0;
+      const rightTime = Date.parse(right.sent_at || "") || 0;
+      return rightTime - leftTime;
+    });
+  }, [drafts, outbox, sentMessages]);
+
   const folderMessages = useMemo(() => {
     if (activeFolder === "inbox") return messages;
     if (activeFolder === "starred") {
@@ -1106,11 +1249,9 @@ export function App() {
       return drafts.filter((draft) => draft.status !== "sent").map(toDraftMessage);
     }
     if (activeFolder === "outbox") return outboxMessages;
-    if (activeFolder === "sent") {
-      return outboxMessages.filter((message) => message.outbox.status === "sent");
-    }
+    if (activeFolder === "sent") return combinedSentMessages;
     return [];
-  }, [activeFolder, drafts, messages, outboxMessages]);
+  }, [activeFolder, combinedSentMessages, drafts, messages, outboxMessages]);
 
   const visibleMessages = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
@@ -1137,9 +1278,9 @@ export function App() {
       starred: messages.filter((message) => hasFlag(message, "\\Flagged")).length,
       drafts: drafts.filter((draft) => draft.status !== "sent").length,
       outbox: outbox.filter((item) => item.status !== "sent").length,
-      sent: outbox.filter((item) => item.status === "sent").length,
+      sent: combinedSentMessages.length,
     }),
-    [drafts, messages, outbox],
+    [combinedSentMessages.length, drafts, messages, outbox],
   );
 
   const handleFolderChange = (folder) => {
@@ -1158,7 +1299,12 @@ export function App() {
     setSyncState("syncing");
     try {
       const report = await mailApi.syncAll();
-      await Promise.all([refreshInbox(), refreshDrafts(), refreshOutbox()]);
+      await Promise.all([
+        refreshInbox(),
+        refreshSent(),
+        refreshDrafts(),
+        refreshOutbox(),
+      ]);
       setSyncState("done");
       const fetched = report?.inbox?.fetched ?? report?.fetched ?? 0;
       showToast(fetched ? `同步完成，收到 ${fetched} 封新邮件` : "邮箱已是最新状态");
@@ -1167,6 +1313,16 @@ export function App() {
       showToast(describeError(error, "同步失败，请检查网络"), "error");
     }
   };
+
+  const reconcileSentAfterDelivery = useCallback(() => {
+    void mailApi
+      .syncSent()
+      .then(() => refreshSent())
+      // The local Outbox fallback remains visible if the provider's Sent copy
+      // is briefly delayed or the follow-up sync is offline. Scheduled full
+      // reconciliation will retry without changing delivery state.
+      .catch(() => undefined);
+  }, [refreshSent]);
 
   const handleComposeChange = (updater) => {
     commitComposer((current) => {
@@ -1383,6 +1539,7 @@ export function App() {
         return;
       }
       showToast("邮件已经发送");
+      reconcileSentAfterDelivery();
     } catch (error) {
       showToast(describeError(error, "邮件发送失败"), "error");
       setPendingSend(null);
@@ -1406,6 +1563,7 @@ export function App() {
       await Promise.all([refreshDrafts(), refreshOutbox()]);
       if (result.status === "sent") {
         showToast("邮件重试发送成功");
+        reconcileSentAfterDelivery();
       } else {
         const message =
           result.status === "delivery_unknown"
@@ -1523,6 +1681,7 @@ export function App() {
     if (previousAccountId) {
       accountViewsRef.current.set(previousAccountId, {
         messages,
+        sentMessages,
         drafts,
         outbox,
         selectedUid,

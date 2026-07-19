@@ -103,6 +103,15 @@ impl Repository {
                  FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
              );
 
+             CREATE TABLE IF NOT EXISTS mailbox_roles (
+                 account_id TEXT NOT NULL,
+                 role TEXT NOT NULL,
+                 mailbox TEXT NOT NULL,
+                 PRIMARY KEY (account_id, role),
+                 FOREIGN KEY (account_id, mailbox)
+                     REFERENCES mailboxes(account_id, name) ON DELETE CASCADE
+             );
+
              CREATE TABLE IF NOT EXISTS messages (
                  id INTEGER PRIMARY KEY AUTOINCREMENT,
                  account_id TEXT NOT NULL,
@@ -191,7 +200,7 @@ impl Repository {
         connection.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_drafts_remote_identity
                  ON drafts(account_id, remote_mailbox, remote_uid);
-             PRAGMA user_version = 5;",
+             PRAGMA user_version = 6;",
         )?;
         Ok(repository)
     }
@@ -301,6 +310,43 @@ impl Repository {
             ],
         )?;
         Ok(())
+    }
+
+    pub(crate) fn assign_mailbox_role(
+        &self,
+        account_id: &str,
+        role: &str,
+        mailbox: &str,
+    ) -> Result<()> {
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute(
+            "INSERT INTO mailboxes (account_id, name) VALUES (?1, ?2)
+             ON CONFLICT(account_id, name) DO NOTHING",
+            params![account_id, mailbox],
+        )?;
+        transaction.execute(
+            "INSERT INTO mailbox_roles (account_id, role, mailbox) VALUES (?1, ?2, ?3)
+             ON CONFLICT(account_id, role) DO UPDATE SET mailbox = excluded.mailbox",
+            params![account_id, role, mailbox],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub(crate) fn mailbox_for_role(&self, account_id: &str, role: &str) -> Result<String> {
+        let connection = self.connection()?;
+        connection
+            .query_row(
+                "SELECT mailbox FROM mailbox_roles WHERE account_id = ?1 AND role = ?2",
+                params![account_id, role],
+                |row| row.get(0),
+            )
+            .optional()?
+            .ok_or_else(|| MailError::NotFound {
+                entity: "mailbox role",
+                id: format!("{account_id}:{role}"),
+            })
     }
 
     /// Clears cached messages and all cursors after an IMAP UIDVALIDITY change.
@@ -466,6 +512,34 @@ impl Repository {
             .map_err(Into::into)
     }
 
+    pub(crate) fn list_mailbox(
+        &self,
+        account_id: &str,
+        mailbox: &str,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<InboxMessage>> {
+        let connection = self.connection()?;
+        let sql = format!(
+            "SELECT {MESSAGE_SUMMARY_COLUMNS} FROM messages
+             WHERE account_id = ?1 AND mailbox = ?2
+             ORDER BY COALESCE(internal_date, sent_at, synced_at) DESC, uid DESC
+             LIMIT ?3 OFFSET ?4"
+        );
+        let mut statement = connection.prepare(&sql)?;
+        let rows = statement.query_map(
+            params![
+                account_id,
+                mailbox,
+                usize_to_i64(limit),
+                usize_to_i64(offset)
+            ],
+            row_to_message,
+        )?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
     #[cfg(test)]
     pub(crate) fn get_message(&self, id: i64) -> Result<InboxMessage> {
         let connection = self.connection()?;
@@ -499,9 +573,10 @@ impl Repository {
             })
     }
 
-    pub(crate) fn inbox_body_prefetch_candidates(
+    pub(crate) fn mailbox_body_prefetch_candidates(
         &self,
         account_id: &str,
+        mailbox: &str,
         limit: usize,
         max_message_bytes: u32,
     ) -> Result<Vec<(u32, u32)>> {
@@ -509,15 +584,15 @@ impl Repository {
         let mut statement = connection.prepare(
             "SELECT uid, size_bytes FROM messages
              WHERE account_id = ?1
-               AND mailbox = 'INBOX' COLLATE NOCASE
+               AND mailbox = ?2
                AND body_fetched = 0
                AND size_bytes > 0
-               AND size_bytes <= ?2
+               AND size_bytes <= ?3
              ORDER BY COALESCE(internal_date, sent_at, synced_at) DESC, uid DESC
-             LIMIT ?3",
+             LIMIT ?4",
         )?;
         let rows = statement.query_map(
-            params![account_id, max_message_bytes, usize_to_i64(limit)],
+            params![account_id, mailbox, max_message_bytes, usize_to_i64(limit)],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
@@ -1747,6 +1822,36 @@ mod tests {
     }
 
     #[test]
+    fn sent_role_resolves_provider_mailbox_and_lists_only_that_mailbox() {
+        let (_directory, repository, account) = setup();
+        let mut sent = message(&account.account_id, false);
+        sent.mailbox = "已发送".to_owned();
+        sent.uid = 7;
+        repository.upsert_message(&sent).expect("sent summary");
+        repository
+            .assign_mailbox_role(&account.account_id, "sent", &sent.mailbox)
+            .expect("sent role");
+
+        assert_eq!(
+            repository
+                .mailbox_for_role(&account.account_id, "sent")
+                .expect("resolved role"),
+            "已发送"
+        );
+        let listed = repository
+            .list_mailbox(&account.account_id, "已发送", 10, 0)
+            .expect("sent list");
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].uid, 7);
+        assert!(
+            repository
+                .list_inbox(&account.account_id, 10, 0)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn inbox_summary_avoids_large_payloads_but_preserves_body_availability() {
         let (_directory, repository, account) = setup();
         let mut full = message(&account.account_id, true);
@@ -1774,13 +1879,13 @@ mod tests {
 
         assert_eq!(
             repository
-                .inbox_body_prefetch_candidates(&account.account_id, 10, 1024)
+                .mailbox_body_prefetch_candidates(&account.account_id, "INBOX", 10, 1024)
                 .expect("candidates"),
             vec![(42, 321)]
         );
         assert!(
             repository
-                .inbox_body_prefetch_candidates(&account.account_id, 10, 100)
+                .mailbox_body_prefetch_candidates(&account.account_id, "INBOX", 10, 100)
                 .expect("size-filtered candidates")
                 .is_empty()
         );
@@ -2488,7 +2593,7 @@ Body' AS BLOB)
         let version: u32 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("schema version");
-        assert_eq!(version, 5);
+        assert_eq!(version, 6);
         for column in [
             "local_version",
             "has_unsupported_content",

@@ -45,6 +45,8 @@ pub(crate) struct RemoteMessage {
 pub(crate) struct RemoteMailbox {
     pub name: String,
     pub is_drafts: bool,
+    pub is_sent: bool,
+    pub is_selectable: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -208,15 +210,23 @@ impl ImapConnection {
                     .attributes()
                     .iter()
                     .any(|attribute| matches!(attribute, NameAttribute::Drafts)),
+                is_sent: name
+                    .attributes()
+                    .iter()
+                    .any(|attribute| matches!(attribute, NameAttribute::Sent)),
+                is_selectable: !name
+                    .attributes()
+                    .iter()
+                    .any(|attribute| matches!(attribute, NameAttribute::NoSelect)),
             })
             .collect())
     }
 
-    pub async fn select_inbox(&mut self) -> Result<MailboxSnapshot> {
-        let selected = timeout(COMMAND_TIMEOUT, self.session.select("INBOX"))
+    pub async fn select_mailbox(&mut self, mailbox: &str) -> Result<MailboxSnapshot> {
+        let selected = timeout(COMMAND_TIMEOUT, self.session.select(mailbox))
             .await
             .map_err(|_| MailError::Timeout {
-                operation: "IMAP SELECT INBOX",
+                operation: "IMAP SELECT mailbox",
             })?
             .map_err(|error| MailError::Imap(error.to_string()))?;
         let all_uids = self.search_all_uids().await?;
@@ -307,13 +317,13 @@ impl ImapConnection {
         ))
     }
 
-    /// Selects INBOX for a known-UID body fetch without the full UID SEARCH
-    /// required by metadata reconciliation.
-    pub async fn select_inbox_for_fetch(&mut self) -> Result<Option<u32>> {
-        timeout(COMMAND_TIMEOUT, self.session.select("INBOX"))
+    /// Selects one mailbox for a known-UID body fetch without the full UID
+    /// SEARCH required by metadata reconciliation.
+    pub async fn select_mailbox_for_fetch(&mut self, mailbox: &str) -> Result<Option<u32>> {
+        timeout(COMMAND_TIMEOUT, self.session.select(mailbox))
             .await
             .map_err(|_| MailError::Timeout {
-                operation: "IMAP SELECT INBOX",
+                operation: "IMAP SELECT mailbox",
             })?
             .map(|selected| selected.uid_validity)
             .map_err(|error| MailError::Imap(error.to_string()))
@@ -572,6 +582,42 @@ impl ImapConnection {
         }
         Err(MailError::Config(
             "server did not advertise a Drafts mailbox; provide an explicit mailbox name"
+                .to_owned(),
+        ))
+    }
+
+    pub(crate) async fn discover_sent_mailbox(&mut self) -> Result<String> {
+        let mailboxes = self.list_mailboxes().await?;
+        if let Some(mailbox) = mailboxes
+            .iter()
+            .find(|mailbox| mailbox.is_sent && mailbox.is_selectable)
+        {
+            return Ok(mailbox.name.clone());
+        }
+
+        const FALLBACK_NAMES: &[&str] = &[
+            "Sent",
+            "Sent Messages",
+            "Sent Items",
+            "已发送",
+            "已发送邮件",
+        ];
+        for fallback in FALLBACK_NAMES {
+            if let Some(mailbox) = mailboxes.iter().find(|mailbox| {
+                mailbox.is_selectable
+                    && (mailbox.name.eq_ignore_ascii_case(fallback)
+                        || mailbox
+                            .name
+                            .rsplit(['/', '.'])
+                            .next()
+                            .is_some_and(|leaf| leaf.eq_ignore_ascii_case(fallback)))
+            }) {
+                return Ok(mailbox.name.clone());
+            }
+        }
+
+        Err(MailError::Config(
+            "server did not advertise a Sent mailbox and no common Sent folder name was found"
                 .to_owned(),
         ))
     }

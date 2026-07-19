@@ -53,6 +53,12 @@ function renderSidebar(accountCount, overrides = {}) {
 describe("Sidebar account switcher", () => {
   afterEach(cleanup);
 
+  it("keeps the compose button free of keyboard shortcut chrome", () => {
+    renderSidebar(1);
+
+    expect(screen.getByRole("button", { name: "写信" }).querySelector("kbd")).toBeNull();
+  });
+
   it.each([
     [1, 2],
     [2, 1],
