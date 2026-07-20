@@ -303,6 +303,9 @@ impl MailBackend {
         // otherwise a stale server `FLAGS` response could make the message
         // appear unread again while the write is still pending.
         let _ = self.flush_pending_seen_updates(connection, mailbox).await;
+        let _ = self
+            .flush_pending_flagged_updates(connection, mailbox)
+            .await;
 
         let previous_highest_uid = if uid_validity_reset {
             None
@@ -423,6 +426,9 @@ impl MailBackend {
         let _ = self
             .flush_pending_seen_updates(&mut connection, INBOX)
             .await;
+        let _ = self
+            .flush_pending_flagged_updates(&mut connection, INBOX)
+            .await;
         let requested = connection.search_uids_after(previous_highest_uid).await?;
         let mut fetched = 0;
         for batch in requested.chunks(SUMMARY_BATCH_SIZE) {
@@ -528,6 +534,24 @@ impl MailBackend {
             .mark_message_seen_pending(&self.config.account_id, INBOX, uid)
     }
 
+    /// Optimistically stars or unstars one cached remote message. The exact
+    /// mailbox and UID are retained so Inbox and provider Sent folders can be
+    /// synchronized without relying on localized mailbox names.
+    pub fn set_message_starred(&self, mailbox: &str, uid: u32, starred: bool) -> Result<bool> {
+        if mailbox.trim().is_empty() {
+            return Err(MailError::Validation(
+                "message mailbox must not be blank".to_owned(),
+            ));
+        }
+        if uid == 0 {
+            return Err(MailError::Validation(
+                "message UID must be greater than zero".to_owned(),
+            ));
+        }
+        self.repository
+            .set_message_flagged_pending(&self.config.account_id, mailbox, uid, starred)
+    }
+
     /// Pushes every pending Inbox read action through UID STORE and clears a
     /// write-behind row only after a FLAGS fetch confirms `\Seen` persisted.
     pub async fn sync_pending_inbox_read_flags(&self) -> Result<usize> {
@@ -561,6 +585,47 @@ impl MailBackend {
         result
     }
 
+    /// Pushes pending star/unstar actions for one cached mailbox. Server
+    /// PERMANENTFLAGS and UIDVALIDITY are checked before UID STORE, and each
+    /// result is removed only after the requested state is fetched back.
+    pub async fn sync_pending_message_star_flags(&self, mailbox: &str) -> Result<usize> {
+        if mailbox.trim().is_empty() {
+            return Err(MailError::Validation(
+                "message mailbox must not be blank".to_owned(),
+            ));
+        }
+        let _guard = self.imap_gate.lock().await;
+        let mut connection = ImapConnection::connect(&self.config).await?;
+        let selected_uid_validity = connection
+            .select_mailbox_for_flagged_update(mailbox)
+            .await?;
+        let local_uid_validity = self
+            .repository
+            .mailbox_state(&self.config.account_id, mailbox)?
+            .and_then(|state| state.uid_validity);
+        match classify_inbox_uid_scope(local_uid_validity, selected_uid_validity) {
+            InboxUidScope::Current => {}
+            InboxUidScope::NeedsSync => {
+                return Err(MailError::Validation(
+                    "Mailbox must be synchronized before updating message flags".to_owned(),
+                ));
+            }
+            InboxUidScope::Changed => {
+                self.repository
+                    .reset_mailbox(&self.config.account_id, mailbox)?;
+                return Err(MailError::Validation(
+                    "Mailbox UIDVALIDITY changed; synchronize before updating message flags"
+                        .to_owned(),
+                ));
+            }
+        }
+        let result = self
+            .flush_pending_flagged_updates(&mut connection, mailbox)
+            .await;
+        let _ = connection.logout().await;
+        result
+    }
+
     async fn flush_pending_seen_updates(
         &self,
         connection: &mut ImapConnection,
@@ -580,6 +645,46 @@ impl MailBackend {
                     &flags,
                 )?;
                 completed += 1;
+            }
+        }
+        Ok(completed)
+    }
+
+    async fn flush_pending_flagged_updates(
+        &self,
+        connection: &mut ImapConnection,
+        mailbox: &str,
+    ) -> Result<usize> {
+        let pending = self
+            .repository
+            .pending_flagged_updates(&self.config.account_id, mailbox)?;
+        let mut completed = 0;
+        for desired in [true, false] {
+            let desired_updates: Vec<(u32, u64)> = pending
+                .iter()
+                .filter_map(|(uid, pending_desired, revision)| {
+                    (*pending_desired == desired).then_some((*uid, *revision))
+                })
+                .collect();
+            for batch in desired_updates.chunks(FLAG_BATCH_SIZE) {
+                let uids: Vec<u32> = batch.iter().map(|(uid, _)| *uid).collect();
+                let confirmed = connection.set_flagged_flags(&uids, desired).await?;
+                let revisions: HashMap<u32, u64> = batch.iter().copied().collect();
+                for (uid, flags) in confirmed {
+                    let Some(revision) = revisions.get(&uid).copied() else {
+                        continue;
+                    };
+                    if self.repository.complete_pending_flagged(
+                        &self.config.account_id,
+                        mailbox,
+                        uid,
+                        desired,
+                        revision,
+                        &flags,
+                    )? {
+                        completed += 1;
+                    }
+                }
             }
         }
         Ok(completed)

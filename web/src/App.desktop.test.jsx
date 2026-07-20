@@ -18,6 +18,7 @@ const desktop = vi.hoisted(() => {
       listInbox: vi.fn(),
       fetchMessage: vi.fn(),
       markMessageRead: vi.fn(),
+      setMessageStarred: vi.fn(),
       listSent: vi.fn(),
       fetchSentMessage: vi.fn(),
       prepareReply: vi.fn(),
@@ -194,6 +195,7 @@ describe("Mine Mail desktop state bridge", () => {
       body_fetched: true,
     }));
     desktop.mailApi.markMessageRead.mockResolvedValue(true);
+    desktop.mailApi.setMessageStarred.mockResolvedValue(true);
     desktop.mailApi.fetchSentMessage.mockImplementation(async (uid) => ({
       ...summary(uid, "Sent mail"),
       mailbox: "Sent",
@@ -294,6 +296,89 @@ describe("Mine Mail desktop state bridge", () => {
       expect(desktop.mailApi.markMessageRead).toHaveBeenCalledWith(14),
     );
     expect((await screen.findByText("Unread body")).closest(".reader-panel")).toBeTruthy();
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 1024 });
+  });
+
+  it("toggles an Inbox star without opening the message and persists both states", async () => {
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 600 });
+    const message = { ...summary(15, "Star this mail"), mailbox: "INBOX" };
+    desktop.mailApi.listInbox.mockResolvedValue([message]);
+    const user = userEvent.setup();
+    render(<App />);
+
+    const addStar = await screen.findByRole("button", {
+      name: "添加星标：Star this mail",
+    });
+    await user.click(addStar);
+
+    await waitFor(() =>
+      expect(desktop.mailApi.setMessageStarred).toHaveBeenCalledWith(
+        "INBOX",
+        15,
+        true,
+      ),
+    );
+    expect(
+      screen.getByRole("button", { name: "取消星标：Star this mail" }).getAttribute(
+        "aria-pressed",
+      ),
+    ).toBe("true");
+    expect(desktop.mailApi.fetchMessage).not.toHaveBeenCalled();
+
+    await user.click(
+      screen.getByRole("button", { name: "取消星标：Star this mail" }),
+    );
+    await waitFor(() =>
+      expect(desktop.mailApi.setMessageStarred).toHaveBeenLastCalledWith(
+        "INBOX",
+        15,
+        false,
+      ),
+    );
+    expect(
+      screen.getByRole("button", { name: "添加星标：Star this mail" }).getAttribute(
+        "aria-pressed",
+      ),
+    ).toBe("false");
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 1024 });
+  });
+
+  it("combines starred Inbox and remote Sent messages without UID collisions", async () => {
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 600 });
+    desktop.mailApi.listInbox.mockResolvedValue([
+      {
+        ...summary(21, "Starred Inbox"),
+        mailbox: "INBOX",
+        flags: ["\\Flagged"],
+      },
+    ]);
+    desktop.mailApi.listSent.mockResolvedValue([
+      {
+        ...summary(21, "Starred Sent"),
+        mailbox: "Sent",
+        to: [{ name: "Friend", email: "friend@example.com" }],
+        flags: ["\\Seen", "\\Flagged"],
+      },
+    ]);
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: /已加星标/ }));
+    expect(await screen.findByText("Starred Inbox")).toBeTruthy();
+    expect(await screen.findByText("Starred Sent")).toBeTruthy();
+
+    await user.click(
+      screen.getByRole("button", { name: "取消星标：Starred Sent" }),
+    );
+    await waitFor(() =>
+      expect(desktop.mailApi.setMessageStarred).toHaveBeenCalledWith(
+        "Sent",
+        21,
+        false,
+      ),
+    );
+    expect(screen.getByText("Starred Inbox")).toBeTruthy();
+    expect(screen.queryByText("Starred Sent")).toBeNull();
     Object.defineProperty(window, "innerWidth", { configurable: true, value: 1024 });
   });
 
@@ -496,6 +581,76 @@ describe("Mine Mail desktop state bridge", () => {
     expect(screen.getByText("引用邮件 1")).toBeTruthy();
     expect(container.querySelector("details.quoted-message").open).toBe(false);
     expect(container.querySelector("iframe")).toBeNull();
+  });
+
+  it("opens and focuses a referenced Sent message without expanding the quote card", async () => {
+    const replySummary = {
+      ...summary(9, "Reply with local ancestor"),
+      mailbox: "INBOX",
+    };
+    const sentAncestor = {
+      ...summary(71, "Original sent message"),
+      mailbox: "Sent",
+      sender: { name: "Me", email: "me@163.com" },
+      to: [{ name: "Friend", email: "friend@example.com" }],
+    };
+    desktop.mailApi.listInbox.mockResolvedValue([replySummary]);
+    desktop.mailApi.listSent.mockResolvedValue([sentAncestor]);
+    desktop.mailApi.fetchMessage.mockResolvedValue({
+      ...replySummary,
+      body_text: "Current reply.\n\nEarlier body.",
+      body_fetched: true,
+      body_segments: [
+        {
+          kind: "authored",
+          content: "Current reply.",
+          render_mode: "plain",
+          quote_depth: 0,
+          confidence: "high",
+        },
+        {
+          kind: "quoted",
+          content: "Earlier body.",
+          render_mode: "plain",
+          quote_depth: 1,
+          confidence: "high",
+          quote_metadata: { subject: "Original sent message" },
+          navigation_target: { mailbox: "Sent", uid: 71 },
+        },
+      ],
+    });
+    desktop.mailApi.fetchSentMessage.mockResolvedValue({
+      ...sentAncestor,
+      body_text: "Canonical sent ancestor body",
+      body_fetched: true,
+    });
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+
+    await user.click(await screen.findByText("Reply with local ancestor"));
+    const details = container.querySelector("details.quoted-message");
+    expect(details.open).toBe(false);
+
+    await user.click(
+      await screen.findByRole("button", {
+        name: "在已发送中打开原邮件：Original sent message",
+      }),
+    );
+
+    await waitFor(() =>
+      expect(desktop.mailApi.fetchSentMessage).toHaveBeenCalledWith(71),
+    );
+    expect(screen.getByLabelText("已发送邮件列表")).toBeTruthy();
+    expect(
+      await screen.findByRole("heading", { name: "Original sent message" }),
+    ).toBeTruthy();
+    expect(await screen.findByText("Canonical sent ancestor body")).toBeTruthy();
+    const selectedRow = screen.getByText("Original sent message", {
+      selector: ".mail-row__subject",
+    }).closest(".mail-row");
+    expect(selectedRow?.dataset.selected).toBe("true");
+    expect(document.activeElement).toBe(selectedRow);
+    expect(details.open).toBe(false);
   });
 
   it("shows the immutable reply subject and recipient for sent mail", async () => {

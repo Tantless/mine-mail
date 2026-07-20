@@ -1,5 +1,5 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { SegmentedMessageBody } from "./SegmentedMessageBody.jsx";
 
 const message = {
@@ -166,5 +166,52 @@ describe("segmented message body", () => {
 
     expect(quotedLayers[0].open).toBe(true);
     expect(quotedLayers[1].open).toBe(false);
+  });
+
+  it("shows a separate jump control only for a reference resolved in the current lists", () => {
+    const navigationTarget = { mailbox: "Sent", uid: 17 };
+    const navigableMessage = {
+      ...message,
+      body_segments: [
+        message.body_segments[0],
+        {
+          ...message.body_segments[1],
+          navigation_target: navigationTarget,
+        },
+      ],
+    };
+    const onOpenReferencedMessage = vi.fn();
+    const { container, rerender } = render(
+      <SegmentedMessageBody
+        message={navigableMessage}
+        body={navigableMessage.body_text}
+        bodyRenderMode="plain"
+        resolveReferencedMessage={() => ({ folder: "sent" })}
+        onOpenReferencedMessage={onOpenReferencedMessage}
+      />,
+    );
+
+    const details = container.querySelector("details.quoted-message");
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "在已发送中打开原邮件：Earlier note",
+      }),
+    );
+
+    expect(onOpenReferencedMessage).toHaveBeenCalledWith(navigationTarget);
+    expect(details.open).toBe(false);
+
+    rerender(
+      <SegmentedMessageBody
+        message={navigableMessage}
+        body={navigableMessage.body_text}
+        bodyRenderMode="plain"
+        resolveReferencedMessage={() => null}
+        onOpenReferencedMessage={onOpenReferencedMessage}
+      />,
+    );
+    expect(
+      screen.queryByRole("button", { name: /打开原邮件/ }),
+    ).toBeNull();
   });
 });

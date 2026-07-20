@@ -43,6 +43,8 @@ export function MessageView({
   canNext,
   remoteImageMode = "automatic",
   onOpenExternalLink,
+  resolveReferencedMessage,
+  onOpenReferencedMessage,
   senderAvatar,
   onSetSenderAvatar,
   onRemoveSenderAvatar,
@@ -189,6 +191,8 @@ export function MessageView({
               bodyRenderMode={bodyRenderMode}
               remoteImageMode={remoteImageMode}
               onOpenExternalLink={onOpenExternalLink}
+              resolveReferencedMessage={resolveReferencedMessage}
+              onOpenReferencedMessage={onOpenReferencedMessage}
             />
           ) : bodyRenderMode === "native_html" && message.body_html ? (
             <NativeHtmlMessageBody

@@ -189,7 +189,7 @@ fn enrich_quote_metadata(
     }
 }
 
-fn quote_metadata_matches_cached(
+pub(crate) fn quote_metadata_matches_cached(
     detected: &MailBodySegmentMetadata,
     cached: &MailBodySegmentMetadata,
 ) -> bool {
@@ -932,7 +932,7 @@ fn split_netease_at_wrote_reply(
     if authored.is_empty() || quoted.is_empty() {
         return None;
     }
-    let quote_metadata = merge_quote_metadata(parent_metadata, Some(intro_metadata));
+    let quote_metadata = merge_cached_quote_metadata(parent_metadata, Some(intro_metadata));
     let mut segments = vec![PlainBodySegment {
         kind: MailBodySegmentKind::Authored,
         content: authored,
@@ -1067,6 +1067,20 @@ fn merge_quote_metadata(
         }
     }
     (!merged.is_empty()).then_some(merged)
+}
+
+fn merge_cached_quote_metadata(
+    cached: Option<&MailBodySegmentMetadata>,
+    detected: Option<MailBodySegmentMetadata>,
+) -> Option<MailBodySegmentMetadata> {
+    match (cached, detected) {
+        (Some(cached), Some(detected)) if quote_metadata_matches_cached(&detected, cached) => {
+            merge_quote_metadata(Some(cached), Some(detected))
+        }
+        (Some(_), Some(detected)) => Some(detected),
+        (Some(cached), None) => Some(cached.clone()),
+        (None, detected) => detected,
+    }
 }
 
 fn append_quoted_history(
@@ -1438,7 +1452,7 @@ fn split_html_reply(
                 parse_netease_at_wrote_metadata(&text).map(|metadata| (sibling.id(), metadata))
             })
     });
-    let quote_metadata = merge_quote_metadata(
+    let quote_metadata = merge_cached_quote_metadata(
         parent_metadata,
         intro.as_ref().map(|(_, metadata)| metadata.clone()),
     );

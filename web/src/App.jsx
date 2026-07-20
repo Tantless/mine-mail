@@ -17,6 +17,7 @@ import { AccountSetupPanel } from "./components/AccountSetup.jsx";
 import { Toast } from "./components/Toast.jsx";
 import { normalizeAvatarEmail } from "./components/ProfileAvatar.jsx";
 import { hasFlag } from "./utils/formatters.js";
+import { messageNavigationKey } from "./utils/messageNavigation.js";
 
 const folderLabels = {
   inbox: "收件箱",
@@ -187,8 +188,30 @@ function sentMessageMatchesOutbox(message, item) {
 }
 
 function withSeenFlag(message) {
-  if (!message || hasFlag(message, "\\Seen")) return message;
-  return { ...message, flags: [...(message.flags || []), "\\Seen"] };
+  return withSystemFlag(message, "\\Seen", true);
+}
+
+function withSystemFlag(message, flag, desired) {
+  if (!message || hasFlag(message, flag) === desired) return message;
+  const flags = desired
+    ? [...(message.flags || []), flag]
+    : (message.flags || []).filter(
+        (value) => value.toLowerCase() !== flag.toLowerCase(),
+      );
+  return { ...message, flags };
+}
+
+function remoteFlagKey(message) {
+  if (!message || message.kind === "draft" || message.kind === "outbox") return null;
+  const uid = Number(message.uid);
+  const mailbox = (message.mailbox || (!message.kind ? "INBOX" : "")).trim();
+  if (!mailbox || !Number.isInteger(uid) || uid <= 0) return null;
+  return `${mailbox.toLowerCase()}:${uid}`;
+}
+
+function scopedRemoteFlagKey(message, accountId = "unscoped") {
+  const key = remoteFlagKey(message);
+  return key ? `${accountId}:${key}` : null;
 }
 
 function hasDraftContent(value) {
@@ -268,6 +291,7 @@ export function App() {
   const [accountError, setAccountError] = useState(null);
   const [profileAvatars, setProfileAvatars] = useState([]);
   const [toast, setToast] = useState(null);
+  const [referenceJump, setReferenceJump] = useState(null);
 
   const composerRef = useRef(null);
   const draftSaveRef = useRef(null);
@@ -281,6 +305,9 @@ export function App() {
   const accountViewLoadsRef = useRef(new Map());
   const activeAccountIdRef = useRef(null);
   const accountSwitchRequestRef = useRef(0);
+  const referenceJumpRequestRef = useRef(0);
+  const starRequestRef = useRef(new Map());
+  const starStateRef = useRef(new Map());
   const platform = /Mac|iPhone|iPad/.test(navigator.platform) ? "mac" : "windows";
   const networkActionsAvailable = Boolean(
     accountStatus.configured &&
@@ -433,6 +460,13 @@ export function App() {
       }
 
       const accountId = activeAccountIdRef.current || "unscoped";
+      const selectedStarKey = scopedRemoteFlagKey(message, accountId);
+      if (selectedStarKey && !starStateRef.current.has(selectedStarKey)) {
+        starStateRef.current.set(
+          selectedStarKey,
+          hasFlag(message, "\\Flagged"),
+        );
+      }
       const shouldMarkRead =
         !message.kind &&
         (message.mailbox || "INBOX").toLowerCase() === "inbox" &&
@@ -537,6 +571,14 @@ export function App() {
         if (shouldMarkRead && fullMessage) {
           fullMessage = withSeenFlag(fullMessage);
         }
+        const fullMessageStarKey = scopedRemoteFlagKey(fullMessage, accountId);
+        if (fullMessageStarKey && starStateRef.current.has(fullMessageStarKey)) {
+          fullMessage = withSystemFlag(
+            fullMessage,
+            "\\Flagged",
+            starStateRef.current.get(fullMessageStarKey),
+          );
+        }
         if (
           !fullMessage ||
           selectionRequestRef.current !== requestId ||
@@ -575,6 +617,71 @@ export function App() {
     [openComposer, showToast],
   );
 
+  const applyMessageStarState = useCallback((target, starred, accountId) => {
+    const messageKey = remoteFlagKey(target);
+    if (!messageKey) return;
+    const scopedKey = scopedRemoteFlagKey(target, accountId);
+    starStateRef.current.set(scopedKey, starred);
+    const update = (mail) =>
+      remoteFlagKey(mail) === messageKey
+        ? withSystemFlag(mail, "\\Flagged", starred)
+        : mail;
+    if (activeAccountIdRef.current !== accountId) {
+      const accountView = accountViewsRef.current.get(accountId) || {};
+      accountViewsRef.current.set(accountId, {
+        ...accountView,
+        messages: (accountView.messages || []).map(update),
+        sentMessages: (accountView.sentMessages || []).map(update),
+        selectedMessage: update(accountView.selectedMessage),
+      });
+      return;
+    }
+    setMessages((current) => {
+      const updated = current.map(update);
+      const accountView = accountViewsRef.current.get(accountId) || {};
+      accountViewsRef.current.set(accountId, {
+        ...accountView,
+        messages: updated,
+      });
+      return updated;
+    });
+    setSentMessages((current) => {
+      const updated = current.map(update);
+      const accountView = accountViewsRef.current.get(accountId) || {};
+      accountViewsRef.current.set(accountId, {
+        ...accountView,
+        sentMessages: updated,
+      });
+      return updated;
+    });
+    setSelectedMessage((current) => update(current));
+  }, []);
+
+  const handleToggleStar = useCallback(
+    async (message) => {
+      const accountId = activeAccountIdRef.current || "unscoped";
+      const key = scopedRemoteFlagKey(message, accountId);
+      if (!key) return;
+      const mailbox = message.mailbox || "INBOX";
+      const starred = !hasFlag(message, "\\Flagged");
+      const requestId = (starRequestRef.current.get(key)?.requestId || 0) + 1;
+      starRequestRef.current.set(key, { requestId, starred });
+      applyMessageStarState(message, starred, accountId);
+      try {
+        await mailApi.setMessageStarred(mailbox, message.uid, starred);
+        if (starRequestRef.current.get(key)?.requestId === requestId) {
+          starRequestRef.current.delete(key);
+        }
+      } catch (error) {
+        if (starRequestRef.current.get(key)?.requestId !== requestId) return;
+        starRequestRef.current.delete(key);
+        applyMessageStarState(message, !starred, accountId);
+        showToast(describeError(error, "星标状态保存失败"), "error");
+      }
+    },
+    [applyMessageStarState, showToast],
+  );
+
   const refreshInbox = useCallback(
     async ({ selectFirst = false } = {}) => {
       const accountId = activeAccountIdRef.current || "unscoped";
@@ -583,7 +690,13 @@ export function App() {
         const cachedBody = messageBodyCacheRef.current.get(
           messageCacheKey(message, accountId),
         );
-        return cachedBody ? { ...message, ...cachedBody } : message;
+        let resolved = cachedBody ? { ...message, ...cachedBody } : message;
+        const key = scopedRemoteFlagKey(resolved, accountId);
+        const pending = key ? starRequestRef.current.get(key) : null;
+        const starred = pending?.starred ?? hasFlag(resolved, "\\Flagged");
+        if (key) starStateRef.current.set(key, starred);
+        if (pending) resolved = withSystemFlag(resolved, "\\Flagged", starred);
+        return resolved;
       });
       const existingView = accountViewsRef.current.get(accountId) || {};
       accountViewsRef.current.set(accountId, { ...existingView, messages: inbox });
@@ -594,6 +707,7 @@ export function App() {
         const current = inbox.find((message) => message.uid === currentUid);
         if (current) {
           setSelectedMessage((previous) => {
+            if (previous?.kind) return previous;
             if (!previous || previous.uid !== currentUid) return current;
             const preservedBody = bodySnapshot(previous);
             messageBodyCacheRef.current.set(
@@ -618,11 +732,16 @@ export function App() {
     const accountId = activeAccountIdRef.current || "unscoped";
     const summaries = await mailApi.listSent(250);
     const sent = summaries.map((summary) => {
-      const message = toSentMessage(summary);
+      let message = toSentMessage(summary);
       const cachedBody = messageBodyCacheRef.current.get(
         messageCacheKey(message, accountId),
       );
-      return cachedBody ? { ...message, ...cachedBody } : message;
+      message = cachedBody ? { ...message, ...cachedBody } : message;
+      const key = scopedRemoteFlagKey(message, accountId);
+      const pending = key ? starRequestRef.current.get(key) : null;
+      const starred = pending?.starred ?? hasFlag(message, "\\Flagged");
+      if (key) starStateRef.current.set(key, starred);
+      return pending ? withSystemFlag(message, "\\Flagged", starred) : message;
     });
     const existingView = accountViewsRef.current.get(accountId) || {};
     accountViewsRef.current.set(accountId, { ...existingView, sentMessages: sent });
@@ -1280,10 +1399,56 @@ export function App() {
     });
   }, [drafts, outbox, sentMessages]);
 
+  const referenceNavigationIndex = useMemo(() => {
+    const index = new Map();
+    for (const message of messages) {
+      const key = messageNavigationKey(message);
+      if (key) index.set(key, { folder: "inbox", message });
+    }
+    for (const message of combinedSentMessages) {
+      const key = messageNavigationKey(message);
+      if (key) index.set(key, { folder: "sent", message });
+    }
+    return index;
+  }, [combinedSentMessages, messages]);
+
+  const resolveReferencedMessage = useCallback(
+    (target) => {
+      const key = messageNavigationKey(target);
+      return key ? referenceNavigationIndex.get(key) || null : null;
+    },
+    [referenceNavigationIndex],
+  );
+
+  const handleOpenReferencedMessage = useCallback(
+    (target) => {
+      const key = messageNavigationKey(target);
+      const destination = key ? referenceNavigationIndex.get(key) : null;
+      if (!destination) {
+        showToast("原邮件已不在当前列表中", "info");
+        return;
+      }
+
+      referenceJumpRequestRef.current += 1;
+      setReferenceJump({
+        key,
+        requestId: referenceJumpRequestRef.current,
+      });
+      setActiveFolder(destination.folder);
+      setFilter("all");
+      setQuery("");
+      setIsSidebarOpen(false);
+      void handleSelect(destination.message);
+    },
+    [handleSelect, referenceNavigationIndex, showToast],
+  );
+
   const folderMessages = useMemo(() => {
     if (activeFolder === "inbox") return messages;
     if (activeFolder === "starred") {
-      return messages.filter((message) => hasFlag(message, "\\Flagged"));
+      return [...messages, ...sentMessages].filter((message) =>
+        hasFlag(message, "\\Flagged"),
+      );
     }
     if (activeFolder === "drafts") {
       return drafts.filter((draft) => draft.status !== "sent").map(toDraftMessage);
@@ -1291,7 +1456,14 @@ export function App() {
     if (activeFolder === "outbox") return outboxMessages;
     if (activeFolder === "sent") return combinedSentMessages;
     return [];
-  }, [activeFolder, combinedSentMessages, drafts, messages, outboxMessages]);
+  }, [
+    activeFolder,
+    combinedSentMessages,
+    drafts,
+    messages,
+    outboxMessages,
+    sentMessages,
+  ]);
 
   const visibleMessages = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
@@ -1308,19 +1480,25 @@ export function App() {
     });
   }, [filter, folderMessages, query]);
 
-  const selectedIndex = visibleMessages.findIndex(
-    (message) => message.uid === selectedUid,
-  );
+  const selectedMessageKey = remoteFlagKey(selectedMessage);
+  const selectedIndex = visibleMessages.findIndex((message) => {
+    const key = remoteFlagKey(message);
+    return selectedMessageKey && key
+      ? key === selectedMessageKey
+      : message.uid === selectedUid;
+  });
 
   const folderCounts = useMemo(
     () => ({
       inbox: messages.filter((message) => !hasFlag(message, "\\Seen")).length,
-      starred: messages.filter((message) => hasFlag(message, "\\Flagged")).length,
+      starred: [...messages, ...sentMessages].filter((message) =>
+        hasFlag(message, "\\Flagged"),
+      ).length,
       drafts: drafts.filter((draft) => draft.status !== "sent").length,
       outbox: outbox.filter((item) => item.status !== "sent").length,
       sent: combinedSentMessages.length,
     }),
-    [combinedSentMessages.length, drafts, messages, outbox],
+    [combinedSentMessages.length, drafts, messages, outbox, sentMessages],
   );
 
   const handleFolderChange = (folder) => {
@@ -1949,7 +2127,9 @@ export function App() {
           folderLabel={folderLabels[activeFolder]}
           messages={visibleMessages}
           selectedUid={selectedUid}
+          selectedMessage={selectedMessage}
           onSelect={handleSelect}
+          onToggleStar={(message) => void handleToggleStar(message)}
           query={query}
           onQueryChange={setQuery}
           filter={filter}
@@ -1959,6 +2139,7 @@ export function App() {
           canSync={networkActionsAvailable}
           onOpenMobileNav={() => setIsSidebarOpen(true)}
           avatarForEmail={(email) => profileAvatarFor("contact", email)}
+          referenceJump={referenceJump}
         />
 
         <MessageView
@@ -1980,6 +2161,8 @@ export function App() {
           canNext={selectedIndex >= 0 && selectedIndex < visibleMessages.length - 1}
           remoteImageMode={settings.remoteImageMode}
           onOpenExternalLink={(url) => void handleOpenExternalLink(url)}
+          resolveReferencedMessage={resolveReferencedMessage}
+          onOpenReferencedMessage={handleOpenReferencedMessage}
           senderAvatar={profileAvatarFor("contact", selectedMessage?.sender?.email)}
           onSetSenderAvatar={(file) =>
             handleSaveProfileAvatar("contact", selectedMessage?.sender?.email, file)

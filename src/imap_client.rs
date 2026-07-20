@@ -348,6 +348,26 @@ impl ImapConnection {
         Ok(selected.uid_validity)
     }
 
+    /// Selects a mailbox read-write and rejects a server that explicitly
+    /// omits the standard `\Flagged` flag from PERMANENTFLAGS.
+    pub async fn select_mailbox_for_flagged_update(
+        &mut self,
+        mailbox: &str,
+    ) -> Result<Option<u32>> {
+        let selected = timeout(COMMAND_TIMEOUT, self.session.select(mailbox))
+            .await
+            .map_err(|_| MailError::Timeout {
+                operation: "IMAP SELECT mailbox",
+            })?
+            .map_err(|error| MailError::Imap(error.to_string()))?;
+        if !mailbox_allows_flagged_updates(&selected.permanent_flags) {
+            return Err(MailError::Validation(
+                "the IMAP mailbox does not allow persistent \\Flagged updates".to_owned(),
+            ));
+        }
+        Ok(selected.uid_validity)
+    }
+
     async fn search_all_uids(&mut self) -> Result<Vec<u32>> {
         let uids = timeout(COMMAND_TIMEOUT, self.session.uid_search("ALL"))
             .await
@@ -453,6 +473,61 @@ impl ImapConnection {
             if !flags.iter().any(|flag| flag.eq_ignore_ascii_case("\\Seen")) {
                 return Err(MailError::Validation(format!(
                     "the IMAP server did not persist the read flag for UID {uid}"
+                )));
+            }
+        }
+        Ok(confirmed)
+    }
+
+    /// Adds or removes the standard `\Flagged` system flag without replacing
+    /// unrelated message state, then verifies the server's persisted result.
+    pub async fn set_flagged_flags(
+        &mut self,
+        uids: &[u32],
+        desired: bool,
+    ) -> Result<Vec<(u32, Vec<String>)>> {
+        if uids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let sequence_set = compress_uid_set(uids);
+        let query = if desired {
+            "+FLAGS.SILENT (\\Flagged)"
+        } else {
+            "-FLAGS.SILENT (\\Flagged)"
+        };
+        {
+            let stream = timeout(
+                COMMAND_TIMEOUT,
+                self.session.uid_store(&sequence_set, query),
+            )
+            .await
+            .map_err(|_| MailError::Timeout {
+                operation: "IMAP update message star",
+            })?
+            .map_err(|error| MailError::Imap(error.to_string()))?;
+            timeout(COMMAND_TIMEOUT, stream.try_collect::<Vec<_>>())
+                .await
+                .map_err(|_| MailError::Timeout {
+                    operation: "IMAP update message star response",
+                })?
+                .map_err(|error| MailError::Imap(error.to_string()))?;
+        }
+
+        let confirmed = self.fetch_flags(uids).await?;
+        for uid in uids.iter().copied().collect::<BTreeSet<_>>() {
+            let flags = confirmed
+                .iter()
+                .find_map(|(candidate, flags)| (*candidate == uid).then_some(flags))
+                .ok_or_else(|| MailError::NotFound {
+                    entity: "remote message UID",
+                    id: uid.to_string(),
+                })?;
+            let persisted = flags
+                .iter()
+                .any(|flag| flag.eq_ignore_ascii_case("\\Flagged"));
+            if persisted != desired {
+                return Err(MailError::Validation(format!(
+                    "the IMAP server did not persist the requested star state for UID {uid}"
                 )));
             }
         }
@@ -784,11 +859,18 @@ fn mailbox_allows_seen_updates(permanent_flags: &[Flag<'_>]) -> bool {
             .any(|flag| matches!(flag, Flag::Seen))
 }
 
+fn mailbox_allows_flagged_updates(permanent_flags: &[Flag<'_>]) -> bool {
+    permanent_flags.is_empty()
+        || permanent_flags
+            .iter()
+            .any(|flag| matches!(flag, Flag::Flagged))
+}
+
 #[cfg(test)]
 mod tests {
     use async_imap::types::Flag;
 
-    use super::{compress_uid_set, mailbox_allows_seen_updates};
+    use super::{compress_uid_set, mailbox_allows_flagged_updates, mailbox_allows_seen_updates};
 
     #[test]
     fn compresses_sorted_or_unsorted_uid_sets() {
@@ -802,5 +884,12 @@ mod tests {
         assert!(mailbox_allows_seen_updates(&[]));
         assert!(mailbox_allows_seen_updates(&[Flag::Seen, Flag::Flagged]));
         assert!(!mailbox_allows_seen_updates(&[Flag::Flagged]));
+    }
+
+    #[test]
+    fn detects_advertised_flagged_support() {
+        assert!(mailbox_allows_flagged_updates(&[]));
+        assert!(mailbox_allows_flagged_updates(&[Flag::Seen, Flag::Flagged]));
+        assert!(!mailbox_allows_flagged_updates(&[Flag::Seen]));
     }
 }

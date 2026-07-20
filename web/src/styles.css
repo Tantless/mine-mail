@@ -1592,6 +1592,20 @@ html[data-surface="new-mail-notification"] #root {
   color: #e4a82c;
 }
 
+.star-button:not(:disabled) {
+  cursor: pointer;
+}
+
+.star-button:not(:disabled):hover {
+  background: color-mix(in srgb, currentColor 10%, transparent);
+}
+
+.star-button:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 1px;
+  opacity: 1;
+}
+
 .empty-list {
   display: grid;
   justify-items: center;
@@ -1979,6 +1993,7 @@ html[data-surface="new-mail-notification"] #root {
 }
 
 .quoted-message {
+  position: relative;
   min-width: 0;
   overflow: hidden;
   border: 1px solid var(--quote-edge);
@@ -2004,6 +2019,14 @@ html[data-surface="new-mail-notification"] #root {
   cursor: pointer;
   list-style: none;
   user-select: none;
+}
+
+.quoted-message--navigable > summary {
+  grid-template-columns: 32px minmax(0, 1fr) 32px 20px;
+}
+
+.quoted-message--navigable > summary .quoted-message__caret {
+  grid-column: 4;
 }
 
 .quoted-message > summary::-webkit-details-marker {
@@ -2085,6 +2108,38 @@ html[data-surface="new-mail-notification"] #root {
 
 .quoted-message[open] > summary .quoted-message__caret {
   transform: rotate(90deg);
+}
+
+.quoted-message__open-source {
+  display: inline-grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  transition:
+    background var(--motion-fast),
+    border-color var(--motion-fast),
+    color var(--motion-fast),
+    transform 80ms;
+}
+
+.quoted-message__open-source:hover {
+  border-color: color-mix(in srgb, var(--color-primary) 24%, transparent);
+  background: color-mix(in srgb, var(--color-primary) 11%, transparent);
+  color: var(--color-primary);
+}
+
+.quoted-message__open-source:active {
+  transform: translateY(1px);
+}
+
+.quoted-message__open-source:focus-visible {
+  color: var(--color-primary);
 }
 
 .quoted-message__content {
@@ -3919,6 +3974,10 @@ html[data-surface="new-mail-notification"] #root {
 
 .toast[data-tone="error"] {
   color: var(--color-danger);
+}
+
+.toast[data-tone="info"] {
+  color: var(--color-text-secondary);
 }
 
 .toast span {

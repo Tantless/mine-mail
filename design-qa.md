@@ -267,3 +267,56 @@ No actionable P0, P1, or P2 mismatch remains.
 - The in-app browser surface was unavailable in this session; visual evidence was captured from the actual running Tauri window instead.
 
 final result: passed
+# Reply-History Local Navigation Design QA — 2026-07-20
+
+- Source visual truth: `C:\Users\tantl\AppData\Local\Temp\347520a3-8692-4c89-85b8-57619e5d5d2f.png`
+- Browser-rendered implementation screenshot: `Z:\mine-mail\web\design\qa\quote-navigation-final.png`
+- Focused implementation crop: `Z:\mine-mail\web\design\qa\quote-navigation-final-focus.png`
+- Focused side-by-side comparison: `Z:\mine-mail\web\design\qa\quote-navigation-comparison.png`
+- Navigation destination screenshot: `Z:\mine-mail\web\design\qa\quote-navigation-destination-passed.png`
+- Viewport: 4000 × 2400 physical pixels at WebView2 device scale factor 2 (2000 × 1200 logical pixels).
+- State: active dark theme, Gmail account, received `Re: test1` selected, cached `test1` ancestor available in Sent.
+
+## Full-view Comparison Evidence
+
+The final running Tauri capture preserves the approved three-column reader, dark frosted material, quote-card radius and edge, left quote mark, subject/route/time hierarchy, and far-right disclosure caret. The new local-navigation affordance uses the existing Phosphor icon family and occupies a reserved 32 px control column immediately left of the caret without changing card height.
+
+## Focused Region Comparison Evidence
+
+The side-by-side comparison places the supplied quote-card source and the final implementation in one image. Subject, sender → recipient, time, card outline, and disclosure direction remain visually consistent. The only intentional addition is the muted envelope control; its transparent default surface keeps the card hierarchy quiet while hover/focus styling uses the active theme accent.
+
+## Required Fidelity Surfaces
+
+- Fonts and typography: the existing Inter/system stack, subject weight, monospaced metadata, line heights, truncation, and single-line route/time behavior are unchanged.
+- Spacing and layout rhythm: the card retains its 66 px header, 12 px radius, 32 px quote mark, and 9 px grid gaps. A dedicated 32 px navigation column prevents overlap with both metadata and caret.
+- Colors and visual tokens: the control defaults to `--color-text-muted`; hover/focus use `--color-primary`, semantic border mixing, and the existing focus ring. No fixed theme color was introduced.
+- Image quality and asset fidelity: no raster or custom SVG asset was added. The control uses the repository's existing Phosphor `EnvelopeOpen` icon at 17 px.
+- Copy and content: subject, route, timestamp, and numbered fallback remain unchanged. The accessible label and tooltip say which mailbox will open.
+
+## Findings
+
+No actionable P0, P1, or P2 issue remains.
+
+## Comparison History
+
+### Iteration 1
+
+- Earlier finding [P2]: an absolutely positioned sibling button inside `<details>` used the disclosure content area as its vertical containing block, so the control rendered below the quote header and was not visibly discoverable.
+- Fix: moved the button into the summary's dedicated third grid column, kept the caret in the fourth column, and prevented/stopped the button click so it never toggles the disclosure.
+- Post-fix evidence: `quote-navigation-final.png`, `quote-navigation-final-focus.png`, and `quote-navigation-comparison.png` show the icon aligned between metadata and caret with no height or text-wrap regression.
+
+## Interaction, Accessibility, and Console Checks
+
+- Before navigation, the quote disclosure was closed and the target resolved to Gmail Sent UID 3.
+- Activating the icon switched the folder to `已发送`, opened reader heading `test1`, selected and focused the exact `test1` list row, and removed the previous quote card with the source message view. The result is captured in `quote-navigation-destination-passed.png`.
+- React tests verify that activating the nested button does not open the `<details>` card, unresolved targets render no button, and cross-folder navigation selects/focuses the exact row.
+- The 32 × 32 px button is keyboard-focusable, has a mailbox-specific accessible name and tooltip, and retains the global focus ring.
+- DevTools showed no application error or warning from this flow; only the standard React DevTools advisory and the console paste-safety notice appeared during QA.
+
+## Follow-up Polish
+
+No P3 follow-up is required for this focused feature.
+
+final result: passed
+
+---

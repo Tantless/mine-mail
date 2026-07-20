@@ -1,8 +1,13 @@
-import { CheckCircle, WarningCircle, X } from "@phosphor-icons/react";
+import { CheckCircle, Info, WarningCircle, X } from "@phosphor-icons/react";
 
 export function Toast({ toast, onClose }) {
   if (!toast) return null;
-  const Icon = toast.tone === "error" ? WarningCircle : CheckCircle;
+  const Icon =
+    toast.tone === "error"
+      ? WarningCircle
+      : toast.tone === "info"
+        ? Info
+        : CheckCircle;
   return (
     <div
       className="toast"

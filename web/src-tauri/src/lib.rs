@@ -26,8 +26,8 @@ use desktop::{
 use diagnostics::{ErrorKind as DiagnosticErrorKind, Fields as DiagnosticFields};
 use mail_html::{
     MailBodySegmentConfidence, MailBodySegmentKind, MailBodySegmentMetadata, MailHtmlStructure,
-    SanitizedMailBodySegment, authored_body_preview, sanitize_mail_html,
-    segment_mail_body_with_metadata, segment_mail_body_with_metadata_chain,
+    SanitizedMailBodySegment, authored_body_preview, quote_metadata_matches_cached,
+    sanitize_mail_html, segment_mail_body_with_metadata, segment_mail_body_with_metadata_chain,
 };
 
 const INBOX_SYNC_LIMIT: usize = 100;
@@ -102,6 +102,8 @@ struct BodySegmentDto {
     confidence: BodySegmentConfidenceDto,
     #[serde(skip_serializing_if = "Option::is_none")]
     quote_metadata: Option<BodySegmentMetadataDto>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    navigation_target: Option<MessageNavigationTargetDto>,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -110,6 +112,21 @@ struct BodySegmentMetadataDto {
     sender: Option<String>,
     recipient: Option<String>,
     sent_at: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+struct MessageNavigationTargetDto {
+    mailbox: String,
+    uid: u32,
+}
+
+impl From<&InboxMessage> for MessageNavigationTargetDto {
+    fn from(value: &InboxMessage) -> Self {
+        Self {
+            mailbox: value.mailbox.clone(),
+            uid: value.uid,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -246,8 +263,26 @@ impl From<SanitizedMailBodySegment> for BodySegmentDto {
                 MailBodySegmentConfidence::Medium => BodySegmentConfidenceDto::Medium,
             },
             quote_metadata: value.quote_metadata.map(Into::into),
+            navigation_target: None,
         }
     }
+}
+
+fn quote_navigation_target(
+    segment: &SanitizedMailBodySegment,
+    metadata_chain: &[Option<MailBodySegmentMetadata>],
+    navigation_targets: &[Option<MessageNavigationTargetDto>],
+) -> Option<MessageNavigationTargetDto> {
+    if segment.kind != MailBodySegmentKind::Quoted || segment.quote_depth == 0 {
+        return None;
+    }
+    let index = usize::from(segment.quote_depth - 1);
+    let cached_metadata = metadata_chain.get(index)?.as_ref()?;
+    let detected_metadata = segment.quote_metadata.as_ref()?;
+    if !quote_metadata_matches_cached(detected_metadata, cached_metadata) {
+        return None;
+    }
+    navigation_targets.get(index)?.clone()
 }
 
 impl InboxMessageDto {
@@ -284,18 +319,28 @@ impl InboxMessageDto {
             .map(Some)
             .into_iter()
             .collect::<Vec<_>>();
-        Self::full_with_metadata_chain(value, &metadata_chain)
+        let navigation_targets = parent
+            .map(MessageNavigationTargetDto::from)
+            .map(Some)
+            .into_iter()
+            .collect::<Vec<_>>();
+        Self::full_with_metadata_chain(value, &metadata_chain, &navigation_targets)
     }
 
     fn full_with_ancestors(value: InboxMessage, ancestors: &[Option<InboxMessage>]) -> Self {
         let has_reply_headers = !value.in_reply_to.is_empty() || !value.references.is_empty();
         let metadata_chain = reply_quote_metadata_chain(&value, ancestors, has_reply_headers);
-        Self::full_with_metadata_chain(value, &metadata_chain)
+        let navigation_targets = ancestors
+            .iter()
+            .map(|ancestor| ancestor.as_ref().map(MessageNavigationTargetDto::from))
+            .collect::<Vec<_>>();
+        Self::full_with_metadata_chain(value, &metadata_chain, &navigation_targets)
     }
 
     fn full_with_metadata_chain(
         value: InboxMessage,
         metadata_chain: &[Option<MailBodySegmentMetadata>],
+        navigation_targets: &[Option<MessageNavigationTargetDto>],
     ) -> Self {
         // MIME extraction (including safe CID image resolution) already ran
         // when the body entered SQLite. Re-parsing raw RFC822 on every click
@@ -313,7 +358,13 @@ impl InboxMessageDto {
             metadata_chain,
         )
         .into_iter()
-        .map(Into::into)
+        .map(|segment| {
+            let navigation_target =
+                quote_navigation_target(&segment, metadata_chain, navigation_targets);
+            let mut dto = BodySegmentDto::from(segment);
+            dto.navigation_target = navigation_target;
+            dto
+        })
         .collect();
         let sanitized = value.body_html.as_deref().map(sanitize_mail_html);
         let has_remote_images = sanitized
@@ -647,9 +698,7 @@ impl From<OutboxItem> for OutboxMessageDto {
                     Some(fragment) => (Some(fragment), BodyRenderMode::NativeHtml),
                     None => (Some(html.fragment), BodyRenderMode::IsolatedHtml),
                 },
-                MailHtmlStructure::Isolated => {
-                    (Some(html.fragment), BodyRenderMode::IsolatedHtml)
-                }
+                MailHtmlStructure::Isolated => (Some(html.fragment), BodyRenderMode::IsolatedHtml),
             },
         };
         Self {
@@ -735,7 +784,11 @@ async fn mark_message_read(
         .mark_inbox_message_read(uid)
         .map_err(safe_mail_error)?;
 
-    if account.refresh_active_oauth_backend(&backend).await.is_err() {
+    if account
+        .refresh_active_oauth_backend(&backend)
+        .await
+        .is_err()
+    {
         diagnostics::limited_failure(
             "message_read_sync_failed",
             "message_read_sync",
@@ -770,6 +823,71 @@ async fn mark_message_read(
             diagnostics::limited_failure(
                 "message_read_sync_failed",
                 "message_read_sync",
+                Some(&account_id),
+                diagnostics::mail_error_kind(&error),
+            );
+            Ok(false)
+        }
+    }
+}
+
+/// Stars or unstars one cached remote message locally first, then mirrors the
+/// exact mailbox UID through the standard IMAP `\Flagged` system flag.
+#[tauri::command]
+async fn set_message_starred(
+    account: State<'_, AccountRuntime>,
+    backend: State<'_, BackendState>,
+    mailbox: String,
+    uid: u32,
+    starred: bool,
+) -> CommandResult<bool> {
+    let account_id = backend
+        .active_account_id()
+        .ok_or_else(|| "No mail account is selected.".to_owned())?;
+    backend
+        .local_for(&account_id)?
+        .set_message_starred(&mailbox, uid, starred)
+        .map_err(safe_mail_error)?;
+
+    if account
+        .refresh_active_oauth_backend(&backend)
+        .await
+        .is_err()
+    {
+        diagnostics::limited_failure(
+            "message_star_sync_failed",
+            "message_star_sync",
+            Some(&account_id),
+            DiagnosticErrorKind::Runtime,
+        );
+        return Ok(false);
+    }
+    let network = match backend.network_for(&account_id) {
+        Ok(network) => network,
+        Err(_) => {
+            diagnostics::limited_failure(
+                "message_star_sync_failed",
+                "message_star_sync",
+                Some(&account_id),
+                DiagnosticErrorKind::Runtime,
+            );
+            return Ok(false);
+        }
+    };
+    match network.sync_pending_message_star_flags(&mailbox).await {
+        Ok(_) => {
+            diagnostics::limited_recovery(
+                "message_star_sync_failed",
+                "message_star_sync_recovered",
+                "message_star_sync",
+                Some(&account_id),
+            );
+            Ok(true)
+        }
+        Err(error) => {
+            diagnostics::limited_failure(
+                "message_star_sync_failed",
+                "message_star_sync",
                 Some(&account_id),
                 diagnostics::mail_error_kind(&error),
             );
@@ -1574,6 +1692,7 @@ pub fn run() {
             list_inbox,
             list_sent,
             mark_message_read,
+            set_message_starred,
             fetch_message,
             fetch_sent_message,
             prepare_reply,
@@ -1942,6 +2061,8 @@ mod tests {
 
         let mut parent = rich_message();
         parent.id = 2;
+        parent.mailbox = "INBOX".to_owned();
+        parent.uid = 12;
         parent.message_id = Some("parent@mine-mail.invalid".to_owned());
         parent.subject = "Re: test1".to_owned();
         parent.sender = Some(MailAddress {
@@ -1956,6 +2077,8 @@ mod tests {
 
         let mut root = rich_message();
         root.id = 3;
+        root.mailbox = "[Gmail]/Sent Mail".to_owned();
+        root.uid = 34;
         root.message_id = Some("root@mine-mail.invalid".to_owned());
         root.subject = "test1".to_owned();
         root.sender = Some(MailAddress {
@@ -1976,6 +2099,8 @@ mod tests {
         assert_eq!(segments[0]["content"], "ok1");
         assert_eq!(segments[1]["quote_metadata"]["subject"], "Re: test1");
         assert_eq!(segments[1]["quote_metadata"]["sender"], "tantless@163.com");
+        assert_eq!(segments[1]["navigation_target"]["mailbox"], "INBOX");
+        assert_eq!(segments[1]["navigation_target"]["uid"], 12);
         assert_eq!(
             segments[1]["quote_metadata"]["recipient"],
             "tantless8@gmail.com"
@@ -1993,7 +2118,44 @@ mod tests {
             segments[2]["quote_metadata"]["sent_at"],
             "2026-07-20 01:45:53 +00:00"
         );
+        assert_eq!(
+            segments[2]["navigation_target"]["mailbox"],
+            "[Gmail]/Sent Mail"
+        );
+        assert_eq!(segments[2]["navigation_target"]["uid"], 34);
         assert!(json.get("raw_rfc822").is_none());
+    }
+
+    #[test]
+    fn unrelated_detected_quote_never_inherits_a_cached_navigation_target() {
+        let mut message = rich_message();
+        message.subject = "Re: mixed thread".to_owned();
+        message.in_reply_to = vec!["parent@mine-mail.invalid".to_owned()];
+        message.body_text = Some(
+            "Current reply\n\nAt 2026-07-20 09:00:00 +00:00, <third@example.com> wrote:\n> Third-party history"
+                .to_owned(),
+        );
+        message.body_html = None;
+
+        let mut parent = rich_message();
+        parent.mailbox = "INBOX".to_owned();
+        parent.uid = 99;
+        parent.sender = Some(MailAddress {
+            name: None,
+            email: "expected@example.com".to_owned(),
+        });
+
+        let dto = InboxMessageDto::full_with_ancestors(message, &[Some(parent)]);
+        let json = serde_json::to_value(dto).expect("serialize mixed quote");
+        let quoted = json["body_segments"]
+            .as_array()
+            .expect("body segments")
+            .iter()
+            .find(|segment| segment["kind"] == "quoted")
+            .expect("quoted segment");
+
+        assert_eq!(quoted["quote_metadata"]["sender"], "<third@example.com>");
+        assert!(quoted.get("navigation_target").is_none());
     }
 
     #[test]

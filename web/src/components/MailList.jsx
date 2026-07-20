@@ -5,6 +5,7 @@ import {
   MagnifyingGlass,
   Star,
 } from "@phosphor-icons/react";
+import { useEffect, useRef } from "react";
 import { IconButton } from "./IconButton.jsx";
 import { ProfileAvatar } from "./ProfileAvatar.jsx";
 import {
@@ -12,6 +13,7 @@ import {
   hasFlag,
   senderLabel,
 } from "../utils/formatters.js";
+import { messageNavigationKey } from "../utils/messageNavigation.js";
 
 const tabs = [
   { id: "all", label: "全部" },
@@ -23,7 +25,9 @@ export function MailList({
   folderLabel,
   messages,
   selectedUid,
+  selectedMessage = null,
   onSelect,
+  onToggleStar = null,
   query,
   onQueryChange,
   filter,
@@ -33,7 +37,20 @@ export function MailList({
   canSync = true,
   onOpenMobileNav,
   avatarForEmail = () => null,
+  referenceJump = null,
 }) {
+  const messageListRef = useRef(null);
+
+  useEffect(() => {
+    if (!referenceJump?.key || !messageListRef.current) return;
+    const targetRow = Array.from(
+      messageListRef.current.querySelectorAll(".mail-row"),
+    ).find((row) => row.dataset.navigationKey === referenceJump.key);
+    if (!targetRow) return;
+    targetRow.scrollIntoView?.({ block: "nearest" });
+    targetRow.focus({ preventScroll: true });
+  }, [referenceJump]);
+
   return (
     <section className="mail-list-panel" aria-label={`${folderLabel}邮件列表`}>
       <div className="list-topbar">
@@ -91,20 +108,36 @@ export function MailList({
         <span className="mail-tabs__count">{messages.length} 封</span>
       </div>
 
-      <div className="message-list" role="listbox" aria-label="邮件">
+      <div
+        className="message-list"
+        role="listbox"
+        aria-label="邮件"
+        ref={messageListRef}
+      >
         {messages.length ? (
           messages.map((message, index) => {
-            const selected = message.uid === selectedUid;
+            const navigationKey = messageNavigationKey(message);
+            const selectedNavigationKey = messageNavigationKey(selectedMessage);
+            const selected =
+              navigationKey && selectedNavigationKey
+                ? navigationKey === selectedNavigationKey
+                : message.uid === selectedUid;
             const unread = !hasFlag(message, "\\Seen");
             const starred = hasFlag(message, "\\Flagged");
             const sender = senderLabel(message);
+            const canToggleStar =
+              typeof onToggleStar === "function" &&
+              message.kind !== "draft" &&
+              message.kind !== "outbox";
+            const subject = message.subject || "（无主题）";
 
             return (
               <article
-                key={message.uid}
+                key={navigationKey || message.uid}
                 className="mail-row"
                 data-selected={selected}
                 data-unread={unread}
+                data-navigation-key={navigationKey || undefined}
                 role="option"
                 aria-selected={selected}
                 tabIndex={0}
@@ -138,9 +171,15 @@ export function MailList({
                   type="button"
                   className="star-button"
                   data-active={starred}
-                  aria-label="星标（尚未实现）"
-                  title="星标操作尚未实现"
-                  disabled
+                  aria-label={starred ? `取消星标：${subject}` : `添加星标：${subject}`}
+                  aria-pressed={starred}
+                  title={starred ? "取消星标" : "添加星标"}
+                  disabled={!canToggleStar}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    if (canToggleStar) onToggleStar(message);
+                  }}
+                  onKeyDown={(event) => event.stopPropagation()}
                 >
                   <Star size={17} weight={starred ? "fill" : "regular"} />
                 </button>

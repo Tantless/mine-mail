@@ -300,6 +300,15 @@ export const mailApi = {
     })();
   },
 
+  async setMessageStarred(mailbox, uid, starred) {
+    if (isTauri) {
+      return desktopInvoke("set_message_starred", { mailbox, uid, starred });
+    }
+    // Browser mode is only a visual test/demo surface. Persistent flag state
+    // remains owned by the Tauri Rust/SQLite backend.
+    return webOnly(() => true)();
+  },
+
   async listSent(limit = 50) {
     if (isTauri) return desktopInvoke("list_sent", { limit });
     return webOnly(() => [])();

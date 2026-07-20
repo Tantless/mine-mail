@@ -1,4 +1,4 @@
-import { CaretRight, Quotes } from "@phosphor-icons/react";
+import { CaretRight, EnvelopeOpen, Quotes } from "@phosphor-icons/react";
 import { useState } from "react";
 import { HtmlMessageBody } from "./HtmlMessageBody.jsx";
 import { NativeHtmlMessageBody } from "./NativeHtmlMessageBody.jsx";
@@ -84,14 +84,21 @@ function QuotedSegment({
   sourceIndex,
   remoteImageMode,
   onOpenExternalLink,
+  resolveReferencedMessage,
+  onOpenReferencedMessage,
 }) {
   const metadata = segment.quote_metadata || {};
   const subject = metadata.subject || `引用邮件 ${quoteNumber}`;
   const hasRoute = metadata.sender || metadata.recipient;
+  const navigationTarget = segment.navigation_target;
+  const destination = navigationTarget
+    ? resolveReferencedMessage?.(navigationTarget)
+    : null;
+  const destinationLabel = destination?.folder === "sent" ? "已发送" : "收件箱";
 
   return (
     <details
-      className="quoted-message"
+      className={`quoted-message${destination ? " quoted-message--navigable" : ""}`}
       open={segment.confidence === "medium" ? true : undefined}
     >
       <summary>
@@ -119,6 +126,21 @@ function QuotedSegment({
             <time className="quoted-message__time">{metadata.sent_at}</time>
           ) : null}
         </span>
+        {destination ? (
+          <button
+            type="button"
+            className="quoted-message__open-source"
+            aria-label={`在${destinationLabel}中打开原邮件：${subject}`}
+            title={`在${destinationLabel}中打开原邮件`}
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onOpenReferencedMessage?.(navigationTarget);
+            }}
+          >
+            <EnvelopeOpen size={17} weight="regular" aria-hidden="true" />
+          </button>
+        ) : null}
         <CaretRight className="quoted-message__caret" size={16} weight="bold" />
       </summary>
       <div className="quoted-message__content">
@@ -140,6 +162,8 @@ export function SegmentedMessageBody({
   bodyRenderMode,
   remoteImageMode,
   onOpenExternalLink,
+  resolveReferencedMessage,
+  onOpenReferencedMessage,
 }) {
   const [showOriginal, setShowOriginal] = useState(false);
   const segments = message.body_segments || [];
@@ -183,6 +207,8 @@ export function SegmentedMessageBody({
                 sourceIndex={segment.sourceIndex}
                 remoteImageMode={remoteImageMode}
                 onOpenExternalLink={onOpenExternalLink}
+                resolveReferencedMessage={resolveReferencedMessage}
+                onOpenReferencedMessage={onOpenReferencedMessage}
               />
             ) : (
               <section
