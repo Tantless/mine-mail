@@ -61,6 +61,17 @@ describe("Sidebar account switcher", () => {
     expect(screen.getByRole("button", { name: "写信" }).querySelector("kbd")).toBeNull();
   });
 
+  it("keeps account and settings controls in a dedicated footer region", () => {
+    renderSidebar(1);
+
+    const accountSwitcher = screen.getByLabelText("已登录邮箱账户");
+    const footer = accountSwitcher.closest(".sidebar__footer");
+
+    expect(footer).toBeTruthy();
+    expect(footer.contains(screen.getByRole("button", { name: "设置" }))).toBe(true);
+    expect(footer.contains(screen.getByRole("button", { name: "写信" }))).toBe(false);
+  });
+
   it.each([
     [0, 1],
     [1, 1],
