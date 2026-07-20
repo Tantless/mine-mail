@@ -329,6 +329,25 @@ impl ImapConnection {
             .map_err(|error| MailError::Imap(error.to_string()))
     }
 
+    /// Selects a mailbox read-write and verifies the server's advertised
+    /// permanent flags when that metadata is present. `\Seen` is a standard
+    /// IMAP system flag rather than an optional CAPABILITY token, so the final
+    /// authority is a successful STORE followed by a FLAGS fetch.
+    pub async fn select_mailbox_for_seen_update(&mut self, mailbox: &str) -> Result<Option<u32>> {
+        let selected = timeout(COMMAND_TIMEOUT, self.session.select(mailbox))
+            .await
+            .map_err(|_| MailError::Timeout {
+                operation: "IMAP SELECT mailbox",
+            })?
+            .map_err(|error| MailError::Imap(error.to_string()))?;
+        if !mailbox_allows_seen_updates(&selected.permanent_flags) {
+            return Err(MailError::Validation(
+                "the IMAP mailbox does not allow persistent \\Seen updates".to_owned(),
+            ));
+        }
+        Ok(selected.uid_validity)
+    }
+
     async fn search_all_uids(&mut self) -> Result<Vec<u32>> {
         let uids = timeout(COMMAND_TIMEOUT, self.session.uid_search("ALL"))
             .await
@@ -394,6 +413,50 @@ impl ImapConnection {
                 Some((uid, flags))
             })
             .collect())
+    }
+
+    /// Adds `\Seen` without replacing unrelated flags and returns the
+    /// server-confirmed flag set for every requested UID.
+    pub async fn add_seen_flags(&mut self, uids: &[u32]) -> Result<Vec<(u32, Vec<String>)>> {
+        if uids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let sequence_set = compress_uid_set(uids);
+        {
+            let stream = timeout(
+                COMMAND_TIMEOUT,
+                self.session
+                    .uid_store(&sequence_set, "+FLAGS.SILENT (\\Seen)"),
+            )
+            .await
+            .map_err(|_| MailError::Timeout {
+                operation: "IMAP mark message read",
+            })?
+            .map_err(|error| MailError::Imap(error.to_string()))?;
+            timeout(COMMAND_TIMEOUT, stream.try_collect::<Vec<_>>())
+                .await
+                .map_err(|_| MailError::Timeout {
+                    operation: "IMAP mark message read response",
+                })?
+                .map_err(|error| MailError::Imap(error.to_string()))?;
+        }
+
+        let confirmed = self.fetch_flags(uids).await?;
+        for uid in uids.iter().copied().collect::<BTreeSet<_>>() {
+            let flags = confirmed
+                .iter()
+                .find_map(|(candidate, flags)| (*candidate == uid).then_some(flags))
+                .ok_or_else(|| MailError::NotFound {
+                    entity: "remote message UID",
+                    id: uid.to_string(),
+                })?;
+            if !flags.iter().any(|flag| flag.eq_ignore_ascii_case("\\Seen")) {
+                return Err(MailError::Validation(format!(
+                    "the IMAP server did not persist the read flag for UID {uid}"
+                )));
+            }
+        }
+        Ok(confirmed)
     }
 
     async fn fetch_messages(
@@ -714,14 +777,30 @@ fn flag_name(flag: Flag<'_>) -> String {
     }
 }
 
+fn mailbox_allows_seen_updates(permanent_flags: &[Flag<'_>]) -> bool {
+    permanent_flags.is_empty()
+        || permanent_flags
+            .iter()
+            .any(|flag| matches!(flag, Flag::Seen))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::compress_uid_set;
+    use async_imap::types::Flag;
+
+    use super::{compress_uid_set, mailbox_allows_seen_updates};
 
     #[test]
     fn compresses_sorted_or_unsorted_uid_sets() {
         assert_eq!(compress_uid_set(&[]), "");
         assert_eq!(compress_uid_set(&[9]), "9");
         assert_eq!(compress_uid_set(&[8, 1, 2, 3, 3, 7, 10]), "1:3,7:8,10");
+    }
+
+    #[test]
+    fn detects_advertised_seen_flag_support() {
+        assert!(mailbox_allows_seen_updates(&[]));
+        assert!(mailbox_allows_seen_updates(&[Flag::Seen, Flag::Flagged]));
+        assert!(!mailbox_allows_seen_updates(&[Flag::Flagged]));
     }
 }

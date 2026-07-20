@@ -288,6 +288,18 @@ export const mailApi = {
     )();
   },
 
+  async markMessageRead(uid) {
+    if (isTauri) return desktopInvoke("mark_message_read", { uid });
+    return webOnly(() => {
+      const message = webMessages.find((mail) => mail.uid === uid);
+      if (!message) throw new Error("找不到要标记为已读的邮件");
+      if (!(message.flags || []).some((flag) => flag.toLowerCase() === "\\seen")) {
+        message.flags = [...(message.flags || []), "\\Seen"];
+      }
+      return true;
+    })();
+  },
+
   async listSent(limit = 50) {
     if (isTauri) return desktopInvoke("list_sent", { limit });
     return webOnly(() => [])();

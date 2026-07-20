@@ -17,6 +17,7 @@ const desktop = vi.hoisted(() => {
     mailApi: {
       listInbox: vi.fn(),
       fetchMessage: vi.fn(),
+      markMessageRead: vi.fn(),
       listSent: vi.fn(),
       fetchSentMessage: vi.fn(),
       prepareReply: vi.fn(),
@@ -192,6 +193,7 @@ describe("Mine Mail desktop state bridge", () => {
       body_text: "Loaded body",
       body_fetched: true,
     }));
+    desktop.mailApi.markMessageRead.mockResolvedValue(true);
     desktop.mailApi.fetchSentMessage.mockImplementation(async (uid) => ({
       ...summary(uid, "Sent mail"),
       mailbox: "Sent",
@@ -268,6 +270,31 @@ describe("Mine Mail desktop state bridge", () => {
 
     await waitFor(() => expect(desktop.mailApi.fetchMessage).toHaveBeenCalledWith(1));
     expect(await screen.findByText("Loaded body")).toBeTruthy();
+  });
+
+  it("marks an unread Inbox message read immediately and requests IMAP persistence", async () => {
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 600 });
+    const unread = summary(14, "Unread mail");
+    desktop.mailApi.listInbox.mockResolvedValue([unread]);
+    desktop.mailApi.fetchMessage.mockResolvedValue({
+      ...unread,
+      body_text: "Unread body",
+      body_fetched: true,
+    });
+    const user = userEvent.setup();
+    render(<App />);
+
+    const subject = await screen.findByText("Unread mail");
+    const row = subject.closest(".mail-row");
+    expect(row?.dataset.unread).toBe("true");
+    await user.click(subject);
+
+    expect(row?.dataset.unread).toBe("false");
+    await waitFor(() =>
+      expect(desktop.mailApi.markMessageRead).toHaveBeenCalledWith(14),
+    );
+    expect((await screen.findByText("Unread body")).closest(".reader-panel")).toBeTruthy();
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 1024 });
   });
 
   it("hydrates local account and exact-contact avatars across the shell", async () => {

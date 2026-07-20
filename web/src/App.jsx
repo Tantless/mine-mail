@@ -186,6 +186,11 @@ function sentMessageMatchesOutbox(message, item) {
   );
 }
 
+function withSeenFlag(message) {
+  if (!message || hasFlag(message, "\\Seen")) return message;
+  return { ...message, flags: [...(message.flags || []), "\\Seen"] };
+}
+
 function hasDraftContent(value) {
   return Boolean(
     value &&
@@ -428,16 +433,42 @@ export function App() {
       }
 
       const accountId = activeAccountIdRef.current || "unscoped";
+      const shouldMarkRead =
+        !message.kind &&
+        (message.mailbox || "INBOX").toLowerCase() === "inbox" &&
+        !hasFlag(message, "\\Seen");
       const cachedBody = messageBodyCacheRef.current.get(
         messageCacheKey(message, accountId),
       );
-      const displayMessage = cachedBody ? { ...message, ...cachedBody } : message;
+      const cachedDisplayMessage = cachedBody
+        ? { ...message, ...cachedBody }
+        : message;
+      const displayMessage = shouldMarkRead
+        ? withSeenFlag(cachedDisplayMessage)
+        : cachedDisplayMessage;
       const requestId = selectionRequestRef.current + 1;
       selectionRequestRef.current = requestId;
       selectedUidRef.current = message.uid;
       setSelectedUid(message.uid);
       setSelectedMessage(displayMessage);
       setMessageError(null);
+
+      if (shouldMarkRead) {
+        setMessages((current) => {
+          const updated = current.map((mail) =>
+            mail.uid === message.uid ? withSeenFlag(mail) : mail,
+          );
+          const accountView = accountViewsRef.current.get(accountId) || {};
+          accountViewsRef.current.set(accountId, {
+            ...accountView,
+            messages: updated,
+          });
+          return updated;
+        });
+        void mailApi.markMessageRead(message.uid).catch((error) => {
+          showToast(describeError(error, "已读状态保存失败"), "error");
+        });
+      }
 
       const needsHtmlHydration =
         displayMessage.body_html_available === true &&
@@ -499,10 +530,13 @@ export function App() {
           displayMessage.kind === "sent"
             ? await mailApi.fetchSentMessage(message.uid)
             : await mailApi.fetchMessage(message.uid);
-        const fullMessage =
+        let fullMessage =
           displayMessage.kind === "sent" && fetchedMessage
             ? toSentMessage(fetchedMessage)
             : fetchedMessage;
+        if (shouldMarkRead && fullMessage) {
+          fullMessage = withSeenFlag(fullMessage);
+        }
         if (
           !fullMessage ||
           selectionRequestRef.current !== requestId ||

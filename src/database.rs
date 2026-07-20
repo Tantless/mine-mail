@@ -145,6 +145,16 @@ impl Repository {
              CREATE INDEX IF NOT EXISTS idx_messages_message_id
                  ON messages(account_id, message_id);
 
+             CREATE TABLE IF NOT EXISTS pending_seen_updates (
+                 account_id TEXT NOT NULL,
+                 mailbox TEXT NOT NULL,
+                 uid INTEGER NOT NULL,
+                 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                 PRIMARY KEY (account_id, mailbox, uid),
+                 FOREIGN KEY (account_id, mailbox, uid)
+                     REFERENCES messages(account_id, mailbox, uid) ON DELETE CASCADE
+             );
+
              CREATE TABLE IF NOT EXISTS drafts (
                  id TEXT PRIMARY KEY NOT NULL,
                  account_id TEXT NOT NULL,
@@ -200,10 +210,11 @@ impl Repository {
         migrate_drafts_v4(&connection)?;
         migrate_messages_v5(&connection)?;
         migrate_drafts_v7(&connection)?;
+        migrate_pending_seen_v8(&connection)?;
         connection.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_drafts_remote_identity
                  ON drafts(account_id, remote_mailbox, remote_uid);
-             PRAGMA user_version = 7;",
+             PRAGMA user_version = 8;",
         )?;
         Ok(repository)
     }
@@ -415,6 +426,13 @@ impl Repository {
             params![message.account_id, message.mailbox],
         )?;
         let sender_json = message.sender.as_ref().map(encode_json).transpose()?;
+        let flags = flags_with_pending_seen(
+            &connection,
+            &message.account_id,
+            &message.mailbox,
+            message.uid,
+            &message.flags,
+        )?;
         connection.execute(
             "INSERT INTO messages (
                  account_id, mailbox, uid, message_id, in_reply_to_json, references_json, subject, sender_json,
@@ -457,7 +475,7 @@ impl Repository {
                 encode_json(&message.cc)?,
                 message.sent_at,
                 message.internal_date,
-                encode_json(&message.flags)?,
+                encode_json(&flags)?,
                 message.size_bytes,
                 message.preview,
                 message.body_text,
@@ -485,12 +503,93 @@ impl Repository {
         flags: &[String],
     ) -> Result<()> {
         let connection = self.connection()?;
+        let flags = flags_with_pending_seen(&connection, account_id, mailbox, uid, flags)?;
         let changed = connection.execute(
+            "UPDATE messages SET flags_json = ?4
+             WHERE account_id = ?1 AND mailbox = ?2 AND uid = ?3",
+            params![account_id, mailbox, uid, encode_json(&flags)?],
+        )?;
+        ensure_changed(changed, "message", format!("{account_id}:{mailbox}/{uid}"))
+    }
+
+    /// Marks one cached message read immediately and persists an idempotent
+    /// IMAP write-behind record. Remote flag reconciliation must preserve this
+    /// local intent until the server has confirmed `\Seen`.
+    pub(crate) fn mark_message_seen_pending(
+        &self,
+        account_id: &str,
+        mailbox: &str,
+        uid: u32,
+    ) -> Result<bool> {
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let encoded: Option<String> = transaction
+            .query_row(
+                "SELECT flags_json FROM messages
+                 WHERE account_id = ?1 AND mailbox = ?2 AND uid = ?3",
+                params![account_id, mailbox, uid],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let encoded = encoded.ok_or_else(|| MailError::NotFound {
+            entity: "message",
+            id: format!("{account_id}:{mailbox}/{uid}"),
+        })?;
+        let mut flags: Vec<String> = serde_json::from_str(&encoded)?;
+        let changed = add_seen_flag(&mut flags);
+        if changed {
+            transaction.execute(
+                "UPDATE messages SET flags_json = ?4
+                 WHERE account_id = ?1 AND mailbox = ?2 AND uid = ?3",
+                params![account_id, mailbox, uid, encode_json(&flags)?],
+            )?;
+        }
+        transaction.execute(
+            "INSERT INTO pending_seen_updates (account_id, mailbox, uid)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(account_id, mailbox, uid) DO NOTHING",
+            params![account_id, mailbox, uid],
+        )?;
+        transaction.commit()?;
+        Ok(changed)
+    }
+
+    pub(crate) fn pending_seen_uids(&self, account_id: &str, mailbox: &str) -> Result<Vec<u32>> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT uid FROM pending_seen_updates
+             WHERE account_id = ?1 AND mailbox = ?2 ORDER BY uid",
+        )?;
+        statement
+            .query_map(params![account_id, mailbox], |row| row.get(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    /// Commits the server-confirmed flags and removes the write-behind record
+    /// atomically, so a crash cannot lose the user's read action.
+    pub(crate) fn complete_pending_seen(
+        &self,
+        account_id: &str,
+        mailbox: &str,
+        uid: u32,
+        flags: &[String],
+    ) -> Result<()> {
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let changed = transaction.execute(
             "UPDATE messages SET flags_json = ?4
              WHERE account_id = ?1 AND mailbox = ?2 AND uid = ?3",
             params![account_id, mailbox, uid, encode_json(flags)?],
         )?;
-        ensure_changed(changed, "message", format!("{account_id}:{mailbox}/{uid}"))
+        ensure_changed(changed, "message", format!("{account_id}:{mailbox}/{uid}"))?;
+        transaction.execute(
+            "DELETE FROM pending_seen_updates
+             WHERE account_id = ?1 AND mailbox = ?2 AND uid = ?3",
+            params![account_id, mailbox, uid],
+        )?;
+        transaction.commit()?;
+        Ok(())
     }
 
     pub(crate) fn list_inbox(
@@ -1453,6 +1552,51 @@ fn migrate_drafts_v7(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn migrate_pending_seen_v8(connection: &Connection) -> Result<()> {
+    connection.execute_batch(
+        "CREATE TABLE IF NOT EXISTS pending_seen_updates (
+             account_id TEXT NOT NULL,
+             mailbox TEXT NOT NULL,
+             uid INTEGER NOT NULL,
+             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+             PRIMARY KEY (account_id, mailbox, uid),
+             FOREIGN KEY (account_id, mailbox, uid)
+                 REFERENCES messages(account_id, mailbox, uid) ON DELETE CASCADE
+         );",
+    )?;
+    Ok(())
+}
+
+fn flags_with_pending_seen(
+    connection: &Connection,
+    account_id: &str,
+    mailbox: &str,
+    uid: u32,
+    flags: &[String],
+) -> Result<Vec<String>> {
+    let pending = connection.query_row(
+        "SELECT EXISTS(
+             SELECT 1 FROM pending_seen_updates
+             WHERE account_id = ?1 AND mailbox = ?2 AND uid = ?3
+         )",
+        params![account_id, mailbox, uid],
+        |row| row.get::<_, bool>(0),
+    )?;
+    let mut flags = flags.to_vec();
+    if pending {
+        add_seen_flag(&mut flags);
+    }
+    Ok(flags)
+}
+
+fn add_seen_flag(flags: &mut Vec<String>) -> bool {
+    if flags.iter().any(|flag| flag.eq_ignore_ascii_case("\\Seen")) {
+        return false;
+    }
+    flags.push("\\Seen".to_owned());
+    true
+}
+
 fn table_has_column(connection: &Connection, table: &str, column: &str) -> Result<bool> {
     debug_assert!(
         table
@@ -1885,6 +2029,71 @@ mod tests {
         assert_eq!(
             repository.get_message(first_id).unwrap().flags,
             ["\\Flagged"]
+        );
+    }
+
+    #[test]
+    fn pending_seen_write_is_immediate_durable_and_reconciliation_safe() {
+        let (_directory, repository, account) = setup();
+        let mut unread = message(&account.account_id, false);
+        unread.flags = vec!["\\Flagged".to_owned()];
+        let row_id = repository.upsert_message(&unread).expect("unread message");
+
+        assert!(
+            repository
+                .mark_message_seen_pending(&account.account_id, "INBOX", unread.uid)
+                .expect("mark seen")
+        );
+        assert_eq!(
+            repository
+                .pending_seen_uids(&account.account_id, "INBOX")
+                .expect("pending seen"),
+            [unread.uid]
+        );
+        assert_eq!(
+            repository.get_message(row_id).expect("local message").flags,
+            ["\\Flagged", "\\Seen"]
+        );
+
+        repository
+            .update_message_flags(&account.account_id, "INBOX", unread.uid, &[])
+            .expect("stale remote flags");
+        let mut refreshed = unread.clone();
+        refreshed.flags.clear();
+        repository
+            .upsert_message(&refreshed)
+            .expect("stale remote summary");
+        assert_eq!(
+            repository
+                .get_message(row_id)
+                .expect("preserved seen")
+                .flags,
+            ["\\Seen"]
+        );
+
+        repository
+            .complete_pending_seen(
+                &account.account_id,
+                "INBOX",
+                unread.uid,
+                &["\\Seen".to_owned()],
+            )
+            .expect("server confirmation");
+        assert!(
+            repository
+                .pending_seen_uids(&account.account_id, "INBOX")
+                .expect("cleared pending seen")
+                .is_empty()
+        );
+        repository
+            .update_message_flags(&account.account_id, "INBOX", unread.uid, &[])
+            .expect("later remote unread state");
+        assert!(
+            repository
+                .get_message(row_id)
+                .expect("reconciled message")
+                .flags
+                .is_empty()
         );
     }
 
@@ -2678,7 +2887,7 @@ Body' AS BLOB)
         let version: u32 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("schema version");
-        assert_eq!(version, 7);
+        assert_eq!(version, 8);
         for column in [
             "local_version",
             "has_unsupported_content",

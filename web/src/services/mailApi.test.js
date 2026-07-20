@@ -71,6 +71,14 @@ describe("mailApi desktop IPC contract", () => {
     expect(ipc.invoke).toHaveBeenCalledWith("prepare_reply", { messageId: 42 });
   });
 
+  it("marks an Inbox UID read through a narrow desktop command", async () => {
+    ipc.invoke.mockResolvedValueOnce(true);
+    const { mailApi } = await import("./mailApi.js");
+
+    await expect(mailApi.markMessageRead(42)).resolves.toBe(true);
+    expect(ipc.invoke).toHaveBeenCalledWith("mark_message_read", { uid: 42 });
+  });
+
   it("maps desktop settings and account commands without persisting a secret", async () => {
     ipc.invoke
       .mockResolvedValueOnce({

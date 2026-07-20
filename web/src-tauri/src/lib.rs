@@ -27,7 +27,7 @@ use diagnostics::{ErrorKind as DiagnosticErrorKind, Fields as DiagnosticFields};
 use mail_html::{
     MailBodySegmentConfidence, MailBodySegmentKind, MailBodySegmentMetadata, MailHtmlStructure,
     SanitizedMailBodySegment, authored_body_preview, sanitize_mail_html,
-    segment_mail_body_with_metadata,
+    segment_mail_body_with_metadata, segment_mail_body_with_metadata_chain,
 };
 
 const INBOX_SYNC_LIMIT: usize = 100;
@@ -279,6 +279,24 @@ impl InboxMessageDto {
     }
 
     fn full_with_parent(value: InboxMessage, parent: Option<&InboxMessage>) -> Self {
+        let has_reply_headers = !value.in_reply_to.is_empty() || !value.references.is_empty();
+        let metadata_chain = reply_quote_metadata(&value, parent, has_reply_headers)
+            .map(Some)
+            .into_iter()
+            .collect::<Vec<_>>();
+        Self::full_with_metadata_chain(value, &metadata_chain)
+    }
+
+    fn full_with_ancestors(value: InboxMessage, ancestors: &[Option<InboxMessage>]) -> Self {
+        let has_reply_headers = !value.in_reply_to.is_empty() || !value.references.is_empty();
+        let metadata_chain = reply_quote_metadata_chain(&value, ancestors, has_reply_headers);
+        Self::full_with_metadata_chain(value, &metadata_chain)
+    }
+
+    fn full_with_metadata_chain(
+        value: InboxMessage,
+        metadata_chain: &[Option<MailBodySegmentMetadata>],
+    ) -> Self {
         // MIME extraction (including safe CID image resolution) already ran
         // when the body entered SQLite. Re-parsing raw RFC822 on every click
         // made cached HTML feel like a network operation.
@@ -288,12 +306,11 @@ impl InboxMessageDto {
             .as_ref()
             .is_some_and(|text| !text.trim().is_empty());
         let has_reply_headers = !value.in_reply_to.is_empty() || !value.references.is_empty();
-        let quote_metadata = reply_quote_metadata(&value, parent, has_reply_headers);
-        let body_segments = segment_mail_body_with_metadata(
+        let body_segments = segment_mail_body_with_metadata_chain(
             value.body_text.as_deref(),
             value.body_html.as_deref(),
             has_reply_headers,
-            quote_metadata.as_ref(),
+            metadata_chain,
         )
         .into_iter()
         .map(Into::into)
@@ -372,15 +389,7 @@ fn reply_quote_metadata(
     has_reply_headers: bool,
 ) -> Option<MailBodySegmentMetadata> {
     if let Some(parent) = parent {
-        return Some(MailBodySegmentMetadata {
-            subject: nonempty(parent.subject.as_str()),
-            sender: parent.sender.as_ref().map(format_mail_address),
-            recipient: joined_mail_addresses(&parent.to),
-            sent_at: parent
-                .sent_at
-                .clone()
-                .or_else(|| parent.internal_date.clone()),
-        });
+        return Some(reply_message_metadata(parent));
     }
     has_reply_headers.then(|| MailBodySegmentMetadata {
         subject: reply_parent_subject(&message.subject),
@@ -390,6 +399,38 @@ fn reply_quote_metadata(
         recipient: message.sender.as_ref().map(format_mail_address),
         sent_at: None,
     })
+}
+
+fn reply_quote_metadata_chain(
+    message: &InboxMessage,
+    ancestors: &[Option<InboxMessage>],
+    has_reply_headers: bool,
+) -> Vec<Option<MailBodySegmentMetadata>> {
+    let mut metadata_chain = ancestors
+        .iter()
+        .map(|ancestor| ancestor.as_ref().map(reply_message_metadata))
+        .collect::<Vec<_>>();
+    let fallback = reply_quote_metadata(message, None, has_reply_headers);
+    if metadata_chain.is_empty() {
+        if fallback.is_some() {
+            metadata_chain.push(fallback);
+        }
+    } else if metadata_chain[0].is_none() {
+        metadata_chain[0] = fallback;
+    }
+    metadata_chain
+}
+
+fn reply_message_metadata(message: &InboxMessage) -> MailBodySegmentMetadata {
+    MailBodySegmentMetadata {
+        subject: nonempty(message.subject.as_str()),
+        sender: message.sender.as_ref().map(format_mail_address),
+        recipient: joined_mail_addresses(&message.to),
+        sent_at: message
+            .sent_at
+            .clone()
+            .or_else(|| message.internal_date.clone()),
+    }
 }
 
 fn nonempty(value: &str) -> Option<String> {
@@ -436,8 +477,8 @@ fn joined_mail_addresses(addresses: &[MailAddress]) -> Option<String> {
 }
 
 fn full_message_dto(backend: &MailBackend, message: InboxMessage) -> InboxMessageDto {
-    let parent = backend.cached_reply_parent(&message).ok().flatten();
-    InboxMessageDto::full_with_parent(message, parent.as_ref())
+    let ancestors = backend.cached_reply_ancestors(&message).unwrap_or_default();
+    InboxMessageDto::full_with_ancestors(message, &ancestors)
 }
 
 impl From<InboxMessage> for InboxMessageDto {
@@ -675,6 +716,66 @@ fn list_sent(
                 .collect()
         })
         .map_err(safe_mail_error)
+}
+
+/// Opening an unread Inbox message commits `\Seen` to SQLite immediately.
+/// The durable pending row is then pushed to IMAP; a transient network or
+/// credential failure leaves it queued for the next normal Inbox sync.
+#[tauri::command]
+async fn mark_message_read(
+    account: State<'_, AccountRuntime>,
+    backend: State<'_, BackendState>,
+    uid: u32,
+) -> CommandResult<bool> {
+    let account_id = backend
+        .active_account_id()
+        .ok_or_else(|| "No mail account is selected.".to_owned())?;
+    backend
+        .local_for(&account_id)?
+        .mark_inbox_message_read(uid)
+        .map_err(safe_mail_error)?;
+
+    if account.refresh_active_oauth_backend(&backend).await.is_err() {
+        diagnostics::limited_failure(
+            "message_read_sync_failed",
+            "message_read_sync",
+            Some(&account_id),
+            DiagnosticErrorKind::Runtime,
+        );
+        return Ok(false);
+    }
+    let network = match backend.network_for(&account_id) {
+        Ok(network) => network,
+        Err(_) => {
+            diagnostics::limited_failure(
+                "message_read_sync_failed",
+                "message_read_sync",
+                Some(&account_id),
+                DiagnosticErrorKind::Runtime,
+            );
+            return Ok(false);
+        }
+    };
+    match network.sync_pending_inbox_read_flags().await {
+        Ok(_) => {
+            diagnostics::limited_recovery(
+                "message_read_sync_failed",
+                "message_read_sync_recovered",
+                "message_read_sync",
+                Some(&account_id),
+            );
+            Ok(true)
+        }
+        Err(error) => {
+            diagnostics::limited_failure(
+                "message_read_sync_failed",
+                "message_read_sync",
+                Some(&account_id),
+                diagnostics::mail_error_kind(&error),
+            );
+            Ok(false)
+        }
+    }
 }
 
 #[tauri::command]
@@ -1472,6 +1573,7 @@ pub fn run() {
             sync_all,
             list_inbox,
             list_sent,
+            mark_message_read,
             fetch_message,
             fetch_sent_message,
             prepare_reply,
@@ -1807,6 +1909,91 @@ mod tests {
             segments[1]["quote_metadata"]["sent_at"],
             "2026-07-17T09:54:29+08:00"
         );
+    }
+
+    #[test]
+    fn gmail_and_netease_reply_chain_restores_every_cached_quote_header() {
+        let mut message = rich_message();
+        message.mailbox = "[Gmail]/Sent Mail".to_owned();
+        message.message_id = Some("current@mine-mail.invalid".to_owned());
+        message.in_reply_to = vec!["parent@mine-mail.invalid".to_owned()];
+        message.references = vec![
+            "root@mine-mail.invalid".to_owned(),
+            "parent@mine-mail.invalid".to_owned(),
+        ];
+        message.subject = "Re: test1".to_owned();
+        message.sender = Some(MailAddress {
+            name: None,
+            email: "tantless8@gmail.com".to_owned(),
+        });
+        message.to = vec![MailAddress {
+            name: None,
+            email: "tantless@163.com".to_owned(),
+        }];
+        message.sent_at = Some("2026-07-20T01:47:38Z".to_owned());
+        message.body_text = Some(
+            "ok1\n\nAt 2026-07-20 01:46:26 +00:00, <tantless@163.com> wrote:\n> yes,receive1\n>\n> At 2026-07-20 01:45:53 +00:00, <tantless8@gmail.com> wrote:\n> > testtt"
+                .to_owned(),
+        );
+        message.body_html = Some(
+            r#"<div class="mine-mail-authored">ok1</div><br><div class="mine-mail-quote"><div>At 2026-07-20 01:46:26 +00:00, &lt;tantless@163.com&gt; wrote:</div><blockquote id="isReplyContent" type="cite"><div>yes,receive1</div><br><div><div>At 2026-07-20 01:45:53 +00:00, &lt;tantless8@gmail.com&gt; wrote:</div><blockquote>testtt<br></blockquote></div></blockquote></div>"#
+                .to_owned(),
+        );
+
+        let mut parent = rich_message();
+        parent.id = 2;
+        parent.message_id = Some("parent@mine-mail.invalid".to_owned());
+        parent.subject = "Re: test1".to_owned();
+        parent.sender = Some(MailAddress {
+            name: None,
+            email: "tantless@163.com".to_owned(),
+        });
+        parent.to = vec![MailAddress {
+            name: None,
+            email: "tantless8@gmail.com".to_owned(),
+        }];
+        parent.sent_at = Some("2026-07-20T01:46:26Z".to_owned());
+
+        let mut root = rich_message();
+        root.id = 3;
+        root.message_id = Some("root@mine-mail.invalid".to_owned());
+        root.subject = "test1".to_owned();
+        root.sender = Some(MailAddress {
+            name: None,
+            email: "tantless8@gmail.com".to_owned(),
+        });
+        root.to = vec![MailAddress {
+            name: None,
+            email: "tantless@163.com".to_owned(),
+        }];
+        root.sent_at = Some("2026-07-20T01:45:53Z".to_owned());
+
+        let dto = InboxMessageDto::full_with_ancestors(message, &[Some(parent), Some(root)]);
+        let json = serde_json::to_value(dto).expect("serialize reply chain");
+        let segments = json["body_segments"].as_array().expect("body segments");
+
+        assert_eq!(segments.len(), 3);
+        assert_eq!(segments[0]["content"], "ok1");
+        assert_eq!(segments[1]["quote_metadata"]["subject"], "Re: test1");
+        assert_eq!(segments[1]["quote_metadata"]["sender"], "tantless@163.com");
+        assert_eq!(
+            segments[1]["quote_metadata"]["recipient"],
+            "tantless8@gmail.com"
+        );
+        assert_eq!(segments[2]["quote_metadata"]["subject"], "test1");
+        assert_eq!(
+            segments[2]["quote_metadata"]["sender"],
+            "<tantless8@gmail.com>"
+        );
+        assert_eq!(
+            segments[2]["quote_metadata"]["recipient"],
+            "tantless@163.com"
+        );
+        assert_eq!(
+            segments[2]["quote_metadata"]["sent_at"],
+            "2026-07-20 01:45:53 +00:00"
+        );
+        assert!(json.get("raw_rfc822").is_none());
     }
 
     #[test]

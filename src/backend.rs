@@ -298,6 +298,12 @@ impl MailBackend {
             self.repository
                 .delete_missing_uids(&self.config.account_id, mailbox, &remote_uids)?;
 
+        // A read action is committed locally before the network round trip.
+        // Push those durable intents before accepting a remote flag snapshot,
+        // otherwise a stale server `FLAGS` response could make the message
+        // appear unread again while the write is still pending.
+        let _ = self.flush_pending_seen_updates(connection, mailbox).await;
+
         let previous_highest_uid = if uid_validity_reset {
             None
         } else {
@@ -414,6 +420,9 @@ impl MailBackend {
         let previous_highest_uid = previous_state
             .highest_uid
             .expect("full sync fallback handles a missing highest UID");
+        let _ = self
+            .flush_pending_seen_updates(&mut connection, INBOX)
+            .await;
         let requested = connection.search_uids_after(previous_highest_uid).await?;
         let mut fetched = 0;
         for batch in requested.chunks(SUMMARY_BATCH_SIZE) {
@@ -507,24 +516,124 @@ impl MailBackend {
         self.cached_mailbox_message(&mailbox, uid)
     }
 
-    /// Resolve the direct parent of a reply from SQLite without opening IMAP.
-    /// This supplies display metadata for provider reply templates that carry
-    /// only a Message-ID reference around their quoted body.
-    pub fn cached_reply_parent(&self, message: &InboxMessage) -> Result<Option<InboxMessage>> {
+    /// Records the user's read action in SQLite without waiting for IMAP. The
+    /// pending row is retried by foreground marking and normal Inbox sync.
+    pub fn mark_inbox_message_read(&self, uid: u32) -> Result<bool> {
+        if uid == 0 {
+            return Err(MailError::Validation(
+                "message UID must be greater than zero".to_owned(),
+            ));
+        }
+        self.repository
+            .mark_message_seen_pending(&self.config.account_id, INBOX, uid)
+    }
+
+    /// Pushes every pending Inbox read action through UID STORE and clears a
+    /// write-behind row only after a FLAGS fetch confirms `\Seen` persisted.
+    pub async fn sync_pending_inbox_read_flags(&self) -> Result<usize> {
+        let _guard = self.imap_gate.lock().await;
+        let mut connection = ImapConnection::connect(&self.config).await?;
+        let selected_uid_validity = connection.select_mailbox_for_seen_update(INBOX).await?;
+        let local_uid_validity = self
+            .repository
+            .mailbox_state(&self.config.account_id, INBOX)?
+            .and_then(|state| state.uid_validity);
+        match classify_inbox_uid_scope(local_uid_validity, selected_uid_validity) {
+            InboxUidScope::Current => {}
+            InboxUidScope::NeedsSync => {
+                return Err(MailError::Validation(
+                    "Inbox must be synchronized before updating message flags".to_owned(),
+                ));
+            }
+            InboxUidScope::Changed => {
+                self.repository
+                    .reset_mailbox(&self.config.account_id, INBOX)?;
+                return Err(MailError::Validation(
+                    "Inbox UIDVALIDITY changed; synchronize before updating message flags"
+                        .to_owned(),
+                ));
+            }
+        }
+        let result = self
+            .flush_pending_seen_updates(&mut connection, INBOX)
+            .await;
+        let _ = connection.logout().await;
+        result
+    }
+
+    async fn flush_pending_seen_updates(
+        &self,
+        connection: &mut ImapConnection,
+        mailbox: &str,
+    ) -> Result<usize> {
+        let pending = self
+            .repository
+            .pending_seen_uids(&self.config.account_id, mailbox)?;
+        let mut completed = 0;
+        for batch in pending.chunks(FLAG_BATCH_SIZE) {
+            let confirmed = connection.add_seen_flags(batch).await?;
+            for (uid, flags) in confirmed {
+                self.repository.complete_pending_seen(
+                    &self.config.account_id,
+                    mailbox,
+                    uid,
+                    &flags,
+                )?;
+                completed += 1;
+            }
+        }
+        Ok(completed)
+    }
+
+    /// Resolve reply ancestors from SQLite without opening IMAP. Slots remain
+    /// ordered from the direct parent to the oldest referenced message, and a
+    /// missing cache entry remains `None` so deeper quote metadata cannot be
+    /// applied to the wrong quote level.
+    pub fn cached_reply_ancestors(
+        &self,
+        message: &InboxMessage,
+    ) -> Result<Vec<Option<InboxMessage>>> {
+        let current_message_id = message.message_id.as_deref().map(normalized_message_id_key);
+        let mut seen = HashSet::new();
+        let mut ancestors = Vec::new();
         for message_id in message
             .in_reply_to
             .iter()
             .chain(message.references.iter().rev())
         {
-            if let Some(parent) = self
+            let key = normalized_message_id_key(message_id);
+            if key.is_empty()
+                || current_message_id
+                    .as_ref()
+                    .is_some_and(|current| current == &key)
+                || !seen.insert(key)
+            {
+                continue;
+            }
+            let ancestor = self
                 .repository
                 .find_message_by_message_id(&self.config.account_id, message_id)?
-                && parent.id != message.id
-            {
-                return Ok(Some(parent));
-            }
+                .filter(|ancestor| ancestor.id != message.id);
+            ancestors.push(ancestor);
         }
-        self.cached_legacy_reply_parent(message)
+
+        if ancestors.is_empty() {
+            if let Some(parent) = self.cached_legacy_reply_parent(message)? {
+                ancestors.push(Some(parent));
+            }
+        } else if ancestors[0].is_none() {
+            ancestors[0] = self.cached_legacy_reply_parent(message)?;
+        }
+        Ok(ancestors)
+    }
+
+    /// Resolve the nearest cached reply ancestor for legacy callers.
+    pub fn cached_reply_parent(&self, message: &InboxMessage) -> Result<Option<InboxMessage>> {
+        Ok(self
+            .cached_reply_ancestors(message)?
+            .into_iter()
+            .flatten()
+            .next())
     }
 
     fn cached_legacy_reply_parent(&self, message: &InboxMessage) -> Result<Option<InboxMessage>> {
@@ -1834,6 +1943,15 @@ fn normalize_legacy_reply_text(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+fn normalized_message_id_key(value: &str) -> String {
+    value
+        .trim()
+        .trim_start_matches('<')
+        .trim_end_matches('>')
+        .trim()
+        .to_ascii_lowercase()
+}
+
 fn normalized_reply_subject(subject: &str) -> String {
     let mut subject = subject.trim();
     loop {
@@ -2049,6 +2167,46 @@ mod tests {
         }
     }
 
+    fn cached_message(
+        account_id: &str,
+        uid: u32,
+        message_id: &str,
+        subject: &str,
+        sender: &str,
+        recipient: &str,
+    ) -> InboxMessage {
+        InboxMessage {
+            id: 0,
+            account_id: account_id.to_owned(),
+            mailbox: INBOX.to_owned(),
+            uid,
+            message_id: Some(message_id.to_owned()),
+            in_reply_to: Vec::new(),
+            references: Vec::new(),
+            subject: subject.to_owned(),
+            sender: Some(MailAddress {
+                name: None,
+                email: sender.to_owned(),
+            }),
+            to: vec![MailAddress {
+                name: None,
+                email: recipient.to_owned(),
+            }],
+            cc: Vec::new(),
+            sent_at: Some(format!("2026-07-20T01:45:5{uid}Z")),
+            internal_date: None,
+            flags: Vec::new(),
+            size_bytes: 100,
+            preview: subject.to_owned(),
+            body_text: Some(format!("body {uid}")),
+            body_html: None,
+            attachment_names: Vec::new(),
+            body_fetched: true,
+            raw_rfc822: Vec::new(),
+            synced_at: "2026-07-20T02:00:00Z".to_owned(),
+        }
+    }
+
     fn local_record(
         subject: &str,
         revision: u64,
@@ -2116,6 +2274,90 @@ mod tests {
 
         assert_eq!(saved.status, "local");
         assert_eq!(backend.list_drafts().expect("drafts").len(), 1);
+    }
+
+    #[test]
+    fn cached_reply_ancestors_follow_reference_depth_and_keep_missing_slots() {
+        let directory = tempdir().expect("tempdir");
+        let config =
+            AccountConfig::from_163_lines(["demo@163.com", "not-a-real-secret"]).expect("config");
+        let backend = MailBackend::open(config, directory.path().join("mail.db")).expect("backend");
+        backend.initialize().expect("initialize");
+
+        let root = cached_message(
+            &backend.config.account_id,
+            1,
+            "root@example.com",
+            "test1",
+            "gmail@example.com",
+            "demo@163.com",
+        );
+        let mut parent = cached_message(
+            &backend.config.account_id,
+            2,
+            "parent@example.com",
+            "Re: test1",
+            "demo@163.com",
+            "gmail@example.com",
+        );
+        parent.in_reply_to = vec!["root@example.com".to_owned()];
+        parent.references = vec!["root@example.com".to_owned()];
+        backend
+            .repository
+            .upsert_message(&root)
+            .expect("root cache");
+        backend
+            .repository
+            .upsert_message(&parent)
+            .expect("parent cache");
+
+        let mut current = cached_message(
+            &backend.config.account_id,
+            3,
+            "current@example.com",
+            "Re: test1",
+            "gmail@example.com",
+            "demo@163.com",
+        );
+        current.in_reply_to = vec!["parent@example.com".to_owned()];
+        current.references = vec![
+            "root@example.com".to_owned(),
+            "parent@example.com".to_owned(),
+        ];
+
+        let ancestors = backend
+            .cached_reply_ancestors(&current)
+            .expect("ancestor chain");
+        assert_eq!(ancestors.len(), 2);
+        assert_eq!(
+            ancestors[0]
+                .as_ref()
+                .and_then(|message| message.message_id.as_deref()),
+            Some("parent@example.com")
+        );
+        assert_eq!(
+            ancestors[1]
+                .as_ref()
+                .and_then(|message| message.message_id.as_deref()),
+            Some("root@example.com")
+        );
+
+        current.in_reply_to = vec!["missing-parent@example.com".to_owned()];
+        current.references = vec![
+            "root@example.com".to_owned(),
+            "missing-parent@example.com".to_owned(),
+        ];
+        let incomplete = backend
+            .cached_reply_ancestors(&current)
+            .expect("incomplete ancestor chain");
+        assert_eq!(incomplete.len(), 2);
+        assert!(incomplete[0].is_none());
+        assert_eq!(
+            incomplete[1]
+                .as_ref()
+                .and_then(|message| message.message_id.as_deref()),
+            Some("root@example.com")
+        );
     }
 
     #[test]

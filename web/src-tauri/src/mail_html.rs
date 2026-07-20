@@ -109,6 +109,21 @@ pub(crate) fn segment_mail_body_with_metadata(
     has_reply_headers: bool,
     parent_metadata: Option<&MailBodySegmentMetadata>,
 ) -> Vec<SanitizedMailBodySegment> {
+    let metadata_chain = parent_metadata
+        .cloned()
+        .map(Some)
+        .into_iter()
+        .collect::<Vec<_>>();
+    segment_mail_body_with_metadata_chain(body_text, body_html, has_reply_headers, &metadata_chain)
+}
+
+pub(crate) fn segment_mail_body_with_metadata_chain(
+    body_text: Option<&str>,
+    body_html: Option<&str>,
+    has_reply_headers: bool,
+    metadata_chain: &[Option<MailBodySegmentMetadata>],
+) -> Vec<SanitizedMailBodySegment> {
+    let parent_metadata = metadata_chain.first().and_then(Option::as_ref);
     let html_segments =
         body_html.and_then(|html| split_html_reply(html, has_reply_headers, parent_metadata));
     let plain_segments = body_text
@@ -144,10 +159,57 @@ pub(crate) fn segment_mail_body_with_metadata(
                 }
             }
         }
+        enrich_quote_metadata(&mut preferred, metadata_chain);
         return preferred;
     }
 
-    plain_segments.or(html_segments).unwrap_or_default()
+    let mut preferred = plain_segments.or(html_segments).unwrap_or_default();
+    enrich_quote_metadata(&mut preferred, metadata_chain);
+    preferred
+}
+
+fn enrich_quote_metadata(
+    segments: &mut [SanitizedMailBodySegment],
+    metadata_chain: &[Option<MailBodySegmentMetadata>],
+) {
+    for segment in segments
+        .iter_mut()
+        .filter(|segment| segment.kind == MailBodySegmentKind::Quoted && segment.quote_depth > 0)
+    {
+        let Some(Some(cached)) = metadata_chain.get(usize::from(segment.quote_depth - 1)) else {
+            continue;
+        };
+        segment.quote_metadata = match segment.quote_metadata.take() {
+            Some(detected) if quote_metadata_matches_cached(&detected, cached) => {
+                merge_quote_metadata(Some(&detected), Some(cached.clone()))
+            }
+            Some(detected) => Some(detected),
+            None => Some(cached.clone()),
+        };
+    }
+}
+
+fn quote_metadata_matches_cached(
+    detected: &MailBodySegmentMetadata,
+    cached: &MailBodySegmentMetadata,
+) -> bool {
+    match (
+        detected.sender.as_deref().and_then(metadata_email),
+        cached.sender.as_deref().and_then(metadata_email),
+    ) {
+        (Some(detected), Some(cached)) => detected.eq_ignore_ascii_case(&cached),
+        _ => true,
+    }
+}
+
+fn metadata_email(value: &str) -> Option<&str> {
+    let value = value.trim();
+    let mailbox = value
+        .rsplit_once('<')
+        .and_then(|(_, tail)| tail.strip_suffix('>'))
+        .unwrap_or(value)
+        .trim();
+    (mailbox.contains('@') && !mailbox.chars().any(char::is_whitespace)).then_some(mailbox)
 }
 
 /// Builds a bounded list-row preview from only the portions authored in the
@@ -1488,7 +1550,7 @@ mod tests {
     use super::{
         MailBodySegmentConfidence, MailBodySegmentKind, MailBodySegmentMetadata, MailHtmlStructure,
         authored_body_preview, sanitize_mail_html, segment_mail_body,
-        segment_mail_body_with_metadata,
+        segment_mail_body_with_metadata, segment_mail_body_with_metadata_chain,
     };
 
     #[test]
@@ -1826,6 +1888,67 @@ mod tests {
                 .and_then(|metadata| metadata.sender.as_deref()),
             Some("\"Older\" <older@example.com>")
         );
+    }
+
+    #[test]
+    fn nested_at_wrote_history_merges_cached_metadata_by_quote_depth() {
+        let text = "Newest reply\n\nAt 2026-07-20 01:46:26 +00:00, <parent@example.com> wrote:\n> Parent reply\n>\n> At 2026-07-20 01:45:53 +00:00, <root@example.com> wrote:\n> > Oldest body";
+        let metadata_chain = vec![
+            Some(MailBodySegmentMetadata {
+                subject: Some("Re: test1".to_owned()),
+                sender: Some("parent@example.com".to_owned()),
+                recipient: Some("root@example.com".to_owned()),
+                sent_at: Some("2026-07-20T01:46:26Z".to_owned()),
+            }),
+            Some(MailBodySegmentMetadata {
+                subject: Some("test1".to_owned()),
+                sender: Some("root@example.com".to_owned()),
+                recipient: Some("parent@example.com".to_owned()),
+                sent_at: Some("2026-07-20T01:45:53Z".to_owned()),
+            }),
+        ];
+
+        let segments =
+            segment_mail_body_with_metadata_chain(Some(text), None, true, &metadata_chain);
+
+        assert_eq!(segments.len(), 3);
+        let direct = segments[1]
+            .quote_metadata
+            .as_ref()
+            .expect("direct parent metadata");
+        assert_eq!(direct.subject.as_deref(), Some("Re: test1"));
+        assert_eq!(direct.recipient.as_deref(), Some("root@example.com"));
+        let root = segments[2].quote_metadata.as_ref().expect("root metadata");
+        assert_eq!(root.subject.as_deref(), Some("test1"));
+        assert_eq!(root.sender.as_deref(), Some("<root@example.com>"));
+        assert_eq!(root.recipient.as_deref(), Some("parent@example.com"));
+        assert_eq!(root.sent_at.as_deref(), Some("2026-07-20 01:45:53 +00:00"));
+    }
+
+    #[test]
+    fn cached_metadata_is_not_applied_when_the_detected_sender_disagrees() {
+        let text = "Newest reply\n\nAt 2026-07-20 01:46:26 +00:00, <parent@example.com> wrote:\n> Parent reply\n>\n> At 2026-07-20 01:45:53 +00:00, <root@example.com> wrote:\n> > Oldest body";
+        let metadata_chain = vec![
+            None,
+            Some(MailBodySegmentMetadata {
+                subject: Some("Unrelated subject".to_owned()),
+                sender: Some("someone-else@example.com".to_owned()),
+                recipient: Some("unrelated@example.com".to_owned()),
+                sent_at: Some("2026-07-19T00:00:00Z".to_owned()),
+            }),
+        ];
+
+        let segments =
+            segment_mail_body_with_metadata_chain(Some(text), None, true, &metadata_chain);
+        let root = segments[2]
+            .quote_metadata
+            .as_ref()
+            .expect("detected root metadata");
+
+        assert!(root.subject.is_none());
+        assert_eq!(root.sender.as_deref(), Some("<root@example.com>"));
+        assert!(root.recipient.is_none());
+        assert_eq!(root.sent_at.as_deref(), Some("2026-07-20 01:45:53 +00:00"));
     }
 
     #[test]
