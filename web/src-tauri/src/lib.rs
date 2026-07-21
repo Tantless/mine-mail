@@ -1,4 +1,5 @@
 mod account;
+mod contacts;
 mod desktop;
 mod diagnostics;
 mod mail_html;
@@ -6,10 +7,10 @@ mod mail_html;
 use std::{env, time::Instant};
 
 use mine_mail::{
-    ComposeRequest, ConnectionReport, Draft, DraftDeleteKind, DraftSaveKind, DraftSaveOutcome,
-    InboxMessage, MailAddress, MailBackend, OutboxItem, OutboxStatus, ReplyContext, SyncReport,
-    outbox_body_html, outbox_body_text, outbox_has_reply_headers, outbox_message_id,
-    outbox_preview, outbox_sent_at, outbox_subject,
+    ComposeRequest, ConnectionReport, ContactMessage, ContactMessageDirection, Draft,
+    DraftDeleteKind, DraftSaveKind, DraftSaveOutcome, InboxMessage, MailAddress, MailBackend,
+    OutboxItem, OutboxStatus, ReplyContext, SyncReport, outbox_body_html, outbox_body_text,
+    outbox_has_reply_headers, outbox_message_id, outbox_preview, outbox_sent_at, outbox_subject,
 };
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WindowEvent};
@@ -19,6 +20,7 @@ use url::Url;
 use account::{
     AccountPresetDto, AccountRuntime, AccountStatusDto, BackendState, ConfigureAccountRequest,
 };
+use contacts::{ContactListItemDto, ContactRuntime};
 use desktop::{
     DeleteProfileAvatarRequest, DesktopRuntime, DesktopSettingsDto, DesktopSettingsUpdate,
     NewMailNotificationDto, ProfileAvatarDto, SaveProfileAvatarRequest,
@@ -37,6 +39,7 @@ const INBOX_PREFETCH_TOTAL_BYTES: u64 = 8 * 1024 * 1024;
 const INBOX_PREFETCH_MESSAGE_BYTES: u32 = 2 * 1024 * 1024;
 const SENT_SYNC_LIMIT: usize = 250;
 const SENT_LIST_LIMIT: usize = 250;
+const CONTACT_MESSAGE_LIST_LIMIT: usize = 250;
 
 type CommandResult<T> = Result<T, String>;
 
@@ -83,6 +86,22 @@ struct InboxMessageDto {
     attachment_names: Vec<String>,
     body_fetched: bool,
     synced_at: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct ContactMessageDto {
+    direction: ContactMessageDirection,
+    #[serde(flatten)]
+    message: InboxMessageDto,
+}
+
+impl From<ContactMessage> for ContactMessageDto {
+    fn from(value: ContactMessage) -> Self {
+        Self {
+            direction: value.direction,
+            message: InboxMessageDto::summary(value.message),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
@@ -767,6 +786,59 @@ fn list_sent(
         .map_err(safe_mail_error)
 }
 
+/// Combines desktop-wide favorites with body-free activity derived from
+/// one explicitly selected account's cached message headers.
+#[tauri::command]
+fn list_contacts(
+    backend: State<'_, BackendState>,
+    contacts: State<'_, ContactRuntime>,
+    account_id: String,
+) -> CommandResult<Vec<ContactListItemDto>> {
+    let activity = backend
+        .local_for(&account_id)?
+        .list_contact_activity()
+        .map_err(safe_mail_error)?;
+    contacts.list_contacts(activity)
+}
+
+/// Returns only existing message-summary fields plus a portable direction.
+/// Complete body text, sender HTML, and RFC822 bytes are never loaded by this
+/// query or serialized across the Tauri boundary.
+#[tauri::command]
+fn list_contact_messages(
+    backend: State<'_, BackendState>,
+    account_id: String,
+    email: String,
+    limit: Option<usize>,
+) -> CommandResult<Vec<ContactMessageDto>> {
+    let limit = limit
+        .unwrap_or(CONTACT_MESSAGE_LIST_LIMIT)
+        .clamp(1, CONTACT_MESSAGE_LIST_LIMIT);
+    backend
+        .local_for(&account_id)?
+        .list_contact_messages(&email, limit)
+        .map(|messages| messages.into_iter().map(Into::into).collect())
+        .map_err(safe_mail_error)
+}
+
+#[tauri::command]
+fn set_contact_favorite(
+    contacts: State<'_, ContactRuntime>,
+    email: String,
+    favorite: bool,
+) -> CommandResult<bool> {
+    contacts.set_favorite(&email, favorite)
+}
+
+#[tauri::command]
+fn set_contact_remark(
+    contacts: State<'_, ContactRuntime>,
+    email: String,
+    remark: String,
+) -> CommandResult<bool> {
+    contacts.set_remark(&email, &remark)
+}
+
 /// Opening an unread Inbox message commits `\Seen` to SQLite immediately.
 /// The durable pending row is then pushed to IMAP; a transient network or
 /// credential failure leaves it queued for the next normal Inbox sync.
@@ -961,6 +1033,34 @@ async fn fetch_sent_message(
             let local = backend.local()?;
             local
                 .cached_sent_message(uid)
+                .map(|message| full_message_dto(&local, message))
+                .map_err(|_| network_error)
+        }
+    }
+}
+
+/// Contact history spans every cached mailbox. Hydrate by the exact
+/// account/mailbox/UID tuple because an IMAP UID is not account-global or even
+/// mailbox-global.
+#[tauri::command]
+async fn fetch_contact_message(
+    account: State<'_, AccountRuntime>,
+    backend: State<'_, BackendState>,
+    account_id: String,
+    mailbox: String,
+    uid: u32,
+) -> CommandResult<InboxMessageDto> {
+    let _ = account.refresh_active_oauth_backend(&backend).await;
+    match backend.network_for(&account_id) {
+        Ok(network) => network
+            .fetch_contact_message(&mailbox, uid)
+            .await
+            .map(|message| full_message_dto(&network, message))
+            .map_err(safe_mail_error),
+        Err(network_error) => {
+            let local = backend.local_for(&account_id)?;
+            local
+                .cached_contact_message(&mailbox, uid)
                 .map(|message| full_message_dto(&local, message))
                 .map_err(|_| network_error)
         }
@@ -1586,6 +1686,7 @@ fn initialize_state(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Erro
     }
     let local_backend_ready = backend.is_local_ready();
     let (desktop, sync_rx, shutdown_rx) = DesktopRuntime::open(&app_data);
+    let contacts = ContactRuntime::open(&app_data);
     if let Some(error) = path_error {
         desktop.record_startup_error(error);
     }
@@ -1594,6 +1695,7 @@ fn initialize_state(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Erro
     app.manage(account);
     app.manage(backend);
     app.manage(desktop);
+    app.manage(contacts);
     let tray_available = match desktop::build_tray(app) {
         Ok(()) => {
             diagnostics::info("tray_initialized", DiagnosticFields::default());
@@ -1691,10 +1793,15 @@ pub fn run() {
             sync_all,
             list_inbox,
             list_sent,
+            list_contacts,
+            list_contact_messages,
+            set_contact_favorite,
+            set_contact_remark,
             mark_message_read,
             set_message_starred,
             fetch_message,
             fetch_sent_message,
+            fetch_contact_message,
             prepare_reply,
             open_external_url,
             save_draft,
@@ -1751,10 +1858,13 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use mine_mail::{InboxMessage, MailAddress, OutboxItem, OutboxStatus, ReplyContext};
+    use mine_mail::{
+        ContactMessage, ContactMessageDirection, InboxMessage, MailAddress, OutboxItem,
+        OutboxStatus, ReplyContext,
+    };
 
     use super::{
-        InboxMessageDto, OutboxItemDto, OutboxMessageDto, ReplyContextDto,
+        ContactMessageDto, InboxMessageDto, OutboxItemDto, OutboxMessageDto, ReplyContextDto,
         requested_autostart_change, validate_external_url,
     };
 
@@ -1866,6 +1976,26 @@ mod tests {
         assert_eq!(json["body_html_loaded"], false);
         assert!(json["body_html"].is_null());
         assert!(json["body_render_mode"].is_null());
+        assert!(json.get("raw_rfc822").is_none());
+    }
+
+    #[test]
+    fn contact_summaries_include_direction_without_body_or_rfc822_content() {
+        let mut message = rich_message();
+        message.mailbox = "Sent Items".to_owned();
+        message.body_text = None;
+        message.body_html = None;
+        message.raw_rfc822 = vec![1; 32 * 1024];
+        let json = serde_json::to_value(ContactMessageDto::from(ContactMessage {
+            direction: ContactMessageDirection::Outgoing,
+            message,
+        }))
+        .expect("serialize contact summary");
+
+        assert_eq!(json["direction"], "outgoing");
+        assert_eq!(json["mailbox"], "Sent Items");
+        assert!(json["body_text"].is_null());
+        assert!(json["body_html"].is_null());
         assert!(json.get("raw_rfc822").is_none());
     }
 

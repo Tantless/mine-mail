@@ -3,11 +3,27 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   EditableProfileAvatar,
   ProfileAvatar,
+  avatarToneForEmail,
   trustedBrandForEmail,
 } from "./ProfileAvatar.jsx";
 
 describe("ProfileAvatar", () => {
   afterEach(() => cleanup());
+
+  it("keeps the fallback tone stable for a normalized email", () => {
+    expect(avatarToneForEmail("  Friend@Example.COM ")).toBe(
+      avatarToneForEmail("friend@example.com"),
+    );
+
+    const { rerender } = render(
+      <ProfileAvatar email="Friend@Example.COM" label="Friend" />,
+    );
+    const firstClassName = screen.getByText("FR").className;
+
+    rerender(<ProfileAvatar email=" friend@example.com " label="Friend" />);
+    expect(screen.getByText("FR").className).toBe(firstClassName);
+    expect(firstClassName).toMatch(/profile-avatar--tone-[0-3]/);
+  });
 
   it("matches only trusted domain boundaries", () => {
     expect(trustedBrandForEmail("notifications@github.com")?.id).toBe("github");

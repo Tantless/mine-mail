@@ -1,4 +1,5 @@
 import {
+  AddressBook,
   Archive,
   FileText,
   GearSix,
@@ -16,6 +17,7 @@ import { ProfileAvatar } from "./ProfileAvatar.jsx";
 const folders = [
   { id: "inbox", label: "收件箱", icon: Tray },
   { id: "starred", label: "已加星标", icon: Star },
+  { id: "contacts", label: "通讯录", icon: AddressBook },
   { id: "sent", label: "已发送", icon: PaperPlaneTilt },
   { id: "drafts", label: "草稿", icon: FileText },
   { id: "outbox", label: "发件队列", icon: PaperPlaneTilt },

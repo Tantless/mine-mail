@@ -8,6 +8,86 @@ pub struct MailAddress {
     pub email: String,
 }
 
+/// Normalizes an address for Mine Mail's local contact identity.
+///
+/// Mailbox local-parts are technically allowed to be case-sensitive, but the
+/// providers supported by Mine Mail and the existing local avatar override
+/// behavior treat complete addresses case-insensitively. Keeping one shared
+/// normalized key also prevents duplicate contacts that differ only by case or
+/// incidental surrounding whitespace.
+pub fn normalize_contact_email(value: &str) -> Result<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty()
+        || trimmed.len() > 320
+        || trimmed.chars().any(|character| {
+            character.is_whitespace()
+                || character.is_control()
+                || matches!(character, '<' | '>' | ',' | ';')
+        })
+        || trimmed.matches('@').count() != 1
+    {
+        return Err(MailError::Validation(
+            "a valid contact email address is required".to_owned(),
+        ));
+    }
+
+    let (local, domain) = trimmed.split_once('@').expect("one @ was checked above");
+    let domain_is_valid = !domain.is_empty()
+        && domain.len() <= 255
+        && !domain.starts_with('.')
+        && !domain.ends_with('.')
+        && !domain.contains("..")
+        && domain.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label
+                    .chars()
+                    .all(|character| character.is_alphanumeric() || character == '-')
+        });
+    let local_is_valid = !local.is_empty()
+        && local.len() <= 64
+        && !local.starts_with('.')
+        && !local.ends_with('.')
+        && !local.contains("..");
+    if !local_is_valid || !domain_is_valid {
+        return Err(MailError::Validation(
+            "a valid contact email address is required".to_owned(),
+        ));
+    }
+
+    Ok(trimmed.to_ascii_lowercase())
+}
+
+/// Bounded contact activity derived only from cached message headers. It is
+/// combined with the desktop-wide local contact record at the Tauri boundary;
+/// no body, HTML, or RFC822 content is carried here.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct ContactActivity {
+    pub email: String,
+    pub display_name: Option<String>,
+    pub message_count: usize,
+    pub last_message_at: Option<String>,
+    pub last_subject: String,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContactMessageDirection {
+    Incoming,
+    Outgoing,
+}
+
+/// One body-free cached message summary involving a contact. Direction is
+/// derived from the configured account identity rather than provider-specific
+/// mailbox names, which are not portable across IMAP servers.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct ContactMessage {
+    pub direction: ContactMessageDirection,
+    pub message: InboxMessage,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub struct ComposeRequest {
     pub to: Vec<String>,
@@ -259,4 +339,31 @@ pub struct DraftSyncReport {
     pub conflicts: usize,
     pub skipped: usize,
     pub local_total: usize,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_contact_email;
+
+    #[test]
+    fn contact_email_normalization_is_case_insensitive_and_rejects_invalid_keys() {
+        assert_eq!(
+            normalize_contact_email("  Person@Example.COM ").expect("valid address"),
+            "person@example.com"
+        );
+        for invalid in [
+            "",
+            "missing-at.example.com",
+            "two@@example.com",
+            ".person@example.com",
+            "person@example..com",
+            "person@-example.com",
+            "Person <person@example.com>",
+        ] {
+            assert!(
+                normalize_contact_email(invalid).is_err(),
+                "{invalid} should be rejected"
+            );
+        }
+    }
 }

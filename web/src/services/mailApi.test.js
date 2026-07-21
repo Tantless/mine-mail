@@ -91,6 +91,26 @@ describe("mailApi desktop IPC contract", () => {
     });
   });
 
+  it("hydrates contact history by its exact account, mailbox, and UID", async () => {
+    ipc.invoke.mockResolvedValueOnce({
+      uid: 42,
+      mailbox: "Archive/2026",
+      subject: "Archived mail",
+    });
+    const { mailApi } = await import("./mailApi.js");
+
+    await expect(
+      mailApi.fetchContactMessage("account-a", "Archive/2026", 42),
+    ).resolves.toEqual(
+      expect.objectContaining({ uid: 42, mailbox: "Archive/2026" }),
+    );
+    expect(ipc.invoke).toHaveBeenCalledWith("fetch_contact_message", {
+      accountId: "account-a",
+      mailbox: "Archive/2026",
+      uid: 42,
+    });
+  });
+
   it("maps desktop settings and account commands without persisting a secret", async () => {
     ipc.invoke
       .mockResolvedValueOnce({
@@ -375,6 +395,58 @@ describe("mailApi desktop IPC contract", () => {
         owner_type: "contact",
         owner_key: "friend@example.com",
       },
+    });
+  });
+
+  it("maps local contacts and correspondence through narrow desktop commands", async () => {
+    ipc.invoke
+      .mockResolvedValueOnce([
+        {
+          email: "friend@example.com",
+          display_name: "Friend",
+          is_favorite: true,
+          message_count: 4,
+          last_message_at: "2026-07-20T12:00:00Z",
+          last_subject: "Hello",
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          uid: 73,
+          mailbox: "Sent",
+          subject: "Hello",
+          direction: "outgoing",
+        },
+      ])
+      .mockResolvedValueOnce(true);
+    const { mailApi } = await import("./mailApi.js");
+
+    await expect(mailApi.listContacts("account-a")).resolves.toEqual([
+      expect.objectContaining({
+        email: "friend@example.com",
+        displayName: "Friend",
+        isFavorite: true,
+        messageCount: 4,
+      }),
+    ]);
+    await expect(
+      mailApi.listContactMessages("account-a", "friend@example.com", 80),
+    ).resolves.toEqual([
+      expect.objectContaining({ uid: 73, direction: "outgoing" }),
+    ]);
+    await mailApi.setContactFavorite("friend@example.com", false);
+
+    expect(ipc.invoke).toHaveBeenNthCalledWith(1, "list_contacts", {
+      accountId: "account-a",
+    });
+    expect(ipc.invoke).toHaveBeenNthCalledWith(2, "list_contact_messages", {
+      accountId: "account-a",
+      email: "friend@example.com",
+      limit: 80,
+    });
+    expect(ipc.invoke).toHaveBeenNthCalledWith(3, "set_contact_favorite", {
+      email: "friend@example.com",
+      favorite: false,
     });
   });
 

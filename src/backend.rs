@@ -9,9 +9,9 @@ use tokio::{sync::Mutex, time::Instant};
 use uuid::Uuid;
 
 use crate::{
-    AccountConfig, ComposeRequest, ConnectionReport, Draft, DraftDeleteKind, DraftSaveKind,
-    DraftSaveOutcome, InboxMessage, MailError, OutboxItem, OutboxStatus, ReplyContext, Result,
-    SyncReport,
+    AccountConfig, ComposeRequest, ConnectionReport, ContactActivity, ContactMessage,
+    ContactMessageDirection, Draft, DraftDeleteKind, DraftSaveKind, DraftSaveOutcome, InboxMessage,
+    MailAddress, MailError, OutboxItem, OutboxStatus, ReplyContext, Result, SyncReport,
     database::{DraftRecord, MailboxState, Repository},
     imap_client::{ImapConnection, MailboxHint, RemoteMessage},
     mime::{
@@ -19,7 +19,7 @@ use crate::{
         parse_draft_message, parse_incoming_message, parse_incoming_summary_or_fallback,
         render_message_html, restore_outbox_envelope,
     },
-    models::DraftSyncReport,
+    models::{DraftSyncReport, normalize_contact_email},
     smtp_client::SmtpClient,
 };
 
@@ -511,6 +511,79 @@ impl MailBackend {
             .list_mailbox(&self.config.account_id, &mailbox, limit, 0)
     }
 
+    /// Derives one contact row per normalized address from all cached message
+    /// headers for this account. The account's own address is excluded and a
+    /// participant appearing more than once in one message is counted once.
+    pub fn list_contact_activity(&self) -> Result<Vec<ContactActivity>> {
+        let own_email = normalize_contact_email(&self.config.email)?;
+        let messages = self
+            .repository
+            .list_contact_source_messages(&self.config.account_id)?;
+        let mut order = Vec::new();
+        let mut activity_by_email: HashMap<String, ContactActivity> = HashMap::new();
+
+        for message in messages {
+            let participants = contact_participants(&message, &own_email);
+            for (email, display_name) in participants {
+                let activity = activity_by_email.entry(email.clone()).or_insert_with(|| {
+                    order.push(email.clone());
+                    ContactActivity {
+                        email,
+                        display_name: None,
+                        message_count: 0,
+                        last_message_at: message_activity_at(&message),
+                        last_subject: message.subject.clone(),
+                    }
+                });
+                activity.message_count += 1;
+                if activity.display_name.is_none() {
+                    activity.display_name = display_name;
+                }
+            }
+        }
+
+        Ok(order
+            .into_iter()
+            .filter_map(|email| activity_by_email.remove(&email))
+            .collect())
+    }
+
+    /// Lists bounded, body-free summaries involving one normalized contact
+    /// across every locally cached mailbox. Direction is identity-derived and
+    /// therefore does not depend on localized provider folder names.
+    pub fn list_contact_messages(&self, email: &str, limit: usize) -> Result<Vec<ContactMessage>> {
+        if limit == 0 {
+            return Err(MailError::Validation(
+                "contact message list limit must be greater than zero".to_owned(),
+            ));
+        }
+        let target_email = normalize_contact_email(email)?;
+        let own_email = normalize_contact_email(&self.config.email)?;
+        let messages = self
+            .repository
+            .list_contact_source_messages(&self.config.account_id)?;
+
+        Ok(messages
+            .into_iter()
+            .filter(|message| message_has_contact(message, &target_email))
+            .take(limit)
+            .map(|message| {
+                let direction = if message
+                    .sender
+                    .as_ref()
+                    .and_then(|sender| normalize_contact_email(&sender.email).ok())
+                    .as_deref()
+                    == Some(own_email.as_str())
+                {
+                    ContactMessageDirection::Outgoing
+                } else {
+                    ContactMessageDirection::Incoming
+                };
+                ContactMessage { direction, message }
+            })
+            .collect())
+    }
+
     pub fn cached_inbox_message(&self, uid: u32) -> Result<InboxMessage> {
         self.cached_mailbox_message(INBOX, uid)
     }
@@ -520,6 +593,22 @@ impl MailBackend {
             .repository
             .mailbox_for_role(&self.config.account_id, "sent")?;
         self.cached_mailbox_message(&mailbox, uid)
+    }
+
+    /// Resolves a contact-history message by its exact IMAP identity. UIDs are
+    /// mailbox-scoped, so callers must never infer the mailbox from direction.
+    pub fn cached_contact_message(&self, mailbox: &str, uid: u32) -> Result<InboxMessage> {
+        if mailbox.trim().is_empty() {
+            return Err(MailError::Validation(
+                "message mailbox must not be blank".to_owned(),
+            ));
+        }
+        if uid == 0 {
+            return Err(MailError::Validation(
+                "message UID must be greater than zero".to_owned(),
+            ));
+        }
+        self.cached_mailbox_message(mailbox, uid)
     }
 
     /// Records the user's read action in SQLite without waiting for IMAP. The
@@ -970,6 +1059,26 @@ impl MailBackend {
             .repository
             .mailbox_for_role(&self.config.account_id, "sent")?;
         self.fetch_mailbox_message(&mailbox, uid, force).await
+    }
+
+    /// Hydrates only a message already discovered in the local contact index,
+    /// preserving the exact mailbox + UID identity across the UI boundary.
+    pub async fn fetch_contact_message(&self, mailbox: &str, uid: u32) -> Result<InboxMessage> {
+        if mailbox.trim().is_empty() {
+            return Err(MailError::Validation(
+                "message mailbox must not be blank".to_owned(),
+            ));
+        }
+        if uid == 0 {
+            return Err(MailError::Validation(
+                "message UID must be greater than zero".to_owned(),
+            ));
+        }
+        // Do not turn the contact reader into an arbitrary mailbox fetch API:
+        // the exact identity must already exist in this account's SQLite cache.
+        self.repository
+            .get_message_by_uid(&self.config.account_id, mailbox, uid)?;
+        self.fetch_mailbox_message(mailbox, uid, false).await
     }
 
     async fn fetch_mailbox_message(
@@ -1998,6 +2107,61 @@ impl MailBackend {
     }
 }
 
+fn message_activity_at(message: &InboxMessage) -> Option<String> {
+    message
+        .internal_date
+        .clone()
+        .or_else(|| message.sent_at.clone())
+        .or_else(|| Some(message.synced_at.clone()))
+}
+
+fn normalized_header_name(address: &MailAddress) -> Option<String> {
+    let value = address.name.as_deref()?.trim();
+    if value.is_empty() || value.chars().any(char::is_control) {
+        return None;
+    }
+    Some(value.chars().take(200).collect())
+}
+
+fn contact_participants(message: &InboxMessage, own_email: &str) -> Vec<(String, Option<String>)> {
+    let mut participants = Vec::<(String, Option<String>)>::new();
+    let mut indexes = HashMap::<String, usize>::new();
+    for address in message
+        .sender
+        .iter()
+        .chain(message.to.iter())
+        .chain(message.cc.iter())
+    {
+        let Ok(email) = normalize_contact_email(&address.email) else {
+            continue;
+        };
+        if email == own_email {
+            continue;
+        }
+        let name = normalized_header_name(address);
+        if let Some(index) = indexes.get(&email).copied() {
+            if participants[index].1.is_none() && name.is_some() {
+                participants[index].1 = name;
+            }
+        } else {
+            indexes.insert(email.clone(), participants.len());
+            participants.push((email, name));
+        }
+    }
+    participants
+}
+
+fn message_has_contact(message: &InboxMessage, target_email: &str) -> bool {
+    message
+        .sender
+        .iter()
+        .chain(message.to.iter())
+        .chain(message.cc.iter())
+        .any(|address| {
+            normalize_contact_email(&address.email).is_ok_and(|email| email == target_email)
+        })
+}
+
 fn validate_manual_retry(item: &OutboxItem, account_id: &str) -> Result<()> {
     if item.account_id != account_id {
         return Err(MailError::NotFound {
@@ -2254,8 +2418,8 @@ mod tests {
         remote_draft_candidate, validate_manual_retry,
     };
     use crate::{
-        AccountConfig, ComposeRequest, Draft, DraftDeleteKind, DraftSaveKind, InboxMessage,
-        MailAddress, MailError, OutboxItem, OutboxStatus,
+        AccountConfig, ComposeRequest, ContactMessageDirection, Draft, DraftDeleteKind,
+        DraftSaveKind, InboxMessage, MailAddress, MailError, OutboxItem, OutboxStatus,
         database::{DraftRecord, Repository},
         imap_client::{MailboxHint, RemoteMessage},
         mime::parse_draft_message,
@@ -2379,6 +2543,123 @@ mod tests {
 
         assert_eq!(saved.status, "local");
         assert_eq!(backend.list_drafts().expect("drafts").len(), 1);
+    }
+
+    #[test]
+    fn contact_activity_is_normalized_deduplicated_and_body_free_across_mailboxes() {
+        let directory = tempdir().expect("tempdir");
+        let config =
+            AccountConfig::from_163_lines(["demo@163.com", "not-a-real-secret"]).expect("config");
+        let backend = MailBackend::open(config, directory.path().join("mail.db")).expect("backend");
+        backend.initialize().expect("initialize");
+
+        let mut incoming = cached_message(
+            &backend.config.account_id,
+            9,
+            "incoming@example.com",
+            "Newest subject",
+            "Friend@Example.COM",
+            "demo@163.com",
+        );
+        incoming.sender.as_mut().expect("sender").name = Some("Latest Friend".to_owned());
+        incoming.cc.push(MailAddress {
+            name: Some("Duplicate copy".to_owned()),
+            email: "friend@example.com".to_owned(),
+        });
+
+        let mut outgoing = cached_message(
+            &backend.config.account_id,
+            8,
+            "outgoing@example.com",
+            "Older subject",
+            "DEMO@163.COM",
+            "friend@example.com",
+        );
+        outgoing.mailbox = "Sent Items".to_owned();
+        outgoing.to[0].name = Some("Older Friend".to_owned());
+        outgoing.cc.push(MailAddress {
+            name: None,
+            email: "FRIEND@example.com".to_owned(),
+        });
+
+        backend
+            .repository
+            .upsert_message(&outgoing)
+            .expect("outgoing cache");
+        backend
+            .repository
+            .upsert_message(&incoming)
+            .expect("incoming cache");
+
+        let activity = backend.list_contact_activity().expect("contact activity");
+        assert_eq!(activity.len(), 1);
+        assert_eq!(activity[0].email, "friend@example.com");
+        assert_eq!(activity[0].display_name.as_deref(), Some("Latest Friend"));
+        assert_eq!(activity[0].message_count, 2);
+        assert_eq!(activity[0].last_subject, "Newest subject");
+
+        let messages = backend
+            .list_contact_messages(" FRIEND@example.com ", 10)
+            .expect("contact messages");
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].direction, ContactMessageDirection::Incoming);
+        assert_eq!(messages[1].direction, ContactMessageDirection::Outgoing);
+        assert_eq!(messages[1].message.mailbox, "Sent Items");
+        assert!(messages.iter().all(|item| item.message.body_text.is_none()));
+        assert!(messages.iter().all(|item| item.message.body_html.is_none()));
+        assert!(
+            messages
+                .iter()
+                .all(|item| item.message.raw_rfc822.is_empty())
+        );
+        assert_eq!(
+            backend
+                .list_contact_messages("friend@example.com", 1)
+                .expect("bounded contact messages")
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn cached_contact_message_uses_the_exact_mailbox_uid_pair() {
+        let directory = tempdir().expect("tempdir");
+        let config =
+            AccountConfig::from_163_lines(["demo@163.com", "not-a-real-secret"]).expect("config");
+        let backend = MailBackend::open(config, directory.path().join("mail.db")).expect("backend");
+        backend.initialize().expect("initialize");
+
+        let mut inbox = cached_message(
+            &backend.config.account_id,
+            42,
+            "inbox@example.com",
+            "Inbox copy",
+            "friend@example.com",
+            "demo@163.com",
+        );
+        inbox.body_text = Some("Inbox body".to_owned());
+        let mut archived = inbox.clone();
+        archived.id = 0;
+        archived.mailbox = "Archive/2026".to_owned();
+        archived.message_id = Some("archive@example.com".to_owned());
+        archived.subject = "Archived copy".to_owned();
+        archived.body_text = Some("Archived body".to_owned());
+
+        backend
+            .repository
+            .upsert_message(&inbox)
+            .expect("inbox cache");
+        backend
+            .repository
+            .upsert_message(&archived)
+            .expect("archive cache");
+
+        let selected = backend
+            .cached_contact_message("Archive/2026", 42)
+            .expect("exact cached contact message");
+        assert_eq!(selected.mailbox, "Archive/2026");
+        assert_eq!(selected.subject, "Archived copy");
+        assert_eq!(selected.body_text.as_deref(), Some("Archived body"));
     }
 
     #[test]

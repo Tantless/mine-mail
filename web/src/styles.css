@@ -1508,17 +1508,22 @@ html[data-surface="new-mail-notification"] #root {
   letter-spacing: -0.02em;
 }
 
-.mail-row:nth-child(4n + 2) .mail-row__avatar {
+.profile-avatar--initials.profile-avatar--tone-0 {
+  background: color-mix(in srgb, #d87b72 20%, var(--color-control));
+  color: color-mix(in srgb, #8c4039 72%, var(--color-text));
+}
+
+.profile-avatar--initials.profile-avatar--tone-1 {
   background: color-mix(in srgb, #e8b86a 20%, var(--color-control));
   color: color-mix(in srgb, #8a5919 72%, var(--color-text));
 }
 
-.mail-row:nth-child(4n + 3) .mail-row__avatar {
+.profile-avatar--initials.profile-avatar--tone-2 {
   background: color-mix(in srgb, #879ae1 20%, var(--color-control));
   color: color-mix(in srgb, #475fa8 72%, var(--color-text));
 }
 
-.mail-row:nth-child(4n + 4) .mail-row__avatar {
+.profile-avatar--initials.profile-avatar--tone-3 {
   background: color-mix(in srgb, #62ad86 20%, var(--color-control));
   color: color-mix(in srgb, #2d7351 72%, var(--color-text));
 }

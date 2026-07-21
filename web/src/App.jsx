@@ -11,6 +11,7 @@ import { Sidebar } from "./components/Sidebar.jsx";
 import { MailList } from "./components/MailList.jsx";
 import { MessageView } from "./components/MessageView.jsx";
 import { ComposePanel } from "./components/ComposePanel.jsx";
+import { ContactsWorkspace } from "./components/ContactsWorkspace.jsx";
 import { SendConfirmDialog } from "./components/SendConfirmDialog.jsx";
 import { SettingsPanel } from "./components/SettingsPanel.jsx";
 import { AccountSetupPanel } from "./components/AccountSetup.jsx";
@@ -27,6 +28,7 @@ const folderLabels = {
   outbox: "发件队列",
   archive: "归档",
   trash: "垃圾箱",
+  contacts: "通讯录",
 };
 
 const validThemes = new Set(["daylight", "night", "dusk", "forest"]);
@@ -161,6 +163,12 @@ function toSentMessage(message) {
   };
 }
 
+function toContactDisplayMessage(message) {
+  const displayMessage =
+    message?.direction === "outgoing" ? toSentMessage(message) : message;
+  return displayMessage ? { ...displayMessage, contactHistory: true } : displayMessage;
+}
+
 function sentMessageMatchesOutbox(message, item) {
   const remoteMessageId = normalizeMessageId(message.message_id);
   const localMessageId = normalizeMessageId(item.message_id);
@@ -274,6 +282,15 @@ export function App() {
   const [messageError, setMessageError] = useState(null);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
+  const [contacts, setContacts] = useState([]);
+  const [contactQuery, setContactQuery] = useState("");
+  const [contactFilter, setContactFilter] = useState("all");
+  const [contactsState, setContactsState] = useState("idle");
+  const [contactsError, setContactsError] = useState(null);
+  const [selectedContactEmail, setSelectedContactEmail] = useState(null);
+  const [contactMessages, setContactMessages] = useState([]);
+  const [contactMessagesState, setContactMessagesState] = useState("idle");
+  const [contactMessagesError, setContactMessagesError] = useState(null);
   const [syncState, setSyncState] = useState("idle");
   const [isThemeMenuOpen, setIsThemeMenuOpen] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
@@ -304,8 +321,12 @@ export function App() {
   const accountViewsRef = useRef(new Map());
   const accountViewLoadsRef = useRef(new Map());
   const activeAccountIdRef = useRef(null);
+  const activeFolderRef = useRef("inbox");
+  const selectedContactEmailRef = useRef(null);
   const accountSwitchRequestRef = useRef(0);
   const referenceJumpRequestRef = useRef(0);
+  const contactsRequestRef = useRef(0);
+  const contactMessagesRequestRef = useRef(0);
   const starRequestRef = useRef(new Map());
   const starStateRef = useRef(new Map());
   const platform = /Mac|iPhone|iPad/.test(navigator.platform) ? "mac" : "windows";
@@ -315,10 +336,13 @@ export function App() {
       accountStatus.credentialAvailable &&
       accountStatus.networkReady !== false,
   );
+  const activeAccountId =
+    accountStatus.activeAccountId || accountStatus.accountId || null;
   networkActionsAvailableRef.current = networkActionsAvailable;
   draftsRef.current = drafts;
-  activeAccountIdRef.current =
-    accountStatus.activeAccountId || accountStatus.accountId || null;
+  activeAccountIdRef.current = activeAccountId;
+  activeFolderRef.current = activeFolder;
+  selectedContactEmailRef.current = selectedContactEmail;
 
   useEffect(() => {
     const accountId = activeAccountIdRef.current;
@@ -499,6 +523,13 @@ export function App() {
           });
           return updated;
         });
+        setContactMessages((current) =>
+          current.map((mail) =>
+            remoteFlagKey(mail) === remoteFlagKey(message)
+              ? withSeenFlag(mail)
+              : mail,
+          ),
+        );
         void mailApi.markMessageRead(message.uid).catch((error) => {
           showToast(describeError(error, "已读状态保存失败"), "error");
         });
@@ -560,14 +591,22 @@ export function App() {
       );
       setIsMessageLoading(!hasImmediateCopy);
       try {
-        const fetchedMessage =
-          displayMessage.kind === "sent"
+        const fetchedMessage = displayMessage.contactHistory
+          ? await mailApi.fetchContactMessage(
+              accountId,
+              message.mailbox,
+              message.uid,
+            )
+          : displayMessage.kind === "sent"
             ? await mailApi.fetchSentMessage(message.uid)
             : await mailApi.fetchMessage(message.uid);
         let fullMessage =
           displayMessage.kind === "sent" && fetchedMessage
             ? toSentMessage(fetchedMessage)
             : fetchedMessage;
+        if (displayMessage.contactHistory && fullMessage) {
+          fullMessage = { ...fullMessage, contactHistory: true };
+        }
         if (shouldMarkRead && fullMessage) {
           fullMessage = withSeenFlag(fullMessage);
         }
@@ -654,6 +693,7 @@ export function App() {
       });
       return updated;
     });
+    setContactMessages((current) => current.map(update));
     setSelectedMessage((current) => update(current));
   }, []);
 
@@ -951,6 +991,142 @@ export function App() {
     [handleSelect],
   );
 
+  const loadContacts = useCallback(
+    async ({
+      accountId = activeAccountIdRef.current,
+      selectFirst = false,
+      silent = false,
+    } = {}) => {
+      if (!accountId) {
+        setContacts([]);
+        setContactsState("idle");
+        return [];
+      }
+      const requestId = contactsRequestRef.current + 1;
+      contactsRequestRef.current = requestId;
+      if (!silent) {
+        setContactsState("loading");
+        setContactsError(null);
+      }
+      try {
+        const items = await mailApi.listContacts(accountId);
+        if (
+          contactsRequestRef.current !== requestId ||
+          activeAccountIdRef.current !== accountId
+        ) {
+          return items;
+        }
+        setContacts(items);
+        setContactsState("ready");
+        setContactsError(null);
+        setSelectedContactEmail((current) => {
+          const currentKey = normalizeAvatarEmail(current);
+          if (
+            currentKey &&
+            items.some((item) => normalizeAvatarEmail(item.email) === currentKey)
+          ) {
+            return current;
+          }
+          return selectFirst && window.innerWidth >= 720
+            ? items[0]?.email || null
+            : null;
+        });
+        return items;
+      } catch (error) {
+        if (contactsRequestRef.current === requestId && !silent) {
+          setContactsState("error");
+          setContactsError(describeError(error, "联系人没有加载完成"));
+        }
+        throw error;
+      }
+    },
+    [],
+  );
+
+  const loadContactMessages = useCallback(
+    async (
+      email,
+      { accountId = activeAccountIdRef.current, silent = false } = {},
+    ) => {
+      const normalizedEmail = normalizeAvatarEmail(email);
+      if (!accountId || !normalizedEmail) {
+        setContactMessages([]);
+        setContactMessagesState("idle");
+        return [];
+      }
+      const requestId = contactMessagesRequestRef.current + 1;
+      contactMessagesRequestRef.current = requestId;
+      if (!silent) {
+        setContactMessagesState("loading");
+        setContactMessagesError(null);
+      }
+      try {
+        const items = await mailApi.listContactMessages(
+          accountId,
+          normalizedEmail,
+          250,
+        );
+        if (
+          contactMessagesRequestRef.current !== requestId ||
+          activeAccountIdRef.current !== accountId
+        ) {
+          return items;
+        }
+        setContactMessages(items);
+        setContactMessagesState("ready");
+        setContactMessagesError(null);
+        return items;
+      } catch (error) {
+        if (contactMessagesRequestRef.current === requestId && !silent) {
+          setContactMessagesState("error");
+          setContactMessagesError(
+            describeError(error, "往来邮件没有加载完成"),
+          );
+        }
+        throw error;
+      }
+    },
+    [],
+  );
+
+  const refreshActiveContactWorkspace = useCallback(async () => {
+    if (activeFolderRef.current !== "contacts") return;
+    const accountId = activeAccountIdRef.current;
+    if (!accountId) return;
+    await loadContacts({ accountId, silent: true });
+    const email = selectedContactEmailRef.current;
+    if (email) await loadContactMessages(email, { accountId, silent: true });
+  }, [loadContactMessages, loadContacts]);
+
+  useEffect(() => {
+    if (activeFolder !== "contacts" || !activeAccountId) return;
+    void loadContacts({ accountId: activeAccountId, selectFirst: true }).catch(
+      () => {},
+    );
+  }, [activeAccountId, activeFolder, loadContacts]);
+
+  useEffect(() => {
+    if (
+      activeFolder !== "contacts" ||
+      !activeAccountId ||
+      !selectedContactEmail
+    ) {
+      contactMessagesRequestRef.current += 1;
+      setContactMessages([]);
+      setContactMessagesState("idle");
+      setContactMessagesError(null);
+      return;
+    }
+    void loadContactMessages(selectedContactEmail, {
+      accountId: activeAccountId,
+    }).catch(() => {});
+  }, [
+    activeAccountId,
+    activeFolder,
+    loadContactMessages,
+    selectedContactEmail,
+  ]);
+
   useEffect(() => {
     if (isUnsupportedRuntime) return undefined;
     let cancelled = false;
@@ -1150,9 +1326,9 @@ export function App() {
         const inboxUnlisten = await mailApi.onMailEvent(
           "mail:inbox-updated",
           () => {
-            void refreshInbox().catch((error) =>
-              reportEventError(error, "收件箱刷新失败"),
-            );
+            void refreshInbox()
+              .then(() => refreshActiveContactWorkspace())
+              .catch((error) => reportEventError(error, "收件箱刷新失败"));
           },
         );
         if (cancelled) inboxUnlisten();
@@ -1161,9 +1337,9 @@ export function App() {
         const sentUnlisten = await mailApi.onMailEvent(
           "mail:sent-updated",
           () => {
-            void refreshSent().catch((error) =>
-              reportEventError(error, "已发送刷新失败"),
-            );
+            void refreshSent()
+              .then(() => refreshActiveContactWorkspace())
+              .catch((error) => reportEventError(error, "已发送刷新失败"));
           },
         );
         if (cancelled) sentUnlisten();
@@ -1322,6 +1498,7 @@ export function App() {
     commitComposer,
     handleSelect,
     refreshDrafts,
+    refreshActiveContactWorkspace,
     refreshInbox,
     refreshOutbox,
     refreshSent,
@@ -1443,6 +1620,56 @@ export function App() {
     [handleSelect, referenceNavigationIndex, showToast],
   );
 
+  const contactsWithAvatars = useMemo(
+    () =>
+      contacts.map((contact) => ({
+        ...contact,
+        avatarSrc: profileAvatarFor("contact", contact.email),
+      })),
+    [contacts, profileAvatarFor],
+  );
+
+  const visibleContacts = useMemo(() => {
+    const normalizedQuery = contactQuery.trim().toLowerCase();
+    return contactsWithAvatars
+      .filter((contact) => {
+        if (contactFilter === "favorite" && !contact.isFavorite) return false;
+        if (!normalizedQuery) return true;
+        return [contact.displayName, contact.email, contact.lastSubject].some(
+          (value) => value?.toLowerCase().includes(normalizedQuery),
+        );
+      })
+      .sort(
+        (left, right) =>
+          Number(Boolean(right.isFavorite)) - Number(Boolean(left.isFavorite)),
+      );
+  }, [contactFilter, contactQuery, contactsWithAvatars]);
+
+  useEffect(() => {
+    if (activeFolder !== "contacts") return;
+    const selectedKey = normalizeAvatarEmail(selectedContactEmail);
+    if (
+      selectedKey &&
+      visibleContacts.some(
+        (contact) => normalizeAvatarEmail(contact.email) === selectedKey,
+      )
+    ) {
+      return;
+    }
+    setSelectedContactEmail(
+      window.innerWidth >= 720 ? visibleContacts[0]?.email || null : null,
+    );
+  }, [activeFolder, selectedContactEmail, visibleContacts]);
+
+  const selectedContact = useMemo(() => {
+    const selectedKey = normalizeAvatarEmail(selectedContactEmail);
+    return selectedKey
+      ? contactsWithAvatars.find(
+          (contact) => normalizeAvatarEmail(contact.email) === selectedKey,
+        ) || null
+      : null;
+  }, [contactsWithAvatars, selectedContactEmail]);
+
   const folderMessages = useMemo(() => {
     if (activeFolder === "inbox") return messages;
     if (activeFolder === "starred") {
@@ -1488,6 +1715,17 @@ export function App() {
       : message.uid === selectedUid;
   });
 
+  const contactDisplayMessages = useMemo(
+    () => contactMessages.map(toContactDisplayMessage),
+    [contactMessages],
+  );
+  const contactSelectedIndex = contactDisplayMessages.findIndex((message) => {
+    const key = remoteFlagKey(message);
+    return selectedMessageKey && key
+      ? key === selectedMessageKey
+      : message.uid === selectedUid;
+  });
+
   const folderCounts = useMemo(
     () => ({
       inbox: messages.filter((message) => !hasFlag(message, "\\Seen")).length,
@@ -1503,10 +1741,62 @@ export function App() {
 
   const handleFolderChange = (folder) => {
     setActiveFolder(folder);
-    setFilter("all");
-    setQuery("");
+    if (folder === "contacts") {
+      setContactFilter("all");
+      setContactQuery("");
+    } else {
+      setFilter("all");
+      setQuery("");
+    }
     clearSelection();
     setIsSidebarOpen(false);
+  };
+
+  const handleSelectContact = (contact) => {
+    clearSelection();
+    setSelectedContactEmail(contact?.email || null);
+  };
+
+  const handleBackToContacts = () => {
+    clearSelection();
+    setSelectedContactEmail(null);
+  };
+
+  const handleOpenContactMessage = (message) => {
+    // Contact history deliberately carries no body/HTML across the Tauri
+    // boundary. Force a local hydration even when SQLite reports that the
+    // canonical cached message body has already been fetched.
+    void handleSelect(toContactDisplayMessage(message), true);
+  };
+
+  const navigateContactRelative = (offset) => {
+    const next = contactDisplayMessages[contactSelectedIndex + offset];
+    if (next) void handleSelect(next, true);
+  };
+
+  const handleToggleContactFavorite = async (contact) => {
+    if (!contact?.email || !activeAccountId) return;
+    const email = normalizeAvatarEmail(contact.email);
+    const nextFavorite = !contact.isFavorite;
+    const updateFavorite = (value) => (current) =>
+      current.map((item) =>
+        normalizeAvatarEmail(item.email) === email
+          ? { ...item, isFavorite: value }
+          : item,
+      );
+    setContacts(updateFavorite(nextFavorite));
+    try {
+      await mailApi.setContactFavorite(contact.email, nextFavorite);
+      await loadContacts({ accountId: activeAccountId, silent: true });
+    } catch (error) {
+      setContacts(updateFavorite(Boolean(contact.isFavorite)));
+      showToast(describeError(error, "联系人收藏状态没有保存"), "error");
+    }
+  };
+
+  const handleComposeToContact = (contact) => {
+    if (!contact?.email) return;
+    openComposer({ ...emptyCompose, to: [contact.email] });
   };
 
   const handleSync = async () => {
@@ -1523,6 +1813,15 @@ export function App() {
         refreshDrafts(),
         refreshOutbox(),
       ]);
+      if (activeFolder === "contacts" && activeAccountId) {
+        await loadContacts({ accountId: activeAccountId, silent: true });
+        if (selectedContactEmail) {
+          await loadContactMessages(selectedContactEmail, {
+            accountId: activeAccountId,
+            silent: true,
+          });
+        }
+      }
       setSyncState("done");
       const fetched = report?.inbox?.fetched ?? report?.fetched ?? 0;
       showToast(fetched ? `同步完成，收到 ${fetched} 封新邮件` : "邮箱已是最新状态");
@@ -2062,9 +2361,54 @@ export function App() {
     );
   }
 
+  const isContactMode = activeFolder === "contacts";
+  const messageReader = (
+    <MessageView
+      message={selectedMessage}
+      isLoading={isMessageLoading}
+      error={messageError}
+      onRetry={() => selectedMessage && void handleSelect(selectedMessage, true)}
+      onClose={clearSelection}
+      backLabel={isContactMode ? "返回联系人详情" : "返回邮件列表"}
+      onReply={openReply}
+      onForward={openForward}
+      onRetryDelivery={() =>
+        selectedMessage?.outbox && void handleRetryOutbox(selectedMessage.outbox)
+      }
+      isRetryingDelivery={Boolean(retryingOutboxId)}
+      canRetryDelivery={networkActionsAvailable}
+      onPrevious={() =>
+        isContactMode ? navigateContactRelative(-1) : navigateRelative(-1)
+      }
+      onNext={() =>
+        isContactMode ? navigateContactRelative(1) : navigateRelative(1)
+      }
+      canPrevious={
+        isContactMode ? contactSelectedIndex > 0 : selectedIndex > 0
+      }
+      canNext={
+        isContactMode
+          ? contactSelectedIndex >= 0 &&
+            contactSelectedIndex < contactDisplayMessages.length - 1
+          : selectedIndex >= 0 && selectedIndex < visibleMessages.length - 1
+      }
+      remoteImageMode={settings.remoteImageMode}
+      onOpenExternalLink={(url) => void handleOpenExternalLink(url)}
+      resolveReferencedMessage={resolveReferencedMessage}
+      onOpenReferencedMessage={handleOpenReferencedMessage}
+      senderAvatar={profileAvatarFor("contact", selectedMessage?.sender?.email)}
+      onSetSenderAvatar={(file) =>
+        handleSaveProfileAvatar("contact", selectedMessage?.sender?.email, file)
+      }
+      onRemoveSenderAvatar={() =>
+        handleDeleteProfileAvatar("contact", selectedMessage?.sender?.email)
+      }
+    />
+  );
+
   return (
     <div
-      className={`app-shell platform-${platform} ${isSidebarOpen ? "sidebar-is-open" : ""} ${selectedMessage ? "has-selection" : ""}`}
+      className={`app-shell platform-${platform} ${isSidebarOpen ? "sidebar-is-open" : ""} ${selectedMessage || (isContactMode && selectedContact) ? "has-selection" : ""}`}
       data-runtime={isTauriRuntime ? "tauri" : "web"}
     >
       <div className="app-wallpaper" aria-hidden="true" />
@@ -2123,54 +2467,69 @@ export function App() {
           />
         ) : null}
 
-        <MailList
-          folderLabel={folderLabels[activeFolder]}
-          messages={visibleMessages}
-          selectedUid={selectedUid}
-          selectedMessage={selectedMessage}
-          onSelect={handleSelect}
-          onToggleStar={(message) => void handleToggleStar(message)}
-          query={query}
-          onQueryChange={setQuery}
-          filter={filter}
-          onFilterChange={setFilter}
-          onSync={handleSync}
-          syncState={syncState}
-          canSync={networkActionsAvailable}
-          onOpenMobileNav={() => setIsSidebarOpen(true)}
-          avatarForEmail={(email) => profileAvatarFor("contact", email)}
-          referenceJump={referenceJump}
-        />
-
-        <MessageView
-          message={selectedMessage}
-          isLoading={isMessageLoading}
-          error={messageError}
-          onRetry={() => selectedMessage && void handleSelect(selectedMessage, true)}
-          onClose={clearSelection}
-          onReply={openReply}
-          onForward={openForward}
-          onRetryDelivery={() =>
-            selectedMessage?.outbox && void handleRetryOutbox(selectedMessage.outbox)
-          }
-          isRetryingDelivery={Boolean(retryingOutboxId)}
-          canRetryDelivery={networkActionsAvailable}
-          onPrevious={() => navigateRelative(-1)}
-          onNext={() => navigateRelative(1)}
-          canPrevious={selectedIndex > 0}
-          canNext={selectedIndex >= 0 && selectedIndex < visibleMessages.length - 1}
-          remoteImageMode={settings.remoteImageMode}
-          onOpenExternalLink={(url) => void handleOpenExternalLink(url)}
-          resolveReferencedMessage={resolveReferencedMessage}
-          onOpenReferencedMessage={handleOpenReferencedMessage}
-          senderAvatar={profileAvatarFor("contact", selectedMessage?.sender?.email)}
-          onSetSenderAvatar={(file) =>
-            handleSaveProfileAvatar("contact", selectedMessage?.sender?.email, file)
-          }
-          onRemoveSenderAvatar={() =>
-            handleDeleteProfileAvatar("contact", selectedMessage?.sender?.email)
-          }
-        />
+        {isContactMode ? (
+          <ContactsWorkspace
+            contacts={visibleContacts}
+            selectedContact={selectedContact}
+            messages={contactMessages}
+            query={contactQuery}
+            filter={contactFilter}
+            isLoading={contactsState === "loading"}
+            error={contactsError}
+            isMessagesLoading={contactMessagesState === "loading"}
+            messagesError={contactMessagesError}
+            readerContent={selectedMessage ? messageReader : null}
+            onRetry={() =>
+              activeAccountId &&
+              void loadContacts({ accountId: activeAccountId })
+            }
+            onRetryMessages={() =>
+              activeAccountId &&
+              selectedContactEmail &&
+              void loadContactMessages(selectedContactEmail, {
+                accountId: activeAccountId,
+              })
+            }
+            onOpenMobileNav={() => setIsSidebarOpen(true)}
+            onSearchChange={setContactQuery}
+            onFilterChange={setContactFilter}
+            onSelectContact={handleSelectContact}
+            onBackToContacts={handleBackToContacts}
+            onToggleFavorite={(contact) =>
+              void handleToggleContactFavorite(contact)
+            }
+            onCompose={handleComposeToContact}
+            onOpenMessage={handleOpenContactMessage}
+            onSetAvatar={(contact, file) =>
+              handleSaveProfileAvatar("contact", contact.email, file)
+            }
+            onRemoveAvatar={(contact) =>
+              handleDeleteProfileAvatar("contact", contact.email)
+            }
+          />
+        ) : (
+          <>
+            <MailList
+              folderLabel={folderLabels[activeFolder]}
+              messages={visibleMessages}
+              selectedUid={selectedUid}
+              selectedMessage={selectedMessage}
+              onSelect={handleSelect}
+              onToggleStar={(message) => void handleToggleStar(message)}
+              query={query}
+              onQueryChange={setQuery}
+              filter={filter}
+              onFilterChange={setFilter}
+              onSync={handleSync}
+              syncState={syncState}
+              canSync={networkActionsAvailable}
+              onOpenMobileNav={() => setIsSidebarOpen(true)}
+              avatarForEmail={(email) => profileAvatarFor("contact", email)}
+              referenceJump={referenceJump}
+            />
+            {messageReader}
+          </>
+        )}
       </div>
 
       {composer ? (

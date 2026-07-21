@@ -25,6 +25,13 @@ const MESSAGE_SUMMARY_COLUMNS: &str = "id, account_id, mailbox, uid, message_id,
     references_json, subject, sender_json, to_json, cc_json, sent_at, internal_date, flags_json, \
     size_bytes, preview, body_text, CASE WHEN body_html IS NULL THEN NULL ELSE '' END, \
     attachment_names_json, body_fetched, X'', synced_at";
+// Contact history is a header-derived view. Keep the familiar InboxMessage
+// shape for the desktop DTO while ensuring a contact-list query cannot carry a
+// complete text body, HTML fragment, or RFC822 payload into React.
+const CONTACT_MESSAGE_SUMMARY_COLUMNS: &str = "id, account_id, mailbox, uid, message_id, \
+    in_reply_to_json, references_json, subject, sender_json, to_json, cc_json, sent_at, \
+    internal_date, flags_json, size_bytes, preview, NULL, NULL, attachment_names_json, \
+    body_fetched, X'', synced_at";
 const DRAFT_COLUMNS: &str = "id, account_id, to_json, cc_json, bcc_json, subject, \
     body_text, reply_context_json, status, remote_mailbox, remote_uid, created_at, updated_at, \
     raw_rfc822, local_version, has_unsupported_content";
@@ -761,6 +768,25 @@ impl Repository {
             ],
             row_to_message,
         )?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    /// Returns body-free summaries for all locally cached mailboxes belonging
+    /// to one account. Contact aggregation deliberately happens over parsed
+    /// MailAddress values in Rust instead of substring matching JSON in SQL.
+    pub(crate) fn list_contact_source_messages(
+        &self,
+        account_id: &str,
+    ) -> Result<Vec<InboxMessage>> {
+        let connection = self.connection()?;
+        let sql = format!(
+            "SELECT {CONTACT_MESSAGE_SUMMARY_COLUMNS} FROM messages
+             WHERE account_id = ?1
+             ORDER BY COALESCE(internal_date, sent_at, synced_at) DESC, uid DESC, id DESC"
+        );
+        let mut statement = connection.prepare(&sql)?;
+        let rows = statement.query_map(params![account_id], row_to_message)?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(Into::into)
     }

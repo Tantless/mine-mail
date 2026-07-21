@@ -21,6 +21,7 @@ const desktop = vi.hoisted(() => {
       setMessageStarred: vi.fn(),
       listSent: vi.fn(),
       fetchSentMessage: vi.fn(),
+      fetchContactMessage: vi.fn(),
       prepareReply: vi.fn(),
       openExternalUrl: vi.fn(),
       listDrafts: vi.fn(),
@@ -45,6 +46,9 @@ const desktop = vi.hoisted(() => {
       listProfileAvatars: vi.fn(),
       saveProfileAvatar: vi.fn(),
       deleteProfileAvatar: vi.fn(),
+      listContacts: vi.fn(),
+      listContactMessages: vi.fn(),
+      setContactFavorite: vi.fn(),
       onMailEvent: vi.fn(async (name, handler) => {
         listeners.set(name, handler);
         return () => listeners.delete(name);
@@ -185,6 +189,10 @@ describe("Mine Mail desktop state bridge", () => {
       imageDataUrl: request.imageDataUrl,
     }));
     desktop.mailApi.deleteProfileAvatar.mockResolvedValue(undefined);
+    desktop.mailApi.listContacts.mockResolvedValue([]);
+    desktop.mailApi.listContactMessages.mockResolvedValue([]);
+    desktop.mailApi.fetchContactMessage.mockResolvedValue(undefined);
+    desktop.mailApi.setContactFavorite.mockResolvedValue(true);
     desktop.mailApi.checkConnections.mockResolvedValue({
       imap_ok: true,
       smtp_ok: true,
@@ -406,6 +414,127 @@ describe("Mine Mail desktop state bridge", () => {
     });
     expect(document.querySelector('img[src="data:image/png;base64,AAAA"]')).toBeTruthy();
     expect(screen.getByLabelText("设置 Sender 1 的头像")).toBeTruthy();
+  });
+
+  it("pins favorites in all contacts and reuses the reader", async () => {
+    const contact = {
+      email: "friend@example.com",
+      displayName: "Friend",
+      isFavorite: false,
+      messageCount: 1,
+      lastMessageAt: "2026-07-14T09:00:00Z",
+      lastSubject: "Contact hello",
+    };
+    const pinnedContact = {
+      ...contact,
+      email: "pinned@example.com",
+      displayName: "Pinned",
+      isFavorite: true,
+      lastMessageAt: "2026-07-01T09:00:00Z",
+    };
+    const favoritedContact = { ...contact, isFavorite: true };
+    const contactMessage = {
+      ...summary(33, "Contact hello"),
+      mailbox: "Archive/2026",
+      sender: { name: "Friend", email: "friend@example.com" },
+      direction: "incoming",
+      // Contact summaries intentionally omit bodies even when SQLite already
+      // owns one, so opening must still hydrate the canonical local message.
+      body_fetched: true,
+    };
+    desktop.mailApi.listContacts
+      .mockResolvedValueOnce([contact, pinnedContact])
+      .mockResolvedValue([favoritedContact, pinnedContact]);
+    desktop.mailApi.listContactMessages.mockResolvedValue([contactMessage]);
+    desktop.mailApi.fetchContactMessage.mockResolvedValue({
+      ...contactMessage,
+      body_text: "Contact message body",
+      body_fetched: true,
+    });
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: "通讯录" }));
+    expect(await screen.findByRole("button", { name: "查看联系人 Friend" })).toBeTruthy();
+    const contactList = screen.getByRole("list", { name: "联系人" });
+    expect(within(contactList).getAllByRole("listitem")[0].textContent).toContain(
+      "Pinned",
+    );
+    await waitFor(() =>
+      expect(desktop.mailApi.listContactMessages).toHaveBeenCalledWith(
+        "desktop-account",
+        "friend@example.com",
+        250,
+      ),
+    );
+
+    await user.click(screen.getByRole("tab", { name: "收藏" }));
+    expect(within(contactList).getAllByRole("listitem")).toHaveLength(1);
+    expect(
+      await screen.findByRole("heading", { name: "Pinned" }),
+    ).toBeTruthy();
+    await user.click(screen.getByRole("tab", { name: "全部" }));
+
+    await user.click(within(contactList).getByRole("button", { name: "收藏 Friend" }));
+    await waitFor(() =>
+      expect(desktop.mailApi.setContactFavorite).toHaveBeenCalledWith(
+        "friend@example.com",
+        true,
+      ),
+    );
+    await waitFor(() =>
+      expect(within(contactList).getAllByRole("listitem")[0].textContent).toContain(
+        "Friend",
+      ),
+    );
+    expect(screen.queryByRole("button", { name: "保存联系人" })).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "打开邮件：Contact hello" }));
+    expect(await screen.findByText("Contact message body")).toBeTruthy();
+    expect(desktop.mailApi.fetchContactMessage).toHaveBeenCalledWith(
+      "desktop-account",
+      "Archive/2026",
+      33,
+    );
+    expect(desktop.mailApi.fetchMessage).not.toHaveBeenCalledWith(33);
+
+    await user.click(screen.getByRole("button", { name: "返回联系人详情" }));
+    expect(await screen.findByRole("heading", { name: "往来邮件" })).toBeTruthy();
+  });
+
+  it("keeps visible contact rows mounted during background mailbox refresh", async () => {
+    const contact = {
+      email: "friend@example.com",
+      displayName: "Friend",
+      isFavorite: false,
+      messageCount: 1,
+      lastMessageAt: "2026-07-14T09:00:00Z",
+      lastSubject: "Before refresh",
+    };
+    const backgroundContacts = deferred();
+    desktop.mailApi.listContacts
+      .mockResolvedValueOnce([contact])
+      .mockReturnValueOnce(backgroundContacts.promise);
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: "通讯录" }));
+    expect(await screen.findByRole("button", { name: "查看联系人 Friend" })).toBeTruthy();
+    await waitFor(() =>
+      expect(desktop.listeners.get("mail:inbox-updated")).toBeTruthy(),
+    );
+
+    act(() => desktop.listeners.get("mail:inbox-updated")());
+    await waitFor(() => expect(desktop.mailApi.listContacts).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole("button", { name: "查看联系人 Friend" })).toBeTruthy();
+    expect(screen.queryByText("正在加载联系人…")).toBeNull();
+
+    await act(async () => {
+      backgroundContacts.resolve([
+        { ...contact, lastSubject: "After refresh" },
+      ]);
+    });
+    expect(await screen.findByText("1 封往来 · After refresh")).toBeTruthy();
   });
 
   it("ignores a stale body response after the user selects another message", async () => {

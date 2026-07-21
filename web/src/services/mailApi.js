@@ -66,6 +66,8 @@ let webAccountStatus = {
   googleOauthConfigured: true,
 };
 let webProfileAvatars = [];
+let webFavoriteContacts = new Set();
+let webContactRemarks = new Map();
 
 const webAccountPresets = [
   { id: "163", label: "163 邮箱", secret_label: "客户端授权密码" },
@@ -229,6 +231,107 @@ function normalizeProfileAvatar(avatar = {}) {
   };
 }
 
+function normalizeContact(contact = {}) {
+  const email = (contact.email ?? "").trim().toLowerCase();
+  const originalName =
+    contact.originalName ??
+    contact.original_name ??
+    contact.displayName ??
+    contact.display_name ??
+    email;
+  const remark = (contact.remark ?? "").trim() || null;
+  return {
+    email,
+    displayName:
+      remark || (contact.displayName ?? contact.display_name ?? originalName),
+    originalName,
+    remark,
+    isFavorite: Boolean(contact.isFavorite ?? contact.is_favorite),
+    messageCount: Number(contact.messageCount ?? contact.message_count ?? 0),
+    lastMessageAt: contact.lastMessageAt ?? contact.last_message_at ?? null,
+    lastSubject: contact.lastSubject ?? contact.last_subject ?? null,
+  };
+}
+
+function normalizeContactEmail(value = "") {
+  return value.trim().toLowerCase();
+}
+
+function webContactItems() {
+  const accountEmail = normalizeContactEmail(webAccountStatus.email || "");
+  const contacts = new Map();
+
+  for (const message of webMessages) {
+    const senderEmail = normalizeContactEmail(message.sender?.email || "");
+    const outgoing = Boolean(accountEmail) && senderEmail === accountEmail;
+    const participants = outgoing
+      ? [...(message.to || []), ...(message.cc || [])]
+      : message.sender
+        ? [message.sender]
+        : [];
+    const seenInMessage = new Set();
+    for (const participant of participants) {
+      const email = normalizeContactEmail(participant?.email || "");
+      if (!email || email === accountEmail || seenInMessage.has(email)) continue;
+      seenInMessage.add(email);
+      const sentAt = message.sent_at || message.internal_date || null;
+      const existing = contacts.get(email);
+      const isNewer =
+        !existing?.last_message_at ||
+        (sentAt && Date.parse(sentAt) > Date.parse(existing.last_message_at));
+      contacts.set(email, {
+        email,
+        original_name:
+          (isNewer ? participant?.name : existing?.display_name) ||
+          existing?.original_name ||
+          email,
+        display_name:
+          (isNewer ? participant?.name : existing?.display_name) ||
+          existing?.display_name ||
+          email,
+        remark: null,
+        is_favorite: false,
+        message_count: (existing?.message_count || 0) + 1,
+        last_message_at: isNewer ? sentAt : existing?.last_message_at || sentAt,
+        last_subject: isNewer
+          ? message.subject || null
+          : existing?.last_subject || message.subject || null,
+      });
+    }
+  }
+
+  const localEmails = new Set([
+    ...webFavoriteContacts,
+    ...webContactRemarks.keys(),
+  ]);
+  for (const email of localEmails) {
+    const existing = contacts.get(email) || {
+      email,
+      original_name: email,
+      display_name: email,
+      message_count: 0,
+      last_message_at: null,
+      last_subject: null,
+    };
+    const remark = webContactRemarks.get(email) || null;
+    contacts.set(email, {
+      ...existing,
+      original_name: existing.original_name || existing.display_name || email,
+      display_name: remark || existing.original_name || existing.display_name || email,
+      remark,
+      is_favorite: webFavoriteContacts.has(email),
+    });
+  }
+
+  return [...contacts.values()].sort((left, right) => {
+    if (left.is_favorite !== right.is_favorite) return left.is_favorite ? -1 : 1;
+    const rightTime = Date.parse(right.last_message_at || "") || 0;
+    const leftTime = Date.parse(left.last_message_at || "") || 0;
+    if (rightTime !== leftTime) return rightTime - leftTime;
+    return left.display_name.localeCompare(right.display_name, "zh-CN");
+  });
+}
+
 function profileAvatarRequest(request) {
   return {
     owner_type: request.ownerType,
@@ -317,6 +420,23 @@ export const mailApi = {
   async fetchSentMessage(uid) {
     if (isTauri) return desktopInvoke("fetch_sent_message", { uid });
     return webOnly(() => undefined)();
+  },
+
+  async fetchContactMessage(accountId, mailbox, uid) {
+    if (isTauri) {
+      return desktopInvoke("fetch_contact_message", {
+        accountId,
+        mailbox,
+        uid,
+      });
+    }
+    return webOnly(() => {
+      const message = webMessages.find(
+        (mail) => mail.uid === uid && (mail.mailbox || "INBOX") === mailbox,
+      );
+      if (!message) throw new Error("找不到这封联系人往来邮件");
+      return structuredClone(message);
+    })();
   },
 
   async prepareReply(messageId) {
@@ -712,6 +832,76 @@ export const mailApi = {
     })();
   },
 
+  async listContacts(accountId) {
+    if (isTauri) {
+      const contacts = await desktopInvoke("list_contacts", { accountId });
+      return contacts.map(normalizeContact);
+    }
+    return webOnly(() => webContactItems().map(normalizeContact))();
+  },
+
+  async listContactMessages(accountId, email, limit = 250) {
+    if (isTauri) {
+      return desktopInvoke("list_contact_messages", {
+        accountId,
+        email,
+        limit,
+      });
+    }
+    return webOnly(() => {
+      const target = normalizeContactEmail(email);
+      const accountEmail = normalizeContactEmail(webAccountStatus.email || "");
+      return structuredClone(
+        webMessages
+          .filter((message) => {
+            const sender = normalizeContactEmail(message.sender?.email || "");
+            if (sender === target) return true;
+            if (sender !== accountEmail) return false;
+            return [...(message.to || []), ...(message.cc || [])].some(
+              (recipient) => normalizeContactEmail(recipient.email || "") === target,
+            );
+          })
+          .slice(0, limit)
+          .map((message) => ({
+            ...message,
+            direction:
+              normalizeContactEmail(message.sender?.email || "") === accountEmail
+                ? "outgoing"
+                : "incoming",
+          })),
+      );
+    })();
+  },
+
+  async setContactFavorite(email, favorite) {
+    if (isTauri) {
+      return desktopInvoke("set_contact_favorite", { email, favorite });
+    }
+    return webOnly(() => {
+      const normalizedEmail = normalizeContactEmail(email || "");
+      if (!normalizedEmail) throw new Error("联系人邮箱不能为空");
+      if (favorite) webFavoriteContacts.add(normalizedEmail);
+      else webFavoriteContacts.delete(normalizedEmail);
+      return true;
+    })();
+  },
+
+  async setContactRemark(email, remark) {
+    if (isTauri) {
+      return desktopInvoke("set_contact_remark", { email, remark });
+    }
+    return webOnly(() => {
+      const normalizedEmail = normalizeContactEmail(email || "");
+      if (!normalizedEmail) throw new Error("联系人邮箱不能为空");
+      const normalizedRemark = (remark || "").trim();
+      if ([...normalizedRemark].length > 80) throw new Error("联系人备注最多 80 个字符");
+      if (/\p{Cc}/u.test(normalizedRemark)) throw new Error("联系人备注不能包含控制字符");
+      if (normalizedRemark) webContactRemarks.set(normalizedEmail, normalizedRemark);
+      else webContactRemarks.delete(normalizedEmail);
+      return true;
+    })();
+  },
+
   async onMailEvent(eventName, handler) {
     if (!isTauri) return webOnly(() => () => {})();
     try {
@@ -727,4 +917,5 @@ export const __testing = {
   normalizeSettings,
   normalizeAccountStatus,
   normalizeProfileAvatar,
+  normalizeContact,
 };

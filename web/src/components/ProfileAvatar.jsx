@@ -22,6 +22,16 @@ export function normalizeAvatarEmail(value = "") {
   return (value ?? "").trim().toLowerCase();
 }
 
+export function avatarToneForEmail(value = "") {
+  const normalized = normalizeAvatarEmail(value);
+  let hash = 2166136261;
+  for (let index = 0; index < normalized.length; index += 1) {
+    hash ^= normalized.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0) % 4;
+}
+
 function emailDomain(email) {
   const normalized = normalizeAvatarEmail(email);
   const separator = normalized.lastIndexOf("@");
@@ -65,10 +75,12 @@ function BrandMark({ brand }) {
 
 export function ProfileAvatar({ email, label, customSrc, className = "" }) {
   const brand = customSrc ? null : trustedBrandForEmail(email);
+  const tone = customSrc || brand ? null : avatarToneForEmail(email || label);
   const classes = [
     "profile-avatar",
     customSrc ? "profile-avatar--custom" : brand ? "profile-avatar--brand" : "profile-avatar--initials",
     brand ? `profile-avatar--${brand.id}` : "",
+    tone == null ? "" : `profile-avatar--tone-${tone}`,
     className,
   ]
     .filter(Boolean)

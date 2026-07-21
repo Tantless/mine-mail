@@ -61,6 +61,16 @@ describe("Sidebar account switcher", () => {
     expect(screen.getByRole("button", { name: "写信" }).querySelector("kbd")).toBeNull();
   });
 
+  it("opens the contacts workspace from the primary navigation", async () => {
+    const user = userEvent.setup();
+    const onFolderChange = vi.fn();
+    renderSidebar(1, { onFolderChange });
+
+    await user.click(screen.getByRole("button", { name: "通讯录" }));
+
+    expect(onFolderChange).toHaveBeenCalledWith("contacts");
+  });
+
   it("keeps account and settings controls in a dedicated footer region", () => {
     renderSidebar(1);
 

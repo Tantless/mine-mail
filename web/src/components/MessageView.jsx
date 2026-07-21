@@ -32,6 +32,7 @@ export function MessageView({
   error,
   onRetry,
   onClose,
+  backLabel = "返回邮件列表",
   onReply,
   onForward,
   onRetryDelivery,
@@ -74,7 +75,7 @@ export function MessageView({
     <section className="reader-panel reader-panel--message" aria-label="邮件阅读区">
       <header className="reader-toolbar">
         <div className="reader-toolbar__group">
-          <IconButton label="返回邮件列表" className="reader-back" onClick={onClose}>
+          <IconButton label={backLabel} className="reader-back" onClick={onClose}>
             <ArrowLeft size={20} />
           </IconButton>
           <IconButton label="归档（尚未实现）" disabled>
