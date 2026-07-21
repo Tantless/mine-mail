@@ -4,6 +4,12 @@ const minimumFrameHeight = 220;
 const maximumFrameHeight = 250_000;
 const rememberedHeightLimit = 32;
 const rememberedHeights = new Map();
+const horizontalOverflowTolerance = 1;
+const maximumDeclaredLayoutWidth = 2_000;
+const layoutElements =
+  "table, tbody, tr, td, th, div, section, main, article, img";
+const declaredWidthElements = "table, td, th, div, section, main, article";
+const measuredContentWidths = new WeakMap();
 
 function rememberHeight(key, height) {
   if (!key) return;
@@ -12,6 +18,136 @@ function rememberHeight(key, height) {
   while (rememberedHeights.size > rememberedHeightLimit) {
     rememberedHeights.delete(rememberedHeights.keys().next().value);
   }
+}
+
+function isVisuallyHidden(document, element) {
+  if (
+    element.hidden ||
+    element.getAttribute?.("aria-hidden") === "true" ||
+    element.style?.display === "none"
+  ) {
+    return true;
+  }
+  const style = document.defaultView?.getComputedStyle?.(element);
+  return style?.display === "none" || style?.visibility === "hidden";
+}
+
+function parseDeclaredPixelWidth(value) {
+  const match = String(value || "").match(/^\s*(\d+(?:\.\d+)?)\s*(?:px)?\s*$/i);
+  if (!match) return 0;
+  const width = Number(match[1]);
+  return Number.isFinite(width) && width <= maximumDeclaredLayoutWidth
+    ? width
+    : 0;
+}
+
+function measureDeclaredLayoutWidth(document, viewportWidth) {
+  let width = viewportWidth;
+  for (const element of document.querySelectorAll?.(declaredWidthElements) || []) {
+    if (isVisuallyHidden(document, element)) continue;
+    width = Math.max(
+      width,
+      parseDeclaredPixelWidth(element.getAttribute?.("width")),
+      parseDeclaredPixelWidth(element.style?.width),
+      parseDeclaredPixelWidth(element.style?.minWidth),
+    );
+  }
+  return width;
+}
+
+function measureRenderedHorizontalExtent(document, viewportWidth) {
+  const root = document.documentElement;
+  const body = document.body;
+  const bodyRect = body.getBoundingClientRect?.();
+  const origin = Number.isFinite(bodyRect?.left) ? bodyRect.left : 0;
+  let extent = Math.max(
+    root.scrollWidth || 0,
+    body.scrollWidth || 0,
+    viewportWidth,
+  );
+
+  if (extent <= viewportWidth + horizontalOverflowTolerance) {
+    for (const element of document.querySelectorAll?.(layoutElements) || []) {
+      if (isVisuallyHidden(document, element)) continue;
+      const rect = element.getBoundingClientRect?.();
+      const relativeLeft = Number.isFinite(rect?.left) ? rect.left - origin : 0;
+      const relativeRight = Number.isFinite(rect?.right)
+        ? rect.right - origin
+        : 0;
+      extent = Math.max(extent, relativeRight);
+
+      const clientWidth = element.clientWidth || 0;
+      const scrollWidth = element.scrollWidth || 0;
+      const overflowX =
+        document.defaultView?.getComputedStyle?.(element)?.overflowX || "";
+      if (
+        clientWidth > 0 &&
+        scrollWidth > clientWidth + horizontalOverflowTolerance &&
+        overflowX !== "auto" &&
+        overflowX !== "scroll"
+      ) {
+        extent = Math.max(extent, Math.max(0, relativeLeft) + scrollWidth);
+      }
+    }
+  }
+
+  return extent;
+}
+
+function measureEmailContentWidth(document, viewportWidth) {
+  const cached = measuredContentWidths.get(document);
+  if (cached?.viewportWidth === viewportWidth) return cached.contentWidth;
+
+  const renderedExtent = measureRenderedHorizontalExtent(document, viewportWidth);
+  const contentWidth =
+    renderedExtent > viewportWidth + horizontalOverflowTolerance
+      ? Math.max(
+          renderedExtent,
+          measureDeclaredLayoutWidth(document, viewportWidth),
+        )
+      : viewportWidth;
+  measuredContentWidths.set(document, { viewportWidth, contentWidth });
+  return contentWidth;
+}
+
+export function fitEmailDocumentToWidth(document, availableWidth) {
+  const root = document?.documentElement;
+  const body = document?.body;
+  const viewportWidth = Number(availableWidth);
+  if (!root || !body || !Number.isFinite(viewportWidth) || viewportWidth <= 0) {
+    return { height: minimumFrameHeight, scale: 1 };
+  }
+
+  // Measure the sender document without a previous fit applied. The generated
+  // iframe owns this body element, so these inline properties are Mine Mail's.
+  body.style.removeProperty("width");
+  body.style.removeProperty("transform");
+  body.style.removeProperty("transform-origin");
+  delete body.dataset.mineMailWidthFit;
+
+  const contentWidth = measureEmailContentWidth(document, viewportWidth);
+  const shouldFit =
+    contentWidth > viewportWidth + horizontalOverflowTolerance;
+  const scale = shouldFit ? viewportWidth / contentWidth : 1;
+
+  if (shouldFit) {
+    // Giving the body its intrinsic width before transforming preserves the
+    // sender's table/image composition while making the complete document fit.
+    body.style.setProperty("width", `${contentWidth}px`, "important");
+    body.style.setProperty("transform-origin", "top left", "important");
+    body.style.setProperty("transform", `scale(${scale})`, "important");
+    body.dataset.mineMailWidthFit = "true";
+  }
+
+  const contentHeight = Math.max(
+    body.scrollHeight || 0,
+    body.offsetHeight || 0,
+    shouldFit ? 0 : root.scrollHeight || 0,
+  );
+  return {
+    height: Math.max(minimumFrameHeight, Math.ceil(contentHeight * scale)),
+    scale,
+  };
 }
 
 export function buildEmailDocument(fragment, allowRemoteImages = false) {
@@ -123,10 +259,9 @@ export function HtmlMessageBody({
     document.body.style.setProperty("overflow", "hidden", "important");
 
     const updateHeight = () => {
-      const height = Math.max(
-        document.documentElement?.scrollHeight || 0,
-        document.body?.scrollHeight || 0,
-        minimumFrameHeight,
+      const { height } = fitEmailDocumentToWidth(
+        document,
+        frame.clientWidth || document.documentElement?.clientWidth || 0,
       );
       const nextHeight = Math.min(height, maximumFrameHeight);
       rememberHeight(cacheKey, nextHeight);
