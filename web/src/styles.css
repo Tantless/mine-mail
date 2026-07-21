@@ -739,9 +739,12 @@ html[data-surface="new-mail-notification"] #root {
 .mail-layout {
   display: grid;
   grid-template-columns: var(--sidebar-width) var(--mail-list-width) minmax(var(--reader-min-width), 1fr);
+  grid-template-rows: minmax(0, 1fr);
   gap: var(--panel-gap);
   width: 100%;
+  min-width: 0;
   height: 100%;
+  min-height: 0;
   padding: var(--content-top) var(--window-edge) var(--window-edge) 0;
 }
 
@@ -764,8 +767,31 @@ html[data-surface="new-mail-notification"] #root {
 .sidebar__content {
   display: flex;
   flex-direction: column;
+  min-height: 0;
   height: 100%;
   padding: 16px 26px 14px;
+}
+
+.sidebar__primary {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+}
+
+.sidebar__primary::-webkit-scrollbar {
+  display: none;
+}
+
+.sidebar__footer {
+  width: 100%;
+  min-width: 0;
+  flex: 0 0 auto;
 }
 
 .brand {
@@ -973,11 +999,6 @@ html[data-surface="new-mail-notification"] #root {
   font-size: 11px;
   font-variant-numeric: tabular-nums;
   text-align: center;
-}
-
-.sidebar__spacer {
-  flex: 1;
-  min-height: 20px;
 }
 
 .account-switcher {
@@ -1230,6 +1251,7 @@ html[data-surface="new-mail-notification"] #root {
 .reader-panel {
   position: relative;
   min-width: 0;
+  min-height: 0;
   height: 100%;
   overflow: hidden;
   border: 1px solid color-mix(in srgb, var(--panel-border) 72%, var(--surface-edge));
@@ -1639,6 +1661,7 @@ html[data-surface="new-mail-notification"] #root {
 .reader-panel--message {
   display: flex;
   height: fit-content;
+  min-height: 0;
   max-height: 100%;
   align-self: start;
   flex-direction: column;
@@ -1719,6 +1742,7 @@ html[data-surface="new-mail-notification"] #root {
 }
 
 .reader-scroll {
+  min-width: 0;
   min-height: 0;
   overflow: auto;
   padding: 32px clamp(28px, 3.1vw, 46px) 46px;
@@ -4031,6 +4055,10 @@ html[data-surface="new-mail-notification"] #root {
     padding: 16px 10px 14px;
   }
 
+  .sidebar__primary {
+    align-items: center;
+  }
+
   .brand {
     margin-inline: 0;
   }
@@ -4068,6 +4096,7 @@ html[data-surface="new-mail-notification"] #root {
 
   .account-switcher {
     width: 44px;
+    margin-inline: auto;
   }
 
   .account-add-slot {
@@ -4131,6 +4160,10 @@ html[data-surface="new-mail-notification"] #root {
   .sidebar__content {
     align-items: stretch;
     padding: 18px 20px 16px;
+  }
+
+  .sidebar__primary {
+    align-items: stretch;
   }
 
   .brand__name,
