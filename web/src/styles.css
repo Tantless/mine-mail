@@ -1709,7 +1709,7 @@ html[data-surface="new-mail-notification"] #root {
 
 .reader-idle {
   --idle-ink: color-mix(in srgb, var(--color-text) 92%, var(--color-primary));
-  --reader-idle-quote-size: clamp(34px, 4.25vw, 56px);
+  --reader-idle-quote-cap: 56px;
   position: relative;
   display: grid;
   width: 100%;
@@ -1730,41 +1730,36 @@ html[data-surface="new-mail-notification"] #root {
   width: min(100%, 820px);
   margin: 0;
   opacity: 1;
+  container-type: inline-size;
   animation: reader-idle-scene-exit 9s linear both;
 }
 
 .reader-idle__quote {
   display: grid;
-  justify-items: center;
+  justify-items: start;
   gap: clamp(7px, 1vh, 13px);
-  max-width: 100%;
-  margin: 0;
+  width: calc(var(--reader-idle-frame-units) * 1em);
+  max-width: 92cqi;
+  margin-inline: auto;
   padding: 0;
   color: var(--idle-ink);
   font-family: inherit;
-  font-size: var(--reader-idle-quote-size);
+  font-size: var(--reader-idle-quote-cap);
+  font-size: min(
+    var(--reader-idle-quote-cap),
+    calc(92cqi / var(--reader-idle-frame-units))
+  );
   font-weight: 400;
   line-height: 1.36;
   letter-spacing: 0.08em;
   text-wrap: balance;
 }
 
-.reader-idle__quote[data-staggered="true"] {
-  --reader-idle-line-stagger: 2em;
-  padding-inline: var(--reader-idle-line-stagger);
-}
-
-.reader-idle__quote[data-staggered="true"] .reader-idle__line:first-child {
-  transform: translateX(calc(-1 * var(--reader-idle-line-stagger)));
-}
-
-.reader-idle__quote[data-staggered="true"] .reader-idle__line:last-child {
-  transform: translateX(var(--reader-idle-line-stagger));
-}
-
 .reader-idle__line {
   display: block;
-  max-width: 100%;
+  width: max-content;
+  max-width: none;
+  margin-left: var(--reader-idle-line-start, 0);
   color: inherit;
   white-space: nowrap;
 }
@@ -1797,13 +1792,12 @@ html[data-surface="new-mail-notification"] #root {
 }
 
 .reader-idle__source {
-  display: block;
-  width: min(
-    100%,
-    calc(
-      var(--reader-idle-quote-size) * var(--reader-idle-composition-units)
-    )
-  );
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.42em;
+  width: min(94%, 620px);
+  max-width: 100%;
   margin-top: clamp(20px, 2.8vh, 30px);
   margin-inline: auto;
   color: var(--idle-ink);
@@ -1814,7 +1808,15 @@ html[data-surface="new-mail-notification"] #root {
   letter-spacing: 0.1em;
   opacity: 0;
   text-align: right;
+  white-space: nowrap;
   animation: reader-idle-source-arrive 520ms var(--source-delay) ease-out both;
+}
+
+.reader-idle__source-dash {
+  width: 1.9em;
+  height: 1px;
+  flex: 0 0 1.9em;
+  background: currentColor;
 }
 
 .reader-idle[data-paused="true"] .reader-idle__figure,
@@ -4236,7 +4238,7 @@ html[data-surface="new-mail-notification"] #root {
   }
 
   .reader-idle {
-    --reader-idle-quote-size: clamp(28px, 4vw, 48px);
+    --reader-idle-quote-cap: 48px;
     padding-right: clamp(24px, 4vw, 52px);
     padding-left: clamp(24px, 4vw, 52px);
   }
@@ -4322,7 +4324,7 @@ html[data-surface="new-mail-notification"] #root {
   }
 
   .reader-idle {
-    --reader-idle-quote-size: clamp(25px, 4vw, 36px);
+    --reader-idle-quote-cap: 36px;
     padding: 30px clamp(18px, 3vw, 32px) clamp(88px, 15vh, 126px);
   }
 
