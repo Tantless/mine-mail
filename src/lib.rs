@@ -19,7 +19,8 @@ pub use error::{MailError, Result};
 pub use models::{
     ComposeRequest, ConnectionReport, ContactActivity, ContactMessage, ContactMessageDirection,
     Draft, DraftDeleteKind, DraftSaveKind, DraftSaveOutcome, DraftSyncReport, InboxMessage,
-    MailAddress, OutboxItem, OutboxStatus, ReplyContext, SyncReport, normalize_contact_email,
+    MailAddress, MailboxRole, OutboxItem, OutboxStatus, ReplyContext, SyncReport,
+    normalize_contact_email,
 };
 
 /// Rebuilds the preferred HTML body from the locally cached RFC822 message and

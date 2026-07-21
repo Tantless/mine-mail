@@ -79,12 +79,23 @@ pub enum ContactMessageDirection {
     Outgoing,
 }
 
+/// Semantic role of a cached mailbox. The provider's exact mailbox name stays
+/// on `InboxMessage` as an opaque IMAP identifier; this role is safe to render
+/// consistently even when that identifier uses IMAP modified UTF-7.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MailboxRole {
+    Inbox,
+    Sent,
+}
+
 /// One body-free cached message summary involving a contact. Direction is
 /// derived from the configured account identity rather than provider-specific
 /// mailbox names, which are not portable across IMAP servers.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub struct ContactMessage {
     pub direction: ContactMessageDirection,
+    pub mailbox_role: Option<MailboxRole>,
     pub message: InboxMessage,
 }
 

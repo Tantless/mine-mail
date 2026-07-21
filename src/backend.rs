@@ -11,7 +11,8 @@ use uuid::Uuid;
 use crate::{
     AccountConfig, ComposeRequest, ConnectionReport, ContactActivity, ContactMessage,
     ContactMessageDirection, Draft, DraftDeleteKind, DraftSaveKind, DraftSaveOutcome, InboxMessage,
-    MailAddress, MailError, OutboxItem, OutboxStatus, ReplyContext, Result, SyncReport,
+    MailAddress, MailError, MailboxRole, OutboxItem, OutboxStatus, ReplyContext, Result,
+    SyncReport,
     database::{DraftRecord, MailboxState, Repository},
     imap_client::{ImapConnection, MailboxHint, RemoteMessage},
     mime::{
@@ -562,6 +563,14 @@ impl MailBackend {
         let messages = self
             .repository
             .list_contact_source_messages(&self.config.account_id)?;
+        let sent_mailbox = match self
+            .repository
+            .mailbox_for_role(&self.config.account_id, "sent")
+        {
+            Ok(mailbox) => Some(mailbox),
+            Err(MailError::NotFound { .. }) => None,
+            Err(error) => return Err(error),
+        };
 
         Ok(messages
             .into_iter()
@@ -579,7 +588,18 @@ impl MailBackend {
                 } else {
                     ContactMessageDirection::Incoming
                 };
-                ContactMessage { direction, message }
+                let mailbox_role = if message.mailbox.eq_ignore_ascii_case(INBOX) {
+                    Some(MailboxRole::Inbox)
+                } else if sent_mailbox.as_deref() == Some(message.mailbox.as_str()) {
+                    Some(MailboxRole::Sent)
+                } else {
+                    None
+                };
+                ContactMessage {
+                    direction,
+                    mailbox_role,
+                    message,
+                }
             })
             .collect())
     }
@@ -2419,7 +2439,7 @@ mod tests {
     };
     use crate::{
         AccountConfig, ComposeRequest, ContactMessageDirection, Draft, DraftDeleteKind,
-        DraftSaveKind, InboxMessage, MailAddress, MailError, OutboxItem, OutboxStatus,
+        DraftSaveKind, InboxMessage, MailAddress, MailError, MailboxRole, OutboxItem, OutboxStatus,
         database::{DraftRecord, Repository},
         imap_client::{MailboxHint, RemoteMessage},
         mime::parse_draft_message,
@@ -2575,12 +2595,16 @@ mod tests {
             "DEMO@163.COM",
             "friend@example.com",
         );
-        outgoing.mailbox = "Sent Items".to_owned();
+        outgoing.mailbox = "&XfJT0ZAB-".to_owned();
         outgoing.to[0].name = Some("Older Friend".to_owned());
         outgoing.cc.push(MailAddress {
             name: None,
             email: "FRIEND@example.com".to_owned(),
         });
+        backend
+            .repository
+            .assign_mailbox_role(&backend.config.account_id, "sent", &outgoing.mailbox)
+            .expect("assign encoded Sent mailbox role");
 
         backend
             .repository
@@ -2603,8 +2627,10 @@ mod tests {
             .expect("contact messages");
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].direction, ContactMessageDirection::Incoming);
+        assert_eq!(messages[0].mailbox_role, Some(MailboxRole::Inbox));
         assert_eq!(messages[1].direction, ContactMessageDirection::Outgoing);
-        assert_eq!(messages[1].message.mailbox, "Sent Items");
+        assert_eq!(messages[1].mailbox_role, Some(MailboxRole::Sent));
+        assert_eq!(messages[1].message.mailbox, "&XfJT0ZAB-");
         assert!(messages.iter().all(|item| item.message.body_text.is_none()));
         assert!(messages.iter().all(|item| item.message.body_html.is_none()));
         assert!(

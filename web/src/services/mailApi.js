@@ -863,13 +863,23 @@ export const mailApi = {
             );
           })
           .slice(0, limit)
-          .map((message) => ({
-            ...message,
-            direction:
+          .map((message) => {
+            const direction =
               normalizeContactEmail(message.sender?.email || "") === accountEmail
                 ? "outgoing"
-                : "incoming",
-          })),
+                : "incoming";
+            const mailbox = (message.mailbox || "INBOX").trim();
+            return {
+              ...message,
+              direction,
+              mailbox_role:
+                mailbox.toLowerCase() === "inbox"
+                  ? "inbox"
+                  : direction === "outgoing"
+                    ? "sent"
+                    : null,
+            };
+          }),
       );
     })();
   },

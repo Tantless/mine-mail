@@ -17,6 +17,7 @@ const messages = [
   {
     uid: 42,
     mailbox: "INBOX",
+    mailbox_role: "inbox",
     kind: "inbox",
     subject: "周末见",
     preview: "我们周六下午见吧。",
@@ -24,7 +25,8 @@ const messages = [
   },
   {
     uid: 41,
-    mailbox: "Sent",
+    mailbox: "&XfJT0ZAB-",
+    mailbox_role: "sent",
     kind: "sent",
     subject: "Re: 地址",
     preview: "好的，我把地址发给你。",
@@ -99,7 +101,15 @@ describe("ContactsWorkspace", () => {
     expect(callbacks.onOpenMessage).toHaveBeenCalledWith(messages[0]);
   });
 
-  it("shows the original name beneath a remark and saves remark edits", async () => {
+  it("renders semantic mailbox roles without exposing provider mailbox encoding", () => {
+    renderWorkspace();
+
+    expect(screen.getByText("对方发来 · INBOX")).toBeTruthy();
+    expect(screen.getByText("发给对方 · SENT")).toBeTruthy();
+    expect(screen.queryByText(/&XfJT0ZAB-/)).toBeNull();
+  });
+
+  it("reveals the inline editor and saves a remark with Enter", async () => {
     const user = userEvent.setup();
     const remarkedContact = {
       ...contact,
@@ -113,15 +123,37 @@ describe("ContactsWorkspace", () => {
     });
 
     expect(screen.getByRole("heading", { name: "林老师" })).toBeTruthy();
-    expect(screen.getByText("原名：小林")).toBeTruthy();
+    expect(screen.getByText("(小林)")).toBeTruthy();
     expect(screen.getByRole("button", { name: "查看联系人 林老师" })).toBeTruthy();
+    expect(screen.queryByRole("textbox", { name: "联系人备注名" })).toBeNull();
 
+    await user.click(screen.getByRole("button", { name: "编辑备注" }));
     const input = screen.getByRole("textbox", { name: "联系人备注名" });
     await user.clear(input);
     await user.type(input, "  林同学  ");
-    await user.click(screen.getByRole("button", { name: "保存备注" }));
+    await user.keyboard("{Enter}");
 
     expect(callbacks.onSaveRemark).toHaveBeenCalledWith(remarkedContact, "林同学");
+  });
+
+  it("clears a remark when an empty inline input is saved", async () => {
+    const user = userEvent.setup();
+    const remarkedContact = {
+      ...contact,
+      displayName: "林老师",
+      originalName: "小林",
+      remark: "林老师",
+    };
+    const callbacks = renderWorkspace({
+      contacts: [remarkedContact],
+      selectedContact: remarkedContact,
+    });
+
+    await user.click(screen.getByRole("button", { name: "编辑备注" }));
+    await user.clear(screen.getByRole("textbox", { name: "联系人备注名" }));
+    await user.click(screen.getByRole("button", { name: "保存" }));
+
+    expect(callbacks.onSaveRemark).toHaveBeenCalledWith(remarkedContact, "");
   });
 
   it("marks favorite rows with the pinned surface hook", () => {

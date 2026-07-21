@@ -9,8 +9,9 @@ use std::{env, time::Instant};
 use mine_mail::{
     ComposeRequest, ConnectionReport, ContactMessage, ContactMessageDirection, Draft,
     DraftDeleteKind, DraftSaveKind, DraftSaveOutcome, InboxMessage, MailAddress, MailBackend,
-    OutboxItem, OutboxStatus, ReplyContext, SyncReport, outbox_body_html, outbox_body_text,
-    outbox_has_reply_headers, outbox_message_id, outbox_preview, outbox_sent_at, outbox_subject,
+    MailboxRole, OutboxItem, OutboxStatus, ReplyContext, SyncReport, outbox_body_html,
+    outbox_body_text, outbox_has_reply_headers, outbox_message_id, outbox_preview,
+    outbox_sent_at, outbox_subject,
 };
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WindowEvent};
@@ -91,6 +92,7 @@ struct InboxMessageDto {
 #[derive(Clone, Debug, Serialize)]
 struct ContactMessageDto {
     direction: ContactMessageDirection,
+    mailbox_role: Option<MailboxRole>,
     #[serde(flatten)]
     message: InboxMessageDto,
 }
@@ -99,6 +101,7 @@ impl From<ContactMessage> for ContactMessageDto {
     fn from(value: ContactMessage) -> Self {
         Self {
             direction: value.direction,
+            mailbox_role: value.mailbox_role,
             message: InboxMessageDto::summary(value.message),
         }
     }
@@ -1859,8 +1862,8 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use mine_mail::{
-        ContactMessage, ContactMessageDirection, InboxMessage, MailAddress, OutboxItem,
-        OutboxStatus, ReplyContext,
+        ContactMessage, ContactMessageDirection, InboxMessage, MailAddress, MailboxRole,
+        OutboxItem, OutboxStatus, ReplyContext,
     };
 
     use super::{
@@ -1982,18 +1985,20 @@ mod tests {
     #[test]
     fn contact_summaries_include_direction_without_body_or_rfc822_content() {
         let mut message = rich_message();
-        message.mailbox = "Sent Items".to_owned();
+        message.mailbox = "&XfJT0ZAB-".to_owned();
         message.body_text = None;
         message.body_html = None;
         message.raw_rfc822 = vec![1; 32 * 1024];
         let json = serde_json::to_value(ContactMessageDto::from(ContactMessage {
             direction: ContactMessageDirection::Outgoing,
+            mailbox_role: Some(MailboxRole::Sent),
             message,
         }))
         .expect("serialize contact summary");
 
         assert_eq!(json["direction"], "outgoing");
-        assert_eq!(json["mailbox"], "Sent Items");
+        assert_eq!(json["mailbox_role"], "sent");
+        assert_eq!(json["mailbox"], "&XfJT0ZAB-");
         assert!(json["body_text"].is_null());
         assert!(json["body_html"].is_null());
         assert!(json.get("raw_rfc822").is_none());

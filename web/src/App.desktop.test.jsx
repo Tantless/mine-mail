@@ -562,9 +562,10 @@ describe("Mine Mail desktop state bridge", () => {
     render(<App />);
 
     await user.click(await screen.findByRole("button", { name: "通讯录" }));
+    await user.click(await screen.findByRole("button", { name: "添加备注" }));
     const input = await screen.findByRole("textbox", { name: "联系人备注名" });
     await user.type(input, "林老师");
-    await user.click(screen.getByRole("button", { name: "保存备注" }));
+    await user.click(screen.getByRole("button", { name: "保存" }));
 
     await waitFor(() =>
       expect(desktop.mailApi.setContactRemark).toHaveBeenCalledWith(
@@ -572,7 +573,7 @@ describe("Mine Mail desktop state bridge", () => {
         "林老师",
       ),
     );
-    expect(await screen.findByText("原名：Sender 1")).toBeTruthy();
+    expect(await screen.findByText("(Sender 1)")).toBeTruthy();
     expect(screen.getByRole("button", { name: "查看联系人 林老师" })).toBeTruthy();
 
     await user.click(screen.getByRole("button", { name: "收件箱" }));

@@ -416,6 +416,7 @@ describe("mailApi desktop IPC contract", () => {
         {
           uid: 73,
           mailbox: "Sent",
+          mailbox_role: "sent",
           subject: "Hello",
           direction: "outgoing",
         },
@@ -437,7 +438,11 @@ describe("mailApi desktop IPC contract", () => {
     await expect(
       mailApi.listContactMessages("account-a", "friend@example.com", 80),
     ).resolves.toEqual([
-      expect.objectContaining({ uid: 73, direction: "outgoing" }),
+      expect.objectContaining({
+        uid: 73,
+        direction: "outgoing",
+        mailbox_role: "sent",
+      }),
     ]);
     await mailApi.setContactFavorite("friend@example.com", false);
     await mailApi.setContactRemark("friend@example.com", "林同学");

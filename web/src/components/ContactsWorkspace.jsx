@@ -11,7 +11,7 @@ import {
   UsersThree,
   WarningCircle,
 } from "@phosphor-icons/react";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { formatFullDate, formatMailTime } from "../utils/formatters.js";
 import { EditableProfileAvatar, ProfileAvatar } from "./ProfileAvatar.jsx";
 import "./ContactsWorkspace.css";
@@ -53,6 +53,12 @@ function isOutgoingMessage(message) {
 
 function messageTime(message) {
   return message.sent_at || message.internal_date || message.synced_at || null;
+}
+
+function mailboxRoleLabel(message) {
+  if (message.mailbox_role === "inbox") return "INBOX";
+  if (message.mailbox_role === "sent") return "SENT";
+  return "";
 }
 
 function newestFirst(messages) {
@@ -233,7 +239,7 @@ function ContactDetails({
             <p className="eyebrow">CONTACT</p>
             <h1>{label}</h1>
             {contact.remark ? (
-              <span className="contacts-profile__original-name">原名：{originalName}</span>
+              <span className="contacts-profile__original-name">({originalName})</span>
             ) : null}
             <span className="contacts-profile__email">{contact.email}</span>
             <span>{Number(contact.messageCount) || 0} 封往来邮件</span>
@@ -250,8 +256,6 @@ function ContactDetails({
           </button>
         </header>
 
-        <ContactRemarkEditor contact={contact} onSaveRemark={onSaveRemark} />
-
         <div className="contacts-profile-actions" aria-label="联系人操作">
           <button
             type="button"
@@ -261,6 +265,11 @@ function ContactDetails({
             <EnvelopeSimple size={18} weight="bold" />
             写信
           </button>
+          <ContactRemarkEditor
+            key={contact.email}
+            contact={contact}
+            onSaveRemark={onSaveRemark}
+          />
         </div>
 
         <section className="contacts-correspondence" aria-labelledby="contacts-correspondence-title">
@@ -294,6 +303,7 @@ function ContactDetails({
                 const outgoing = isOutgoingMessage(message);
                 const subject = message.subject || "（无主题）";
                 const timestamp = messageTime(message);
+                const mailboxLabel = mailboxRoleLabel(message);
                 return (
                   <article role="listitem" key={messageKey(message, index)}>
                     <button
@@ -319,7 +329,7 @@ function ContactDetails({
                         </span>
                         <span className="contacts-message-row__meta">
                           {outgoing ? "发给对方" : "对方发来"}
-                          {message.mailbox ? ` · ${message.mailbox}` : ""}
+                          {mailboxLabel ? ` · ${mailboxLabel}` : ""}
                         </span>
                       </span>
                     </button>
@@ -343,92 +353,89 @@ function ContactDetails({
 function ContactRemarkEditor({ contact, onSaveRemark }) {
   const savedRemark = contact?.remark?.trim() || "";
   const [value, setValue] = useState(savedRemark);
-  const [status, setStatus] = useState("idle");
+  const [isOpen, setIsOpen] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState(null);
 
-  useEffect(() => {
-    setValue(savedRemark);
-    setStatus("idle");
-    setError(null);
-  }, [contact?.email, savedRemark]);
-
-  const normalizedValue = value.trim();
-  const hasChanges = normalizedValue !== savedRemark;
-
-  const save = async (nextRemark) => {
-    setStatus("saving");
+  const save = async () => {
+    setIsSaving(true);
     setError(null);
     try {
-      await onSaveRemark(contact, nextRemark);
-      setStatus("saved");
+      await onSaveRemark(contact, value.trim());
+      setIsOpen(false);
     } catch (saveError) {
-      setStatus("error");
       setError(errorMessage(saveError, "备注没有保存，请重试。"));
+    } finally {
+      setIsSaving(false);
     }
   };
 
   return (
     <form
-      className="contacts-remark"
+      className="contacts-remark-editor"
+      data-open={isOpen}
       aria-label="联系人备注"
       onSubmit={(event) => {
         event.preventDefault();
-        if (hasChanges && status !== "saving") void save(normalizedValue);
+        if (!isSaving) void save();
       }}
     >
-      <div className="contacts-remark__heading">
-        <span className="contacts-remark__icon" aria-hidden="true">
-          <NotePencil size={18} weight="duotone" />
-        </span>
-        <div>
-          <strong>备注</strong>
-          <span>邮件列表和阅读页会优先显示备注。</span>
-        </div>
-      </div>
-      <div className="contacts-remark__controls">
-        <input
-          className="contacts-remark__input"
-          type="text"
-          value={value}
-          maxLength={80}
-          placeholder="例如：林老师"
-          aria-label="联系人备注名"
-          disabled={status === "saving"}
-          onChange={(event) => {
-            setValue(event.target.value);
-            setStatus("idle");
+      <button
+        type="button"
+        className="contacts-remark-editor__toggle"
+        data-active={Boolean(savedRemark)}
+        aria-label={savedRemark ? "编辑备注" : "添加备注"}
+        aria-expanded={isOpen}
+        title={savedRemark ? `编辑备注：${savedRemark}` : "添加备注"}
+        onClick={() => {
+          if (isOpen) {
+            setIsOpen(false);
+            setValue(savedRemark);
             setError(null);
-          }}
-          onKeyDown={(event) => {
-            if (event.key === "Escape") {
-              event.preventDefault();
-              setValue(savedRemark);
-              setStatus("idle");
+            return;
+          }
+          setValue(savedRemark);
+          setError(null);
+          setIsOpen(true);
+        }}
+      >
+        <NotePencil size={18} weight={savedRemark ? "fill" : "regular"} />
+      </button>
+      {isOpen ? (
+        <span className="contacts-remark-editor__fields">
+          <input
+            className="contacts-remark-editor__input"
+            type="text"
+            value={value}
+            maxLength={80}
+            placeholder="输入备注"
+            aria-label="联系人备注名"
+            autoFocus
+            disabled={isSaving}
+            onChange={(event) => {
+              setValue(event.target.value);
               setError(null);
-            }
-          }}
-        />
-        <button
-          type="submit"
-          className="contacts-primary-button contacts-remark__save"
-          disabled={!hasChanges || status === "saving"}
-        >
-          {status === "saving" ? "保存中…" : "保存备注"}
-        </button>
-        {savedRemark ? (
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                event.preventDefault();
+                setValue(savedRemark);
+                setError(null);
+                setIsOpen(false);
+              }
+            }}
+          />
           <button
-            type="button"
-            className="contacts-secondary-button contacts-remark__clear"
-            disabled={status === "saving"}
-            onClick={() => void save("")}
+            type="submit"
+            className="contacts-remark-editor__save"
+            disabled={isSaving}
           >
-            清除
+            {isSaving ? "保存中…" : "保存"}
           </button>
-        ) : null}
-      </div>
-      {error ? <span className="contacts-remark__error" role="alert">{error}</span> : null}
-      {!error && status === "saved" ? (
-        <span className="contacts-remark__success" role="status">备注已保存</span>
+        </span>
+      ) : null}
+      {error ? (
+        <span className="contacts-remark-editor__error" role="alert">{error}</span>
       ) : null}
     </form>
   );
