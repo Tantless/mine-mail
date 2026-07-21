@@ -83,12 +83,12 @@ export function Sidebar({
           <span className="brand__name">Mine Mail</span>
         </div>
 
-        <div className="sidebar__primary">
-          <button className="compose-button" type="button" onClick={onCompose}>
-            <PencilSimple size={19} weight="bold" />
-            <span>写信</span>
-          </button>
+        <button className="compose-button" type="button" onClick={onCompose}>
+          <PencilSimple size={19} weight="bold" />
+          <span>写信</span>
+        </button>
 
+        <div className="sidebar__primary">
           <nav className="folder-nav">
             {folders.map((folder) => {
               const FolderIcon = folder.icon;
