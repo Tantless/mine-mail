@@ -1019,6 +1019,8 @@ export function App() {
         setContacts(items);
         setContactsState("ready");
         setContactsError(null);
+        const firstVisibleContact =
+          items.find((item) => item.isFavorite) || items[0] || null;
         setSelectedContactEmail((current) => {
           const currentKey = normalizeAvatarEmail(current);
           if (
@@ -1028,7 +1030,7 @@ export function App() {
             return current;
           }
           return selectFirst && window.innerWidth >= 720
-            ? items[0]?.email || null
+            ? firstVisibleContact?.email || null
             : null;
         });
         return items;
@@ -1099,11 +1101,14 @@ export function App() {
   }, [loadContactMessages, loadContacts]);
 
   useEffect(() => {
-    if (activeFolder !== "contacts" || !activeAccountId) return;
+    if (!activeAccountId) return;
+    // Contact remarks are local metadata used by the mail list and reader too,
+    // so hydrate them with the active account's cached header activity even
+    // before the contacts workspace is opened.
     void loadContacts({ accountId: activeAccountId, selectFirst: true }).catch(
       () => {},
     );
-  }, [activeAccountId, activeFolder, loadContacts]);
+  }, [activeAccountId, loadContacts]);
 
   useEffect(() => {
     if (
@@ -1629,15 +1634,37 @@ export function App() {
     [contacts, profileAvatarFor],
   );
 
+  const contactRemarksByEmail = useMemo(
+    () =>
+      new Map(
+        contacts
+          .filter((contact) => contact.remark?.trim())
+          .map((contact) => [
+            normalizeAvatarEmail(contact.email),
+            contact.remark.trim(),
+          ]),
+      ),
+    [contacts],
+  );
+
+  const contactRemarkForEmail = useCallback(
+    (email) => contactRemarksByEmail.get(normalizeAvatarEmail(email)) || null,
+    [contactRemarksByEmail],
+  );
+
   const visibleContacts = useMemo(() => {
     const normalizedQuery = contactQuery.trim().toLowerCase();
     return contactsWithAvatars
       .filter((contact) => {
         if (contactFilter === "favorite" && !contact.isFavorite) return false;
         if (!normalizedQuery) return true;
-        return [contact.displayName, contact.email, contact.lastSubject].some(
-          (value) => value?.toLowerCase().includes(normalizedQuery),
-        );
+        return [
+          contact.displayName,
+          contact.originalName,
+          contact.remark,
+          contact.email,
+          contact.lastSubject,
+        ].some((value) => value?.toLowerCase().includes(normalizedQuery));
       })
       .sort(
         (left, right) =>
@@ -1701,11 +1728,12 @@ export function App() {
       return [
         message.subject,
         message.preview,
+        contactRemarkForEmail(message.sender?.email),
         message.sender?.name,
         message.sender?.email,
       ].some((value) => value?.toLowerCase().includes(normalizedQuery));
     });
-  }, [filter, folderMessages, query]);
+  }, [contactRemarkForEmail, filter, folderMessages, query]);
 
   const selectedMessageKey = remoteFlagKey(selectedMessage);
   const selectedIndex = visibleMessages.findIndex((message) => {
@@ -1791,6 +1819,33 @@ export function App() {
     } catch (error) {
       setContacts(updateFavorite(Boolean(contact.isFavorite)));
       showToast(describeError(error, "联系人收藏状态没有保存"), "error");
+    }
+  };
+
+  const handleSaveContactRemark = async (contact, remark) => {
+    if (!contact?.email || !activeAccountId) return;
+    const email = normalizeAvatarEmail(contact.email);
+    const nextRemark = remark.trim();
+    const previousRemark = contact.remark?.trim() || "";
+    const applyRemark = (value) => (current) =>
+      current.map((item) => {
+        if (normalizeAvatarEmail(item.email) !== email) return item;
+        const normalizedRemark = value || null;
+        return {
+          ...item,
+          remark: normalizedRemark,
+          displayName: normalizedRemark || item.originalName || item.email,
+        };
+      });
+
+    setContacts(applyRemark(nextRemark));
+    try {
+      await mailApi.setContactRemark(contact.email, nextRemark);
+      await loadContacts({ accountId: activeAccountId, silent: true });
+      showToast(nextRemark ? "联系人备注已保存" : "联系人备注已清除");
+    } catch (error) {
+      setContacts(applyRemark(previousRemark));
+      throw error;
     }
   };
 
@@ -2397,6 +2452,7 @@ export function App() {
       resolveReferencedMessage={resolveReferencedMessage}
       onOpenReferencedMessage={handleOpenReferencedMessage}
       senderAvatar={profileAvatarFor("contact", selectedMessage?.sender?.email)}
+      senderDisplayName={contactRemarkForEmail(selectedMessage?.sender?.email)}
       onSetSenderAvatar={(file) =>
         handleSaveProfileAvatar("contact", selectedMessage?.sender?.email, file)
       }
@@ -2500,6 +2556,7 @@ export function App() {
             }
             onCompose={handleComposeToContact}
             onOpenMessage={handleOpenContactMessage}
+            onSaveRemark={handleSaveContactRemark}
             onSetAvatar={(contact, file) =>
               handleSaveProfileAvatar("contact", contact.email, file)
             }
@@ -2525,6 +2582,7 @@ export function App() {
               canSync={networkActionsAvailable}
               onOpenMobileNav={() => setIsSidebarOpen(true)}
               avatarForEmail={(email) => profileAvatarFor("contact", email)}
+              displayNameForEmail={contactRemarkForEmail}
               referenceJump={referenceJump}
             />
             {messageReader}

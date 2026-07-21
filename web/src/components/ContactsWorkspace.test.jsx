@@ -40,6 +40,7 @@ function renderWorkspace(overrides = {}) {
     onToggleFavorite: vi.fn(),
     onCompose: vi.fn(),
     onOpenMessage: vi.fn(),
+    onSaveRemark: vi.fn().mockResolvedValue(undefined),
   };
 
   render(
@@ -96,6 +97,31 @@ describe("ContactsWorkspace", () => {
 
     await user.click(screen.getByRole("button", { name: "打开邮件：周末见" }));
     expect(callbacks.onOpenMessage).toHaveBeenCalledWith(messages[0]);
+  });
+
+  it("shows the original name beneath a remark and saves remark edits", async () => {
+    const user = userEvent.setup();
+    const remarkedContact = {
+      ...contact,
+      displayName: "林老师",
+      originalName: "小林",
+      remark: "林老师",
+    };
+    const callbacks = renderWorkspace({
+      contacts: [remarkedContact],
+      selectedContact: remarkedContact,
+    });
+
+    expect(screen.getByRole("heading", { name: "林老师" })).toBeTruthy();
+    expect(screen.getByText("原名：小林")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "查看联系人 林老师" })).toBeTruthy();
+
+    const input = screen.getByRole("textbox", { name: "联系人备注名" });
+    await user.clear(input);
+    await user.type(input, "  林同学  ");
+    await user.click(screen.getByRole("button", { name: "保存备注" }));
+
+    expect(callbacks.onSaveRemark).toHaveBeenCalledWith(remarkedContact, "林同学");
   });
 
   it("marks favorite rows with the pinned surface hook", () => {

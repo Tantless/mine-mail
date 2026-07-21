@@ -319,9 +319,54 @@ fn compare_contact_items(left: &ContactListItemDto, right: &ContactListItemDto) 
 
 #[cfg(test)]
 mod tests {
+    use rusqlite::Connection;
     use tempfile::tempdir;
 
     use super::{ContactActivity, ContactRecord, ContactStore, merge_contacts};
+
+    #[test]
+    fn contact_store_migrates_the_existing_favorites_database() {
+        let directory = tempdir().expect("tempdir");
+        let path = directory.path().join("contacts.sqlite3");
+        let connection = Connection::open(&path).expect("legacy database");
+        connection
+            .execute_batch(
+                "CREATE TABLE contacts (
+                     email TEXT PRIMARY KEY NOT NULL COLLATE NOCASE,
+                     display_name TEXT,
+                     is_saved INTEGER NOT NULL DEFAULT 1,
+                     is_favorite INTEGER NOT NULL DEFAULT 0,
+                     created_at TEXT NOT NULL,
+                     updated_at TEXT NOT NULL
+                 );
+                 INSERT INTO contacts VALUES (
+                     'friend@example.com', NULL, 0, 1,
+                     '2026-07-01T00:00:00Z', '2026-07-01T00:00:00Z'
+                 );
+                 PRAGMA user_version = 1;",
+            )
+            .expect("legacy schema");
+        drop(connection);
+
+        let store = ContactStore::open(&path).expect("migrated store");
+        assert_eq!(
+            store.list_records().expect("preserved favorite"),
+            vec![ContactRecord {
+                email: "friend@example.com".to_owned(),
+                remark: None,
+                is_favorite: true,
+            }]
+        );
+        assert!(store.set_remark("friend@example.com", "旧友").expect("remark"));
+
+        let connection = Connection::open(path).expect("migrated database");
+        assert_eq!(
+            connection
+                .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+                .expect("schema version"),
+            2
+        );
+    }
 
     #[test]
     fn contact_store_normalizes_and_persists_favorites_and_remarks_independently() {
@@ -341,7 +386,11 @@ mod tests {
                 is_favorite: true,
             }]
         );
-        assert!(store.set_remark("friend@example.com", "  林老师  ").expect("remark"));
+        assert!(
+            store
+                .set_remark("friend@example.com", "  林老师  ")
+                .expect("remark")
+        );
 
         let reopened = ContactStore::open(path).expect("reopen");
         assert_eq!(
@@ -365,7 +414,11 @@ mod tests {
                 is_favorite: false,
             }]
         );
-        assert!(reopened.set_remark("friend@example.com", " ").expect("clear"));
+        assert!(
+            reopened
+                .set_remark("friend@example.com", " ")
+                .expect("clear")
+        );
         assert!(reopened.list_records().expect("empty").is_empty());
     }
 

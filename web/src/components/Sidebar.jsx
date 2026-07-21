@@ -76,14 +76,14 @@ export function Sidebar({
     <aside className="sidebar" aria-label="邮箱导航">
       <div className="sidebar__scrim" aria-hidden="true" />
       <div className="sidebar__content">
-        <div className="sidebar__primary">
-          <div className="brand" aria-label="Mine Mail">
-            <span className="brand__mark" aria-hidden="true">
-              <BrandLogo />
-            </span>
-            <span className="brand__name">Mine Mail</span>
-          </div>
+        <div className="brand" aria-label="Mine Mail">
+          <span className="brand__mark" aria-hidden="true">
+            <BrandLogo />
+          </span>
+          <span className="brand__name">Mine Mail</span>
+        </div>
 
+        <div className="sidebar__primary">
           <button className="compose-button" type="button" onClick={onCompose}>
             <PencilSimple size={19} weight="bold" />
             <span>写信</span>

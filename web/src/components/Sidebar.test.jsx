@@ -82,6 +82,19 @@ describe("Sidebar account switcher", () => {
     expect(footer.contains(screen.getByRole("button", { name: "写信" }))).toBe(false);
   });
 
+  it("keeps the brand outside the scrollable primary region", () => {
+    renderSidebar(1);
+
+    const brand = screen.getByLabelText("Mine Mail");
+    const content = brand.closest(".sidebar__content");
+    const primary = content.querySelector(".sidebar__primary");
+
+    expect(content).toBeTruthy();
+    expect(primary).toBeTruthy();
+    expect(primary.contains(brand)).toBe(false);
+    expect(brand.parentElement).toBe(content);
+  });
+
   it.each([
     [0, 1],
     [1, 1],

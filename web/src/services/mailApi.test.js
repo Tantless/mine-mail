@@ -403,7 +403,9 @@ describe("mailApi desktop IPC contract", () => {
       .mockResolvedValueOnce([
         {
           email: "friend@example.com",
-          display_name: "Friend",
+          display_name: "林老师",
+          original_name: "Friend",
+          remark: "林老师",
           is_favorite: true,
           message_count: 4,
           last_message_at: "2026-07-20T12:00:00Z",
@@ -418,13 +420,16 @@ describe("mailApi desktop IPC contract", () => {
           direction: "outgoing",
         },
       ])
+      .mockResolvedValueOnce(true)
       .mockResolvedValueOnce(true);
     const { mailApi } = await import("./mailApi.js");
 
     await expect(mailApi.listContacts("account-a")).resolves.toEqual([
       expect.objectContaining({
         email: "friend@example.com",
-        displayName: "Friend",
+        displayName: "林老师",
+        originalName: "Friend",
+        remark: "林老师",
         isFavorite: true,
         messageCount: 4,
       }),
@@ -435,6 +440,7 @@ describe("mailApi desktop IPC contract", () => {
       expect.objectContaining({ uid: 73, direction: "outgoing" }),
     ]);
     await mailApi.setContactFavorite("friend@example.com", false);
+    await mailApi.setContactRemark("friend@example.com", "林同学");
 
     expect(ipc.invoke).toHaveBeenNthCalledWith(1, "list_contacts", {
       accountId: "account-a",
@@ -447,6 +453,10 @@ describe("mailApi desktop IPC contract", () => {
     expect(ipc.invoke).toHaveBeenNthCalledWith(3, "set_contact_favorite", {
       email: "friend@example.com",
       favorite: false,
+    });
+    expect(ipc.invoke).toHaveBeenNthCalledWith(4, "set_contact_remark", {
+      email: "friend@example.com",
+      remark: "林同学",
     });
   });
 

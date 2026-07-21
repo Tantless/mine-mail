@@ -233,12 +233,13 @@ function normalizeProfileAvatar(avatar = {}) {
 
 function normalizeContact(contact = {}) {
   const email = (contact.email ?? "").trim().toLowerCase();
-  const originalName =
+  const originalName = String(
     contact.originalName ??
-    contact.original_name ??
-    contact.displayName ??
-    contact.display_name ??
-    email;
+      contact.original_name ??
+      contact.displayName ??
+      contact.display_name ??
+      email,
+  ).trim() || email;
   const remark = (contact.remark ?? "").trim() || null;
   return {
     email,

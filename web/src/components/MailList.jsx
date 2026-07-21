@@ -37,6 +37,7 @@ export function MailList({
   canSync = true,
   onOpenMobileNav,
   avatarForEmail = () => null,
+  displayNameForEmail = () => null,
   referenceJump = null,
 }) {
   const messageListRef = useRef(null);
@@ -124,7 +125,9 @@ export function MailList({
                 : message.uid === selectedUid;
             const unread = !hasFlag(message, "\\Seen");
             const starred = hasFlag(message, "\\Flagged");
-            const sender = senderLabel(message);
+            const sender =
+              displayNameForEmail(message.sender?.email)?.trim() ||
+              senderLabel(message);
             const canToggleStar =
               typeof onToggleStar === "function" &&
               message.kind !== "draft" &&

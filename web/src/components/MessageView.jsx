@@ -47,6 +47,7 @@ export function MessageView({
   resolveReferencedMessage,
   onOpenReferencedMessage,
   senderAvatar,
+  senderDisplayName = null,
   onSetSenderAvatar,
   onRemoveSenderAvatar,
 }) {
@@ -62,7 +63,7 @@ export function MessageView({
     );
   }
 
-  const sender = senderLabel(message);
+  const sender = senderDisplayName?.trim() || senderLabel(message);
   const isOutgoing = message.kind === "outbox" || message.kind === "sent";
   const body = message.body_fetched
     ? message.body_text || "这封邮件没有纯文本正文。"

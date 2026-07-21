@@ -49,6 +49,7 @@ const desktop = vi.hoisted(() => {
       listContacts: vi.fn(),
       listContactMessages: vi.fn(),
       setContactFavorite: vi.fn(),
+      setContactRemark: vi.fn(),
       onMailEvent: vi.fn(async (name, handler) => {
         listeners.set(name, handler);
         return () => listeners.delete(name);
@@ -193,6 +194,7 @@ describe("Mine Mail desktop state bridge", () => {
     desktop.mailApi.listContactMessages.mockResolvedValue([]);
     desktop.mailApi.fetchContactMessage.mockResolvedValue(undefined);
     desktop.mailApi.setContactFavorite.mockResolvedValue(true);
+    desktop.mailApi.setContactRemark.mockResolvedValue(true);
     desktop.mailApi.checkConnections.mockResolvedValue({
       imap_ok: true,
       smtp_ok: true,
@@ -463,7 +465,7 @@ describe("Mine Mail desktop state bridge", () => {
     await waitFor(() =>
       expect(desktop.mailApi.listContactMessages).toHaveBeenCalledWith(
         "desktop-account",
-        "friend@example.com",
+        "pinned@example.com",
         250,
       ),
     );
@@ -535,6 +537,52 @@ describe("Mine Mail desktop state bridge", () => {
       ]);
     });
     expect(await screen.findByText("1 封往来 · After refresh")).toBeTruthy();
+  });
+
+  it("saves a contact remark and prioritizes it in mail names", async () => {
+    const contact = {
+      email: "sender1@example.com",
+      displayName: "Sender 1",
+      originalName: "Sender 1",
+      remark: null,
+      isFavorite: false,
+      messageCount: 1,
+      lastMessageAt: "2026-07-14T09:00:00Z",
+      lastSubject: "First mail",
+    };
+    const remarkedContact = {
+      ...contact,
+      displayName: "林老师",
+      remark: "林老师",
+    };
+    desktop.mailApi.listContacts
+      .mockResolvedValueOnce([contact])
+      .mockResolvedValue([remarkedContact]);
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: "通讯录" }));
+    const input = await screen.findByRole("textbox", { name: "联系人备注名" });
+    await user.type(input, "林老师");
+    await user.click(screen.getByRole("button", { name: "保存备注" }));
+
+    await waitFor(() =>
+      expect(desktop.mailApi.setContactRemark).toHaveBeenCalledWith(
+        "sender1@example.com",
+        "林老师",
+      ),
+    );
+    expect(await screen.findByText("原名：Sender 1")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "查看联系人 林老师" })).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: "收件箱" }));
+    const mailRow = await screen.findByRole("option");
+    expect(mailRow.textContent).toContain("林老师");
+    await user.click(mailRow);
+    await screen.findByText("Loaded body");
+    expect(document.querySelector(".sender-card__identity strong")?.textContent).toBe(
+      "林老师",
+    );
   });
 
   it("ignores a stale body response after the user selects another message", async () => {
