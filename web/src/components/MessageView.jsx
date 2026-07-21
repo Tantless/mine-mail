@@ -16,6 +16,7 @@ import {
 import { IconButton } from "./IconButton.jsx";
 import { HtmlMessageBody } from "./HtmlMessageBody.jsx";
 import { NativeHtmlMessageBody } from "./NativeHtmlMessageBody.jsx";
+import { ReaderIdleExperience } from "./ReaderIdleExperience.jsx";
 import { SegmentedMessageBody } from "./SegmentedMessageBody.jsx";
 import { EditableProfileAvatar, ProfileAvatar } from "./ProfileAvatar.jsx";
 import { formatFullDate, senderLabel } from "../utils/formatters.js";
@@ -53,12 +54,11 @@ export function MessageView({
 }) {
   if (!message) {
     return (
-      <section className="reader-panel reader-panel--empty" aria-label="邮件阅读区">
-        <div className="reader-empty__art" aria-hidden="true">
-          <EnvelopeOpen size={34} weight="duotone" />
-        </div>
-        <p>选择一封邮件开始阅读</p>
-        <small>背景会在这里多留一点呼吸</small>
+      <section
+        className="reader-panel reader-panel--empty"
+        aria-label="邮件阅读区，当前未打开邮件"
+      >
+        <ReaderIdleExperience />
       </section>
     );
   }

@@ -1,3 +1,12 @@
+@font-face {
+  font-family: "Ma Shan Zheng";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src: url("@fontsource/ma-shan-zheng/files/ma-shan-zheng-chinese-simplified-400-normal.woff2")
+    format("woff2");
+}
+
 :root {
   color-scheme: light;
   font-family: "Inter Variable", Inter, system-ui, -apple-system, BlinkMacSystemFont,
@@ -1682,8 +1691,9 @@ html[data-surface="new-mail-notification"] #root {
 
 .reader-panel--empty {
   display: grid;
-  place-content: center;
-  justify-items: center;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  place-items: stretch;
   border-color: transparent;
   background: transparent;
   backdrop-filter: none;
@@ -1697,27 +1707,119 @@ html[data-surface="new-mail-notification"] #root {
   display: none;
 }
 
-.reader-empty__art {
+.reader-idle {
+  --idle-ink: color-mix(in srgb, var(--color-text) 92%, var(--color-primary));
+  --reader-idle-quote-size: clamp(34px, 4.25vw, 56px);
+  position: relative;
   display: grid;
-  width: 62px;
-  height: 62px;
+  width: 100%;
+  min-width: 0;
+  height: 100%;
+  min-height: 0;
   place-items: center;
-  margin-bottom: 14px;
-  border: 1px solid rgba(255, 255, 255, 0.26);
-  border-radius: 18px;
-  background: rgba(255, 255, 255, 0.16);
+  overflow: hidden;
+  padding: clamp(48px, 8vh, 92px) clamp(28px, 5vw, 86px)
+    clamp(84px, 13vh, 138px);
+  color: var(--idle-ink);
+  font-family: "Ma Shan Zheng", "STKaiti", "KaiTi", "FZKai-Z03", cursive;
+  text-align: center;
 }
 
-.reader-panel--empty p {
+.reader-idle__figure {
+  position: relative;
+  width: min(100%, 820px);
   margin: 0;
-  font-size: 14px;
-  font-weight: 650;
+  opacity: 1;
+  animation: reader-idle-scene-exit 9s linear both;
 }
 
-.reader-panel--empty small {
-  margin-top: 6px;
-  color: var(--sidebar-muted);
-  font-size: 11px;
+.reader-idle__quote {
+  display: grid;
+  justify-items: center;
+  gap: clamp(7px, 1vh, 13px);
+  max-width: 100%;
+  margin: 0;
+  padding: 0;
+  color: var(--idle-ink);
+  font-family: inherit;
+  font-size: var(--reader-idle-quote-size);
+  font-weight: 400;
+  line-height: 1.36;
+  letter-spacing: 0.08em;
+  text-wrap: balance;
+}
+
+.reader-idle__quote[data-staggered="true"] {
+  --reader-idle-line-stagger: 2em;
+  padding-inline: var(--reader-idle-line-stagger);
+}
+
+.reader-idle__quote[data-staggered="true"] .reader-idle__line:first-child {
+  transform: translateX(calc(-1 * var(--reader-idle-line-stagger)));
+}
+
+.reader-idle__quote[data-staggered="true"] .reader-idle__line:last-child {
+  transform: translateX(var(--reader-idle-line-stagger));
+}
+
+.reader-idle__line {
+  display: block;
+  max-width: 100%;
+  color: inherit;
+  white-space: nowrap;
+}
+
+.reader-idle__char {
+  display: inline-block;
+  opacity: 0;
+  white-space: pre;
+  animation-delay: calc(180ms + var(--char-index, 0) * 120ms);
+  animation-duration: 720ms;
+  animation-fill-mode: both;
+  animation-timing-function: cubic-bezier(0.2, 0.78, 0.22, 1);
+  will-change: opacity, filter, transform;
+}
+
+.reader-idle__figure[data-effect="char-rise"] .reader-idle__char {
+  animation-name: reader-idle-char-rise;
+}
+
+.reader-idle__figure[data-effect="char-fly"] .reader-idle__char {
+  animation-name: reader-idle-char-fly;
+}
+
+.reader-idle__figure[data-effect="char-focus"] .reader-idle__char {
+  animation-name: reader-idle-char-focus;
+}
+
+.reader-idle__figure[data-effect="char-depth"] .reader-idle__char {
+  animation-name: reader-idle-char-depth;
+}
+
+.reader-idle__source {
+  display: block;
+  width: min(
+    100%,
+    calc(
+      var(--reader-idle-quote-size) * var(--reader-idle-composition-units)
+    )
+  );
+  margin-top: clamp(20px, 2.8vh, 30px);
+  margin-inline: auto;
+  color: var(--idle-ink);
+  font-family: inherit;
+  font-size: clamp(13px, 1.05vw, 16px);
+  font-style: normal;
+  font-weight: 400;
+  letter-spacing: 0.1em;
+  opacity: 0;
+  text-align: right;
+  animation: reader-idle-source-arrive 520ms var(--source-delay) ease-out both;
+}
+
+.reader-idle[data-paused="true"] .reader-idle__figure,
+.reader-idle[data-paused="true"] .reader-idle__figure * {
+  animation-play-state: paused;
 }
 
 .reader-toolbar {
@@ -4047,12 +4149,96 @@ html[data-surface="new-mail-notification"] #root {
 @keyframes dialog-in { from { opacity: 0; transform: translateY(8px) scale(0.985); } }
 @keyframes toast-in { from { opacity: 0; transform: translateY(8px); } }
 @keyframes menu-in { from { opacity: 0; transform: translateY(7px); } }
+@keyframes reader-idle-scene-exit {
+  0%,
+  92% {
+    opacity: 1;
+  }
+
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes reader-idle-char-rise {
+  from {
+    filter: blur(2px);
+    opacity: 0;
+    transform: translate3d(0, 0.42em, 0);
+  }
+
+  to {
+    filter: blur(0);
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes reader-idle-char-fly {
+  from {
+    filter: blur(2px);
+    opacity: 0;
+    transform: translate3d(-0.52em, 0, 0) scale(0.97);
+  }
+
+  to {
+    filter: blur(0);
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes reader-idle-char-focus {
+  from {
+    filter: blur(0.18em);
+    opacity: 0;
+    transform: scale(1.04);
+  }
+
+  to {
+    filter: blur(0);
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes reader-idle-char-depth {
+  from {
+    filter: blur(1px);
+    opacity: 0;
+    transform: scale(0.72);
+  }
+
+  to {
+    filter: blur(0);
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes reader-idle-source-arrive {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
 
 @media (max-width: 1250px) {
   :root {
     --sidebar-width: 78px;
     --mail-list-width: clamp(350px, 35vw, 420px);
     --reader-min-width: 420px;
+  }
+
+  .reader-idle {
+    --reader-idle-quote-size: clamp(28px, 4vw, 48px);
+    padding-right: clamp(24px, 4vw, 52px);
+    padding-left: clamp(24px, 4vw, 52px);
   }
 
   .sidebar__content {
@@ -4133,6 +4319,20 @@ html[data-surface="new-mail-notification"] #root {
   :root {
     --mail-list-width: minmax(350px, 42vw);
     --reader-min-width: 0px;
+  }
+
+  .reader-idle {
+    --reader-idle-quote-size: clamp(25px, 4vw, 36px);
+    padding: 30px clamp(18px, 3vw, 32px) clamp(88px, 15vh, 126px);
+  }
+
+  .reader-idle__quote {
+    letter-spacing: 0.055em;
+  }
+
+  .reader-idle__source {
+    font-size: 10px;
+    letter-spacing: 0.15em;
   }
 
   .mail-layout {
@@ -4296,6 +4496,10 @@ html[data-surface="new-mail-notification"] #root {
   }
 
   .reader-panel--empty {
+    display: none;
+  }
+
+  .reader-idle {
     display: none;
   }
 
@@ -4545,5 +4749,23 @@ html[data-surface="new-mail-notification"] #root {
   .account-add-slot:active > svg,
   .account-card .account-card__avatar {
     transform: none;
+  }
+
+  .reader-idle__figure,
+  .reader-idle__figure[data-effect] .reader-idle__char,
+  .reader-idle__figure[data-effect] .reader-idle__source {
+    animation: none !important;
+    filter: none !important;
+    transform: none !important;
+    will-change: auto;
+  }
+
+  .reader-idle__figure,
+  .reader-idle__figure[data-effect] .reader-idle__char {
+    opacity: 1;
+  }
+
+  .reader-idle__figure[data-effect] .reader-idle__source {
+    opacity: 1;
   }
 }
