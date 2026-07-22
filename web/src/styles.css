@@ -1753,6 +1753,8 @@ html[data-surface="new-mail-notification"] #root {
   color: var(--idle-ink);
   font-family: "Ma Shan Zheng", "STKaiti", "KaiTi", "FZKai-Z03", cursive;
   text-align: center;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 .reader-idle__figure {
