@@ -88,7 +88,7 @@ export function Sidebar({
           <span>写信</span>
         </button>
 
-        <div className="sidebar__primary">
+        <div className="sidebar__primary vertical-scroll-surface">
           <nav className="folder-nav">
             {folders.map((folder) => {
               const FolderIcon = folder.icon;

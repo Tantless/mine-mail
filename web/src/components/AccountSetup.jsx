@@ -268,7 +268,10 @@ export function AccountSetupForm({
 export function AccountSetupPanel(props) {
   return (
     <div className="account-onboarding-layer">
-      <section className="account-onboarding" aria-labelledby="account-onboarding-title">
+      <section
+        className="account-onboarding vertical-scroll-surface"
+        aria-labelledby="account-onboarding-title"
+      >
         <span className="account-onboarding__mark" aria-hidden="true">
           <BrandLogo />
         </span>

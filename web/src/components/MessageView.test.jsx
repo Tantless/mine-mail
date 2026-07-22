@@ -32,4 +32,25 @@ describe("MessageView idle experience", () => {
     expect(screen.queryByTestId("reader-idle-experience")).toBeNull();
     expect(screen.getByText("已打开的邮件")).toBeTruthy();
   });
+
+  it("uses the vertical-only scroll contract for an opened message", () => {
+    const { container } = render(
+      <MessageView
+        message={{
+          uid: 2,
+          kind: "inbox",
+          subject: "仅纵向滚动",
+          sender: { email: "sender@example.com", name: "Sender" },
+          sent_at: "2026-07-21T12:00:00Z",
+          body_fetched: true,
+          body_text: "正文",
+        }}
+        onClose={vi.fn()}
+      />,
+    );
+
+    const scrollSurface = container.querySelector(".reader-scroll");
+    expect(scrollSurface).toBeTruthy();
+    expect(scrollSurface.classList.contains("vertical-scroll-surface")).toBe(true);
+  });
 });

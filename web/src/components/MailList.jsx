@@ -110,7 +110,7 @@ export function MailList({
       </div>
 
       <div
-        className="message-list"
+        className="message-list vertical-scroll-surface"
         role="listbox"
         aria-label="邮件"
         ref={messageListRef}

@@ -168,7 +168,7 @@ export function SettingsPanel({
         </aside>
 
         <div className="settings-content">
-          <div className="settings-scroll">
+          <div className="settings-scroll vertical-scroll-surface">
             {activeSection === "account" ? (
               <section className="settings-page" aria-labelledby="settings-account-title">
                 <header className="settings-page__heading">

@@ -534,7 +534,7 @@ export function ComposePanel({
                   />
                 </button>
                 {isReplyExpanded ? (
-                  <div className="compose-reply-context__body">
+                  <div className="compose-reply-context__body vertical-scroll-surface">
                     {replyContext.quoted_render_mode === "native_html" &&
                     replyContext.quoted_html ? (
                       <NativeHtmlMessageBody

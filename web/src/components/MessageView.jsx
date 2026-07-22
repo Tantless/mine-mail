@@ -103,7 +103,7 @@ export function MessageView({
         </div>
       </header>
 
-      <div className="reader-scroll">
+      <div className="reader-scroll vertical-scroll-surface">
         <div className="message-header">
           <p className="eyebrow">
             {message.kind === "sent"

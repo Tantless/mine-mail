@@ -391,6 +391,19 @@ button:disabled {
   opacity: 0.42;
 }
 
+/*
+ * Panel-level scroll surfaces are intentionally one-dimensional. Precision
+ * touchpads emit horizontal and vertical deltas together, so a two-axis
+ * `overflow: auto` surface feels like a canvas and lets the panel drift.
+ */
+.vertical-scroll-surface {
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior-x: none;
+  overscroll-behavior-y: contain;
+  touch-action: pan-y;
+}
+
 kbd {
   font-family: inherit;
   font-size: 10px;
@@ -788,8 +801,6 @@ html[data-surface="new-mail-notification"] #root {
   min-height: 0;
   flex: 1 1 auto;
   flex-direction: column;
-  overflow-y: auto;
-  overscroll-behavior: contain;
   scrollbar-width: none;
 }
 
@@ -1469,7 +1480,6 @@ html[data-surface="new-mail-notification"] #root {
 
 .message-list {
   min-height: 0;
-  overflow: auto;
   padding: 6px 8px 12px;
   scrollbar-color: color-mix(in srgb, var(--color-text-muted) 36%, transparent) transparent;
   scrollbar-width: thin;
@@ -1853,16 +1863,24 @@ html[data-surface="new-mail-notification"] #root {
 .reader-scroll {
   min-width: 0;
   min-height: 0;
-  overflow: auto;
   padding: 32px clamp(28px, 3.1vw, 46px) 46px;
   background: var(--reader-content-surface);
   scrollbar-color: color-mix(in srgb, var(--color-text-muted) 36%, transparent) transparent;
   scrollbar-width: thin;
 }
 
+.message-header,
+.message-body,
+.attachments,
+.message-actions {
+  min-width: 0;
+  max-width: 100%;
+}
+
 .message-header h2 {
   max-width: 760px;
   margin: 5px 0 25px;
+  overflow-wrap: anywhere;
   color: var(--color-text);
   font-size: clamp(22px, 2vw, 28px);
   font-weight: 680;
@@ -2038,6 +2056,8 @@ html[data-surface="new-mail-notification"] #root {
 }
 
 .sender-card__identity strong {
+  max-width: 100%;
+  overflow-wrap: anywhere;
   font-size: 13px;
   font-weight: 680;
 }
@@ -2046,6 +2066,11 @@ html[data-surface="new-mail-notification"] #root {
 .sender-card time {
   color: var(--color-text-muted);
   font-size: 11px;
+}
+
+.sender-card__identity > span {
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 
 .sender-card time {
@@ -2070,6 +2095,7 @@ html[data-surface="new-mail-notification"] #root {
   max-width: 760px;
   min-height: 190px;
   padding: 26px 0 12px;
+  overflow-wrap: anywhere;
   color: var(--color-text-secondary);
   font-size: 15px;
   line-height: 1.72;
@@ -3050,7 +3076,6 @@ html[data-surface="new-mail-notification"] #root {
 
 .compose-reply-context__body {
   max-height: 190px;
-  overflow: auto;
   padding: 12px 16px 16px;
   border-top: 1px solid var(--compose-divider);
   color: var(--color-text-muted);
@@ -3474,7 +3499,6 @@ html[data-surface="new-mail-notification"] #root {
 
 .settings-scroll {
   min-height: 0;
-  overflow: auto;
   padding: 36px 42px 26px;
   scrollbar-gutter: stable;
 }
@@ -3945,7 +3969,6 @@ html[data-surface="new-mail-notification"] #root {
 .account-onboarding {
   width: min(700px, calc(100vw - 34px));
   max-height: min(860px, calc(100vh - 36px));
-  overflow: auto;
   padding: 28px;
   border: 1px solid var(--panel-border);
   border-radius: 16px;

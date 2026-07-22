@@ -214,7 +214,7 @@ function ContactDetails({
 
   return (
     <section className="reader-panel contacts-detail-panel" aria-label={`${label} 的联系人详情`}>
-      <div className="contacts-detail-scroll">
+      <div className="contacts-detail-scroll vertical-scroll-surface">
         {onBackToContacts ? (
           <button
             type="button"
@@ -519,7 +519,7 @@ export function ContactsWorkspace({
           <span>{contacts.length} 人</span>
         </div>
 
-        <div className="contacts-list-body">
+        <div className="contacts-list-body vertical-scroll-surface">
           {isLoading && !contacts.length ? (
             <ContactsLoadingState />
           ) : error || !contacts.length ? (
