@@ -329,6 +329,7 @@ export function App() {
   const contactMessagesRequestRef = useRef(0);
   const starRequestRef = useRef(new Map());
   const starStateRef = useRef(new Map());
+  const settingsSaveRequestRef = useRef(0);
   const platform = /Mac|iPhone|iPad/.test(navigator.platform) ? "mac" : "windows";
   const networkActionsAvailable = Boolean(
     accountStatus.configured &&
@@ -1768,6 +1769,8 @@ export function App() {
   );
 
   const handleFolderChange = (folder) => {
+    setIsSettingsOpen(false);
+    setSettingsFocusTarget(null);
     setActiveFolder(folder);
     if (folder === "contacts") {
       setContactFilter("all");
@@ -2153,14 +2156,22 @@ export function App() {
   };
 
   const handleSaveSettings = async (nextSettings) => {
+    const requestId = settingsSaveRequestRef.current + 1;
+    settingsSaveRequestRef.current = requestId;
+    setSettings(nextSettings);
     setSettingsSaveStatus("saving");
     try {
       const updated = await mailApi.updateDesktopSettings(nextSettings);
+      if (settingsSaveRequestRef.current !== requestId) return;
       setSettings(updated);
       setSettingsSaveStatus("saved");
-      setIsSettingsOpen(false);
-      showToast("桌面设置已保存");
+      window.setTimeout(() => {
+        if (settingsSaveRequestRef.current === requestId) {
+          setSettingsSaveStatus("idle");
+        }
+      }, 1600);
     } catch (error) {
+      if (settingsSaveRequestRef.current !== requestId) return;
       setSettingsSaveStatus("error");
       showToast(describeError(error, "桌面设置保存失败"), "error");
     }
@@ -2464,7 +2475,7 @@ export function App() {
 
   return (
     <div
-      className={`app-shell platform-${platform} ${isSidebarOpen ? "sidebar-is-open" : ""} ${selectedMessage || (isContactMode && selectedContact) ? "has-selection" : ""}`}
+      className={`app-shell platform-${platform} ${isSidebarOpen ? "sidebar-is-open" : ""} ${isSettingsOpen ? "settings-is-open" : ""} ${selectedMessage || (isContactMode && selectedContact) ? "has-selection" : ""}`}
       data-runtime={isTauriRuntime ? "tauri" : "web"}
     >
       <div className="app-wallpaper" aria-hidden="true" />
@@ -2500,11 +2511,12 @@ export function App() {
           onThemeMenuToggle={() => setIsThemeMenuOpen((open) => !open)}
           counts={folderCounts}
           accountStatus={accountStatus}
+          isSettingsOpen={isSettingsOpen}
           accountAvatarFor={(email) => profileAvatarFor("account", email)}
           onAccountSwitch={(accountId) => void handleSwitchAccount(accountId)}
           onAddAccount={() => {
             setSettingsSaveStatus("idle");
-            setSettingsFocusTarget("account-form");
+            setSettingsFocusTarget(`account-form:${Date.now()}`);
             setIsSettingsOpen(true);
           }}
           onOpenSettings={() => {
@@ -2523,7 +2535,35 @@ export function App() {
           />
         ) : null}
 
-        {isContactMode ? (
+        {isSettingsOpen ? (
+          <SettingsPanel
+            settings={settings}
+            saveStatus={settingsSaveStatus}
+            onClose={() => {
+              setIsSettingsOpen(false);
+              setSettingsFocusTarget(null);
+            }}
+            onSave={handleSaveSettings}
+            accountPresets={accountPresets}
+            accountStatus={accountStatus}
+            accountSubmitStatus={accountSubmitStatus}
+            accountError={accountError}
+            onConfigureAccount={handleConfigureAccount}
+            onConnectGoogle={handleConnectGoogle}
+            onSwitchAccount={(accountId) => void handleSwitchAccount(accountId)}
+            onRemoveAccount={(connectedAccount) =>
+              void handleRemoveAccount(connectedAccount)
+            }
+            accountAvatarFor={(email) => profileAvatarFor("account", email)}
+            onSetAccountAvatar={(email, file) =>
+              handleSaveProfileAvatar("account", email, file)
+            }
+            onRemoveAccountAvatar={(email) =>
+              handleDeleteProfileAvatar("account", email)
+            }
+            focusTarget={settingsFocusTarget}
+          />
+        ) : isContactMode ? (
           <ContactsWorkspace
             contacts={visibleContacts}
             selectedContact={selectedContact}
@@ -2617,33 +2657,6 @@ export function App() {
         onCancel={handleCancelSend}
         onConfirm={handleConfirmSend}
       />
-
-      {isSettingsOpen ? (
-        <SettingsPanel
-          settings={settings}
-          saveStatus={settingsSaveStatus}
-          onClose={() => setIsSettingsOpen(false)}
-          onSave={handleSaveSettings}
-          accountPresets={accountPresets}
-          accountStatus={accountStatus}
-          accountSubmitStatus={accountSubmitStatus}
-          accountError={accountError}
-          onConfigureAccount={handleConfigureAccount}
-          onConnectGoogle={handleConnectGoogle}
-          onSwitchAccount={(accountId) => void handleSwitchAccount(accountId)}
-          onRemoveAccount={(connectedAccount) =>
-            void handleRemoveAccount(connectedAccount)
-          }
-          accountAvatar={profileAvatarFor("account", accountStatus.email)}
-          onSetAccountAvatar={(file) =>
-            handleSaveProfileAvatar("account", accountStatus.email, file)
-          }
-          onRemoveAccountAvatar={() =>
-            handleDeleteProfileAvatar("account", accountStatus.email)
-          }
-          focusTarget={settingsFocusTarget}
-        />
-      ) : null}
 
       {needsAccountSetup ? (
         <AccountSetupPanel

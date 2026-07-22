@@ -83,4 +83,24 @@ describe("AccountSetupForm", () => {
     await user.click(screen.getByRole("button", { name: "使用 Google 登录" }));
     expect(onGoogle).toHaveBeenCalledOnce();
   });
+
+  it("uses the themed selector for custom SMTP security", async () => {
+    const user = userEvent.setup();
+    render(
+      <AccountSetupForm
+        presets={presets}
+        status={{ configured: false }}
+        submitStatus="idle"
+        error={null}
+        onSubmit={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("radio", { name: "自定义 IMAP/SMTP" }));
+    const security = screen.getByRole("combobox", { name: "SMTP 安全" });
+    await user.click(security);
+    await user.click(screen.getByRole("option", { name: "STARTTLS" }));
+    expect(security.textContent).toContain("STARTTLS");
+    expect(document.querySelector("select")).toBeNull();
+  });
 });

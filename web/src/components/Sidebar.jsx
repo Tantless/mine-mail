@@ -61,6 +61,7 @@ export function Sidebar({
   onThemeMenuToggle,
   counts = {},
   accountStatus,
+  isSettingsOpen = false,
   accountAvatarFor,
   onAccountSwitch,
   onAddAccount,
@@ -92,7 +93,7 @@ export function Sidebar({
           <nav className="folder-nav">
             {folders.map((folder) => {
               const FolderIcon = folder.icon;
-              const selected = folder.id === activeFolder;
+              const selected = !isSettingsOpen && folder.id === activeFolder;
               return (
                 <button
                   key={folder.id}
@@ -186,7 +187,13 @@ export function Sidebar({
               <Palette size={19} />
               <span>主题外观</span>
             </button>
-            <button type="button" className="sidebar-action" onClick={onOpenSettings}>
+            <button
+              type="button"
+              className="sidebar-action"
+              data-selected={isSettingsOpen}
+              aria-current={isSettingsOpen ? "page" : undefined}
+              onClick={onOpenSettings}
+            >
               <GearSix size={19} />
               <span>设置</span>
             </button>

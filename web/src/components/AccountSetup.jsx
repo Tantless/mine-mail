@@ -1,12 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { EnvelopeSimple, GoogleLogo, ShieldCheck, ShieldWarning } from "@phosphor-icons/react";
 import { BrandLogo } from "./BrandLogo.jsx";
+import { ThemedSelect } from "./ThemedSelect.jsx";
 
 const fallbackPresets = [
   { id: "163", label: "163 邮箱", secret_label: "客户端授权密码" },
   { id: "gmail", label: "Gmail", oauth: true, secret_label: "Google OAuth" },
   { id: "outlook", label: "Outlook", disabled: true },
   { id: "custom", label: "自定义 IMAP/SMTP", secret_label: "邮箱密码或授权密码" },
+];
+
+const smtpSecurityOptions = [
+  { value: "implicit_tls", label: "TLS" },
+  { value: "start_tls", label: "STARTTLS" },
 ];
 
 function normalizedPreset(preset) {
@@ -36,12 +42,18 @@ export function AccountSetupForm({
   error,
   onSubmit,
   onGoogle,
+  initialProvider: requestedInitialProvider,
+  showProviderPicker = true,
 }) {
   const options = useMemo(
     () => (presets?.length ? presets : fallbackPresets).map(normalizedPreset),
     [presets],
   );
-  const initialProvider = status?.provider || options.find((item) => !item.disabled)?.id || "163";
+  const initialProvider =
+    requestedInitialProvider ||
+    status?.provider ||
+    options.find((item) => !item.disabled)?.id ||
+    "163";
   const [provider, setProvider] = useState(initialProvider);
   const [email, setEmail] = useState(status?.email || "");
   const [custom, setCustom] = useState({
@@ -55,8 +67,9 @@ export function AccountSetupForm({
 
   useEffect(() => {
     if (status?.email) setEmail(status.email);
-    if (status?.provider) setProvider(status.provider);
-  }, [status?.email, status?.provider]);
+    if (requestedInitialProvider) setProvider(requestedInitialProvider);
+    else if (status?.provider) setProvider(status.provider);
+  }, [requestedInitialProvider, status?.email, status?.provider]);
 
   const selected = options.find((item) => item.id === provider) || options[0];
   const outlookBlocked = provider === "outlook";
@@ -90,22 +103,24 @@ export function AccountSetupForm({
 
   return (
     <form className="account-setup-form" onSubmit={handleSubmit}>
-      <div className="account-provider-grid" role="radiogroup" aria-label="邮箱服务商">
-        {options.map((option) => (
-          <button
-            key={option.id}
-            type="button"
-            role="radio"
-            aria-checked={provider === option.id}
-            aria-disabled={option.disabled || option.id === "outlook"}
-            data-selected={provider === option.id}
-            data-disabled={option.disabled || option.id === "outlook"}
-            onClick={() => setProvider(option.id)}
-          >
-            {option.label}
-          </button>
-        ))}
-      </div>
+      {showProviderPicker ? (
+        <div className="account-provider-grid" role="radiogroup" aria-label="邮箱服务商">
+          {options.map((option) => (
+            <button
+              key={option.id}
+              type="button"
+              role="radio"
+              aria-checked={provider === option.id}
+              aria-disabled={option.disabled || option.id === "outlook"}
+              data-selected={provider === option.id}
+              data-disabled={option.disabled || option.id === "outlook"}
+              onClick={() => setProvider(option.id)}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
 
       {configurationBlocked ? (
         <div className="account-auth-notice" role="status">
@@ -219,20 +234,20 @@ export function AccountSetupForm({
                   />
                 </span>
               </label>
-              <label className="settings-field settings-field--wide">
+              <div className="settings-field settings-field--wide">
                 <span>SMTP 安全</span>
                 <span className="settings-input-shell inset-input-shell">
-                  <select
+                  <ThemedSelect
+                    className="themed-select--embedded"
+                    label="SMTP 安全"
                     value={custom.smtpSecurity}
-                    onChange={(event) =>
-                      setCustom((current) => ({ ...current, smtpSecurity: event.target.value }))
+                    options={smtpSecurityOptions}
+                    onValueChange={(smtpSecurity) =>
+                      setCustom((current) => ({ ...current, smtpSecurity }))
                     }
-                  >
-                    <option value="implicit_tls">TLS</option>
-                    <option value="start_tls">STARTTLS</option>
-                  </select>
+                  />
                 </span>
-              </label>
+              </div>
             </div>
           ) : null}
           </>

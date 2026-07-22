@@ -132,8 +132,11 @@ describe("Mine Mail MVP", () => {
     expect(addSlots).toHaveLength(1);
     await user.click(addSlots[0]);
 
-    expect(await screen.findByRole("dialog", { name: "设置" })).toBeTruthy();
-    expect(screen.getByText("连接新账户")).toBeTruthy();
+    expect(await screen.findByRole("region", { name: "设置" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "选择邮箱服务商" })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: /163 邮箱/ }));
+    expect(await screen.findByRole("heading", { name: "连接 163 邮箱" })).toBeTruthy();
+    expect(screen.getByRole("textbox", { name: "邮箱地址" })).toBeTruthy();
   });
 
   it("paints a prewarmed mailbox immediately while the native account switch is pending", async () => {
@@ -537,24 +540,24 @@ describe("Mine Mail MVP", () => {
 
     await user.click(screen.getByRole("button", { name: "设置" }));
     expect(screen.getByRole("navigation", { name: "设置菜单" })).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "账户" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "账户与同步" })).toBeTruthy();
+    await user.click(screen.getByRole("combobox", { name: "完整校准间隔" }));
+    await user.click(screen.getByRole("option", { name: "3 分钟" }));
     await user.click(screen.getByRole("button", { name: /功能设定/ }));
     expect(
       screen.getByRole("button", { name: "了解自动加载远程图片的隐私风险" }),
     ).toBeTruthy();
     expect(screen.getByRole("tooltip").textContent).toContain("邮件打开时间");
-    await user.selectOptions(screen.getByRole("combobox", { name: "完整校准间隔" }), "3");
     await user.click(screen.getByRole("checkbox", { name: /前台也提醒/ }));
-    await user.selectOptions(
-      screen.getByRole("combobox", { name: "通知声音类型" }),
-      "reminder",
-    );
-    await user.selectOptions(screen.getByRole("combobox", { name: "远程图片加载方式" }), "ask");
+    await user.click(screen.getByRole("combobox", { name: "通知声音类型" }));
+    await user.click(screen.getByRole("option", { name: "提醒提示" }));
+    await user.click(screen.getByRole("combobox", { name: "远程图片加载方式" }));
+    await user.click(screen.getByRole("option", { name: "每次询问" }));
     await user.click(screen.getByRole("checkbox", { name: /开机启动/ }));
     await user.click(screen.getByRole("button", { name: /版本/ }));
     expect(screen.getByText("v0.0.1")).toBeTruthy();
     expect(screen.getByRole("button", { name: "检查更新" }).disabled).toBe(true);
-    await user.click(screen.getByRole("button", { name: "保存设置" }));
+    expect(screen.queryByRole("button", { name: "保存设置" })).toBeNull();
 
     await waitFor(() =>
       expect(updateSettings).toHaveBeenCalledWith({
