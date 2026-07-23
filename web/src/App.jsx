@@ -22,7 +22,7 @@ import { messageNavigationKey } from "./utils/messageNavigation.js";
 
 const folderLabels = {
   inbox: "收件箱",
-  starred: "已加星标",
+  starred: "已收藏",
   sent: "已发送",
   drafts: "草稿",
   outbox: "发件队列",
@@ -717,7 +717,7 @@ export function App() {
         if (starRequestRef.current.get(key)?.requestId !== requestId) return;
         starRequestRef.current.delete(key);
         applyMessageStarState(message, !starred, accountId);
-        showToast(describeError(error, "星标状态保存失败"), "error");
+        showToast(describeError(error, "收藏状态保存失败"), "error");
       }
     },
     [applyMessageStarState, showToast],

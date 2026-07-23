@@ -455,7 +455,7 @@ export function SettingsPanel({
                   <label className="settings-preference-row" htmlFor="settings-sync-interval">
                     <span>
                       <strong>完整校准间隔</strong>
-                      <small>服务器推送优先；按此间隔校准删除、星标与状态变化。</small>
+                      <small>服务器推送优先；按此间隔校准删除、收藏与状态变化。</small>
                     </span>
                     <SettingsSelect
                       id="settings-sync-interval"

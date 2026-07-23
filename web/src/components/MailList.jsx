@@ -18,7 +18,7 @@ import { messageNavigationKey } from "../utils/messageNavigation.js";
 const tabs = [
   { id: "all", label: "全部" },
   { id: "unread", label: "未读" },
-  { id: "starred", label: "星标" },
+  { id: "starred", label: "收藏" },
 ];
 
 export function MailList({
@@ -174,9 +174,9 @@ export function MailList({
                   type="button"
                   className="star-button"
                   data-active={starred}
-                  aria-label={starred ? `取消星标：${subject}` : `添加星标：${subject}`}
+                  aria-label={starred ? `取消收藏：${subject}` : `添加收藏：${subject}`}
                   aria-pressed={starred}
-                  title={starred ? "取消星标" : "添加星标"}
+                  title={starred ? "取消收藏" : "添加收藏"}
                   disabled={!canToggleStar}
                   onClick={(event) => {
                     event.stopPropagation();

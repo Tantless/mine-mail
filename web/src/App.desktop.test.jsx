@@ -317,7 +317,7 @@ describe("Mine Mail desktop state bridge", () => {
     render(<App />);
 
     const addStar = await screen.findByRole("button", {
-      name: "添加星标：Star this mail",
+      name: "添加收藏：Star this mail",
     });
     await user.click(addStar);
 
@@ -329,14 +329,14 @@ describe("Mine Mail desktop state bridge", () => {
       ),
     );
     expect(
-      screen.getByRole("button", { name: "取消星标：Star this mail" }).getAttribute(
+      screen.getByRole("button", { name: "取消收藏：Star this mail" }).getAttribute(
         "aria-pressed",
       ),
     ).toBe("true");
     expect(desktop.mailApi.fetchMessage).not.toHaveBeenCalled();
 
     await user.click(
-      screen.getByRole("button", { name: "取消星标：Star this mail" }),
+      screen.getByRole("button", { name: "取消收藏：Star this mail" }),
     );
     await waitFor(() =>
       expect(desktop.mailApi.setMessageStarred).toHaveBeenLastCalledWith(
@@ -346,7 +346,7 @@ describe("Mine Mail desktop state bridge", () => {
       ),
     );
     expect(
-      screen.getByRole("button", { name: "添加星标：Star this mail" }).getAttribute(
+      screen.getByRole("button", { name: "添加收藏：Star this mail" }).getAttribute(
         "aria-pressed",
       ),
     ).toBe("false");
@@ -373,12 +373,12 @@ describe("Mine Mail desktop state bridge", () => {
     const user = userEvent.setup();
     render(<App />);
 
-    await user.click(await screen.findByRole("button", { name: /已加星标/ }));
+    await user.click(await screen.findByRole("button", { name: /已收藏/ }));
     expect(await screen.findByText("Starred Inbox")).toBeTruthy();
     expect(await screen.findByText("Starred Sent")).toBeTruthy();
 
     await user.click(
-      screen.getByRole("button", { name: "取消星标：Starred Sent" }),
+      screen.getByRole("button", { name: "取消收藏：Starred Sent" }),
     );
     await waitFor(() =>
       expect(desktop.mailApi.setMessageStarred).toHaveBeenCalledWith(
