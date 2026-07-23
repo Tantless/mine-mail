@@ -1434,6 +1434,57 @@ html[data-surface="new-mail-notification"] #root {
   color: var(--color-danger);
 }
 
+.app-tooltip {
+  position: fixed;
+  z-index: 1000;
+  width: max-content;
+  max-width: min(280px, calc(100vw - 16px));
+  padding: 7px 10px;
+  overflow-wrap: anywhere;
+  border: 1px solid color-mix(in srgb, var(--color-border) 82%, var(--surface-edge));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--color-panel) 94%, transparent);
+  color: var(--color-text-secondary);
+  box-shadow: 0 8px 24px color-mix(in srgb, #111827 16%, transparent),
+    inset 0 1px 0 color-mix(in srgb, var(--surface-highlight) 72%, transparent);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 520;
+  line-height: 1.35;
+  letter-spacing: 0.01em;
+  text-align: left;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  backdrop-filter: blur(10px) saturate(1.04);
+  -webkit-backdrop-filter: blur(10px) saturate(1.04);
+}
+
+.app-tooltip[data-ready="true"] {
+  visibility: visible;
+  animation: app-tooltip-in var(--motion-fast) ease-out both;
+}
+
+.app-tooltip[data-placement="top"] {
+  --tooltip-enter-y: 3px;
+}
+
+.app-tooltip[data-placement="bottom"] {
+  --tooltip-enter-y: -3px;
+}
+
+@keyframes app-tooltip-in {
+  from {
+    opacity: 0;
+    transform: translateY(var(--tooltip-enter-y));
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 .mobile-nav-button {
   display: none;
   border-color: var(--color-border);
