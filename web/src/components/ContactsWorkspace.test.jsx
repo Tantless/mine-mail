@@ -81,7 +81,9 @@ describe("ContactsWorkspace", () => {
     const user = userEvent.setup();
     const callbacks = renderWorkspace();
 
-    const favoriteButtons = screen.getAllByRole("button", { name: "收藏 小林" });
+    const favoriteButtons = screen.getAllByRole("button", {
+      name: "收藏 小林",
+    });
     await user.click(favoriteButtons[0]);
     expect(callbacks.onToggleFavorite).toHaveBeenCalledWith(contact);
     expect(callbacks.onSelectContact).not.toHaveBeenCalled();
@@ -124,7 +126,9 @@ describe("ContactsWorkspace", () => {
 
     expect(screen.getByRole("heading", { name: "林老师" })).toBeTruthy();
     expect(screen.getByText("(小林)")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "查看联系人 林老师" })).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "查看联系人 林老师" }),
+    ).toBeTruthy();
     expect(screen.queryByRole("textbox", { name: "联系人备注名" })).toBeNull();
 
     await user.click(screen.getByRole("button", { name: "编辑备注" }));
@@ -133,7 +137,10 @@ describe("ContactsWorkspace", () => {
     await user.type(input, "  林同学  ");
     await user.keyboard("{Enter}");
 
-    expect(callbacks.onSaveRemark).toHaveBeenCalledWith(remarkedContact, "林同学");
+    expect(callbacks.onSaveRemark).toHaveBeenCalledWith(
+      remarkedContact,
+      "林同学",
+    );
   });
 
   it("clears a remark when an empty inline input is saved", async () => {
@@ -161,7 +168,33 @@ describe("ContactsWorkspace", () => {
     renderWorkspace({ selectedContact: favorite, contacts: [favorite] });
 
     const list = screen.getByRole("list", { name: "联系人" });
-    expect(within(list).getByRole("listitem").getAttribute("data-favorite")).toBe("true");
+    expect(
+      within(list).getByRole("listitem").getAttribute("data-favorite"),
+    ).toBe("true");
+  });
+
+  it("visibly identifies the owning account for app-wide favorites", () => {
+    const favorite = {
+      ...contact,
+      accountId: "gmail-account",
+      accountLabel: "mine@gmail.com",
+      isFavorite: true,
+    };
+    renderWorkspace({
+      filter: "favorite",
+      selectedContact: favorite,
+      contacts: [favorite],
+    });
+
+    expect(screen.getAllByLabelText("收藏账号：mine@gmail.com")).toHaveLength(
+      2,
+    );
+    expect(
+      screen.getByRole("button", {
+        name: "查看联系人 小林（mine@gmail.com）",
+      }),
+    ).toBeTruthy();
+    expect(screen.getByText("收藏于 mine@gmail.com")).toBeTruthy();
   });
 
   it("orders correspondence newest first without mutating the input", () => {
@@ -169,7 +202,9 @@ describe("ContactsWorkspace", () => {
     renderWorkspace({ messages: reversed });
 
     expect(
-      screen.getAllByRole("button", { name: /打开邮件/ })[0].getAttribute("aria-label"),
+      screen
+        .getAllByRole("button", { name: /打开邮件/ })[0]
+        .getAttribute("aria-label"),
     ).toBe("打开邮件：周末见");
     expect(reversed[0]).toBe(messages[1]);
   });
@@ -178,6 +213,15 @@ describe("ContactsWorkspace", () => {
     [{ isLoading: true, contacts: [] }, "正在加载联系人"],
     [{ error: "数据库暂不可用", contacts: [] }, "联系人加载失败"],
     [{ contacts: [], selectedContact: null, messages: [] }, "还没有联系人"],
+    [
+      {
+        contacts: [],
+        selectedContact: null,
+        messages: [],
+        filter: "favorite",
+      },
+      "还没有收藏联系人",
+    ],
     [{ selectedContact: null, messages: [] }, "选择一个联系人"],
     [{ messages: [] }, "还没有往来邮件"],
     [{ isMessagesLoading: true, messages: [] }, "正在加载往来邮件"],
@@ -188,7 +232,9 @@ describe("ContactsWorkspace", () => {
   });
 
   it("replaces only the detail column when readerContent is provided", () => {
-    renderWorkspace({ readerContent: <section aria-label="复用邮件阅读器">邮件正文</section> });
+    renderWorkspace({
+      readerContent: <section aria-label="复用邮件阅读器">邮件正文</section>,
+    });
 
     expect(screen.getByLabelText("通讯录联系人列表")).toBeTruthy();
     expect(screen.getByLabelText("复用邮件阅读器")).toBeTruthy();

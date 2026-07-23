@@ -10,8 +10,8 @@ use mine_mail::{
     ComposeRequest, ConnectionReport, ContactMessage, ContactMessageDirection, Draft,
     DraftDeleteKind, DraftSaveKind, DraftSaveOutcome, InboxMessage, MailAddress, MailBackend,
     MailboxRole, OutboxItem, OutboxStatus, ReplyContext, SyncReport, outbox_body_html,
-    outbox_body_text, outbox_has_reply_headers, outbox_message_id, outbox_preview,
-    outbox_sent_at, outbox_subject,
+    outbox_body_text, outbox_has_reply_headers, outbox_message_id, outbox_preview, outbox_sent_at,
+    outbox_subject,
 };
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WindowEvent};
@@ -21,7 +21,7 @@ use url::Url;
 use account::{
     AccountPresetDto, AccountRuntime, AccountStatusDto, BackendState, ConfigureAccountRequest,
 };
-use contacts::{ContactListItemDto, ContactRuntime};
+use contacts::{ContactDirectoryDto, ContactRuntime};
 use desktop::{
     DeleteProfileAvatarRequest, DesktopRuntime, DesktopSettingsDto, DesktopSettingsUpdate,
     NewMailNotificationDto, ProfileAvatarDto, SaveProfileAvatarRequest,
@@ -789,19 +789,29 @@ fn list_sent(
         .map_err(safe_mail_error)
 }
 
-/// Combines desktop-wide favorites with body-free activity derived from
-/// one explicitly selected account's cached message headers.
+/// Returns current-account correspondents separately from app-wide favorites.
+/// Each favorite retains the account that owns it so the UI can make the
+/// otherwise mixed scope explicit.
 #[tauri::command]
 fn list_contacts(
     backend: State<'_, BackendState>,
+    account: State<'_, AccountRuntime>,
     contacts: State<'_, ContactRuntime>,
     account_id: String,
-) -> CommandResult<Vec<ContactListItemDto>> {
-    let activity = backend
-        .local_for(&account_id)?
-        .list_contact_activity()
-        .map_err(safe_mail_error)?;
-    contacts.list_contacts(activity)
+) -> CommandResult<ContactDirectoryDto> {
+    backend.local_for(&account_id)?;
+    let activity_by_account = account
+        .account_ids()
+        .into_iter()
+        .map(|configured_account_id| {
+            backend
+                .local_for(&configured_account_id)?
+                .list_contact_activity()
+                .map(|activity| (configured_account_id, activity))
+                .map_err(safe_mail_error)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    contacts.list_directory(&account_id, activity_by_account)
 }
 
 /// Returns only existing message-summary fields plus a portable direction.
@@ -826,11 +836,14 @@ fn list_contact_messages(
 
 #[tauri::command]
 fn set_contact_favorite(
+    backend: State<'_, BackendState>,
     contacts: State<'_, ContactRuntime>,
+    account_id: String,
     email: String,
     favorite: bool,
 ) -> CommandResult<bool> {
-    contacts.set_favorite(&email, favorite)
+    backend.local_for(&account_id)?;
+    contacts.set_favorite(&account_id, &email, favorite)
 }
 
 #[tauri::command]
@@ -1611,12 +1624,16 @@ async fn remove_account(
     app: AppHandle,
     account: State<'_, AccountRuntime>,
     backend: State<'_, BackendState>,
+    contacts: State<'_, ContactRuntime>,
     desktop_runtime: State<'_, DesktopRuntime>,
     account_id: String,
 ) -> CommandResult<AccountStatusDto> {
     let _sync_guard = desktop_runtime.acquire_sync_gate().await;
     let status = account.remove_account(&backend, &account_id)?;
     if let Err(error) = desktop_runtime.remove_notification_baseline(&account_id) {
+        desktop_runtime.record_startup_error(error);
+    }
+    if let Err(error) = contacts.remove_account(&account_id) {
         desktop_runtime.record_startup_error(error);
     }
     let _ = app.emit("mail:account-updated", status.clone());

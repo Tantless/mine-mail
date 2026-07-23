@@ -1,20 +1,22 @@
 use std::{
     cmp::Ordering,
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
     time::Duration,
 };
 
 use mine_mail::{ContactActivity, normalize_contact_email};
-use rusqlite::Connection;
+use rusqlite::{Connection, params};
 use serde::Serialize;
 
 const CONTACTS_DATABASE_NAME: &str = "desktop-contacts.sqlite3";
 const CONTACT_REMARK_MAX_CHARACTERS: usize = 80;
+const LEGACY_FAVORITE_ACCOUNT_ID: &str = "__legacy_global__";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub(crate) struct ContactListItemDto {
+    pub account_id: String,
     pub email: String,
     /// Resolved from the local remark, the newest non-empty mail header, then
     /// the normalized email itself. Favorite state never freezes a
@@ -30,6 +32,12 @@ pub(crate) struct ContactListItemDto {
     pub last_subject: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub(crate) struct ContactDirectoryDto {
+    pub contacts: Vec<ContactListItemDto>,
+    pub favorites: Vec<ContactListItemDto>,
+}
+
 #[derive(Clone, Debug)]
 struct ContactStore {
     path: PathBuf,
@@ -39,7 +47,12 @@ struct ContactStore {
 struct ContactRecord {
     email: String,
     remark: Option<String>,
-    is_favorite: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FavoriteRecord {
+    account_id: String,
+    email: String,
 }
 
 impl ContactStore {
@@ -61,6 +74,15 @@ impl ContactStore {
                      DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
                  updated_at TEXT NOT NULL
                      DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+             );
+             CREATE TABLE IF NOT EXISTS contact_favorites (
+                 account_id TEXT NOT NULL,
+                 email TEXT NOT NULL COLLATE NOCASE,
+                 created_at TEXT NOT NULL
+                     DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                 updated_at TEXT NOT NULL
+                     DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                 PRIMARY KEY (account_id, email)
              );",
         )?;
         let has_remark_column = {
@@ -77,18 +99,34 @@ impl ContactStore {
         connection.execute_batch(
             "DROP INDEX IF EXISTS idx_contacts_saved_favorite;
              CREATE INDEX idx_contacts_saved_favorite
-                 ON contacts(is_favorite DESC, remark, email);
-             PRAGMA user_version = 2;",
+                 ON contacts(remark, email);
+             CREATE INDEX IF NOT EXISTS idx_contact_favorites_email
+                 ON contact_favorites(email, account_id);",
         )?;
+        if connection.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))? < 3 {
+            connection.execute(
+                "INSERT OR IGNORE INTO contact_favorites (account_id, email)
+                 SELECT ?1, email FROM contacts WHERE is_favorite = 1",
+                [LEGACY_FAVORITE_ACCOUNT_ID],
+            )?;
+            connection.execute("UPDATE contacts SET is_favorite = 0", [])?;
+            connection.execute(
+                "DELETE FROM contacts
+                 WHERE is_favorite = 0
+                   AND NULLIF(TRIM(remark), '') IS NULL",
+                [],
+            )?;
+            connection.execute_batch("PRAGMA user_version = 3;")?;
+        }
         Ok(store)
     }
 
     fn list_records(&self) -> rusqlite::Result<Vec<ContactRecord>> {
         let connection = self.connection()?;
         let mut statement = connection.prepare(
-            "SELECT email, remark, is_favorite
+            "SELECT email, remark
              FROM contacts
-             WHERE is_favorite = 1 OR NULLIF(TRIM(remark), '') IS NOT NULL
+             WHERE NULLIF(TRIM(remark), '') IS NOT NULL
              ORDER BY email",
         )?;
         statement
@@ -96,50 +134,98 @@ impl ContactStore {
                 Ok(ContactRecord {
                     email: row.get(0)?,
                     remark: row.get(1)?,
-                    is_favorite: row.get(2)?,
                 })
             })?
             .collect()
     }
 
-    fn set_favorite(&self, email: &str, favorite: bool) -> Result<bool, String> {
+    fn list_favorites(&self) -> rusqlite::Result<Vec<FavoriteRecord>> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT account_id, email
+             FROM contact_favorites
+             ORDER BY account_id, email",
+        )?;
+        statement
+            .query_map([], |row| {
+                Ok(FavoriteRecord {
+                    account_id: row.get(0)?,
+                    email: row.get(1)?,
+                })
+            })?
+            .collect()
+    }
+
+    fn resolve_legacy_favorites(
+        &self,
+        activity_by_account: &[(String, Vec<ContactActivity>)],
+        fallback_account_id: &str,
+    ) -> rusqlite::Result<()> {
+        let legacy = self
+            .list_favorites()?
+            .into_iter()
+            .filter(|record| record.account_id == LEGACY_FAVORITE_ACCOUNT_ID)
+            .collect::<Vec<_>>();
+        if legacy.is_empty() {
+            return Ok(());
+        }
+
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction()?;
+        for record in legacy {
+            // Older Mine Mail builds stored favorites without an account. Keep
+            // them under every account where cached correspondence proves the
+            // contact existed; if no cache remains, preserve the favorite
+            // under the account that triggered the migration.
+            let mut matching_accounts = activity_by_account
+                .iter()
+                .filter(|(_, activity)| activity.iter().any(|item| item.email == record.email))
+                .map(|(account_id, _)| account_id.as_str())
+                .collect::<Vec<_>>();
+            if matching_accounts.is_empty() {
+                matching_accounts.push(fallback_account_id);
+            }
+            for account_id in matching_accounts {
+                transaction.execute(
+                    "INSERT OR IGNORE INTO contact_favorites (account_id, email)
+                     VALUES (?1, ?2)",
+                    params![account_id, record.email],
+                )?;
+            }
+            transaction.execute(
+                "DELETE FROM contact_favorites WHERE account_id = ?1 AND email = ?2",
+                params![LEGACY_FAVORITE_ACCOUNT_ID, record.email],
+            )?;
+        }
+        transaction.commit()
+    }
+
+    fn set_favorite(&self, account_id: &str, email: &str, favorite: bool) -> Result<bool, String> {
+        if account_id.trim().is_empty() || account_id.chars().any(char::is_control) {
+            return Err("A valid account is required for a contact favorite.".to_owned());
+        }
         let email = normalize_contact_email(email).map_err(|error| error.to_string())?;
         let connection = self
             .connection()
             .map_err(|_| "Contact storage is unavailable.".to_owned())?;
         let changed = if favorite {
             connection.execute(
-                "INSERT INTO contacts (
-                     email, display_name, remark, is_saved, is_favorite, created_at, updated_at
-                 ) VALUES (
-                     ?1, NULL, NULL, 0, 1,
+                "INSERT INTO contact_favorites (
+                     account_id, email, created_at, updated_at
+                 ) VALUES (?1, ?2,
                      strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
                      strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
                  )
-                 ON CONFLICT(email) DO UPDATE SET
-                     is_saved = 0,
-                     is_favorite = 1,
+                 ON CONFLICT(account_id, email) DO UPDATE SET
                      updated_at = excluded.updated_at",
-                [email],
+                params![account_id, email],
             )
         } else {
-            (|| -> rusqlite::Result<usize> {
-                let updated = connection.execute(
-                    "UPDATE contacts
-                     SET is_favorite = 0,
-                         updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-                     WHERE email = ?1 AND is_favorite = 1",
-                    [&email],
-                )?;
-                connection.execute(
-                    "DELETE FROM contacts
-                     WHERE email = ?1
-                       AND is_favorite = 0
-                       AND NULLIF(TRIM(remark), '') IS NULL",
-                    [&email],
-                )?;
-                Ok(updated)
-            })()
+            connection.execute(
+                "DELETE FROM contact_favorites
+                 WHERE account_id = ?1 AND email = ?2",
+                params![account_id, email],
+            )
         }
         .map_err(|_| "The contact favorite could not be updated.".to_owned())?;
         Ok(changed > 0)
@@ -167,23 +253,21 @@ impl ContactStore {
                 (&email, remark),
             )
         } else {
-            (|| -> rusqlite::Result<usize> {
-                let updated = connection.execute(
-                    "UPDATE contacts
-                     SET remark = NULL,
-                         updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-                     WHERE email = ?1 AND remark IS NOT NULL",
-                    [&email],
-                )?;
-                connection.execute(
-                    "DELETE FROM contacts WHERE email = ?1 AND is_favorite = 0",
-                    [&email],
-                )?;
-                Ok(updated)
-            })()
+            connection.execute("DELETE FROM contacts WHERE email = ?1", [&email])
         }
         .map_err(|_| "The contact remark could not be updated.".to_owned())?;
         Ok(changed > 0)
+    }
+
+    fn remove_account_favorites(&self, account_id: &str) -> Result<(), String> {
+        self.connection()
+            .map_err(|_| "Contact storage is unavailable.".to_owned())?
+            .execute(
+                "DELETE FROM contact_favorites WHERE account_id = ?1",
+                [account_id],
+            )
+            .map(|_| ())
+            .map_err(|_| "The removed account's favorites could not be cleared.".to_owned())
     }
 
     fn connection(&self) -> rusqlite::Result<Connection> {
@@ -205,24 +289,42 @@ impl ContactRuntime {
         Self { store }
     }
 
-    pub(crate) fn list_contacts(
+    pub(crate) fn list_directory(
         &self,
-        activity: Vec<ContactActivity>,
-    ) -> Result<Vec<ContactListItemDto>, String> {
-        let records = self
+        active_account_id: &str,
+        activity_by_account: Vec<(String, Vec<ContactActivity>)>,
+    ) -> Result<ContactDirectoryDto, String> {
+        let store = self
             .store
             .as_ref()
-            .ok_or_else(|| "Contact storage is unavailable.".to_owned())?
+            .ok_or_else(|| "Contact storage is unavailable.".to_owned())?;
+        store
+            .resolve_legacy_favorites(&activity_by_account, active_account_id)
+            .map_err(|_| "Existing contact favorites could not be upgraded.".to_owned())?;
+        let records = store
             .list_records()
             .map_err(|_| "Contacts could not be loaded.".to_owned())?;
-        Ok(merge_contacts(records, activity))
+        let favorites = store
+            .list_favorites()
+            .map_err(|_| "Contact favorites could not be loaded.".to_owned())?;
+        Ok(build_directory(
+            records,
+            favorites,
+            active_account_id,
+            activity_by_account,
+        ))
     }
 
-    pub(crate) fn set_favorite(&self, email: &str, favorite: bool) -> Result<bool, String> {
+    pub(crate) fn set_favorite(
+        &self,
+        account_id: &str,
+        email: &str,
+        favorite: bool,
+    ) -> Result<bool, String> {
         self.store
             .as_ref()
             .ok_or_else(|| "Contact storage is unavailable.".to_owned())?
-            .set_favorite(email, favorite)
+            .set_favorite(account_id, email, favorite)
     }
 
     pub(crate) fn set_remark(&self, email: &str, remark: &str) -> Result<bool, String> {
@@ -230,6 +332,13 @@ impl ContactRuntime {
             .as_ref()
             .ok_or_else(|| "Contact storage is unavailable.".to_owned())?
             .set_remark(email, remark)
+    }
+
+    pub(crate) fn remove_account(&self, account_id: &str) -> Result<(), String> {
+        self.store
+            .as_ref()
+            .ok_or_else(|| "Contact storage is unavailable.".to_owned())?
+            .remove_account_favorites(account_id)
     }
 }
 
@@ -249,59 +358,94 @@ fn normalize_contact_remark(value: &str) -> Result<Option<String>, String> {
     Ok(Some(remark.to_owned()))
 }
 
-fn merge_contacts(
+fn build_directory(
     records: Vec<ContactRecord>,
-    activity: Vec<ContactActivity>,
-) -> Vec<ContactListItemDto> {
-    let mut contacts = HashMap::<String, ContactListItemDto>::new();
-    for record in records {
-        let display_name = record
-            .remark
-            .clone()
-            .unwrap_or_else(|| record.email.clone());
-        contacts.insert(
-            record.email.clone(),
-            ContactListItemDto {
-                email: record.email.clone(),
-                display_name,
-                original_name: record.email,
-                remark: record.remark,
-                is_favorite: record.is_favorite,
-                message_count: 0,
-                last_message_at: None,
-                last_subject: String::new(),
-            },
-        );
-    }
+    favorites: Vec<FavoriteRecord>,
+    active_account_id: &str,
+    activity_by_account: Vec<(String, Vec<ContactActivity>)>,
+) -> ContactDirectoryDto {
+    let remarks = records
+        .into_iter()
+        .map(|record| (record.email, record.remark))
+        .collect::<HashMap<_, _>>();
+    let activity_by_account = activity_by_account
+        .into_iter()
+        .map(|(account_id, activity)| {
+            (
+                account_id,
+                activity
+                    .into_iter()
+                    .map(|item| (item.email.clone(), item))
+                    .collect::<HashMap<_, _>>(),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    let favorite_keys = favorites
+        .iter()
+        .map(|record| (record.account_id.clone(), record.email.clone()))
+        .collect::<HashSet<_>>();
 
-    for activity in activity {
-        let item = contacts
-            .entry(activity.email.clone())
-            .or_insert_with(|| ContactListItemDto {
-                email: activity.email.clone(),
-                display_name: activity.email.clone(),
-                original_name: activity.email.clone(),
-                remark: None,
-                is_favorite: false,
-                message_count: 0,
-                last_message_at: None,
-                last_subject: String::new(),
-            });
-        item.original_name = activity
-            .display_name
-            .unwrap_or_else(|| activity.email.clone());
-        item.display_name = item
-            .remark
-            .clone()
-            .unwrap_or_else(|| item.original_name.clone());
-        item.message_count = activity.message_count;
-        item.last_message_at = activity.last_message_at;
-        item.last_subject = activity.last_subject;
-    }
-
-    let mut contacts: Vec<_> = contacts.into_values().collect();
+    let mut contacts = activity_by_account
+        .get(active_account_id)
+        .into_iter()
+        .flat_map(|activity| activity.values())
+        .map(|activity| {
+            contact_item(
+                active_account_id,
+                activity.email.as_str(),
+                Some(activity),
+                remarks.get(&activity.email).and_then(Option::as_ref),
+                favorite_keys.contains(&(active_account_id.to_owned(), activity.email.clone())),
+            )
+        })
+        .collect::<Vec<_>>();
     contacts.sort_by(compare_contact_items);
-    contacts
+
+    let mut favorite_contacts = favorites
+        .into_iter()
+        .filter(|record| record.account_id != LEGACY_FAVORITE_ACCOUNT_ID)
+        .map(|record| {
+            let activity = activity_by_account
+                .get(&record.account_id)
+                .and_then(|items| items.get(&record.email));
+            contact_item(
+                &record.account_id,
+                &record.email,
+                activity,
+                remarks.get(&record.email).and_then(Option::as_ref),
+                true,
+            )
+        })
+        .collect::<Vec<_>>();
+    favorite_contacts.sort_by(compare_contact_items);
+
+    ContactDirectoryDto {
+        contacts,
+        favorites: favorite_contacts,
+    }
+}
+
+fn contact_item(
+    account_id: &str,
+    email: &str,
+    activity: Option<&ContactActivity>,
+    remark: Option<&String>,
+    is_favorite: bool,
+) -> ContactListItemDto {
+    let original_name = activity
+        .and_then(|item| item.display_name.clone())
+        .unwrap_or_else(|| email.to_owned());
+    ContactListItemDto {
+        account_id: account_id.to_owned(),
+        email: email.to_owned(),
+        display_name: remark.cloned().unwrap_or_else(|| original_name.clone()),
+        original_name,
+        remark: remark.cloned(),
+        is_favorite,
+        message_count: activity.map_or(0, |item| item.message_count),
+        last_message_at: activity.and_then(|item| item.last_message_at.clone()),
+        last_subject: activity.map_or_else(String::new, |item| item.last_subject.clone()),
+    }
 }
 
 fn compare_contact_items(left: &ContactListItemDto, right: &ContactListItemDto) -> Ordering {
@@ -315,6 +459,7 @@ fn compare_contact_items(left: &ContactListItemDto, right: &ContactListItemDto) 
                 .cmp(&right.display_name.to_lowercase())
         })
         .then_with(|| left.email.cmp(&right.email))
+        .then_with(|| left.account_id.cmp(&right.account_id))
 }
 
 #[cfg(test)]
@@ -322,7 +467,7 @@ mod tests {
     use rusqlite::Connection;
     use tempfile::tempdir;
 
-    use super::{ContactActivity, ContactRecord, ContactStore, merge_contacts};
+    use super::{ContactActivity, ContactRecord, ContactStore, FavoriteRecord, build_directory};
 
     #[test]
     fn contact_store_migrates_the_existing_favorites_database() {
@@ -349,22 +494,47 @@ mod tests {
         drop(connection);
 
         let store = ContactStore::open(&path).expect("migrated store");
+        assert!(store.list_records().expect("metadata only").is_empty());
+        store
+            .resolve_legacy_favorites(
+                &[
+                    (
+                        "account-163".to_owned(),
+                        vec![activity("friend@example.com", "163 Friend", 2)],
+                    ),
+                    (
+                        "account-gmail".to_owned(),
+                        vec![activity("friend@example.com", "Gmail Friend", 1)],
+                    ),
+                ],
+                "account-163",
+            )
+            .expect("resolve legacy favorite");
         assert_eq!(
-            store.list_records().expect("preserved favorite"),
-            vec![ContactRecord {
-                email: "friend@example.com".to_owned(),
-                remark: None,
-                is_favorite: true,
-            }]
+            store.list_favorites().expect("preserved favorites"),
+            vec![
+                FavoriteRecord {
+                    account_id: "account-163".to_owned(),
+                    email: "friend@example.com".to_owned(),
+                },
+                FavoriteRecord {
+                    account_id: "account-gmail".to_owned(),
+                    email: "friend@example.com".to_owned(),
+                },
+            ]
         );
-        assert!(store.set_remark("friend@example.com", "旧友").expect("remark"));
+        assert!(
+            store
+                .set_remark("friend@example.com", "旧友")
+                .expect("remark")
+        );
 
         let connection = Connection::open(path).expect("migrated database");
         assert_eq!(
             connection
                 .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
                 .expect("schema version"),
-            2
+            3
         );
     }
 
@@ -375,17 +545,17 @@ mod tests {
         let store = ContactStore::open(&path).expect("store");
         assert!(
             store
-                .set_favorite("  Friend@Example.COM ", true)
+                .set_favorite("account-163", "  Friend@Example.COM ", true)
                 .expect("favorite")
         );
         assert_eq!(
-            store.list_records().expect("list"),
-            vec![ContactRecord {
+            store.list_favorites().expect("list"),
+            vec![FavoriteRecord {
+                account_id: "account-163".to_owned(),
                 email: "friend@example.com".to_owned(),
-                remark: None,
-                is_favorite: true,
             }]
         );
+        assert!(store.list_records().expect("no remark yet").is_empty());
         assert!(
             store
                 .set_remark("friend@example.com", "  林老师  ")
@@ -398,12 +568,11 @@ mod tests {
             vec![ContactRecord {
                 email: "friend@example.com".to_owned(),
                 remark: Some("林老师".to_owned()),
-                is_favorite: true,
             }]
         );
         assert!(
             reopened
-                .set_favorite("FRIEND@example.com", false)
+                .set_favorite("account-163", "FRIEND@example.com", false)
                 .expect("unfavorite")
         );
         assert_eq!(
@@ -411,7 +580,6 @@ mod tests {
             vec![ContactRecord {
                 email: "friend@example.com".to_owned(),
                 remark: Some("林老师".to_owned()),
-                is_favorite: false,
             }]
         );
         assert!(
@@ -420,44 +588,76 @@ mod tests {
                 .expect("clear")
         );
         assert!(reopened.list_records().expect("empty").is_empty());
+        assert!(reopened.list_favorites().expect("no favorites").is_empty());
     }
 
     #[test]
-    fn merge_pins_favorites_and_uses_current_header_names() {
-        let result = merge_contacts(
+    fn directory_keeps_all_current_and_favorites_app_wide_with_account_scope() {
+        let result = build_directory(
             vec![ContactRecord {
                 email: "saved@example.com".to_owned(),
                 remark: Some("Local Remark".to_owned()),
-                is_favorite: true,
             }],
             vec![
-                ContactActivity {
-                    email: "recent@example.com".to_owned(),
-                    display_name: Some("Recent Header".to_owned()),
-                    message_count: 3,
-                    last_message_at: Some("2026-07-21T10:00:00Z".to_owned()),
-                    last_subject: "Recent mail".to_owned(),
-                },
-                ContactActivity {
+                FavoriteRecord {
+                    account_id: "account-163".to_owned(),
                     email: "saved@example.com".to_owned(),
-                    display_name: Some("Remote Header".to_owned()),
-                    message_count: 1,
-                    last_message_at: Some("2026-07-20T10:00:00Z".to_owned()),
-                    last_subject: "Older mail".to_owned(),
                 },
+                FavoriteRecord {
+                    account_id: "account-gmail".to_owned(),
+                    email: "gmail-only@example.com".to_owned(),
+                },
+            ],
+            "account-163",
+            vec![
+                (
+                    "account-163".to_owned(),
+                    vec![
+                        activity("recent@example.com", "Recent Header", 3),
+                        activity("saved@example.com", "Remote Header", 1),
+                    ],
+                ),
+                (
+                    "account-gmail".to_owned(),
+                    vec![activity("gmail-only@example.com", "Gmail Friend", 4)],
+                ),
             ],
         );
 
-        assert_eq!(result.len(), 2);
-        assert_eq!(result[0].email, "saved@example.com");
-        assert!(result[0].is_favorite);
-        assert_eq!(result[0].display_name, "Local Remark");
-        assert_eq!(result[0].original_name, "Remote Header");
-        assert_eq!(result[0].remark.as_deref(), Some("Local Remark"));
-        assert_eq!(result[0].message_count, 1);
-        assert_eq!(result[1].display_name, "Recent Header");
-        assert_eq!(result[1].original_name, "Recent Header");
-        assert_eq!(result[1].remark, None);
-        assert!(!result[1].is_favorite);
+        assert_eq!(result.contacts.len(), 2);
+        assert_eq!(result.contacts[0].email, "saved@example.com");
+        assert_eq!(result.contacts[0].account_id, "account-163");
+        assert!(result.contacts[0].is_favorite);
+        assert_eq!(result.contacts[0].display_name, "Local Remark");
+        assert_eq!(result.contacts[1].email, "recent@example.com");
+        assert!(!result.contacts[1].is_favorite);
+
+        assert_eq!(result.favorites.len(), 2);
+        assert!(result.favorites.iter().any(|item| {
+            item.account_id == "account-163"
+                && item.email == "saved@example.com"
+                && item.message_count == 1
+        }));
+        assert!(result.favorites.iter().any(|item| {
+            item.account_id == "account-gmail"
+                && item.email == "gmail-only@example.com"
+                && item.message_count == 4
+        }));
+        assert!(
+            !result
+                .contacts
+                .iter()
+                .any(|item| { item.email == "gmail-only@example.com" })
+        );
+    }
+
+    fn activity(email: &str, display_name: &str, message_count: usize) -> ContactActivity {
+        ContactActivity {
+            email: email.to_owned(),
+            display_name: Some(display_name.to_owned()),
+            message_count,
+            last_message_at: Some("2026-07-21T10:00:00Z".to_owned()),
+            last_subject: "Hello".to_owned(),
+        }
     }
 }

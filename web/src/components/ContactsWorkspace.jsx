@@ -30,7 +30,9 @@ function contactOriginalName(contact) {
 }
 
 function contactKey(contact) {
-  return contact?.email?.trim().toLowerCase() || "";
+  const email = contact?.email?.trim().toLowerCase() || "";
+  if (!email) return "";
+  return contact?.accountId ? `${contact.accountId}:${email}` : email;
 }
 
 function errorMessage(error, fallback) {
@@ -65,14 +67,20 @@ function newestFirst(messages) {
   return [...messages].sort((left, right) => {
     const leftTime = Date.parse(messageTime(left) || "");
     const rightTime = Date.parse(messageTime(right) || "");
-    return (Number.isNaN(rightTime) ? 0 : rightTime) -
-      (Number.isNaN(leftTime) ? 0 : leftTime);
+    return (
+      (Number.isNaN(rightTime) ? 0 : rightTime) -
+      (Number.isNaN(leftTime) ? 0 : leftTime)
+    );
   });
 }
 
 function ContactsLoadingState() {
   return (
-    <div className="contacts-state contacts-state--loading" role="status" aria-label="正在加载联系人">
+    <div
+      className="contacts-state contacts-state--loading"
+      role="status"
+      aria-label="正在加载联系人"
+    >
       <span className="contacts-skeleton" />
       <span className="contacts-skeleton" />
       <span className="contacts-skeleton" />
@@ -81,7 +89,7 @@ function ContactsLoadingState() {
   );
 }
 
-function ContactsListState({ error, query, onRetry }) {
+function ContactsListState({ error, query, filter, onRetry }) {
   if (error) {
     return (
       <div className="contacts-state" role="alert">
@@ -89,7 +97,11 @@ function ContactsListState({ error, query, onRetry }) {
         <strong>联系人加载失败</strong>
         <span>{errorMessage(error, "暂时无法读取本地联系人。")}</span>
         {onRetry ? (
-          <button type="button" className="contacts-secondary-button" onClick={onRetry}>
+          <button
+            type="button"
+            className="contacts-secondary-button"
+            onClick={onRetry}
+          >
             重新加载
           </button>
         ) : null}
@@ -100,17 +112,31 @@ function ContactsListState({ error, query, onRetry }) {
   return (
     <div className="contacts-state" role="status">
       <UsersThree size={28} weight="duotone" aria-hidden="true" />
-      <strong>{query.trim() ? "没有找到联系人" : "还没有联系人"}</strong>
+      <strong>
+        {query.trim()
+          ? "没有找到联系人"
+          : filter === "favorite"
+            ? "还没有收藏联系人"
+            : "还没有联系人"}
+      </strong>
       <span>
         {query.trim()
           ? "换个名称或邮箱关键词试试。"
+          : filter === "favorite"
+            ? "在任一邮箱账户中收藏后，会集中显示在这里。"
           : "收发邮件后，常用往来对象会出现在这里。"}
       </span>
     </div>
   );
 }
 
-function ContactList({ contacts, selectedContact, onSelectContact, onToggleFavorite }) {
+function ContactList({
+  contacts,
+  selectedContact,
+  showAccountScope,
+  onSelectContact,
+  onToggleFavorite,
+}) {
   const selectedKey = contactKey(selectedContact);
 
   return (
@@ -120,6 +146,11 @@ function ContactList({ contacts, selectedContact, onSelectContact, onToggleFavor
         const selected = Boolean(selectedKey) && key === selectedKey;
         const label = contactLabel(contact);
         const messageCount = Number(contact.messageCount) || 0;
+        const accountLabel = contact.accountLabel || contact.accountId || "";
+        const scopedLabel =
+          showAccountScope && accountLabel
+            ? `${label}（${accountLabel}）`
+            : label;
 
         return (
           <article
@@ -133,7 +164,7 @@ function ContactList({ contacts, selectedContact, onSelectContact, onToggleFavor
             <button
               type="button"
               className="contacts-row__select"
-              aria-label={`查看联系人 ${label}`}
+              aria-label={`查看联系人 ${scopedLabel}`}
               aria-current={selected ? "true" : undefined}
               onClick={() => onSelectContact(contact)}
             >
@@ -157,6 +188,14 @@ function ContactList({ contacts, selectedContact, onSelectContact, onToggleFavor
                 </span>
                 <span className="contacts-row__email">{contact.email}</span>
                 <span className="contacts-row__meta">
+                  {showAccountScope && accountLabel ? (
+                    <span
+                      className="contacts-account-badge"
+                      aria-label={`收藏账号：${accountLabel}`}
+                    >
+                      {accountLabel}
+                    </span>
+                  ) : null}
                   {messageCount} 封往来
                   {contact.lastSubject ? ` · ${contact.lastSubject}` : ""}
                 </span>
@@ -166,12 +205,19 @@ function ContactList({ contacts, selectedContact, onSelectContact, onToggleFavor
               type="button"
               className="contacts-row__favorite"
               data-active={Boolean(contact.isFavorite)}
-              aria-label={contact.isFavorite ? `取消收藏 ${label}` : `收藏 ${label}`}
+              aria-label={
+                contact.isFavorite
+                  ? `取消收藏 ${scopedLabel}`
+                  : `收藏 ${scopedLabel}`
+              }
               aria-pressed={Boolean(contact.isFavorite)}
               title={contact.isFavorite ? "取消收藏" : "收藏联系人"}
               onClick={() => onToggleFavorite(contact)}
             >
-              <Star size={18} weight={contact.isFavorite ? "fill" : "regular"} />
+              <Star
+                size={18}
+                weight={contact.isFavorite ? "fill" : "regular"}
+              />
             </button>
           </article>
         );
@@ -182,6 +228,7 @@ function ContactList({ contacts, selectedContact, onSelectContact, onToggleFavor
 
 function ContactDetails({
   contact,
+  showAccountScope,
   messages,
   isMessagesLoading,
   messagesError,
@@ -196,7 +243,10 @@ function ContactDetails({
 }) {
   if (!contact) {
     return (
-      <section className="reader-panel contacts-detail-panel contacts-detail-panel--empty" aria-label="联系人详情">
+      <section
+        className="reader-panel contacts-detail-panel contacts-detail-panel--empty"
+        aria-label="联系人详情"
+      >
         <div className="contacts-detail-empty">
           <span className="contacts-detail-empty__art" aria-hidden="true">
             <AddressBook size={34} weight="duotone" />
@@ -211,9 +261,13 @@ function ContactDetails({
   const label = contactLabel(contact);
   const originalName = contactOriginalName(contact);
   const sortedMessages = newestFirst(messages);
+  const accountLabel = contact.accountLabel || contact.accountId || "";
 
   return (
-    <section className="reader-panel contacts-detail-panel" aria-label={`${label} 的联系人详情`}>
+    <section
+      className="reader-panel contacts-detail-panel"
+      aria-label={`${label} 的联系人详情`}
+    >
       <div className="contacts-detail-scroll vertical-scroll-surface">
         {onBackToContacts ? (
           <button
@@ -239,16 +293,28 @@ function ContactDetails({
             <p className="eyebrow">CONTACT</p>
             <h1>{label}</h1>
             {contact.remark ? (
-              <span className="contacts-profile__original-name">({originalName})</span>
+              <span className="contacts-profile__original-name">
+                ({originalName})
+              </span>
             ) : null}
             <span className="contacts-profile__email">{contact.email}</span>
+            {showAccountScope && accountLabel ? (
+              <span
+                className="contacts-account-badge contacts-account-badge--detail"
+                aria-label={`收藏账号：${accountLabel}`}
+              >
+                收藏于 {accountLabel}
+              </span>
+            ) : null}
             <span>{Number(contact.messageCount) || 0} 封往来邮件</span>
           </div>
           <button
             type="button"
             className="contacts-profile__favorite"
             data-active={Boolean(contact.isFavorite)}
-            aria-label={contact.isFavorite ? `取消收藏 ${label}` : `收藏 ${label}`}
+            aria-label={
+              contact.isFavorite ? `取消收藏 ${label}` : `收藏 ${label}`
+            }
             aria-pressed={Boolean(contact.isFavorite)}
             onClick={() => onToggleFavorite(contact)}
           >
@@ -272,7 +338,10 @@ function ContactDetails({
           />
         </div>
 
-        <section className="contacts-correspondence" aria-labelledby="contacts-correspondence-title">
+        <section
+          className="contacts-correspondence"
+          aria-labelledby="contacts-correspondence-title"
+        >
           <div className="contacts-correspondence__heading">
             <div>
               <p className="eyebrow">CORRESPONDENCE</p>
@@ -283,22 +352,35 @@ function ContactDetails({
 
           {isMessagesLoading && !messages.length ? (
             <div className="contacts-correspondence-state" role="status">
-              <span className="contacts-correspondence-spinner" aria-hidden="true" />
+              <span
+                className="contacts-correspondence-spinner"
+                aria-hidden="true"
+              />
               正在加载往来邮件…
             </div>
           ) : messagesError ? (
             <div className="contacts-correspondence-state" role="alert">
               <WarningCircle size={24} weight="duotone" aria-hidden="true" />
               <strong>往来邮件加载失败</strong>
-              <span>{errorMessage(messagesError, "暂时无法读取往来记录。")}</span>
+              <span>
+                {errorMessage(messagesError, "暂时无法读取往来记录。")}
+              </span>
               {onRetryMessages ? (
-                <button type="button" className="contacts-secondary-button" onClick={onRetryMessages}>
+                <button
+                  type="button"
+                  className="contacts-secondary-button"
+                  onClick={onRetryMessages}
+                >
                   重新加载
                 </button>
               ) : null}
             </div>
           ) : sortedMessages.length ? (
-            <div className="contacts-message-list" role="list" aria-label={`与 ${label} 的往来邮件`}>
+            <div
+              className="contacts-message-list"
+              role="list"
+              aria-label={`与 ${label} 的往来邮件`}
+            >
               {sortedMessages.map((message, index) => {
                 const outgoing = isOutgoingMessage(message);
                 const subject = message.subject || "（无主题）";
@@ -312,14 +394,25 @@ function ContactDetails({
                       aria-label={`打开邮件：${subject}`}
                       onClick={() => onOpenMessage(message)}
                     >
-                      <span className="contacts-message-row__direction" data-outgoing={outgoing} aria-hidden="true">
-                        {outgoing ? <ArrowUpRight size={18} /> : <ArrowDownLeft size={18} />}
+                      <span
+                        className="contacts-message-row__direction"
+                        data-outgoing={outgoing}
+                        aria-hidden="true"
+                      >
+                        {outgoing ? (
+                          <ArrowUpRight size={18} />
+                        ) : (
+                          <ArrowDownLeft size={18} />
+                        )}
                       </span>
                       <span className="contacts-message-row__copy">
                         <span className="contacts-message-row__topline">
                           <strong>{subject}</strong>
                           {timestamp ? (
-                            <time dateTime={timestamp} title={formatFullDate(timestamp)}>
+                            <time
+                              dateTime={timestamp}
+                              title={formatFullDate(timestamp)}
+                            >
                               {formatMailTime(timestamp)}
                             </time>
                           ) : null}
@@ -437,7 +530,9 @@ function ContactRemarkEditor({ contact, onSaveRemark }) {
         </span>
       ) : null}
       {error ? (
-        <span className="contacts-remark-editor__error" role="alert">{error}</span>
+        <span className="contacts-remark-editor__error" role="alert">
+          {error}
+        </span>
       ) : null}
     </form>
   );
@@ -474,7 +569,10 @@ export function ContactsWorkspace({
 }) {
   return (
     <>
-      <section className="mail-list-panel contacts-list-panel" aria-label="通讯录联系人列表">
+      <section
+        className="mail-list-panel contacts-list-panel"
+        aria-label="通讯录联系人列表"
+      >
         <div className="contacts-list-topbar">
           {onOpenMobileNav ? (
             <button
@@ -526,11 +624,17 @@ export function ContactsWorkspace({
           {isLoading && !contacts.length ? (
             <ContactsLoadingState />
           ) : error || !contacts.length ? (
-            <ContactsListState error={error} query={query} onRetry={onRetry} />
+            <ContactsListState
+              error={error}
+              query={query}
+              filter={filter}
+              onRetry={onRetry}
+            />
           ) : (
             <ContactList
               contacts={contacts}
               selectedContact={selectedContact}
+              showAccountScope={filter === "favorite"}
               onSelectContact={onSelectContact}
               onToggleFavorite={onToggleFavorite}
             />
@@ -541,6 +645,7 @@ export function ContactsWorkspace({
       {readerContent ?? (
         <ContactDetails
           contact={selectedContact}
+          showAccountScope={filter === "favorite"}
           messages={messages}
           isMessagesLoading={isMessagesLoading}
           messagesError={messagesError}

@@ -131,6 +131,29 @@ describe("RecipientInput", () => {
     expect(onRecipientsChange).toHaveBeenLastCalledWith([]);
   });
 
+  it("reopens suggestions when the still-focused input is clicked after a drag-area dismissal", () => {
+    render(
+      <>
+        <button
+          type="button"
+          aria-label="写信窗口拖动区域"
+          onPointerDown={(event) => event.preventDefault()}
+        />
+        <RecipientHarness />
+      </>,
+    );
+    const input = screen.getByRole("combobox", { name: "收件人" });
+    act(() => input.focus());
+    expect(screen.getByRole("listbox")).toBeTruthy();
+
+    fireEvent.pointerDown(screen.getByRole("button", { name: "写信窗口拖动区域" }));
+    expect(document.activeElement).toBe(input);
+    expect(screen.queryByRole("listbox")).toBeNull();
+
+    fireEvent.pointerDown(input);
+    expect(screen.getByRole("listbox")).toBeTruthy();
+  });
+
   it("ranks matching favorites before more recent non-favorites", () => {
     const ranked = rankRecipientContacts(contacts, "example", []);
     expect(ranked.slice(0, 2).every((contact) => contact.isFavorite)).toBe(true);

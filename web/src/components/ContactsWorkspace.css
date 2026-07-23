@@ -95,7 +95,8 @@
 .contacts-list-body {
   min-height: 0;
   padding: 6px 8px 12px;
-  scrollbar-color: color-mix(in srgb, var(--color-text-muted) 36%, transparent) transparent;
+  scrollbar-color: color-mix(in srgb, var(--color-text-muted) 36%, transparent)
+    transparent;
   scrollbar-width: thin;
 }
 
@@ -113,17 +114,28 @@
   border-radius: 0;
   animation: row-in 240ms ease-out both;
   animation-delay: calc(var(--row-index) * 22ms);
-  transition: background var(--motion-fast), border-color var(--motion-fast), border-radius var(--motion-fast);
+  transition:
+    background var(--motion-fast),
+    border-color var(--motion-fast),
+    border-radius var(--motion-fast);
 }
 
 .contacts-row[data-favorite="true"] {
-  border-bottom-color: color-mix(in srgb, var(--color-primary) 16%, var(--color-divider));
+  border-bottom-color: color-mix(
+    in srgb,
+    var(--color-primary) 16%,
+    var(--color-divider)
+  );
   border-radius: var(--row-radius);
   background: color-mix(in srgb, var(--color-primary) 6%, transparent);
 }
 
 .contacts-row[data-favorite="true"]:hover {
-  background: color-mix(in srgb, var(--color-primary) 10%, var(--row-hover-surface));
+  background: color-mix(
+    in srgb,
+    var(--color-primary) 10%,
+    var(--row-hover-surface)
+  );
 }
 
 .contacts-row:hover {
@@ -136,7 +148,8 @@
   border-color: var(--row-selection-edge);
   border-radius: var(--row-radius);
   background: var(--row-selection-surface);
-  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--surface-highlight) 54%, transparent);
+  box-shadow: inset 0 1px 0
+    color-mix(in srgb, var(--surface-highlight) 54%, transparent);
 }
 
 .contacts-row__select {
@@ -165,7 +178,11 @@
   height: 38px;
   place-items: center;
   border-radius: 12px;
-  background: color-mix(in srgb, var(--color-primary) 14%, var(--color-control));
+  background: color-mix(
+    in srgb,
+    var(--color-primary) 14%,
+    var(--color-control)
+  );
   color: var(--color-primary);
   font-size: 11px;
   font-weight: 720;
@@ -213,6 +230,39 @@
 .contacts-row__meta {
   color: var(--color-text-muted);
   font-size: 10px;
+}
+
+.contacts-account-badge {
+  display: inline-flex;
+  max-width: 150px;
+  align-items: center;
+  margin-right: 7px;
+  padding: 2px 6px;
+  overflow: hidden;
+  border: 1px solid
+    color-mix(in srgb, var(--color-primary) 24%, var(--color-border));
+  border-radius: 999px;
+  background: color-mix(
+    in srgb,
+    var(--color-primary) 9%,
+    var(--control-surface)
+  );
+  color: var(--color-primary);
+  font-size: 9px;
+  font-weight: 650;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.contacts-account-badge--detail {
+  display: flex !important;
+  width: fit-content;
+  max-width: 100%;
+  margin-top: 9px !important;
+  margin-right: 0;
+  font-size: 10px !important;
 }
 
 .contacts-row__favorite,
@@ -295,8 +345,12 @@
 }
 
 @keyframes contacts-skeleton {
-  from { background-position: 100% 0; }
-  to { background-position: -100% 0; }
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: -100% 0;
+  }
 }
 
 .reader-panel.contacts-detail-panel {
@@ -308,7 +362,8 @@
   height: 100%;
   padding: clamp(28px, 3.1vw, 46px);
   background: var(--reader-content-surface);
-  scrollbar-color: color-mix(in srgb, var(--color-text-muted) 36%, transparent) transparent;
+  scrollbar-color: color-mix(in srgb, var(--color-text-muted) 36%, transparent)
+    transparent;
   scrollbar-width: thin;
 }
 
@@ -375,9 +430,14 @@
   width: 76px;
   height: 76px;
   place-items: center;
-  border: 1px solid color-mix(in srgb, var(--color-primary) 16%, var(--surface-edge));
+  border: 1px solid
+    color-mix(in srgb, var(--color-primary) 16%, var(--surface-edge));
   border-radius: 22px;
-  background: color-mix(in srgb, var(--color-primary) 14%, var(--color-control));
+  background: color-mix(
+    in srgb,
+    var(--color-primary) 14%,
+    var(--color-control)
+  );
   color: var(--color-primary);
   box-shadow: inset 0 1px 0 var(--surface-highlight);
   font-size: 20px;
@@ -458,14 +518,26 @@
   border-radius: var(--control-radius);
   background: color-mix(in srgb, var(--control-surface) 68%, transparent);
   color: var(--color-text-secondary);
-  transition: background var(--motion-fast), border-color var(--motion-fast), color var(--motion-fast), transform 80ms;
+  transition:
+    background var(--motion-fast),
+    border-color var(--motion-fast),
+    color var(--motion-fast),
+    transform 80ms;
 }
 
 .contacts-remark-editor__toggle:hover,
 .contacts-remark-editor__toggle[data-active="true"],
 .contacts-remark-editor__toggle[aria-expanded="true"] {
-  border-color: color-mix(in srgb, var(--color-primary) 42%, var(--color-border));
-  background: color-mix(in srgb, var(--color-primary) 11%, var(--control-surface));
+  border-color: color-mix(
+    in srgb,
+    var(--color-primary) 42%,
+    var(--color-border)
+  );
+  background: color-mix(
+    in srgb,
+    var(--color-primary) 11%,
+    var(--control-surface)
+  );
   color: var(--color-primary);
 }
 
@@ -491,13 +563,21 @@
   color: var(--color-text);
   font: inherit;
   font-size: 13px;
-  box-shadow: inset 0 1px 2px color-mix(in srgb, var(--color-text) 5%, transparent);
-  transition: border-color var(--motion-fast), box-shadow var(--motion-fast);
+  box-shadow: inset 0 1px 2px
+    color-mix(in srgb, var(--color-text) 5%, transparent);
+  transition:
+    border-color var(--motion-fast),
+    box-shadow var(--motion-fast);
 }
 
 .contacts-remark-editor__input:focus {
-  border-color: color-mix(in srgb, var(--color-primary) 68%, var(--color-border));
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 13%, transparent);
+  border-color: color-mix(
+    in srgb,
+    var(--color-primary) 68%,
+    var(--color-border)
+  );
+  box-shadow: 0 0 0 3px
+    color-mix(in srgb, var(--color-primary) 13%, transparent);
 }
 
 .contacts-remark-editor__save {
@@ -505,7 +585,8 @@
   height: 40px;
   flex: 0 0 auto;
   padding: 0 13px;
-  border: 1px solid color-mix(in srgb, var(--color-primary) 76%, var(--surface-edge));
+  border: 1px solid
+    color-mix(in srgb, var(--color-primary) 76%, var(--surface-edge));
   border-radius: var(--control-radius);
   background: var(--color-primary);
   color: var(--color-on-primary);
@@ -561,12 +642,17 @@
   border-radius: var(--control-radius);
   font-size: 12px;
   font-weight: 650;
-  transition: background var(--motion-fast), border-color var(--motion-fast), color var(--motion-fast), transform 80ms;
+  transition:
+    background var(--motion-fast),
+    border-color var(--motion-fast),
+    color var(--motion-fast),
+    transform 80ms;
 }
 
 .contacts-primary-button {
   min-width: 108px;
-  border: 1px solid color-mix(in srgb, var(--color-primary) 76%, var(--surface-edge));
+  border: 1px solid
+    color-mix(in srgb, var(--color-primary) 76%, var(--surface-edge));
   background: var(--color-primary);
   color: var(--color-on-primary);
   box-shadow:
@@ -575,7 +661,11 @@
 }
 
 .contacts-primary-button:hover {
-  border-color: color-mix(in srgb, var(--color-primary-hover) 82%, var(--surface-edge));
+  border-color: color-mix(
+    in srgb,
+    var(--color-primary-hover) 82%,
+    var(--surface-edge)
+  );
   background: var(--color-primary-hover);
 }
 
@@ -586,7 +676,11 @@
 }
 
 .contacts-secondary-button:hover {
-  border-color: color-mix(in srgb, var(--color-primary) 44%, var(--color-border));
+  border-color: color-mix(
+    in srgb,
+    var(--color-primary) 44%,
+    var(--color-border)
+  );
   background: var(--color-hover);
   color: var(--color-text);
 }
@@ -638,12 +732,20 @@
   background: color-mix(in srgb, var(--control-surface) 42%, transparent);
   color: var(--color-text);
   text-align: left;
-  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--surface-highlight) 54%, transparent);
-  transition: background var(--motion-fast), border-color var(--motion-fast), transform 80ms;
+  box-shadow: inset 0 1px 0
+    color-mix(in srgb, var(--surface-highlight) 54%, transparent);
+  transition:
+    background var(--motion-fast),
+    border-color var(--motion-fast),
+    transform 80ms;
 }
 
 .contacts-message-row:hover {
-  border-color: color-mix(in srgb, var(--color-primary) 30%, var(--color-border));
+  border-color: color-mix(
+    in srgb,
+    var(--color-primary) 30%,
+    var(--color-border)
+  );
   background: color-mix(in srgb, var(--row-hover-surface) 78%, transparent);
 }
 
@@ -659,12 +761,20 @@
   height: 36px;
   place-items: center;
   border-radius: 10px;
-  background: color-mix(in srgb, var(--color-primary) 11%, var(--color-control));
+  background: color-mix(
+    in srgb,
+    var(--color-primary) 11%,
+    var(--color-control)
+  );
   color: var(--color-primary);
 }
 
 .contacts-message-row__direction[data-outgoing="true"] {
-  background: color-mix(in srgb, var(--color-success) 11%, var(--color-control));
+  background: color-mix(
+    in srgb,
+    var(--color-success) 11%,
+    var(--color-control)
+  );
   color: var(--color-success);
 }
 
@@ -756,7 +866,6 @@
     border-radius: 18px;
   }
 
-
   .contacts-profile__avatar-picker {
     width: 62px;
     height: 62px;
@@ -780,7 +889,6 @@
     font-size: 15px;
   }
 
-
   .contacts-profile__avatar-picker {
     width: 54px;
     height: 54px;
@@ -794,7 +902,6 @@
     width: 38px;
     height: 38px;
   }
-
 }
 
 @media (prefers-reduced-motion: reduce) {

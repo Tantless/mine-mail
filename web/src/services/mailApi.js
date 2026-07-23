@@ -79,7 +79,11 @@ const webAccountPresets = [
     disabled: true,
     note: "OAuth / Modern Auth 尚未支持",
   },
-  { id: "custom", label: "自定义 IMAP/SMTP", secret_label: "邮箱密码或授权密码" },
+  {
+    id: "custom",
+    label: "自定义 IMAP/SMTP",
+    secret_label: "邮箱密码或授权密码",
+  },
 ];
 
 function webOnly(action) {
@@ -129,13 +133,13 @@ function normalizeSettings(settings = {}) {
     ),
     foregroundNotificationsEnabled: Boolean(
       settings.foregroundNotificationsEnabled ??
-        settings.foreground_notifications_enabled ??
-        true,
+      settings.foreground_notifications_enabled ??
+      true,
     ),
     notificationSoundEnabled: Boolean(
       settings.notificationSoundEnabled ??
-        settings.notification_sound_enabled ??
-        true,
+      settings.notification_sound_enabled ??
+      true,
     ),
     notificationSound: ["default", "mail", "im", "reminder"].includes(
       notificationSound,
@@ -155,8 +159,7 @@ function settingsDto(settings) {
     poll_interval_minutes: normalized.pollingIntervalMinutes,
     autostart_enabled: normalized.autostartEnabled,
     notifications_enabled: normalized.notificationsEnabled,
-    foreground_notifications_enabled:
-      normalized.foregroundNotificationsEnabled,
+    foreground_notifications_enabled: normalized.foregroundNotificationsEnabled,
     notification_sound_enabled: normalized.notificationSoundEnabled,
     notification_sound: normalized.notificationSound,
     remote_image_mode: normalized.remoteImageMode,
@@ -195,24 +198,34 @@ function normalizeAccountStatus(status = {}) {
     configured: Boolean(status.configured),
     accountId: status.accountId ?? status.account_id ?? null,
     activeAccountId:
-      status.activeAccountId ?? status.active_account_id ?? status.accountId ?? status.account_id ?? null,
+      status.activeAccountId ??
+      status.active_account_id ??
+      status.accountId ??
+      status.account_id ??
+      null,
     provider: status.provider ?? status.provider_id ?? null,
     email: status.email ?? null,
     authentication: status.authentication ?? null,
-    backendReady: Boolean(status.backendReady ?? status.backend_ready ?? status.configured),
+    backendReady: Boolean(
+      status.backendReady ?? status.backend_ready ?? status.configured,
+    ),
     credentialAvailable: Boolean(
-      status.credentialAvailable ?? status.credential_available ?? status.configured,
+      status.credentialAvailable ??
+      status.credential_available ??
+      status.configured,
     ),
     networkReady: Boolean(
       status.networkReady ??
-        status.network_ready ??
-        status.credentialAvailable ??
-        status.credential_available ??
-        status.configured,
+      status.network_ready ??
+      status.credentialAvailable ??
+      status.credential_available ??
+      status.configured,
     ),
     startupError: status.startupError ?? status.startup_error ?? null,
     accounts,
-    accountCount: Number(status.accountCount ?? status.account_count ?? accounts.length),
+    accountCount: Number(
+      status.accountCount ?? status.account_count ?? accounts.length,
+    ),
     maxAccounts: Number(status.maxAccounts ?? status.max_accounts ?? 3),
     canAddAccount: Boolean(
       status.canAddAccount ?? status.can_add_account ?? accounts.length < 3,
@@ -233,15 +246,17 @@ function normalizeProfileAvatar(avatar = {}) {
 
 function normalizeContact(contact = {}) {
   const email = (contact.email ?? "").trim().toLowerCase();
-  const originalName = String(
-    contact.originalName ??
-      contact.original_name ??
-      contact.displayName ??
-      contact.display_name ??
-      email,
-  ).trim() || email;
+  const originalName =
+    String(
+      contact.originalName ??
+        contact.original_name ??
+        contact.displayName ??
+        contact.display_name ??
+        email,
+    ).trim() || email;
   const remark = (contact.remark ?? "").trim() || null;
   return {
+    accountId: contact.accountId ?? contact.account_id ?? null,
     email,
     displayName:
       remark || (contact.displayName ?? contact.display_name ?? originalName),
@@ -258,7 +273,15 @@ function normalizeContactEmail(value = "") {
   return value.trim().toLowerCase();
 }
 
+function webFavoriteKey(accountId, email) {
+  return `${accountId}\u0000${normalizeContactEmail(email)}`;
+}
+
 function webContactItems() {
+  const activeAccountId =
+    webAccountStatus.activeAccountId ||
+    webAccountStatus.accountId ||
+    "demo-primary";
   const accountEmail = normalizeContactEmail(webAccountStatus.email || "");
   const contacts = new Map();
 
@@ -273,7 +296,8 @@ function webContactItems() {
     const seenInMessage = new Set();
     for (const participant of participants) {
       const email = normalizeContactEmail(participant?.email || "");
-      if (!email || email === accountEmail || seenInMessage.has(email)) continue;
+      if (!email || email === accountEmail || seenInMessage.has(email))
+        continue;
       seenInMessage.add(email);
       const sentAt = message.sent_at || message.internal_date || null;
       const existing = contacts.get(email);
@@ -301,36 +325,49 @@ function webContactItems() {
     }
   }
 
-  const localEmails = new Set([
-    ...webFavoriteContacts,
-    ...webContactRemarks.keys(),
-  ]);
-  for (const email of localEmails) {
-    const existing = contacts.get(email) || {
-      email,
-      original_name: email,
-      display_name: email,
-      message_count: 0,
-      last_message_at: null,
-      last_subject: null,
-    };
+  for (const [email, existing] of contacts) {
     const remark = webContactRemarks.get(email) || null;
     contacts.set(email, {
       ...existing,
+      account_id: activeAccountId,
       original_name: existing.original_name || existing.display_name || email,
-      display_name: remark || existing.original_name || existing.display_name || email,
+      display_name:
+        remark || existing.original_name || existing.display_name || email,
       remark,
-      is_favorite: webFavoriteContacts.has(email),
+      is_favorite: webFavoriteContacts.has(
+        webFavoriteKey(activeAccountId, email),
+      ),
     });
   }
 
-  return [...contacts.values()].sort((left, right) => {
-    if (left.is_favorite !== right.is_favorite) return left.is_favorite ? -1 : 1;
+  const byRecent = (left, right) => {
+    if (left.is_favorite !== right.is_favorite)
+      return left.is_favorite ? -1 : 1;
     const rightTime = Date.parse(right.last_message_at || "") || 0;
     const leftTime = Date.parse(left.last_message_at || "") || 0;
     if (rightTime !== leftTime) return rightTime - leftTime;
     return left.display_name.localeCompare(right.display_name, "zh-CN");
+  };
+  const favorites = [...webFavoriteContacts].map((key) => {
+    const [accountId, email] = key.split("\u0000");
+    const existing = accountId === activeAccountId ? contacts.get(email) : null;
+    const remark = webContactRemarks.get(email) || null;
+    return {
+      account_id: accountId,
+      email,
+      original_name: existing?.original_name || email,
+      display_name: remark || existing?.original_name || email,
+      remark,
+      is_favorite: true,
+      message_count: existing?.message_count || 0,
+      last_message_at: existing?.last_message_at || null,
+      last_subject: existing?.last_subject || null,
+    };
   });
+  return {
+    contacts: [...contacts.values()].sort(byRecent),
+    favorites: favorites.sort(byRecent),
+  };
 }
 
 function profileAvatarRequest(request) {
@@ -397,7 +434,9 @@ export const mailApi = {
     return webOnly(() => {
       const message = webMessages.find((mail) => mail.uid === uid);
       if (!message) throw new Error("找不到要标记为已读的邮件");
-      if (!(message.flags || []).some((flag) => flag.toLowerCase() === "\\seen")) {
+      if (
+        !(message.flags || []).some((flag) => flag.toLowerCase() === "\\seen")
+      ) {
         message.flags = [...(message.flags || []), "\\Seen"];
       }
       return true;
@@ -582,7 +621,9 @@ export const mailApi = {
     return webOnly(() => {
       const item = webOutbox.find((candidate) => candidate.id === outboxId);
       if (!item) throw new Error("发件队列中的邮件不存在。");
-      const draft = webDrafts.find((candidate) => candidate.id === item.draft_id);
+      const draft = webDrafts.find(
+        (candidate) => candidate.id === item.draft_id,
+      );
       return structuredClone({
         id: item.id,
         subject: item.subject || draft?.subject || "",
@@ -594,7 +635,10 @@ export const mailApi = {
 
   async getAccountMailboxSnapshot(accountId, limit = 50) {
     if (isTauri) {
-      return desktopInvoke("get_account_mailbox_snapshot", { accountId, limit });
+      return desktopInvoke("get_account_mailbox_snapshot", {
+        accountId,
+        limit,
+      });
     }
     return webOnly(() => ({
       account_id: accountId,
@@ -619,7 +663,10 @@ export const mailApi = {
         last_error: null,
         sent_at: new Date().toISOString(),
       };
-      webOutbox = [sent, ...webOutbox.filter((candidate) => candidate.id !== outboxId)];
+      webOutbox = [
+        sent,
+        ...webOutbox.filter((candidate) => candidate.id !== outboxId),
+      ];
       return structuredClone(sent);
     })();
   },
@@ -739,7 +786,9 @@ export const mailApi = {
 
   async connectGoogleAccount() {
     if (isTauri) {
-      return normalizeAccountStatus(await desktopInvoke("connect_google_account"));
+      return normalizeAccountStatus(
+        await desktopInvoke("connect_google_account"),
+      );
     }
     return webOnly(() => structuredClone(webAccountStatus))();
   },
@@ -811,7 +860,8 @@ export const mailApi = {
       });
       webProfileAvatars = webProfileAvatars.filter(
         (avatar) =>
-          avatar.ownerType !== normalized.ownerType || avatar.ownerKey !== normalized.ownerKey,
+          avatar.ownerType !== normalized.ownerType ||
+          avatar.ownerKey !== normalized.ownerKey,
       );
       webProfileAvatars.push(normalized);
       return structuredClone(normalized);
@@ -828,17 +878,28 @@ export const mailApi = {
     return webOnly(() => {
       const ownerKey = request.ownerKey.trim().toLowerCase();
       webProfileAvatars = webProfileAvatars.filter(
-        (avatar) => avatar.ownerType !== request.ownerType || avatar.ownerKey !== ownerKey,
+        (avatar) =>
+          avatar.ownerType !== request.ownerType ||
+          avatar.ownerKey !== ownerKey,
       );
     })();
   },
 
   async listContacts(accountId) {
     if (isTauri) {
-      const contacts = await desktopInvoke("list_contacts", { accountId });
-      return contacts.map(normalizeContact);
+      const directory = await desktopInvoke("list_contacts", { accountId });
+      return {
+        contacts: (directory.contacts || []).map(normalizeContact),
+        favorites: (directory.favorites || []).map(normalizeContact),
+      };
     }
-    return webOnly(() => webContactItems().map(normalizeContact))();
+    return webOnly(() => {
+      const directory = webContactItems();
+      return {
+        contacts: directory.contacts.map(normalizeContact),
+        favorites: directory.favorites.map(normalizeContact),
+      };
+    })();
   },
 
   async listContactMessages(accountId, email, limit = 250) {
@@ -859,13 +920,15 @@ export const mailApi = {
             if (sender === target) return true;
             if (sender !== accountEmail) return false;
             return [...(message.to || []), ...(message.cc || [])].some(
-              (recipient) => normalizeContactEmail(recipient.email || "") === target,
+              (recipient) =>
+                normalizeContactEmail(recipient.email || "") === target,
             );
           })
           .slice(0, limit)
           .map((message) => {
             const direction =
-              normalizeContactEmail(message.sender?.email || "") === accountEmail
+              normalizeContactEmail(message.sender?.email || "") ===
+              accountEmail
                 ? "outgoing"
                 : "incoming";
             const mailbox = (message.mailbox || "INBOX").trim();
@@ -884,15 +947,20 @@ export const mailApi = {
     })();
   },
 
-  async setContactFavorite(email, favorite) {
+  async setContactFavorite(accountId, email, favorite) {
     if (isTauri) {
-      return desktopInvoke("set_contact_favorite", { email, favorite });
+      return desktopInvoke("set_contact_favorite", {
+        accountId,
+        email,
+        favorite,
+      });
     }
     return webOnly(() => {
       const normalizedEmail = normalizeContactEmail(email || "");
       if (!normalizedEmail) throw new Error("联系人邮箱不能为空");
-      if (favorite) webFavoriteContacts.add(normalizedEmail);
-      else webFavoriteContacts.delete(normalizedEmail);
+      const key = webFavoriteKey(accountId, normalizedEmail);
+      if (favorite) webFavoriteContacts.add(key);
+      else webFavoriteContacts.delete(key);
       return true;
     })();
   },
@@ -905,9 +973,12 @@ export const mailApi = {
       const normalizedEmail = normalizeContactEmail(email || "");
       if (!normalizedEmail) throw new Error("联系人邮箱不能为空");
       const normalizedRemark = (remark || "").trim();
-      if ([...normalizedRemark].length > 80) throw new Error("联系人备注最多 80 个字符");
-      if (/\p{Cc}/u.test(normalizedRemark)) throw new Error("联系人备注不能包含控制字符");
-      if (normalizedRemark) webContactRemarks.set(normalizedEmail, normalizedRemark);
+      if ([...normalizedRemark].length > 80)
+        throw new Error("联系人备注最多 80 个字符");
+      if (/\p{Cc}/u.test(normalizedRemark))
+        throw new Error("联系人备注不能包含控制字符");
+      if (normalizedRemark)
+        webContactRemarks.set(normalizedEmail, normalizedRemark);
       else webContactRemarks.delete(normalizedEmail);
       return true;
     })();

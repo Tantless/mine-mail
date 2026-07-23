@@ -145,6 +145,18 @@ export function RecipientInput({
     setPopupPosition(null);
   }, [cancelScheduledClose]);
 
+  const openSuggestions = useCallback(
+    (trackEntry = false) => {
+      cancelScheduledClose();
+      if (trackEntry) {
+        entryTrackingDeadlineRef.current =
+          window.performance.now() + popupEntryTrackingMs;
+      }
+      setOpen(true);
+    },
+    [cancelScheduledClose],
+  );
+
   const scheduleClose = useCallback(() => {
     cancelScheduledClose();
     closeTimerRef.current = window.setTimeout(() => {
@@ -275,7 +287,7 @@ export function RecipientInput({
     addRecipients([contact.email]);
     setQuery("");
     setExpanded(false);
-    setOpen(true);
+    openSuggestions();
     if (window.requestAnimationFrame) {
       window.requestAnimationFrame(() => inputRef.current?.focus());
     } else {
@@ -285,7 +297,7 @@ export function RecipientInput({
 
   const handleInputChange = (event) => {
     const nextQuery = event.target.value;
-    setOpen(true);
+    openSuggestions();
     setExpanded(false);
     if (/[;,，；\n]$/.test(nextQuery)) {
       const parts = splitAddresses(nextQuery);
@@ -310,7 +322,7 @@ export function RecipientInput({
     }
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault();
-      setOpen(true);
+      openSuggestions();
       if (!visibleSuggestions.length) return;
       const direction = event.key === "ArrowDown" ? 1 : -1;
       if (
@@ -503,12 +515,10 @@ export function RecipientInput({
               : undefined
           }
           onFocus={() => {
-            cancelScheduledClose();
-            if (!disabled) {
-              entryTrackingDeadlineRef.current =
-                window.performance.now() + popupEntryTrackingMs;
-              setOpen(true);
-            }
+            if (!disabled) openSuggestions(true);
+          }}
+          onPointerDown={() => {
+            if (!disabled && !open) openSuggestions();
           }}
           onBlur={() => {
             commitQuery();

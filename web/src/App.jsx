@@ -48,7 +48,9 @@ function readFileAsDataUrl(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.addEventListener("load", () => resolve(reader.result));
-    reader.addEventListener("error", () => reject(new Error("无法读取所选图片")));
+    reader.addEventListener("error", () =>
+      reject(new Error("无法读取所选图片")),
+    );
     reader.readAsDataURL(file);
   });
 }
@@ -166,28 +168,37 @@ function toSentMessage(message) {
 function toContactDisplayMessage(message) {
   const displayMessage =
     message?.direction === "outgoing" ? toSentMessage(message) : message;
-  return displayMessage ? { ...displayMessage, contactHistory: true } : displayMessage;
+  return displayMessage
+    ? { ...displayMessage, contactHistory: true }
+    : displayMessage;
 }
 
 function sentMessageMatchesOutbox(message, item) {
   const remoteMessageId = normalizeMessageId(message.message_id);
   const localMessageId = normalizeMessageId(item.message_id);
-  if (remoteMessageId && localMessageId) return remoteMessageId === localMessageId;
+  if (remoteMessageId && localMessageId)
+    return remoteMessageId === localMessageId;
 
   // Compatibility for items sent before Mine Mail generated Message-ID. Keep
   // this deliberately strict so two genuinely separate sends are not hidden.
-  if ((message.subject || "").trim() !== (item.subject || "").trim()) return false;
+  if ((message.subject || "").trim() !== (item.subject || "").trim())
+    return false;
   const remoteRecipients = [...(message.to || []), ...(message.cc || [])]
     .map((recipient) => normalizeAvatarEmail(recipient.email))
     .filter(Boolean);
   const localRecipients = new Set(
     (item.recipients || []).map(normalizeAvatarEmail).filter(Boolean),
   );
-  if (!remoteRecipients.length || !remoteRecipients.every((email) => localRecipients.has(email))) {
+  if (
+    !remoteRecipients.length ||
+    !remoteRecipients.every((email) => localRecipients.has(email))
+  ) {
     return false;
   }
   const remoteTime = Date.parse(message.sent_at || message.internal_date || "");
-  const localTime = Date.parse(item.message_date || item.sent_at || item.created_at || "");
+  const localTime = Date.parse(
+    item.message_date || item.sent_at || item.created_at || "",
+  );
   return (
     Number.isFinite(remoteTime) &&
     Number.isFinite(localTime) &&
@@ -210,7 +221,8 @@ function withSystemFlag(message, flag, desired) {
 }
 
 function remoteFlagKey(message) {
-  if (!message || message.kind === "draft" || message.kind === "outbox") return null;
+  if (!message || message.kind === "draft" || message.kind === "outbox")
+    return null;
   const uid = Number(message.uid);
   const mailbox = (message.mailbox || (!message.kind ? "INBOX" : "")).trim();
   if (!mailbox || !Number.isInteger(uid) || uid <= 0) return null;
@@ -225,13 +237,17 @@ function scopedRemoteFlagKey(message, accountId = "unscoped") {
 function hasDraftContent(value) {
   return Boolean(
     value &&
-      ([...value.to, ...value.cc, ...value.bcc].length ||
-        value.subject.trim() ||
-        value.body_text.trim()),
+    ([...value.to, ...value.cc, ...value.bcc].length ||
+      value.subject.trim() ||
+      value.body_text.trim()),
   );
 }
 
-function createComposer(value = emptyCompose, draftId = null, persistedDraft = null) {
+function createComposer(
+  value = emptyCompose,
+  draftId = null,
+  persistedDraft = null,
+) {
   const readOnlyUnsupported = Boolean(persistedDraft?.has_unsupported_content);
   return {
     sessionId: crypto.randomUUID(),
@@ -283,11 +299,14 @@ export function App() {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
   const [contacts, setContacts] = useState([]);
+  const [favoriteContacts, setFavoriteContacts] = useState([]);
   const [contactQuery, setContactQuery] = useState("");
   const [contactFilter, setContactFilter] = useState("all");
   const [contactsState, setContactsState] = useState("idle");
   const [contactsError, setContactsError] = useState(null);
   const [selectedContactEmail, setSelectedContactEmail] = useState(null);
+  const [selectedContactAccountId, setSelectedContactAccountId] =
+    useState(null);
   const [contactMessages, setContactMessages] = useState([]);
   const [contactMessagesState, setContactMessagesState] = useState("idle");
   const [contactMessagesError, setContactMessagesError] = useState(null);
@@ -323,6 +342,7 @@ export function App() {
   const activeAccountIdRef = useRef(null);
   const activeFolderRef = useRef("inbox");
   const selectedContactEmailRef = useRef(null);
+  const selectedContactAccountIdRef = useRef(null);
   const accountSwitchRequestRef = useRef(0);
   const referenceJumpRequestRef = useRef(0);
   const contactsRequestRef = useRef(0);
@@ -330,12 +350,14 @@ export function App() {
   const starRequestRef = useRef(new Map());
   const starStateRef = useRef(new Map());
   const settingsSaveRequestRef = useRef(0);
-  const platform = /Mac|iPhone|iPad/.test(navigator.platform) ? "mac" : "windows";
+  const platform = /Mac|iPhone|iPad/.test(navigator.platform)
+    ? "mac"
+    : "windows";
   const networkActionsAvailable = Boolean(
     accountStatus.configured &&
-      accountStatus.backendReady &&
-      accountStatus.credentialAvailable &&
-      accountStatus.networkReady !== false,
+    accountStatus.backendReady &&
+    accountStatus.credentialAvailable &&
+    accountStatus.networkReady !== false,
   );
   const activeAccountId =
     accountStatus.activeAccountId || accountStatus.accountId || null;
@@ -344,6 +366,7 @@ export function App() {
   activeAccountIdRef.current = activeAccountId;
   activeFolderRef.current = activeFolder;
   selectedContactEmailRef.current = selectedContactEmail;
+  selectedContactAccountIdRef.current = selectedContactAccountId;
 
   useEffect(() => {
     const accountId = activeAccountIdRef.current;
@@ -358,9 +381,12 @@ export function App() {
     });
   }, [drafts, messages, outbox, selectedMessage, selectedUid, sentMessages]);
 
-  const showToast = useCallback((message, tone = "success", persistent = false) => {
-    setToast({ message, tone, persistent, id: Date.now() });
-  }, []);
+  const showToast = useCallback(
+    (message, tone = "success", persistent = false) => {
+      setToast({ message, tone, persistent, id: Date.now() });
+    },
+    [],
+  );
 
   const profileAvatarMap = useMemo(
     () =>
@@ -376,7 +402,8 @@ export function App() {
   const profileAvatarFor = useCallback(
     (ownerType, email) =>
       email
-        ? profileAvatarMap.get(`${ownerType}:${normalizeAvatarEmail(email)}`) || null
+        ? profileAvatarMap.get(`${ownerType}:${normalizeAvatarEmail(email)}`) ||
+          null
         : null,
     [profileAvatarMap],
   );
@@ -406,11 +433,14 @@ export function App() {
         setProfileAvatars((current) => [
           ...current.filter(
             (avatar) =>
-              avatar.ownerType !== saved.ownerType || avatar.ownerKey !== saved.ownerKey,
+              avatar.ownerType !== saved.ownerType ||
+              avatar.ownerKey !== saved.ownerKey,
           ),
           saved,
         ]);
-        showToast(ownerType === "account" ? "Mine Mail 头像已更新" : "联系人头像已更新");
+        showToast(
+          ownerType === "account" ? "Mine Mail 头像已更新" : "联系人头像已更新",
+        );
       } catch (error) {
         showToast(describeError(error, "头像没有保存，请重试"), "error");
       }
@@ -426,10 +456,15 @@ export function App() {
         await mailApi.deleteProfileAvatar({ ownerType, ownerKey });
         setProfileAvatars((current) =>
           current.filter(
-            (avatar) => avatar.ownerType !== ownerType || avatar.ownerKey !== ownerKey,
+            (avatar) =>
+              avatar.ownerType !== ownerType || avatar.ownerKey !== ownerKey,
           ),
         );
-        showToast(ownerType === "account" ? "已恢复默认账户头像" : "已恢复默认联系人头像");
+        showToast(
+          ownerType === "account"
+            ? "已恢复默认账户头像"
+            : "已恢复默认联系人头像",
+        );
       } catch (error) {
         showToast(describeError(error, "头像没有移除，请重试"), "error");
       }
@@ -569,16 +604,15 @@ export function App() {
             showToast(messageText, "error");
           }
         } finally {
-          if (selectionRequestRef.current === requestId) setIsMessageLoading(false);
+          if (selectionRequestRef.current === requestId)
+            setIsMessageLoading(false);
         }
         return;
       }
 
       if (!networkActionsAvailableRef.current && !displayMessage.body_fetched) {
         setIsMessageLoading(false);
-        setMessageError(
-          "这封邮件的正文尚未下载。重新连接账户后即可获取。",
-        );
+        setMessageError("这封邮件的正文尚未下载。重新连接账户后即可获取。");
         return;
       }
 
@@ -587,8 +621,8 @@ export function App() {
       // hydrated in the background instead of replacing it with a skeleton.
       const hasImmediateCopy = Boolean(
         displayMessage.body_html ||
-          displayMessage.body_text?.trim() ||
-          displayMessage.preview?.trim(),
+        displayMessage.body_text?.trim() ||
+        displayMessage.preview?.trim(),
       );
       setIsMessageLoading(!hasImmediateCopy);
       try {
@@ -612,7 +646,10 @@ export function App() {
           fullMessage = withSeenFlag(fullMessage);
         }
         const fullMessageStarKey = scopedRemoteFlagKey(fullMessage, accountId);
-        if (fullMessageStarKey && starStateRef.current.has(fullMessageStarKey)) {
+        if (
+          fullMessageStarKey &&
+          starStateRef.current.has(fullMessageStarKey)
+        ) {
           fullMessage = withSystemFlag(
             fullMessage,
             "\\Flagged",
@@ -651,7 +688,8 @@ export function App() {
           showToast(messageText, "error");
         }
       } finally {
-        if (selectionRequestRef.current === requestId) setIsMessageLoading(false);
+        if (selectionRequestRef.current === requestId)
+          setIsMessageLoading(false);
       }
     },
     [openComposer, showToast],
@@ -740,7 +778,10 @@ export function App() {
         return resolved;
       });
       const existingView = accountViewsRef.current.get(accountId) || {};
-      accountViewsRef.current.set(accountId, { ...existingView, messages: inbox });
+      accountViewsRef.current.set(accountId, {
+        ...existingView,
+        messages: inbox,
+      });
       if (activeAccountIdRef.current !== accountId) return inbox;
       setMessages(inbox);
       const currentUid = selectedUidRef.current;
@@ -785,7 +826,10 @@ export function App() {
       return pending ? withSystemFlag(message, "\\Flagged", starred) : message;
     });
     const existingView = accountViewsRef.current.get(accountId) || {};
-    accountViewsRef.current.set(accountId, { ...existingView, sentMessages: sent });
+    accountViewsRef.current.set(accountId, {
+      ...existingView,
+      sentMessages: sent,
+    });
     if (activeAccountIdRef.current !== accountId) return sent;
     setSentMessages(sent);
     setSelectedMessage((previous) => {
@@ -928,7 +972,10 @@ export function App() {
   );
 
   const loadMailboxData = useCallback(
-    async ({ selectFirst = false, accountId = activeAccountIdRef.current } = {}) => {
+    async ({
+      selectFirst = false,
+      accountId = activeAccountIdRef.current,
+    } = {}) => {
       if (!accountId) return null;
       try {
         const view = await loadAccountView(accountId, { force: true });
@@ -1000,8 +1047,9 @@ export function App() {
     } = {}) => {
       if (!accountId) {
         setContacts([]);
+        setFavoriteContacts([]);
         setContactsState("idle");
-        return [];
+        return { contacts: [], favorites: [] };
       }
       const requestId = contactsRequestRef.current + 1;
       contactsRequestRef.current = requestId;
@@ -1010,31 +1058,48 @@ export function App() {
         setContactsError(null);
       }
       try {
-        const items = await mailApi.listContacts(accountId);
+        const directory = await mailApi.listContacts(accountId);
         if (
           contactsRequestRef.current !== requestId ||
           activeAccountIdRef.current !== accountId
         ) {
-          return items;
+          return directory;
         }
-        setContacts(items);
+        const currentContacts = (
+          Array.isArray(directory) ? directory : directory.contacts || []
+        ).map((item) => ({
+          ...item,
+          accountId: item.accountId || accountId,
+        }));
+        const appFavorites = (
+          Array.isArray(directory) ? [] : directory.favorites || []
+        ).map((item) => ({
+          ...item,
+          accountId: item.accountId || accountId,
+        }));
+        setContacts(currentContacts);
+        setFavoriteContacts(appFavorites);
         setContactsState("ready");
         setContactsError(null);
-        const firstVisibleContact =
-          items.find((item) => item.isFavorite) || items[0] || null;
-        setSelectedContactEmail((current) => {
-          const currentKey = normalizeAvatarEmail(current);
-          if (
-            currentKey &&
-            items.some((item) => normalizeAvatarEmail(item.email) === currentKey)
-          ) {
-            return current;
-          }
-          return selectFirst && window.innerWidth >= 720
-            ? firstVisibleContact?.email || null
-            : null;
-        });
-        return items;
+        const currentKey = normalizeAvatarEmail(
+          selectedContactEmailRef.current,
+        );
+        const currentAccountId = selectedContactAccountIdRef.current;
+        const available = [...currentContacts, ...appFavorites];
+        const selectionStillExists =
+          currentKey &&
+          available.some(
+            (item) =>
+              normalizeAvatarEmail(item.email) === currentKey &&
+              item.accountId === currentAccountId,
+          );
+        if (!selectionStillExists && selectFirst && window.innerWidth >= 720) {
+          const firstVisibleContact =
+            currentContacts[0] || appFavorites[0] || null;
+          setSelectedContactEmail(firstVisibleContact?.email || null);
+          setSelectedContactAccountId(firstVisibleContact?.accountId || null);
+        }
+        return directory;
       } catch (error) {
         if (contactsRequestRef.current === requestId && !silent) {
           setContactsState("error");
@@ -1082,9 +1147,7 @@ export function App() {
       } catch (error) {
         if (contactMessagesRequestRef.current === requestId && !silent) {
           setContactMessagesState("error");
-          setContactMessagesError(
-            describeError(error, "往来邮件没有加载完成"),
-          );
+          setContactMessagesError(describeError(error, "往来邮件没有加载完成"));
         }
         throw error;
       }
@@ -1098,7 +1161,13 @@ export function App() {
     if (!accountId) return;
     await loadContacts({ accountId, silent: true });
     const email = selectedContactEmailRef.current;
-    if (email) await loadContactMessages(email, { accountId, silent: true });
+    const contactAccountId = selectedContactAccountIdRef.current || accountId;
+    if (email) {
+      await loadContactMessages(email, {
+        accountId: contactAccountId,
+        silent: true,
+      });
+    }
   }, [loadContactMessages, loadContacts]);
 
   useEffect(() => {
@@ -1114,7 +1183,7 @@ export function App() {
   useEffect(() => {
     if (
       activeFolder !== "contacts" ||
-      !activeAccountId ||
+      !selectedContactAccountId ||
       !selectedContactEmail
     ) {
       contactMessagesRequestRef.current += 1;
@@ -1124,12 +1193,12 @@ export function App() {
       return;
     }
     void loadContactMessages(selectedContactEmail, {
-      accountId: activeAccountId,
+      accountId: selectedContactAccountId,
     }).catch(() => {});
   }, [
-    activeAccountId,
     activeFolder,
     loadContactMessages,
+    selectedContactAccountId,
     selectedContactEmail,
   ]);
 
@@ -1145,25 +1214,29 @@ export function App() {
           if (value.startupError) showToast(value.startupError, "error", true);
         })
         .catch((error) => {
-          if (!cancelled) showToast(describeError(error, "桌面设置读取失败"), "error");
+          if (!cancelled)
+            showToast(describeError(error, "桌面设置读取失败"), "error");
         });
       const presetsTask = mailApi
         .listAccountPresets()
         .then((value) => !cancelled && setAccountPresets(value))
         .catch((error) => {
-          if (!cancelled) showToast(describeError(error, "账户预设读取失败"), "error");
+          if (!cancelled)
+            showToast(describeError(error, "账户预设读取失败"), "error");
         });
       const avatarsTask = mailApi
         .listProfileAvatars()
         .then((value) => !cancelled && setProfileAvatars(value))
         .catch((error) => {
-          if (!cancelled) showToast(describeError(error, "本地头像读取失败"), "error");
+          if (!cancelled)
+            showToast(describeError(error, "本地头像读取失败"), "error");
         });
 
       try {
         const status = await mailApi.getAccountStatus();
         if (cancelled) return;
-        const activeAccountId = status.activeAccountId || status.accountId || null;
+        const activeAccountId =
+          status.activeAccountId || status.accountId || null;
         activeAccountIdRef.current = activeAccountId;
         setAccountStatus(status);
         void prefetchAccountViews(status);
@@ -1313,7 +1386,8 @@ export function App() {
         mustPersist = false;
         const latest = composerRef.current;
         const isStable =
-          latest?.sessionId === sessionId && latest.revision === snapshot.revision;
+          latest?.sessionId === sessionId &&
+          latest.revision === snapshot.revision;
         if (isStable || !force) return draft;
       }
     },
@@ -1367,7 +1441,9 @@ export function App() {
                   currentStatus.activeAccountId !== targetAccountId
                 ) {
                   if (composerRef.current) {
-                    throw new Error("请先关闭当前写信窗口，再打开其他账户的新邮件");
+                    throw new Error(
+                      "请先关闭当前写信窗口，再打开其他账户的新邮件",
+                    );
                   }
                   status = await mailApi.switchAccount(targetAccountId);
                 }
@@ -1381,9 +1457,7 @@ export function App() {
                 if (message) return handleSelect(message, true);
                 throw new Error("这封新邮件暂时不在本地收件箱中");
               })
-              .catch((error) =>
-                reportEventError(error, "新邮件暂时无法打开"),
-              );
+              .catch((error) => reportEventError(error, "新邮件暂时无法打开"));
           },
         );
         if (cancelled) openMessageUnlisten();
@@ -1392,8 +1466,8 @@ export function App() {
         const draftsUnlisten = await mailApi.onMailEvent(
           "mail:drafts-updated",
           () => {
-            void Promise.all([refreshDrafts(), refreshOutbox()]).catch((error) =>
-              reportEventError(error, "草稿或发件队列刷新失败"),
+            void Promise.all([refreshDrafts(), refreshOutbox()]).catch(
+              (error) => reportEventError(error, "草稿或发件队列刷新失败"),
             );
           },
         );
@@ -1417,7 +1491,11 @@ export function App() {
             const requestId =
               event?.payload?.requestId ?? event?.payload?.request_id;
             if (!requestId) {
-              showToast("桌面退出请求缺少 requestId，已拒绝退出", "error", true);
+              showToast(
+                "桌面退出请求缺少 requestId，已拒绝退出",
+                "error",
+                true,
+              );
               return;
             }
             if (exitFlushRef.current) return;
@@ -1533,7 +1611,14 @@ export function App() {
       });
     }, localDraftDebounceMs);
     return () => window.clearTimeout(timer);
-  }, [composer?.dirty, composer?.revision, composer?.saveStatus, composer?.sessionId, saveDraftNow, showToast]);
+  }, [
+    composer?.dirty,
+    composer?.revision,
+    composer?.saveStatus,
+    composer?.sessionId,
+    saveDraftNow,
+    showToast,
+  ]);
 
   useEffect(() => {
     const onKeyDown = (event) => {
@@ -1573,7 +1658,10 @@ export function App() {
     });
     const localFallbacks = outbox
       .filter((item) => item.status === "sent")
-      .filter((item) => !remote.some((message) => sentMessageMatchesOutbox(message, item)))
+      .filter(
+        (item) =>
+          !remote.some((message) => sentMessageMatchesOutbox(message, item)),
+      )
       .map((item) => toOutboxMessage(item, drafts));
     return [...remote, ...localFallbacks].sort((left, right) => {
       const leftTime = Date.parse(left.sent_at || "") || 0;
@@ -1626,26 +1714,62 @@ export function App() {
     [handleSelect, referenceNavigationIndex, showToast],
   );
 
+  const contactAccountLabels = useMemo(
+    () =>
+      new Map(
+        (accountStatus.accounts || []).map((account) => [
+          account.accountId,
+          account.email || account.accountId,
+        ]),
+      ),
+    [accountStatus.accounts],
+  );
+
   const contactsWithAvatars = useMemo(
     () =>
       contacts.map((contact) => ({
         ...contact,
         avatarSrc: profileAvatarFor("contact", contact.email),
+        accountLabel:
+          contactAccountLabels.get(contact.accountId) || contact.accountId,
       })),
-    [contacts, profileAvatarFor],
+    [contactAccountLabels, contacts, profileAvatarFor],
   );
+
+  const favoriteContactsWithAvatars = useMemo(
+    () =>
+      favoriteContacts.map((contact) => ({
+        ...contact,
+        avatarSrc: profileAvatarFor("contact", contact.email),
+        accountLabel:
+          contactAccountLabels.get(contact.accountId) || contact.accountId,
+      })),
+    [contactAccountLabels, favoriteContacts, profileAvatarFor],
+  );
+
+  const composeContactsWithAvatars = useMemo(() => {
+    const byEmail = new Map();
+    for (const contact of [
+      ...contactsWithAvatars,
+      ...favoriteContactsWithAvatars,
+    ]) {
+      const key = normalizeAvatarEmail(contact.email);
+      if (key && !byEmail.has(key)) byEmail.set(key, contact);
+    }
+    return [...byEmail.values()];
+  }, [contactsWithAvatars, favoriteContactsWithAvatars]);
 
   const contactRemarksByEmail = useMemo(
     () =>
       new Map(
-        contacts
+        [...contacts, ...favoriteContacts]
           .filter((contact) => contact.remark?.trim())
           .map((contact) => [
             normalizeAvatarEmail(contact.email),
             contact.remark.trim(),
           ]),
       ),
-    [contacts],
+    [contacts, favoriteContacts],
   );
 
   const contactRemarkForEmail = useCallback(
@@ -1655,9 +1779,12 @@ export function App() {
 
   const visibleContacts = useMemo(() => {
     const normalizedQuery = contactQuery.trim().toLowerCase();
-    return contactsWithAvatars
+    const source =
+      contactFilter === "favorite"
+        ? favoriteContactsWithAvatars
+        : contactsWithAvatars;
+    return source
       .filter((contact) => {
-        if (contactFilter === "favorite" && !contact.isFavorite) return false;
         if (!normalizedQuery) return true;
         return [
           contact.displayName,
@@ -1671,32 +1798,48 @@ export function App() {
         (left, right) =>
           Number(Boolean(right.isFavorite)) - Number(Boolean(left.isFavorite)),
       );
-  }, [contactFilter, contactQuery, contactsWithAvatars]);
+  }, [
+    contactFilter,
+    contactQuery,
+    contactsWithAvatars,
+    favoriteContactsWithAvatars,
+  ]);
 
   useEffect(() => {
     if (activeFolder !== "contacts") return;
     const selectedKey = normalizeAvatarEmail(selectedContactEmail);
+    const selectedAccountId = selectedContactAccountId;
     if (
       selectedKey &&
       visibleContacts.some(
-        (contact) => normalizeAvatarEmail(contact.email) === selectedKey,
+        (contact) =>
+          normalizeAvatarEmail(contact.email) === selectedKey &&
+          contact.accountId === selectedAccountId,
       )
     ) {
       return;
     }
-    setSelectedContactEmail(
-      window.innerWidth >= 720 ? visibleContacts[0]?.email || null : null,
-    );
-  }, [activeFolder, selectedContactEmail, visibleContacts]);
+    const firstVisible =
+      window.innerWidth >= 720 ? visibleContacts[0] || null : null;
+    setSelectedContactEmail(firstVisible?.email || null);
+    setSelectedContactAccountId(firstVisible?.accountId || null);
+  }, [
+    activeFolder,
+    selectedContactAccountId,
+    selectedContactEmail,
+    visibleContacts,
+  ]);
 
   const selectedContact = useMemo(() => {
     const selectedKey = normalizeAvatarEmail(selectedContactEmail);
     return selectedKey
-      ? contactsWithAvatars.find(
-          (contact) => normalizeAvatarEmail(contact.email) === selectedKey,
+      ? visibleContacts.find(
+          (contact) =>
+            normalizeAvatarEmail(contact.email) === selectedKey &&
+            contact.accountId === selectedContactAccountId,
         ) || null
       : null;
-  }, [contactsWithAvatars, selectedContactEmail]);
+  }, [selectedContactAccountId, selectedContactEmail, visibleContacts]);
 
   const folderMessages = useMemo(() => {
     if (activeFolder === "inbox") return messages;
@@ -1706,7 +1849,9 @@ export function App() {
       );
     }
     if (activeFolder === "drafts") {
-      return drafts.filter((draft) => draft.status !== "sent").map(toDraftMessage);
+      return drafts
+        .filter((draft) => draft.status !== "sent")
+        .map(toDraftMessage);
     }
     if (activeFolder === "outbox") return outboxMessages;
     if (activeFolder === "sent") return combinedSentMessages;
@@ -1786,11 +1931,13 @@ export function App() {
   const handleSelectContact = (contact) => {
     clearSelection();
     setSelectedContactEmail(contact?.email || null);
+    setSelectedContactAccountId(contact?.accountId || null);
   };
 
   const handleBackToContacts = () => {
     clearSelection();
     setSelectedContactEmail(null);
+    setSelectedContactAccountId(null);
   };
 
   const handleOpenContactMessage = (message) => {
@@ -1806,21 +1953,52 @@ export function App() {
   };
 
   const handleToggleContactFavorite = async (contact) => {
-    if (!contact?.email || !activeAccountId) return;
+    const favoriteAccountId = contact?.accountId || activeAccountId;
+    if (!contact?.email || !favoriteAccountId || !activeAccountId) return;
     const email = normalizeAvatarEmail(contact.email);
     const nextFavorite = !contact.isFavorite;
     const updateFavorite = (value) => (current) =>
       current.map((item) =>
-        normalizeAvatarEmail(item.email) === email
+        normalizeAvatarEmail(item.email) === email &&
+        item.accountId === favoriteAccountId
           ? { ...item, isFavorite: value }
           : item,
       );
     setContacts(updateFavorite(nextFavorite));
+    setFavoriteContacts((current) => {
+      if (!nextFavorite) {
+        return current.filter(
+          (item) =>
+            normalizeAvatarEmail(item.email) !== email ||
+            item.accountId !== favoriteAccountId,
+        );
+      }
+      if (
+        current.some(
+          (item) =>
+            normalizeAvatarEmail(item.email) === email &&
+            item.accountId === favoriteAccountId,
+        )
+      ) {
+        return updateFavorite(true)(current);
+      }
+      return [
+        { ...contact, accountId: favoriteAccountId, isFavorite: true },
+        ...current,
+      ];
+    });
     try {
-      await mailApi.setContactFavorite(contact.email, nextFavorite);
+      await mailApi.setContactFavorite(
+        favoriteAccountId,
+        contact.email,
+        nextFavorite,
+      );
       await loadContacts({ accountId: activeAccountId, silent: true });
     } catch (error) {
       setContacts(updateFavorite(Boolean(contact.isFavorite)));
+      await loadContacts({ accountId: activeAccountId, silent: true }).catch(
+        () => {},
+      );
       showToast(describeError(error, "联系人收藏状态没有保存"), "error");
     }
   };
@@ -1842,12 +2020,14 @@ export function App() {
       });
 
     setContacts(applyRemark(nextRemark));
+    setFavoriteContacts(applyRemark(nextRemark));
     try {
       await mailApi.setContactRemark(contact.email, nextRemark);
       await loadContacts({ accountId: activeAccountId, silent: true });
       showToast(nextRemark ? "联系人备注已保存" : "联系人备注已清除");
     } catch (error) {
       setContacts(applyRemark(previousRemark));
+      setFavoriteContacts(applyRemark(previousRemark));
       throw error;
     }
   };
@@ -1875,14 +2055,16 @@ export function App() {
         await loadContacts({ accountId: activeAccountId, silent: true });
         if (selectedContactEmail) {
           await loadContactMessages(selectedContactEmail, {
-            accountId: activeAccountId,
+            accountId: selectedContactAccountId || activeAccountId,
             silent: true,
           });
         }
       }
       setSyncState("done");
       const fetched = report?.inbox?.fetched ?? report?.fetched ?? 0;
-      showToast(fetched ? `同步完成，收到 ${fetched} 封新邮件` : "邮箱已是最新状态");
+      showToast(
+        fetched ? `同步完成，收到 ${fetched} 封新邮件` : "邮箱已是最新状态",
+      );
     } catch (error) {
       setSyncState("error");
       showToast(describeError(error, "同步失败，请检查网络"), "error");
@@ -1901,8 +2083,10 @@ export function App() {
 
   const handleComposeChange = (updater) => {
     commitComposer((current) => {
-      if (!current || current.locked || current.readOnlyUnsupported) return current;
-      const nextValue = typeof updater === "function" ? updater(current.value) : updater;
+      if (!current || current.locked || current.readOnlyUnsupported)
+        return current;
+      const nextValue =
+        typeof updater === "function" ? updater(current.value) : updater;
       return {
         ...current,
         value: nextValue,
@@ -1937,9 +2121,7 @@ export function App() {
       }
     } catch (error) {
       commitComposer((current) =>
-        current
-          ? { ...current, locked: false, saveStatus: "error" }
-          : current,
+        current ? { ...current, locked: false, saveStatus: "error" } : current,
       );
       showToast(describeError(error, "草稿保存失败"), "error");
     }
@@ -2005,7 +2187,10 @@ export function App() {
           ? { ...current, locked: false, saveStatus: "error" }
           : current,
       );
-      showToast(describeError(error, "临时草稿清理失败，写信窗口仍保持打开"), "error");
+      showToast(
+        describeError(error, "临时草稿清理失败，写信窗口仍保持打开"),
+        "error",
+      );
     }
   };
 
@@ -2190,7 +2375,8 @@ export function App() {
       const backendUsable = status.configured && status.backendReady;
       if (!backendUsable) {
         const message =
-          status.startupError || "账户信息已保存，但邮箱服务尚未就绪，请检查授权信息。";
+          status.startupError ||
+          "账户信息已保存，但邮箱服务尚未就绪，请检查授权信息。";
         setAccountError(message);
         setAccountSubmitStatus("error");
         return;
@@ -2205,14 +2391,16 @@ export function App() {
       await loadMailboxData({ selectFirst: true });
       if (!networkUsable) {
         setAccountError(
-          status.startupError ||
-            "本地邮箱已打开，但账户凭据或网络连接不可用。",
+          status.startupError || "本地邮箱已打开，但账户凭据或网络连接不可用。",
         );
       }
       setAccountSubmitStatus("saved");
       showToast("邮箱账户已安全连接");
     } catch (error) {
-      const message = describeError(error, "账户配置失败，请检查地址和授权信息");
+      const message = describeError(
+        error,
+        "账户配置失败，请检查地址和授权信息",
+      );
       setAccountError(message);
       setAccountSubmitStatus("error");
     }
@@ -2220,7 +2408,8 @@ export function App() {
 
   const applyActiveAccount = async (status, successMessage) => {
     setAccountStatus(status);
-    activeAccountIdRef.current = status.activeAccountId || status.accountId || null;
+    activeAccountIdRef.current =
+      status.activeAccountId || status.accountId || null;
     clearSelection();
     messageBodyCacheRef.current.clear();
     setMessages([]);
@@ -2299,7 +2488,8 @@ export function App() {
         : loadAccountView(accountId).catch(() => null);
       if (!targetView) {
         void viewPromise.then((loadedView) => {
-          if (!loadedView || accountSwitchRequestRef.current !== requestId) return;
+          if (!loadedView || accountSwitchRequestRef.current !== requestId)
+            return;
           setAccountStatus(optimisticStatus);
           restoreAccountView(accountId, loadedView, { selectFirst: false });
         });
@@ -2331,7 +2521,10 @@ export function App() {
       accountSwitchRequestRef.current += 1;
       setAccountStatus(previousStatus);
       if (previousAccountId) {
-        restoreAccountView(previousAccountId, accountViewsRef.current.get(previousAccountId));
+        restoreAccountView(
+          previousAccountId,
+          accountViewsRef.current.get(previousAccountId),
+        );
       }
       setAccountSubmitStatus("error");
       showToast(describeError(error, "邮箱账户切换失败"), "error");
@@ -2404,8 +2597,7 @@ export function App() {
 
   const needsAccountSetup =
     accountStatus.configured === false ||
-    (accountStatus.configured === true &&
-      !accountStatus.backendReady);
+    (accountStatus.configured === true && !accountStatus.backendReady);
 
   const needsAccountRepairBanner =
     accountStatus.configured === true &&
@@ -2433,13 +2625,16 @@ export function App() {
       message={selectedMessage}
       isLoading={isMessageLoading}
       error={messageError}
-      onRetry={() => selectedMessage && void handleSelect(selectedMessage, true)}
+      onRetry={() =>
+        selectedMessage && void handleSelect(selectedMessage, true)
+      }
       onClose={clearSelection}
       backLabel={isContactMode ? "返回联系人详情" : "返回邮件列表"}
       onReply={openReply}
       onForward={openForward}
       onRetryDelivery={() =>
-        selectedMessage?.outbox && void handleRetryOutbox(selectedMessage.outbox)
+        selectedMessage?.outbox &&
+        void handleRetryOutbox(selectedMessage.outbox)
       }
       isRetryingDelivery={Boolean(retryingOutboxId)}
       canRetryDelivery={networkActionsAvailable}
@@ -2449,9 +2644,7 @@ export function App() {
       onNext={() =>
         isContactMode ? navigateContactRelative(1) : navigateRelative(1)
       }
-      canPrevious={
-        isContactMode ? contactSelectedIndex > 0 : selectedIndex > 0
-      }
+      canPrevious={isContactMode ? contactSelectedIndex > 0 : selectedIndex > 0}
       canNext={
         isContactMode
           ? contactSelectedIndex >= 0 &&
@@ -2580,10 +2773,10 @@ export function App() {
               void loadContacts({ accountId: activeAccountId })
             }
             onRetryMessages={() =>
-              activeAccountId &&
+              selectedContactAccountId &&
               selectedContactEmail &&
               void loadContactMessages(selectedContactEmail, {
-                accountId: activeAccountId,
+                accountId: selectedContactAccountId,
               })
             }
             onOpenMobileNav={() => setIsSidebarOpen(true)}
@@ -2646,7 +2839,7 @@ export function App() {
           onSaveDraft={() => void handleSaveDraftAndClose()}
           onRequestSend={() => void handleRequestSend()}
           sendShortcut={platform === "mac" ? "⌘ ↵" : "Ctrl ↵"}
-          contacts={contactsWithAvatars}
+          contacts={composeContactsWithAvatars}
           remoteImageMode={settings.remoteImageMode}
           onOpenExternalLink={handleOpenExternalLink}
         />
