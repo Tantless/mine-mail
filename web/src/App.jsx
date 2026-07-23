@@ -2646,6 +2646,7 @@ export function App() {
           onSaveDraft={() => void handleSaveDraftAndClose()}
           onRequestSend={() => void handleRequestSend()}
           sendShortcut={platform === "mac" ? "⌘ ↵" : "Ctrl ↵"}
+          contacts={contactsWithAvatars}
           remoteImageMode={settings.remoteImageMode}
           onOpenExternalLink={handleOpenExternalLink}
         />

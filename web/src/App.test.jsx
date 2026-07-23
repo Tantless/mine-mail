@@ -253,9 +253,9 @@ describe("Mine Mail MVP", () => {
     await user.type(screen.getByLabelText("邮件正文"), "这是一封仅用于界面测试的邮件。");
     await user.click(screen.getByRole("button", { name: "发送邮件" }));
 
-    expect(await screen.findByRole("alertdialog")).toBeTruthy();
-    expect(screen.getByText("friend@example.com")).toBeTruthy();
-    expect(screen.getByText("MVP 测试邮件")).toBeTruthy();
+    const confirmation = await screen.findByRole("alertdialog");
+    expect(within(confirmation).getByText("friend@example.com")).toBeTruthy();
+    expect(within(confirmation).getByText("MVP 测试邮件")).toBeTruthy();
 
     await user.click(screen.getByRole("button", { name: "返回修改" }));
     expect(screen.queryByRole("alertdialog")).toBeNull();
@@ -289,8 +289,8 @@ describe("Mine Mail MVP", () => {
     expect(screen.queryByLabelText("密送")).toBeNull();
 
     await user.click(screen.getByRole("button", { name: "展开抄送和密送" }));
-    expect(screen.getByLabelText("抄送").value).toBe("copy@example.com");
-    expect(screen.getByLabelText("密送").value).toBe("private@example.com");
+    expect(screen.getByRole("button", { name: "移除抄送 copy@example.com" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "移除密送 private@example.com" })).toBeTruthy();
   });
 
   it("moves, resizes, persists, minimizes, and restores the compose surface", async () => {
@@ -478,6 +478,7 @@ describe("Mine Mail MVP", () => {
     fireEvent.change(screen.getByLabelText("收件人"), {
       target: { value: "friend@example.com" },
     });
+    fireEvent.keyDown(screen.getByLabelText("收件人"), { key: "Enter" });
     fireEvent.change(screen.getByLabelText("主题"), {
       target: { value: "第一版主题" },
     });
@@ -614,7 +615,9 @@ describe("Mine Mail MVP", () => {
     await user.click(screen.getByRole("button", { name: /草稿/ }));
     await user.click(screen.getByText("关于下周的主题评审"));
     vi.useFakeTimers();
-    fireEvent.change(screen.getByLabelText("收件人"), { target: { value: "" } });
+    fireEvent.click(
+      screen.getByRole("button", { name: "移除收件人 linxia@example.com" }),
+    );
     fireEvent.change(screen.getByLabelText("主题"), { target: { value: "" } });
     fireEvent.change(screen.getByLabelText("邮件正文"), { target: { value: "" } });
     await act(async () => {

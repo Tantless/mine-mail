@@ -375,6 +375,7 @@ function ContactRemarkEditor({ contact, onSaveRemark }) {
       className="contacts-remark-editor"
       data-open={isOpen}
       aria-label="联系人备注"
+      autoComplete="off"
       onSubmit={(event) => {
         event.preventDefault();
         if (!isSaving) void save();
@@ -410,6 +411,7 @@ function ContactRemarkEditor({ contact, onSaveRemark }) {
             maxLength={80}
             placeholder="输入备注"
             aria-label="联系人备注名"
+            autoComplete="off"
             autoFocus
             disabled={isSaving}
             onChange={(event) => {
@@ -488,6 +490,7 @@ export function ContactsWorkspace({
             <MagnifyingGlass size={18} aria-hidden="true" />
             <input
               value={query}
+              autoComplete="off"
               onChange={(event) => onSearchChange(event.target.value)}
               placeholder="搜索名称或邮箱"
               aria-label="搜索联系人"

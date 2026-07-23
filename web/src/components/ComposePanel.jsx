@@ -14,7 +14,7 @@ import {
 import { IconButton } from "./IconButton.jsx";
 import { HtmlMessageBody } from "./HtmlMessageBody.jsx";
 import { NativeHtmlMessageBody } from "./NativeHtmlMessageBody.jsx";
-import { splitAddresses } from "../utils/formatters.js";
+import { RecipientInput } from "./RecipientInput.jsx";
 
 const composeMargin = 22;
 const composeTopBoundary = 52;
@@ -154,6 +154,7 @@ export function ComposePanel({
   onSaveDraft,
   onRequestSend,
   sendShortcut,
+  contacts = [],
   remoteImageMode = "automatic",
   onOpenExternalLink,
 }) {
@@ -343,8 +344,8 @@ export function ComposePanel({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [canSend, controlsDisabled, isBusy, networkAvailable, onClose, onRequestSend]);
 
-  const setAddressField = (field, value) => {
-    onChange((current) => ({ ...current, [field]: splitAddresses(value) }));
+  const setRecipients = (field, recipients) => {
+    onChange((current) => ({ ...current, [field]: recipients }));
   };
 
   const minimizedTitle = value.subject.trim() || "新邮件";
@@ -422,17 +423,15 @@ export function ComposePanel({
             <div className="compose-fields">
               <div className="compose-field">
                 <label htmlFor="compose-to">收件人</label>
-                <div className="compose-input-shell inset-input-shell">
-                  <input
-                    id="compose-to"
-                    autoFocus
-                    disabled={controlsDisabled}
-                    aria-label="收件人"
-                    value={value.to.join(", ")}
-                    onChange={(event) => setAddressField("to", event.target.value)}
-                    placeholder="name@example.com"
-                  />
-                </div>
+                <RecipientInput
+                  id="compose-to"
+                  label="收件人"
+                  autoFocus
+                  disabled={controlsDisabled}
+                  recipients={value.to}
+                  contacts={contacts}
+                  onChange={(recipients) => setRecipients("to", recipients)}
+                />
                 <IconButton
                   className="compose-copy-toggle"
                   label={showCopies ? "收起抄送和密送" : "展开抄送和密送"}
@@ -454,27 +453,25 @@ export function ComposePanel({
                 <div id="compose-copy-fields" className="compose-copy-fields">
                   <div className="compose-field">
                     <label htmlFor="compose-cc">抄送</label>
-                    <div className="compose-input-shell inset-input-shell">
-                      <input
-                        id="compose-cc"
-                        aria-label="抄送"
-                        disabled={controlsDisabled}
-                        value={value.cc.join(", ")}
-                        onChange={(event) => setAddressField("cc", event.target.value)}
-                      />
-                    </div>
+                    <RecipientInput
+                      id="compose-cc"
+                      label="抄送"
+                      disabled={controlsDisabled}
+                      recipients={value.cc}
+                      contacts={contacts}
+                      onChange={(recipients) => setRecipients("cc", recipients)}
+                    />
                   </div>
                   <div className="compose-field">
                     <label htmlFor="compose-bcc">密送</label>
-                    <div className="compose-input-shell inset-input-shell">
-                      <input
-                        id="compose-bcc"
-                        aria-label="密送"
-                        disabled={controlsDisabled}
-                        value={value.bcc.join(", ")}
-                        onChange={(event) => setAddressField("bcc", event.target.value)}
-                      />
-                    </div>
+                    <RecipientInput
+                      id="compose-bcc"
+                      label="密送"
+                      disabled={controlsDisabled}
+                      recipients={value.bcc}
+                      contacts={contacts}
+                      onChange={(recipients) => setRecipients("bcc", recipients)}
+                    />
                   </div>
                 </div>
               ) : null}
@@ -484,6 +481,7 @@ export function ComposePanel({
                   <input
                     id="compose-subject"
                     aria-label="主题"
+                    autoComplete="off"
                     disabled={controlsDisabled}
                     value={value.subject}
                     onChange={(event) =>
@@ -503,6 +501,7 @@ export function ComposePanel({
               }
               placeholder="开始写邮件…"
               aria-label="邮件正文"
+              autoComplete="off"
               disabled={controlsDisabled}
             />
 

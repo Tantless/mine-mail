@@ -102,7 +102,7 @@ export function AccountSetupForm({
   };
 
   return (
-    <form className="account-setup-form" onSubmit={handleSubmit}>
+    <form className="account-setup-form" autoComplete="off" onSubmit={handleSubmit}>
       {showProviderPicker ? (
         <div className="account-provider-grid" role="radiogroup" aria-label="邮箱服务商">
           {options.map((option) => (
@@ -153,7 +153,7 @@ export function AccountSetupForm({
               <input
                 type="email"
                 required
-                autoComplete="username"
+                autoComplete="off"
                 value={email}
                 onChange={(event) => setEmail(event.target.value)}
                 placeholder="name@example.com"
@@ -169,7 +169,7 @@ export function AccountSetupForm({
                 type="password"
                 aria-label={selected?.secretLabel}
                 required
-                autoComplete="new-password"
+                autoComplete="off"
                 placeholder="请输入授权密码"
               />
             </span>
@@ -183,6 +183,7 @@ export function AccountSetupForm({
                 <span className="settings-input-shell inset-input-shell">
                   <input
                     required
+                    autoComplete="off"
                     value={custom.imapHost}
                     onChange={(event) =>
                       setCustom((current) => ({ ...current, imapHost: event.target.value }))
@@ -197,6 +198,7 @@ export function AccountSetupForm({
                   <input
                     required
                     type="number"
+                    autoComplete="off"
                     min="1"
                     max="65535"
                     value={custom.imapPort}
@@ -211,6 +213,7 @@ export function AccountSetupForm({
                 <span className="settings-input-shell inset-input-shell">
                   <input
                     required
+                    autoComplete="off"
                     value={custom.smtpHost}
                     onChange={(event) =>
                       setCustom((current) => ({ ...current, smtpHost: event.target.value }))
@@ -225,6 +228,7 @@ export function AccountSetupForm({
                   <input
                     required
                     type="number"
+                    autoComplete="off"
                     min="1"
                     max="65535"
                     value={custom.smtpPort}

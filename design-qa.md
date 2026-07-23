@@ -58,6 +58,61 @@ final result: passed
 
 ---
 
+# Design QA — Compose Recipient Suggestions and Tokens — 2026-07-23
+
+- Source visual truth: the original 1320 × 600 replacement screenshot plus the two user-provided first-open abnormal/normal positioning screenshots in the current conversation.
+- Implementation screenshot: unavailable because this session does not expose the in-app browser capture runtime.
+- Preview: local demo runtime on port 4173.
+- Viewport and density normalization: not captured; browser-rendered pixel evidence is unavailable.
+- State: new compose window during and after its entry animation, recipient combobox auto-focused, default contact suggestions open; selected-contact and manually entered-email Token states are also in scope.
+
+## Full-view Comparison Evidence
+
+Blocked. The implementation is running and responds over HTTP, but build output, DOM tests, and source inspection are not substitutes for a browser-rendered screenshot.
+
+## Focused Region Comparison Evidence
+
+Blocked. The required focused regions are the open recipient suggestions panel, the expanded scroll state, a favorite contact hover state, and both selected-contact and manual-email Tokens.
+
+## Required Fidelity Surfaces
+
+- Fonts and typography: inherits Mine Mail's Inter/system stack; candidate names, email secondary text, favorite badges, and compact Token text use the existing semantic hierarchy. Visual comparison remains pending.
+- Spacing and layout rhythm: default list is limited to five rows; the expanded list is capped at 260 CSS px and scrolls; the popup uses fixed portal positioning and an 8 px window safety margin. Visual comparison remains pending.
+- Colors and visual tokens: panel, border, shadow, text, hover, focus, favorite tint, and Token surfaces use existing theme tokens across daylight, night, dusk, and forest. Visual contrast remains pending.
+- Image quality and asset fidelity: candidate and Token avatars reuse the existing local-first ProfileAvatar resolver, including contact overrides, known-brand mappings, and initials. No new image asset is required.
+- Copy and content: uses “通讯录联系人”, “匹配联系人”, “显示更多联系人”, remaining-count copy, and “收藏”; contact display names preserve remark priority.
+
+## Findings
+
+- No code-level P0/P1/P2 issue remains after automated tests.
+- Browser/WebView-native autofill attributes were removed or set to `off` for text-like form surfaces, including account setup; file inputs and checkboxes are outside native saved-text completion.
+- The reported first-open vertical drift was traced to the portal retaining coordinates measured during the compose panel's 220 ms entry animation. The popup now follows the moving anchor for the complete entry interval and recalibrates on animation/transition completion.
+- Visual fidelity, popup clipping, theme contrast, perceived hover emphasis, and post-fix first-open alignment cannot be passed without browser-rendered evidence.
+
+## Interaction, Accessibility, and Console Checks
+
+- Automated coverage verifies favorite-first ranking, five-row default, expanded list, scroll contract, name/email filtering, pointer highlight state, contact selection, manual email confirmation, avatar Token rendering, Token removal, and disabled native autocomplete.
+- The combobox exposes list autocomplete, expanded state, controlled option ownership, active descendant, keyboard navigation, Enter/Tab confirmation, Escape dismissal, and Backspace removal.
+- Full application regression: 17 test files and 146 tests passed.
+- Production Vite build passed.
+- Browser console errors checked: no; browser capture runtime unavailable.
+
+## Comparison History
+
+- Iteration 1: introduced the reusable RecipientInput, contact ranking, favorite tint, five-row default, expanded scrolling, local-first avatars, manual email Tokens, and app-wide text autofill suppression.
+- Iteration 2: updated existing compose tests for Token semantics, added focused recipient tests, changed the recipient control to a custom text/email-input-mode combobox to avoid native email completion, and passed the complete frontend suite.
+- Iteration 3: fixed the user-reported first-open vertical drift by tracking the recipient field's changing screen coordinates throughout the compose entry animation and recalibrating at motion completion. Added a regression test that moves the anchor from the abnormal first-frame position to the final position and verifies that the popup follows it.
+
+## Follow-up Polish
+
+- Pending visual inspection may tune popup width, row density, blur strength, or hover saturation as P3 refinements.
+
+final result: blocked
+
+Blocker: browser-rendered source/implementation comparison is unavailable in this session.
+
+---
+
 # Design QA — Themed Select Controls — 2026-07-22
 
 - Source visual truth: `Z:\mine-mail\design-qa\select-user-reference.png`

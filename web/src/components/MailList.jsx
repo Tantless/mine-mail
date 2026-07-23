@@ -67,6 +67,7 @@ export function MailList({
           <MagnifyingGlass size={18} aria-hidden="true" />
           <input
             value={query}
+            autoComplete="off"
             onChange={(event) => onQueryChange(event.target.value)}
             placeholder="搜索邮件"
             aria-label="搜索邮件"
