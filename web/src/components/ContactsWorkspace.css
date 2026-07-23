@@ -368,7 +368,7 @@
 }
 
 .contacts-detail-back {
-  display: none;
+  display: inline-flex;
   align-items: center;
   gap: 7px;
   margin: 0 0 18px;
@@ -892,10 +892,6 @@
   .contacts-profile__avatar-picker {
     width: 54px;
     height: 54px;
-  }
-
-  .contacts-detail-back {
-    display: inline-flex;
   }
 
   .contacts-profile__favorite {

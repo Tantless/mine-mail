@@ -500,6 +500,15 @@ describe("Mine Mail desktop state bridge", () => {
     expect(
       within(contactList).getAllByRole("listitem")[0].textContent,
     ).toContain("Pinned");
+    expect(
+      screen.getByLabelText("邮件阅读区，当前未打开邮件"),
+    ).toBeTruthy();
+    expect(desktop.mailApi.listContactMessages).not.toHaveBeenCalled();
+    await user.click(
+      within(contactList).getByRole("button", {
+        name: "查看联系人 Pinned",
+      }),
+    );
     await waitFor(() =>
       expect(desktop.mailApi.listContactMessages).toHaveBeenCalledWith(
         "desktop-account",
@@ -545,6 +554,10 @@ describe("Mine Mail desktop state bridge", () => {
     await user.click(screen.getByRole("button", { name: "返回联系人详情" }));
     expect(
       await screen.findByRole("heading", { name: "往来邮件" }),
+    ).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "返回通讯录" }));
+    expect(
+      screen.getByLabelText("邮件阅读区，当前未打开邮件"),
     ).toBeTruthy();
   });
 
@@ -613,6 +626,12 @@ describe("Mine Mail desktop state bridge", () => {
         name: "查看联系人 Gmail 联系人（me@gmail.com）",
       }),
     ).toBeTruthy();
+    expect(screen.getAllByLabelText("收藏账号：me@gmail.com")).toHaveLength(1);
+    await user.click(
+      screen.getByRole("button", {
+        name: "查看联系人 Gmail 联系人（me@gmail.com）",
+      }),
+    );
     expect(screen.getAllByLabelText("收藏账号：me@gmail.com")).toHaveLength(2);
     await waitFor(() =>
       expect(desktop.mailApi.listContactMessages).toHaveBeenCalledWith(
@@ -687,6 +706,9 @@ describe("Mine Mail desktop state bridge", () => {
     render(<App />);
 
     await user.click(await screen.findByRole("button", { name: "通讯录" }));
+    await user.click(
+      await screen.findByRole("button", { name: "查看联系人 Sender 1" }),
+    );
     await user.click(await screen.findByRole("button", { name: "添加备注" }));
     const input = await screen.findByRole("textbox", { name: "联系人备注名" });
     await user.type(input, "林老师");

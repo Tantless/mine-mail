@@ -1042,7 +1042,6 @@ export function App() {
   const loadContacts = useCallback(
     async ({
       accountId = activeAccountIdRef.current,
-      selectFirst = false,
       silent = false,
     } = {}) => {
       if (!accountId) {
@@ -1081,24 +1080,6 @@ export function App() {
         setFavoriteContacts(appFavorites);
         setContactsState("ready");
         setContactsError(null);
-        const currentKey = normalizeAvatarEmail(
-          selectedContactEmailRef.current,
-        );
-        const currentAccountId = selectedContactAccountIdRef.current;
-        const available = [...currentContacts, ...appFavorites];
-        const selectionStillExists =
-          currentKey &&
-          available.some(
-            (item) =>
-              normalizeAvatarEmail(item.email) === currentKey &&
-              item.accountId === currentAccountId,
-          );
-        if (!selectionStillExists && selectFirst && window.innerWidth >= 720) {
-          const firstVisibleContact =
-            currentContacts[0] || appFavorites[0] || null;
-          setSelectedContactEmail(firstVisibleContact?.email || null);
-          setSelectedContactAccountId(firstVisibleContact?.accountId || null);
-        }
         return directory;
       } catch (error) {
         if (contactsRequestRef.current === requestId && !silent) {
@@ -1172,12 +1153,12 @@ export function App() {
 
   useEffect(() => {
     if (!activeAccountId) return;
+    setSelectedContactEmail(null);
+    setSelectedContactAccountId(null);
     // Contact remarks are local metadata used by the mail list and reader too,
     // so hydrate them with the active account's cached header activity even
     // before the contacts workspace is opened.
-    void loadContacts({ accountId: activeAccountId, selectFirst: true }).catch(
-      () => {},
-    );
+    void loadContacts({ accountId: activeAccountId }).catch(() => {});
   }, [activeAccountId, loadContacts]);
 
   useEffect(() => {
@@ -1819,10 +1800,8 @@ export function App() {
     ) {
       return;
     }
-    const firstVisible =
-      window.innerWidth >= 720 ? visibleContacts[0] || null : null;
-    setSelectedContactEmail(firstVisible?.email || null);
-    setSelectedContactAccountId(firstVisible?.accountId || null);
+    setSelectedContactEmail(null);
+    setSelectedContactAccountId(null);
   }, [
     activeFolder,
     selectedContactAccountId,
@@ -1920,6 +1899,8 @@ export function App() {
     if (folder === "contacts") {
       setContactFilter("all");
       setContactQuery("");
+      setSelectedContactEmail(null);
+      setSelectedContactAccountId(null);
     } else {
       setFilter("all");
       setQuery("");
@@ -2767,7 +2748,9 @@ export function App() {
             error={contactsError}
             isMessagesLoading={contactMessagesState === "loading"}
             messagesError={contactMessagesError}
-            readerContent={selectedMessage ? messageReader : null}
+            readerContent={
+              selectedMessage || !selectedContact ? messageReader : null
+            }
             onRetry={() =>
               activeAccountId &&
               void loadContacts({ accountId: activeAccountId })

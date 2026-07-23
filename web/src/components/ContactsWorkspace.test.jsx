@@ -39,6 +39,7 @@ function renderWorkspace(overrides = {}) {
     onSearchChange: vi.fn(),
     onFilterChange: vi.fn(),
     onSelectContact: vi.fn(),
+    onBackToContacts: vi.fn(),
     onToggleFavorite: vi.fn(),
     onCompose: vi.fn(),
     onOpenMessage: vi.fn(),
@@ -90,6 +91,8 @@ describe("ContactsWorkspace", () => {
 
     await user.click(screen.getByRole("button", { name: "写信" }));
     expect(callbacks.onCompose).toHaveBeenCalledWith(contact);
+    await user.click(screen.getByRole("button", { name: "返回通讯录" }));
+    expect(callbacks.onBackToContacts).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole("button", { name: "保存联系人" })).toBeNull();
     expect(screen.queryByRole("button", { name: "编辑名称" })).toBeNull();
     expect(screen.queryByRole("button", { name: "移除联系人" })).toBeNull();

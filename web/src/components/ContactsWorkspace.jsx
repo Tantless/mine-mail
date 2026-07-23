@@ -276,7 +276,7 @@ function ContactDetails({
             onClick={onBackToContacts}
           >
             <ArrowLeft size={18} />
-            返回联系人
+            返回通讯录
           </button>
         ) : null}
         <header className="contacts-profile">
