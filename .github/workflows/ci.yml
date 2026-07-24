@@ -95,3 +95,44 @@ jobs:
 
       - name: Check Tauri desktop
         run: cargo check --locked --manifest-path web/src-tauri/Cargo.toml
+
+  windows-installer:
+    name: Branded Windows installer
+    runs-on: windows-latest
+    timeout-minutes: 35
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: installer/windows/package-lock.json
+
+      - name: Install Rust 1.97
+        uses: dtolnay/rust-toolchain@1.97.0
+
+      - name: Cache Rust dependencies
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./installer/windows/src-tauri -> target"
+
+      - name: Install installer dependencies
+        working-directory: installer/windows
+        run: npm ci
+
+      - name: Test installer frontend
+        working-directory: installer/windows
+        run: npm test
+
+      - name: Build installer frontend
+        working-directory: installer/windows
+        run: npm run build
+
+      - name: Test installer shell
+        run: cargo test --locked --manifest-path installer/windows/src-tauri/Cargo.toml
+
+      - name: Check installer shell
+        run: cargo check --locked --manifest-path installer/windows/src-tauri/Cargo.toml

@@ -4,6 +4,10 @@
 /web/dist/
 /web/.npm-cache/
 /web/src-tauri/target/
+/installer/windows/node_modules/
+/installer/windows/dist/
+/installer/windows/src-tauri/target/
+/installer/windows/release-assets/
 *.db
 *.db-shm
 *.db-wal

@@ -1,0 +1,1 @@
+{"default":{"identifier":"default","description":"Permissions required by the Mine Mail installer window.","local":true,"windows":["main"],"permissions":["core:default","core:window:allow-start-dragging","dialog:allow-open"]}}

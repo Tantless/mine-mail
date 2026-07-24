@@ -1,0 +1,27 @@
+[package]
+name = "mine-mail-installer"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.97"
+description = "Branded Windows installer shell for Mine Mail"
+license = "MIT"
+
+[[bin]]
+name = "mine-mail-installer"
+path = "src/main.rs"
+
+[build-dependencies]
+serde_json = "1"
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+auto-launch = "0.5"
+dirs = "6"
+serde = { version = "1", features = ["derive"] }
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2.7.2"
+tempfile = "3"
+
+[profile.dev]
+debug = 1
+incremental = false

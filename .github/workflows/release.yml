@@ -61,9 +61,31 @@ jobs:
           console.log(`All project versions match ${tag}.`);
           NODE
 
+  prepare-release:
+    name: Prepare draft release
+    needs: validate-version
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - name: Create draft release when needed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          if gh release view "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $GITHUB_REF_NAME already exists; reusing it."
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "Mine Mail $GITHUB_REF_NAME" \
+              --draft \
+              --generate-notes
+          fi
+
   build-release:
     name: Build ${{ matrix.label }}
-    needs: validate-version
+    needs: prepare-release
     runs-on: ${{ matrix.platform }}
     timeout-minutes: 90
     strategy:
@@ -82,11 +104,6 @@ jobs:
             apple_signing_identity: "-"
           - label: Linux x64
             platform: ubuntu-22.04
-            args: ""
-            rust_targets: ""
-            apple_signing_identity: ""
-          - label: Windows x64
-            platform: windows-latest
             args: ""
             rust_targets: ""
             apple_signing_identity: ""
@@ -148,9 +165,121 @@ jobs:
           prerelease: ${{ contains(github.ref_name, '-') }}
           args: ${{ matrix.args }}
 
+  build-windows-release:
+    name: Build Windows x64
+    needs: prepare-release
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: |
+            web/package-lock.json
+            installer/windows/package-lock.json
+
+      - name: Install Rust 1.97
+        uses: dtolnay/rust-toolchain@1.97.0
+
+      - name: Cache Rust dependencies
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            ./web/src-tauri -> target
+            ./installer/windows/src-tauri -> target
+
+      - name: Install Mine Mail frontend dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Install installer frontend dependencies
+        working-directory: installer/windows
+        run: npm ci
+
+      - name: Test branded installer frontend
+        working-directory: installer/windows
+        run: npm test
+
+      - name: Restore Gmail OAuth build configuration
+        shell: pwsh
+        env:
+          GOOGLE_OAUTH_CLIENT_JSON_BASE64: ${{ secrets.GOOGLE_OAUTH_CLIENT_JSON_BASE64 }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:GOOGLE_OAUTH_CLIENT_JSON_BASE64)) {
+            throw "Repository secret GOOGLE_OAUTH_CLIENT_JSON_BASE64 is required for a release build."
+          }
+          $bytes = [Convert]::FromBase64String($env:GOOGLE_OAUTH_CLIENT_JSON_BASE64)
+          $path = Join-Path $env:GITHUB_WORKSPACE "web/src-tauri/google-oauth-client.json"
+          [IO.File]::WriteAllBytes($path, $bytes)
+
+      - name: Build internal NSIS payload and MSI
+        working-directory: web
+        run: npm run tauri:build -- --bundles nsis,msi
+
+      - name: Build branded setup executable
+        shell: pwsh
+        run: |
+          $version = $env:GITHUB_REF_NAME.Substring(1)
+          $payload = Get-ChildItem `
+            -LiteralPath "web/src-tauri/target/release/bundle/nsis" `
+            -Filter "*-setup.exe" |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+          if ($null -eq $payload) {
+            throw "The internal NSIS payload was not produced."
+          }
+
+          & .\installer\windows\scripts\build-release.ps1 `
+            -PayloadPath $payload.FullName `
+            -Version $version
+
+          $assetDirectory = "installer/windows/release-assets"
+          $msi = Get-ChildItem `
+            -LiteralPath "web/src-tauri/target/release/bundle/msi" `
+            -Filter "*.msi" |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+          if ($null -eq $msi) {
+            throw "The Windows MSI was not produced."
+          }
+          Copy-Item -LiteralPath $msi.FullName -Destination $assetDirectory -Force
+
+      - name: Upload Windows release assets
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $assets = Get-ChildItem `
+            -LiteralPath "installer/windows/release-assets" `
+            -File |
+            ForEach-Object FullName
+          if ($assets.Count -lt 2) {
+            throw "Expected the branded setup executable and the MSI."
+          }
+          $arguments = @(
+            "release",
+            "upload",
+            $env:GITHUB_REF_NAME
+          ) + $assets + @(
+            "--repo",
+            $env:GITHUB_REPOSITORY,
+            "--clobber"
+          )
+          & gh @arguments
+          if ($LASTEXITCODE -ne 0) {
+            throw "Uploading Windows release assets failed."
+          }
+
   publish-release:
     name: Publish complete release
-    needs: build-release
+    needs:
+      - build-release
+      - build-windows-release
     runs-on: ubuntu-22.04
     timeout-minutes: 5
     steps:
