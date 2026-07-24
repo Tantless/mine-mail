@@ -39,8 +39,8 @@ Then build the branded shell:
 ```powershell
 cd ..
 .\installer\windows\scripts\build-release.ps1 `
-  -PayloadPath ".\web\src-tauri\target\release\bundle\nsis\Mine Mail_0.1.1_x64-setup.exe" `
-  -Version "0.1.1"
+  -PayloadPath ".\web\src-tauri\target\release\bundle\nsis\Mine Mail_0.1.2_x64-setup.exe" `
+  -Version "0.1.2"
 ```
 
 The resulting public asset is written to
