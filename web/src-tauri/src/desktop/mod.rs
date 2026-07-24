@@ -910,6 +910,17 @@ fn emit_sync_error(app: &AppHandle, operation: &'static str, message: String) {
     let _ = app.emit("mail:sync-error", SyncErrorEvent { operation, message });
 }
 
+fn emit_account_status(
+    app: &AppHandle,
+    account_runtime: &AccountRuntime,
+    backend_state: &BackendState,
+) {
+    let _ = app.emit(
+        "mail:account-updated",
+        account_runtime.status(backend_state),
+    );
+}
+
 pub(crate) async fn perform_sync_all(
     app: &AppHandle,
     force: bool,
@@ -941,6 +952,7 @@ pub(crate) async fn perform_sync_all(
         .refresh_oauth_backends(&backend_state)
         .await
         .err();
+    emit_account_status(app, &account_runtime, &backend_state);
     let account_ids = account_runtime.account_ids();
     if account_ids.is_empty() {
         diagnostics::warn(
@@ -999,6 +1011,9 @@ pub(crate) async fn perform_sync_all(
     if let Some(error) = refresh_error {
         errors.push(error);
     }
+    // Emit again after mailbox work so a frontend that mounted while the
+    // refresh was in flight still receives the settled readiness snapshot.
+    emit_account_status(app, &account_runtime, &backend_state);
     if !errors.is_empty() {
         diagnostics::limited_failure("sync_failed", "sync_all", None, ErrorKind::Runtime);
         diagnostics::error(
@@ -1050,6 +1065,7 @@ async fn perform_inbox_reconciliation_all(app: &AppHandle) -> Result<(), String>
         .refresh_oauth_backends(&backend_state)
         .await
         .err();
+    emit_account_status(app, &account_runtime, &backend_state);
     let mut errors = Vec::new();
     for account_id in account_runtime.account_ids() {
         if let Err(error) = sync_inbox_for(app, &account_id).await {
@@ -1083,6 +1099,7 @@ async fn perform_incremental_inbox_sync(
     // Usually a no-op; it ensures a monitor event near OAuth expiry uses the
     // refreshed backend before opening the short-lived incremental session.
     let _ = account_runtime.refresh_oauth_backends(&backend_state).await;
+    emit_account_status(app, &account_runtime, &backend_state);
     sync_new_inbox_for(app, account_id).await
 }
 
@@ -1092,9 +1109,11 @@ pub(crate) async fn perform_inbox_sync(app: &AppHandle) -> Result<SyncReport, St
     runtime.record_sync_start()?;
     let account_runtime = app.state::<AccountRuntime>();
     let backend_state = app.state::<BackendState>();
-    account_runtime
+    let refresh_result = account_runtime
         .refresh_active_oauth_backend(&backend_state)
-        .await?;
+        .await;
+    emit_account_status(app, &account_runtime, &backend_state);
+    refresh_result?;
     let account_id = backend_state
         .active_account_id()
         .ok_or_else(|| "No mail account is selected.".to_owned())?;
@@ -1107,9 +1126,11 @@ pub(crate) async fn perform_sent_sync(app: &AppHandle) -> Result<SyncReport, Str
     runtime.record_sync_start()?;
     let account_runtime = app.state::<AccountRuntime>();
     let backend_state = app.state::<BackendState>();
-    account_runtime
+    let refresh_result = account_runtime
         .refresh_active_oauth_backend(&backend_state)
-        .await?;
+        .await;
+    emit_account_status(app, &account_runtime, &backend_state);
+    refresh_result?;
     let account_id = backend_state
         .active_account_id()
         .ok_or_else(|| "No mail account is selected.".to_owned())?;
@@ -1121,9 +1142,11 @@ pub(crate) async fn perform_draft_sync(app: &AppHandle) -> Result<DraftSyncRepor
     let _guard = runtime.sync_gate.lock().await;
     let account_runtime = app.state::<AccountRuntime>();
     let backend_state = app.state::<BackendState>();
-    account_runtime
+    let refresh_result = account_runtime
         .refresh_active_oauth_backend(&backend_state)
-        .await?;
+        .await;
+    emit_account_status(app, &account_runtime, &backend_state);
+    refresh_result?;
     let account_id = backend_state
         .active_account_id()
         .ok_or_else(|| "No mail account is selected.".to_owned())?;

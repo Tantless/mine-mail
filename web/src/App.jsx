@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { WarningCircle } from "@phosphor-icons/react";
 import { emptyCompose } from "./data/mockMail.js";
 import {
   isTauri,
@@ -43,6 +44,24 @@ const defaultSettings = {
 };
 const supportedAvatarTypes = new Set(["image/png", "image/jpeg", "image/webp"]);
 const maxAvatarBytes = 2 * 1024 * 1024;
+const accountRepairDelayMs = 750;
+
+function canUseAccountNetwork(status) {
+  return Boolean(
+    status?.configured &&
+      status?.backendReady &&
+      status?.credentialAvailable &&
+      status?.networkReady !== false,
+  );
+}
+
+function shouldRepairAccount(status) {
+  return Boolean(
+    status?.configured &&
+      status?.backendReady &&
+      !canUseAccountNetwork(status),
+  );
+}
 
 function readFileAsDataUrl(file) {
   return new Promise((resolve, reject) => {
@@ -325,6 +344,7 @@ export function App() {
   const [accountStatus, setAccountStatus] = useState({ configured: null });
   const [accountSubmitStatus, setAccountSubmitStatus] = useState("idle");
   const [accountError, setAccountError] = useState(null);
+  const [isAccountRepairVisible, setIsAccountRepairVisible] = useState(false);
   const [profileAvatars, setProfileAvatars] = useState([]);
   const [toast, setToast] = useState(null);
   const [referenceJump, setReferenceJump] = useState(null);
@@ -339,6 +359,7 @@ export function App() {
   const messageBodyCacheRef = useRef(new Map());
   const accountViewsRef = useRef(new Map());
   const accountViewLoadsRef = useRef(new Map());
+  const accountStatusRef = useRef(accountStatus);
   const activeAccountIdRef = useRef(null);
   const activeFolderRef = useRef("inbox");
   const selectedContactEmailRef = useRef(null);
@@ -353,15 +374,12 @@ export function App() {
   const platform = /Mac|iPhone|iPad/.test(navigator.platform)
     ? "mac"
     : "windows";
-  const networkActionsAvailable = Boolean(
-    accountStatus.configured &&
-    accountStatus.backendReady &&
-    accountStatus.credentialAvailable &&
-    accountStatus.networkReady !== false,
-  );
+  const networkActionsAvailable = canUseAccountNetwork(accountStatus);
+  const accountNeedsRepair = shouldRepairAccount(accountStatus);
   const activeAccountId =
     accountStatus.activeAccountId || accountStatus.accountId || null;
   networkActionsAvailableRef.current = networkActionsAvailable;
+  accountStatusRef.current = accountStatus;
   draftsRef.current = drafts;
   activeAccountIdRef.current = activeAccountId;
   activeFolderRef.current = activeFolder;
@@ -1268,6 +1286,18 @@ export function App() {
     return () => window.clearTimeout(timer);
   }, [toast]);
 
+  useEffect(() => {
+    if (!accountNeedsRepair) {
+      setIsAccountRepairVisible(false);
+      return undefined;
+    }
+    const timer = window.setTimeout(
+      () => setIsAccountRepairVisible(true),
+      accountRepairDelayMs,
+    );
+    return () => window.clearTimeout(timer);
+  }, [accountNeedsRepair]);
+
   const saveDraftNow = useCallback(
     async ({ force = false } = {}) => {
       const initial = composerRef.current;
@@ -1384,6 +1414,27 @@ export function App() {
     };
     const subscribe = async () => {
       try {
+        const accountUnlisten = await mailApi.onMailEvent(
+          "mail:account-updated",
+          (event) => {
+            const status = event?.payload;
+            if (!status || typeof status.configured !== "boolean") return;
+            const previousStatus = accountStatusRef.current;
+            accountStatusRef.current = status;
+            activeAccountIdRef.current =
+              status.activeAccountId || status.accountId || null;
+            setAccountStatus(status);
+            if (
+              shouldRepairAccount(previousStatus) &&
+              canUseAccountNetwork(status)
+            ) {
+              setAccountError(null);
+            }
+          },
+        );
+        if (cancelled) accountUnlisten();
+        else disposers.push(accountUnlisten);
+
         const inboxUnlisten = await mailApi.onMailEvent(
           "mail:inbox-updated",
           () => {
@@ -2581,9 +2632,7 @@ export function App() {
     (accountStatus.configured === true && !accountStatus.backendReady);
 
   const needsAccountRepairBanner =
-    accountStatus.configured === true &&
-    accountStatus.backendReady === true &&
-    !networkActionsAvailable;
+    accountNeedsRepair && isAccountRepairVisible;
 
   if (isUnsupportedRuntime) {
     return (
@@ -2657,13 +2706,19 @@ export function App() {
 
       {needsAccountRepairBanner ? (
         <div className="account-repair-banner" role="alert">
-          <span>
-            {accountError ||
-              "已下载的邮件仍可阅读；重新连接账户后才能同步、下载其他正文或发送邮件。"}
+          <span className="account-repair-banner__icon" aria-hidden="true">
+            <WarningCircle size={18} weight="fill" />
+          </span>
+          <span className="account-repair-banner__copy">
+            <strong>账户暂时离线</strong>
+            <span>
+              {accountError ||
+                "已下载的邮件仍可阅读；重新连接账户后才能同步、下载其他正文或发送邮件。"}
+            </span>
           </span>
           <button
             type="button"
-            className="secondary-button"
+            className="account-repair-banner__action"
             onClick={() => setIsSettingsOpen(true)}
           >
             修复账户

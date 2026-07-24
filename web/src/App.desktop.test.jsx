@@ -257,6 +257,10 @@ describe("Mine Mail desktop state bridge", () => {
         "mail:sent-updated",
         expect.any(Function),
       );
+      expect(desktop.mailApi.onMailEvent).toHaveBeenCalledWith(
+        "mail:account-updated",
+        expect.any(Function),
+      );
     });
 
     await act(async () => {
@@ -273,6 +277,62 @@ describe("Mine Mail desktop state bridge", () => {
       expect(desktop.mailApi.listDrafts).toHaveBeenCalledTimes(2);
       expect(desktop.mailApi.listOutbox).toHaveBeenCalledTimes(2);
     });
+  });
+
+  it("removes the repair notice when OAuth refresh restores the account backend", async () => {
+    const degradedStatus = {
+      configured: true,
+      accountId: "desktop-account",
+      activeAccountId: "desktop-account",
+      provider: "gmail",
+      email: "me@gmail.com",
+      backendReady: true,
+      credentialAvailable: true,
+      networkReady: false,
+      startupError: null,
+      accounts: [
+        {
+          accountId: "desktop-account",
+          provider: "gmail",
+          email: "me@gmail.com",
+          backendReady: true,
+          credentialAvailable: true,
+          networkReady: false,
+        },
+      ],
+    };
+    desktop.mailApi.getAccountStatus.mockResolvedValue(degradedStatus);
+
+    render(<App />);
+
+    expect(
+      await screen.findByText("账户暂时离线", {}, { timeout: 1600 }),
+    ).toBeTruthy();
+    await waitFor(() =>
+      expect(desktop.listeners.has("mail:account-updated")).toBe(true),
+    );
+
+    await act(async () => {
+      desktop.listeners.get("mail:account-updated")?.({
+        payload: {
+          ...degradedStatus,
+          networkReady: true,
+          accounts: [
+            {
+              ...degradedStatus.accounts[0],
+              networkReady: true,
+            },
+          ],
+        },
+      });
+    });
+
+    await waitFor(() =>
+      expect(screen.queryByText("账户暂时离线")).toBeNull(),
+    );
+    expect(
+      screen.getByRole("button", { name: "同步收件箱" }).disabled,
+    ).toBe(false);
   });
 
   it("opens the exact locally synced message selected from a desktop notification", async () => {

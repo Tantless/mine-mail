@@ -14,9 +14,16 @@ export function Toast({ toast, onClose }) {
       role={toast.tone === "error" ? "alert" : "status"}
       data-tone={toast.tone || "success"}
     >
-      <Icon size={20} weight="fill" />
-      <span>{toast.message}</span>
-      <button type="button" onClick={onClose} aria-label="关闭通知">
+      <span className="toast__icon" aria-hidden="true">
+        <Icon size={18} weight="fill" />
+      </span>
+      <span className="toast__message">{toast.message}</span>
+      <button
+        className="toast__close"
+        type="button"
+        onClick={onClose}
+        aria-label="关闭通知"
+      >
         <X size={15} />
       </button>
     </div>

@@ -673,7 +673,9 @@ describe("Mine Mail MVP", () => {
     render(<App />);
 
     expect(await screen.findAllByText("欢迎来到 Mine Mail")).toHaveLength(2);
-    expect(screen.getByRole("alert").textContent).toContain("系统凭据不可用");
+    expect(
+      (await screen.findByRole("alert", {}, { timeout: 1600 })).textContent,
+    ).toContain("系统凭据不可用");
     expect(screen.queryByText("先连接你的邮箱")).toBeNull();
     expect(getSnapshot).toHaveBeenCalledWith("offline-account", 50);
     expect(screen.getByRole("button", { name: "同步收件箱" }).disabled).toBe(true);
