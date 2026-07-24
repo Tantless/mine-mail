@@ -15,7 +15,7 @@ import { ComposePanel } from "./components/ComposePanel.jsx";
 import { ContactsWorkspace } from "./components/ContactsWorkspace.jsx";
 import { SendConfirmDialog } from "./components/SendConfirmDialog.jsx";
 import { SettingsPanel } from "./components/SettingsPanel.jsx";
-import { AccountSetupPanel } from "./components/AccountSetup.jsx";
+import { AccountEmptyWorkspace } from "./components/AccountEmptyWorkspace.jsx";
 import { Toast } from "./components/Toast.jsx";
 import { normalizeAvatarEmail } from "./components/ProfileAvatar.jsx";
 import { hasFlag } from "./utils/formatters.js";
@@ -2627,12 +2627,26 @@ export function App() {
     if (next) void handleSelect(next);
   };
 
-  const needsAccountSetup =
-    accountStatus.configured === false ||
-    (accountStatus.configured === true && !accountStatus.backendReady);
+  const hasNoConnectedAccount = accountStatus.configured === false;
+  const accountBackendUnavailable =
+    accountStatus.configured === true && !accountStatus.backendReady;
+  const needsAccountWorkspace =
+    hasNoConnectedAccount || accountBackendUnavailable;
 
   const needsAccountRepairBanner =
     accountNeedsRepair && isAccountRepairVisible;
+
+  const openAccountSetup = () => {
+    setSettingsSaveStatus("idle");
+    setSettingsFocusTarget(`account-form:${Date.now()}`);
+    setIsSettingsOpen(true);
+  };
+
+  const openAccountRepair = () => {
+    setSettingsSaveStatus("idle");
+    setSettingsFocusTarget(`account-repair:${Date.now()}`);
+    setIsSettingsOpen(true);
+  };
 
   if (isUnsupportedRuntime) {
     return (
@@ -2719,7 +2733,7 @@ export function App() {
           <button
             type="button"
             className="account-repair-banner__action"
-            onClick={() => setIsSettingsOpen(true)}
+            onClick={openAccountRepair}
           >
             修复账户
           </button>
@@ -2730,7 +2744,13 @@ export function App() {
         <Sidebar
           activeFolder={activeFolder}
           onFolderChange={handleFolderChange}
-          onCompose={() => openComposer()}
+          onCompose={() =>
+            needsAccountWorkspace
+              ? accountBackendUnavailable
+                ? openAccountRepair()
+                : openAccountSetup()
+              : openComposer()
+          }
           theme={theme}
           onThemeChange={(nextTheme) => {
             setTheme(nextTheme);
@@ -2743,11 +2763,7 @@ export function App() {
           isSettingsOpen={isSettingsOpen}
           accountAvatarFor={(email) => profileAvatarFor("account", email)}
           onAccountSwitch={(accountId) => void handleSwitchAccount(accountId)}
-          onAddAccount={() => {
-            setSettingsSaveStatus("idle");
-            setSettingsFocusTarget(`account-form:${Date.now()}`);
-            setIsSettingsOpen(true);
-          }}
+          onAddAccount={openAccountSetup}
           onOpenSettings={() => {
             setSettingsSaveStatus("idle");
             setSettingsFocusTarget(null);
@@ -2791,6 +2807,13 @@ export function App() {
               handleDeleteProfileAvatar("account", email)
             }
             focusTarget={settingsFocusTarget}
+          />
+        ) : needsAccountWorkspace ? (
+          <AccountEmptyWorkspace
+            needsRepair={accountBackendUnavailable}
+            onConnect={
+              accountBackendUnavailable ? openAccountRepair : openAccountSetup
+            }
           />
         ) : isContactMode ? (
           <ContactsWorkspace
@@ -2889,17 +2912,6 @@ export function App() {
         onCancel={handleCancelSend}
         onConfirm={handleConfirmSend}
       />
-
-      {needsAccountSetup ? (
-        <AccountSetupPanel
-          presets={accountPresets}
-          status={accountStatus}
-          submitStatus={accountSubmitStatus}
-          error={accountError}
-          onSubmit={handleConfigureAccount}
-          onGoogle={handleConnectGoogle}
-        />
-      ) : null}
 
       <Toast toast={toast} onClose={() => setToast(null)} />
     </div>

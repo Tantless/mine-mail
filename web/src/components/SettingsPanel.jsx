@@ -172,12 +172,20 @@ export function SettingsPanel({
 }) {
   const addAccountRequested =
     typeof focusTarget === "string" && focusTarget.startsWith("account-form");
+  const repairAccountRequested =
+    typeof focusTarget === "string" &&
+    focusTarget.startsWith("account-repair");
   const [value, setValue] = useState(settings);
   const [activeSection, setActiveSection] = useState("account");
   const [accountFlow, setAccountFlow] = useState(
-    addAccountRequested ? "providers" : "overview",
+    addAccountRequested || repairAccountRequested ? "providers" : "overview",
   );
-  const [selectedProvider, setSelectedProvider] = useState(null);
+  const [selectedProvider, setSelectedProvider] = useState(
+    repairAccountRequested ? accountStatus?.provider || null : null,
+  );
+  const [repairingAccount, setRepairingAccount] = useState(
+    repairAccountRequested,
+  );
   const [accountMenu, setAccountMenu] = useState(null);
   const scrollRef = useRef(null);
   const previousAccountSubmitStatusRef = useRef(accountSubmitStatus);
@@ -200,11 +208,17 @@ export function SettingsPanel({
   }, [settings]);
 
   useEffect(() => {
-    if (!(typeof focusTarget === "string" && focusTarget.startsWith("account-form"))) return;
+    const addRequested =
+      typeof focusTarget === "string" && focusTarget.startsWith("account-form");
+    const repairRequested =
+      typeof focusTarget === "string" &&
+      focusTarget.startsWith("account-repair");
+    if (!addRequested && !repairRequested) return;
     setActiveSection("account");
     setAccountFlow("providers");
-    setSelectedProvider(null);
-  }, [focusTarget]);
+    setSelectedProvider(repairRequested ? accountStatus?.provider || null : null);
+    setRepairingAccount(repairRequested);
+  }, [accountStatus?.provider, focusTarget]);
 
   useEffect(() => {
     const previousStatus = previousAccountSubmitStatusRef.current;
@@ -218,6 +232,7 @@ export function SettingsPanel({
     }
     setAccountFlow("overview");
     setSelectedProvider(null);
+    setRepairingAccount(false);
   }, [accountFlow, accountSubmitStatus]);
 
   useEffect(() => {
@@ -234,6 +249,7 @@ export function SettingsPanel({
   const openAccountOverview = () => {
     setAccountFlow("overview");
     setSelectedProvider(null);
+    setRepairingAccount(false);
   };
 
   const openAddAccount = () => {
@@ -241,6 +257,7 @@ export function SettingsPanel({
     setActiveSection("account");
     setAccountFlow("providers");
     setSelectedProvider(null);
+    setRepairingAccount(false);
   };
 
   const saveStateLabel =
@@ -515,11 +532,20 @@ export function SettingsPanel({
           {activeSection === "account" && accountFlow === "providers" && selectedProvider ? (
             <section className="settings-page settings-page--flow" aria-labelledby="connect-title">
               <header className="settings-flow-heading">
-                <IconButton label="返回选择邮箱服务商" onClick={() => setSelectedProvider(null)}>
+                <IconButton
+                  label={repairingAccount ? "返回账户设置" : "返回选择邮箱服务商"}
+                  onClick={
+                    repairingAccount
+                      ? openAccountOverview
+                      : () => setSelectedProvider(null)
+                  }
+                >
                   <ArrowLeft size={18} />
                 </IconButton>
                 <span>
-                  <p className="eyebrow">添加账户</p>
+                  <p className="eyebrow">
+                    {repairingAccount ? "修复账户" : "添加账户"}
+                  </p>
                   <h3 id="connect-title">连接 {providerNames[selectedProvider] || "邮箱"}</h3>
                   <p>{providerDescriptions[selectedProvider]}</p>
                 </span>
@@ -529,7 +555,7 @@ export function SettingsPanel({
                 <AccountSetupForm
                   key={selectedProvider}
                   presets={accountPresets}
-                  status={null}
+                  status={repairingAccount ? accountStatus : null}
                   submitStatus={accountSubmitStatus}
                   error={accountError}
                   initialProvider={selectedProvider}

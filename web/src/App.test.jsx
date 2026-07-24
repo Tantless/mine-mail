@@ -631,7 +631,8 @@ describe("Mine Mail MVP", () => {
     );
   });
 
-  it("shows account onboarding before touching mailbox APIs when unconfigured", async () => {
+  it("uses the main shell as the unconfigured account state", async () => {
+    const user = userEvent.setup();
     vi.spyOn(mailApi, "getAccountStatus").mockResolvedValue({
       configured: false,
       provider: null,
@@ -643,8 +644,64 @@ describe("Mine Mail MVP", () => {
     const listInbox = vi.spyOn(mailApi, "listInbox");
     render(<App />);
 
-    expect(await screen.findByText("先连接你的邮箱")).toBeTruthy();
+    const emptyWorkspace = await screen.findByRole("region", {
+      name: "尚未连接邮箱",
+    });
+    expect(emptyWorkspace.classList.contains("account-empty-workspace")).toBe(
+      true,
+    );
+    expect(emptyWorkspace.querySelector(".reader-idle")).toBeTruthy();
+    expect(screen.getByLabelText("邮箱导航")).toBeTruthy();
+    expect(screen.queryByLabelText("收件箱邮件列表")).toBeNull();
+    expect(document.querySelector(".reader-panel")).toBeNull();
+    expect(screen.queryByText("先连接你的邮箱")).toBeNull();
     expect(listInbox).not.toHaveBeenCalled();
+
+    await user.click(
+      within(emptyWorkspace).getByRole("button", { name: "连接邮箱" }),
+    );
+    expect(
+      screen.getByRole("heading", { name: "选择邮箱服务商" }),
+    ).toBeTruthy();
+  });
+
+  it("keeps account repair inside the main shell and opens the existing provider", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(mailApi, "getAccountStatus").mockResolvedValue({
+      configured: true,
+      accountId: "repair-account",
+      activeAccountId: "repair-account",
+      provider: "163",
+      email: "repair@163.com",
+      backendReady: false,
+      credentialAvailable: false,
+      networkReady: false,
+      startupError: "授权信息需要更新。",
+      accounts: [
+        {
+          accountId: "repair-account",
+          provider: "163",
+          email: "repair@163.com",
+          backendReady: false,
+          credentialAvailable: false,
+          networkReady: false,
+        },
+      ],
+    });
+    render(<App />);
+
+    const emptyWorkspace = await screen.findByRole("region", {
+      name: "账户需要重新连接",
+    });
+    await user.click(
+      within(emptyWorkspace).getByRole("button", { name: "修复账户" }),
+    );
+
+    expect(
+      screen.getByRole("heading", { name: "连接 163 邮箱" }),
+    ).toBeTruthy();
+    expect(screen.getByDisplayValue("repair@163.com")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "更新账户" })).toBeTruthy();
   });
 
   it("keeps cached mail visible when credentials or network are unavailable", async () => {
@@ -676,7 +733,7 @@ describe("Mine Mail MVP", () => {
     expect(
       (await screen.findByRole("alert", {}, { timeout: 1600 })).textContent,
     ).toContain("系统凭据不可用");
-    expect(screen.queryByText("先连接你的邮箱")).toBeNull();
+    expect(screen.queryByText("尚未连接邮箱")).toBeNull();
     expect(getSnapshot).toHaveBeenCalledWith("offline-account", 50);
     expect(screen.getByRole("button", { name: "同步收件箱" }).disabled).toBe(true);
   });

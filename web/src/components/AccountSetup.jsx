@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { EnvelopeSimple, GoogleLogo, ShieldCheck, ShieldWarning } from "@phosphor-icons/react";
-import { BrandLogo } from "./BrandLogo.jsx";
 import { ThemedSelect } from "./ThemedSelect.jsx";
 
 const fallbackPresets = [
@@ -281,26 +280,5 @@ export function AccountSetupForm({
             : "连接邮箱"}
       </button>
     </form>
-  );
-}
-
-export function AccountSetupPanel(props) {
-  return (
-    <div className="account-onboarding-layer">
-      <section
-        className="account-onboarding vertical-scroll-surface"
-        aria-labelledby="account-onboarding-title"
-      >
-        <span className="account-onboarding__mark" aria-hidden="true">
-          <BrandLogo />
-        </span>
-        <p className="eyebrow">MINE MAIL</p>
-        <h1 id="account-onboarding-title">先连接你的邮箱</h1>
-        <p className="account-onboarding__lead">
-          完成连接后，即可收取、阅读和发送邮件。
-        </p>
-        <AccountSetupForm {...props} />
-      </section>
-    </div>
   );
 }
