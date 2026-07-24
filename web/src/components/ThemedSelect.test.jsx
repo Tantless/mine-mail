@@ -10,7 +10,10 @@ const options = [
 ];
 
 describe("ThemedSelect", () => {
-  afterEach(() => cleanup());
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
 
   it("opens a themed listbox and reports the selected value", async () => {
     const onValueChange = vi.fn();
@@ -35,9 +38,10 @@ describe("ThemedSelect", () => {
     expect(screen.queryByRole("listbox")).toBeNull();
   });
 
-  it("supports arrow navigation and Escape without changing the value", async () => {
+  it("supports Escape before deferred option focus without changing the value", async () => {
     const onValueChange = vi.fn();
     const user = userEvent.setup();
+    vi.spyOn(window, "requestAnimationFrame").mockReturnValue(1);
     render(
       <ThemedSelect
         label="完整校准间隔"
@@ -51,6 +55,7 @@ describe("ThemedSelect", () => {
     trigger.focus();
     await user.keyboard("{ArrowDown}");
     expect(screen.getByRole("listbox")).toBeTruthy();
+    expect(document.activeElement).toBe(trigger);
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("listbox")).toBeNull();
     expect(document.activeElement).toBe(trigger);

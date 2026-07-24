@@ -69,6 +69,11 @@ export function ThemedSelect({
 
   const handleTriggerKeyDown = (event) => {
     if (disabled) return;
+    if (event.key === "Escape" && open) {
+      event.preventDefault();
+      setOpen(false);
+      return;
+    }
     if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
       event.preventDefault();
       const next =
