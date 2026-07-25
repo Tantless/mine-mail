@@ -279,6 +279,8 @@
   --sidebar-muted: rgba(255, 244, 235, 0.76);
   --sidebar-hover: rgba(255, 248, 242, 0.12);
   --sidebar-selected: rgba(255, 248, 242, 0.22);
+  --sidebar-count-surface: rgba(112, 49, 62, 0.58);
+  --sidebar-count-text: rgba(255, 248, 242, 0.96);
   --sidebar-scrim-top: rgba(61, 36, 49, 0.16);
   --sidebar-scrim-bottom: rgba(46, 26, 36, 0.58);
   --titlebar-text: #fff8f2;
