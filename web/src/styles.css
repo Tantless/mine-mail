@@ -57,6 +57,16 @@
   --sidebar-muted: rgba(18, 45, 59, 0.7);
   --sidebar-hover: rgba(247, 252, 255, 0.46);
   --sidebar-selected: rgba(249, 253, 255, 0.7);
+  --sidebar-count-surface: color-mix(
+    in srgb,
+    var(--color-primary) 24%,
+    var(--sidebar-selected)
+  );
+  --sidebar-count-text: color-mix(
+    in srgb,
+    var(--sidebar-text) 82%,
+    var(--color-primary)
+  );
   --account-card-surface: rgba(255, 255, 255, 0.09);
   --account-card-hover-surface: rgba(255, 255, 255, 0.17);
   --account-card-active-surface: color-mix(
@@ -468,10 +478,10 @@ html[data-surface="new-mail-notification"] #root {
   background:
     linear-gradient(
       135deg,
-      color-mix(in srgb, var(--color-primary) 13%, transparent),
+      color-mix(in srgb, var(--color-primary) 9%, transparent),
       transparent 42%
     ),
-    color-mix(in srgb, var(--compose-panel-surface) 91%, var(--color-panel) 9%);
+    color-mix(in srgb, var(--color-panel) 93%, transparent);
   box-shadow:
     0 2px 5px rgb(17 24 39 / 18%),
     0 1px 2px rgb(17 24 39 / 12%),
@@ -494,10 +504,10 @@ html[data-surface="new-mail-notification"] #root {
   display: grid;
   width: 100%;
   height: 100%;
-  grid-template-columns: 54px minmax(0, 1fr);
+  grid-template-columns: 56px minmax(0, 1fr);
   align-items: center;
   gap: 14px;
-  padding: 13px 46px 13px 17px;
+  padding: 12px 44px 12px 16px;
   border: 0;
   background: transparent;
   color: inherit;
@@ -511,10 +521,10 @@ html[data-surface="new-mail-notification"] #root {
   border-radius: inherit;
 }
 
-.new-mail-notification__icon {
+.new-mail-notification__avatar {
   display: grid;
-  width: 52px;
-  height: 52px;
+  width: 54px;
+  height: 54px;
   place-items: center;
   border: 1px solid color-mix(in srgb, var(--color-primary) 24%, var(--surface-edge));
   border-radius: 16px;
@@ -523,17 +533,14 @@ html[data-surface="new-mail-notification"] #root {
   box-shadow:
     inset 0 1px 0 color-mix(in srgb, var(--surface-highlight) 75%, transparent),
     0 8px 18px color-mix(in srgb, var(--color-primary) 12%, transparent);
-}
-
-.new-mail-notification__icon .brand-logo {
-  width: 42px;
-  height: 42px;
+  font-size: 15px;
+  font-weight: 760;
 }
 
 .new-mail-notification__copy {
   display: grid;
   min-width: 0;
-  gap: 4px;
+  gap: 3px;
 }
 
 .new-mail-notification__eyebrow {
@@ -554,23 +561,49 @@ html[data-surface="new-mail-notification"] #root {
   box-shadow: 0 0 0 4px color-mix(in srgb, var(--color-primary) 13%, transparent);
 }
 
-.new-mail-notification__copy strong,
-.new-mail-notification__copy > span:last-child {
+.new-mail-notification__sender,
+.new-mail-notification__sender strong,
+.new-mail-notification__sender > span,
+.new-mail-notification__subject,
+.new-mail-notification__recipient {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.new-mail-notification__copy strong {
-  font-size: 15px;
+.new-mail-notification__sender {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 7px;
+}
+
+.new-mail-notification__sender strong {
+  flex: 0 1 auto;
+  min-width: 0;
+  font-size: 14px;
   line-height: 1.2;
   font-weight: 720;
   letter-spacing: -0.01em;
 }
 
-.new-mail-notification__copy > span:last-child {
+.new-mail-notification__sender > span {
+  flex: 1 1 auto;
+  min-width: 0;
   color: var(--color-text-muted);
-  font-size: 13px;
+  font-size: 10.5px;
+}
+
+.new-mail-notification__subject {
+  color: var(--color-text);
+  font-size: 12.5px;
+  font-weight: 620;
+  line-height: 1.3;
+}
+
+.new-mail-notification__recipient {
+  color: var(--color-text-muted);
+  font-size: 10.5px;
   line-height: 1.3;
 }
 
@@ -1119,8 +1152,8 @@ html[data-surface="new-mail-notification"] #root {
   margin-left: auto;
   padding: 2px 6px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.32);
-  color: var(--sidebar-muted);
+  background: var(--sidebar-count-surface);
+  color: var(--sidebar-count-text);
   font-size: 11px;
   font-variant-numeric: tabular-nums;
   text-align: center;
@@ -3721,6 +3754,11 @@ html[data-surface="new-mail-notification"] #root {
   color: var(--color-primary);
 }
 
+.confirm-dialog--danger .confirm-dialog__icon {
+  background: color-mix(in srgb, var(--color-danger) 12%, var(--color-control));
+  color: var(--color-danger);
+}
+
 .confirm-dialog h2 {
   margin: 19px 0 7px;
   font-size: 19px;
@@ -3791,6 +3829,20 @@ html[data-surface="new-mail-notification"] #root {
   justify-content: flex-end;
   gap: 9px;
   margin-top: 20px;
+}
+
+.confirm-dialog__danger-action {
+  border-color: color-mix(in srgb, var(--color-danger) 46%, var(--surface-edge));
+  background: color-mix(in srgb, var(--color-danger) 88%, #801f2d);
+  box-shadow: 0 5px 14px color-mix(in srgb, var(--color-danger) 24%, transparent);
+}
+
+.confirm-dialog__danger-action:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-danger) 96%, #801f2d);
+}
+
+.confirm-dialog__danger-action:active:not(:disabled) {
+  background: color-mix(in srgb, var(--color-danger) 82%, #5f1621);
 }
 
 .settings-layer {
@@ -4570,6 +4622,21 @@ html[data-surface="new-mail-notification"] #root {
   line-height: 1.5;
 }
 
+.account-setup-form > .settings-error {
+  padding: 9px 11px;
+  border: 1px solid color-mix(in srgb, var(--color-danger) 32%, var(--surface-edge));
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--color-danger) 7%, var(--settings-detail-surface));
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--surface-highlight) 54%, transparent);
+}
+
+.settings-input-shell:has(input[aria-invalid="true"]) {
+  border-color: color-mix(in srgb, var(--color-danger) 58%, var(--color-border));
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, var(--color-danger) 10%, transparent),
+    inset 0 1px 0 color-mix(in srgb, var(--surface-highlight) 58%, transparent);
+}
+
 /* Embedded settings workspace: the mail shell remains the frame and the
  * settings categories/detail replace only the two content columns. */
 .settings-workspace {
@@ -5005,13 +5072,23 @@ html[data-surface="new-mail-notification"] #root {
   border: 0;
   border-radius: 7px;
   background: transparent;
-  color: var(--color-danger);
+  color: var(--color-text-secondary);
   font-size: 10px;
   text-align: left;
 }
 
 .settings-account-menu button:hover {
+  background: color-mix(in srgb, var(--color-primary) 8%, transparent);
+  color: var(--color-text);
+}
+
+.settings-account-menu button[data-tone="danger"] {
+  color: var(--color-danger);
+}
+
+.settings-account-menu button[data-tone="danger"]:hover {
   background: color-mix(in srgb, var(--color-danger) 9%, transparent);
+  color: var(--color-danger);
 }
 
 .settings-account-empty {
@@ -5173,6 +5250,10 @@ html[data-surface="new-mail-notification"] #root {
   border-radius: 14px;
   background: color-mix(in srgb, var(--compose-content-surface) 70%, transparent);
   box-shadow: inset 0 1px 0 color-mix(in srgb, var(--surface-highlight) 70%, transparent);
+}
+
+.account-remark-dialog__field {
+  margin-top: 17px;
 }
 
 .settings-account-setup .settings-input-shell {

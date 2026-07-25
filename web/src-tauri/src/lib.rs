@@ -1620,6 +1620,19 @@ fn switch_account(
 }
 
 #[tauri::command]
+fn set_account_remark(
+    app: AppHandle,
+    account: State<'_, AccountRuntime>,
+    backend: State<'_, BackendState>,
+    account_id: String,
+    remark: String,
+) -> CommandResult<AccountStatusDto> {
+    let status = account.set_remark(&backend, &account_id, &remark)?;
+    let _ = app.emit("mail:account-updated", status.clone());
+    Ok(status)
+}
+
+#[tauri::command]
 async fn remove_account(
     app: AppHandle,
     account: State<'_, AccountRuntime>,
@@ -1806,6 +1819,7 @@ pub fn run() {
             configure_account,
             connect_google_account,
             switch_account,
+            set_account_remark,
             remove_account,
             check_connections,
             sync_inbox,

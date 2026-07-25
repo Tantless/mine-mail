@@ -39,6 +39,56 @@ describe("AccountSetupForm", () => {
     ).toBe(secret.parentElement);
   });
 
+  it("silently focuses empty fields instead of showing redundant browser prompts", async () => {
+    const onSubmit = vi.fn();
+    const user = userEvent.setup();
+    const { container } = render(
+      <AccountSetupForm
+        presets={presets}
+        status={{ configured: false }}
+        submitStatus="idle"
+        error={null}
+        onSubmit={onSubmit}
+      />,
+    );
+
+    const form = container.querySelector("form");
+    const email = screen.getByLabelText("邮箱地址");
+    const secret = screen.getByPlaceholderText("请输入授权密码");
+    expect(form.noValidate).toBe(true);
+    expect(email.required).toBe(false);
+    expect(secret.required).toBe(false);
+
+    await user.click(screen.getByRole("button", { name: "连接邮箱" }));
+
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(email.getAttribute("aria-invalid")).toBe("true");
+    expect(document.activeElement).toBe(email);
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it("keeps useful validation feedback inside the app theme", async () => {
+    const onSubmit = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <AccountSetupForm
+        presets={presets}
+        status={{ configured: false }}
+        submitStatus="idle"
+        error={null}
+        onSubmit={onSubmit}
+      />,
+    );
+
+    const email = screen.getByLabelText("邮箱地址");
+    await user.type(email, "not-an-email");
+    await user.click(screen.getByRole("button", { name: "连接邮箱" }));
+
+    expect(screen.getByRole("alert").textContent).toBe("邮箱地址格式不正确。");
+    expect(email.getAttribute("aria-describedby")).toBe("account-setup-error");
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
   it("clears the uncontrolled secret input immediately after submit", async () => {
     const onSubmit = vi.fn().mockResolvedValue(undefined);
     const user = userEvent.setup();

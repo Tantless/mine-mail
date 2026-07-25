@@ -450,6 +450,28 @@ impl DesktopSettingsStore {
             .collect()
     }
 
+    pub(super) fn profile_avatar(
+        &self,
+        owner_type: ProfileAvatarOwnerType,
+        owner_key: &str,
+    ) -> rusqlite::Result<Option<String>> {
+        let owner_key = owner_key.trim().to_ascii_lowercase();
+        self.connection()?
+            .query_row(
+                "SELECT mime_type, image_bytes
+                 FROM profile_avatars
+                 WHERE owner_type = ?1 AND owner_key = ?2",
+                params![owner_type.as_storage_value(), owner_key],
+                |row| {
+                    Ok(avatar_data_url(
+                        &row.get::<_, String>(0)?,
+                        &row.get::<_, Vec<u8>>(1)?,
+                    ))
+                },
+            )
+            .optional()
+    }
+
     pub(super) fn save_profile_avatar(
         &self,
         request: SaveProfileAvatarRequest,

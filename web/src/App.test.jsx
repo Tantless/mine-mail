@@ -614,6 +614,59 @@ describe("Mine Mail MVP", () => {
     );
   });
 
+  it("propagates a saved account remark to visible account provenance", async () => {
+    const setAccountRemark = vi
+      .spyOn(mailApi, "setAccountRemark")
+      .mockResolvedValue({
+        configured: true,
+        accountId: "demo-primary",
+        activeAccountId: "demo-primary",
+        provider: "163",
+        email: "demo@163.com",
+        remark: "工作邮箱",
+        backendReady: true,
+        credentialAvailable: true,
+        networkReady: true,
+        accounts: [
+          {
+            accountId: "demo-primary",
+            provider: "163",
+            email: "demo@163.com",
+            remark: "工作邮箱",
+            authentication: "password",
+            backendReady: true,
+            credentialAvailable: true,
+            networkReady: true,
+          },
+        ],
+        accountCount: 1,
+        maxAccounts: 3,
+        canAddAccount: true,
+        googleOauthConfigured: true,
+      });
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findAllByText("欢迎来到 Mine Mail");
+
+    await user.click(screen.getByRole("button", { name: "设置" }));
+    await user.click(screen.getByRole("button", { name: "管理 demo@163.com" }));
+    await user.click(screen.getByRole("menuitem", { name: "添加备注" }));
+    await user.type(screen.getByRole("textbox", { name: "备注名" }), "工作邮箱");
+    await user.click(screen.getByRole("button", { name: "保存备注" }));
+
+    await waitFor(() =>
+      expect(setAccountRemark).toHaveBeenCalledWith(
+        "demo-primary",
+        "工作邮箱",
+      ),
+    );
+    expect(
+      screen.getByRole("button", {
+        name: "当前账户 工作邮箱 demo@163.com",
+      }),
+    ).toBeTruthy();
+  });
+
   it("opens and updates an existing draft with the same id", async () => {
     const user = userEvent.setup();
     render(<App />);

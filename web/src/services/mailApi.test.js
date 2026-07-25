@@ -294,6 +294,7 @@ describe("mailApi desktop IPC contract", () => {
       active_account_id: "account-a",
       provider: "163",
       email: "a@163.com",
+      remark: "工作邮箱",
       backend_ready: true,
       credential_available: true,
       network_ready: true,
@@ -306,6 +307,7 @@ describe("mailApi desktop IPC contract", () => {
           account_id: "account-a",
           provider: "163",
           email: "a@163.com",
+          remark: "工作邮箱",
           authentication: "password",
           backend_ready: true,
           credential_available: true,
@@ -328,6 +330,7 @@ describe("mailApi desktop IPC contract", () => {
     const normalized = await mailApi.getAccountStatus();
     expect(normalized).toMatchObject({
       activeAccountId: "account-a",
+      remark: "工作邮箱",
       accountCount: 2,
       maxAccounts: 3,
       canAddAccount: true,
@@ -338,6 +341,7 @@ describe("mailApi desktop IPC contract", () => {
     });
     await mailApi.connectGoogleAccount();
     await mailApi.switchAccount("account-b");
+    await mailApi.setAccountRemark("account-b", "私人邮箱");
     await mailApi.removeAccount("account-a");
 
     expect(ipc.invoke).toHaveBeenNthCalledWith(
@@ -348,7 +352,11 @@ describe("mailApi desktop IPC contract", () => {
     expect(ipc.invoke).toHaveBeenNthCalledWith(3, "switch_account", {
       accountId: "account-b",
     });
-    expect(ipc.invoke).toHaveBeenNthCalledWith(4, "remove_account", {
+    expect(ipc.invoke).toHaveBeenNthCalledWith(4, "set_account_remark", {
+      accountId: "account-b",
+      remark: "私人邮箱",
+    });
+    expect(ipc.invoke).toHaveBeenNthCalledWith(5, "remove_account", {
       accountId: "account-a",
     });
   });

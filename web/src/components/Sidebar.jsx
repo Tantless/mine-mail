@@ -48,6 +48,7 @@ function connectedAccounts(accountStatus) {
       accountId: accountStatus.accountId || "primary",
       provider: accountStatus.provider,
       email: accountStatus.email,
+      remark: accountStatus.remark || null,
     },
   ];
 }
@@ -145,6 +146,7 @@ export function Sidebar({
 
             {accounts.map((account) => {
               const accountLabel = providerNames[account.provider] || "邮箱账户";
+              const displayName = account.remark?.trim() || accountLabel;
               const active = account.accountId === activeAccountId;
               return (
                 <button
@@ -153,17 +155,21 @@ export function Sidebar({
                   className="account-card"
                   data-active={active}
                   aria-pressed={active}
-                  aria-label={`${active ? "当前账户" : "切换到"} ${account.email}`}
+                  aria-label={`${active ? "当前账户" : "切换到"} ${
+                    account.remark
+                      ? `${displayName} ${account.email}`
+                      : account.email
+                  }`}
                   onClick={() => onAccountSwitch(account.accountId)}
                 >
                   <ProfileAvatar
                     className="account-card__avatar"
                     email={account.email}
-                    label={accountLabel}
+                    label={displayName}
                     customSrc={accountAvatarFor?.(account.email)}
                   />
                   <span className="account-card__copy">
-                    <strong>{accountLabel}</strong>
+                    <strong>{displayName}</strong>
                     <small>{account.email}</small>
                   </span>
                 </button>

@@ -62,7 +62,13 @@ export function AccountSetupForm({
     smtpPort: 465,
     smtpSecurity: "implicit_tls",
   });
+  const [validationError, setValidationError] = useState(null);
+  const emailRef = useRef(null);
   const secretRef = useRef(null);
+  const imapHostRef = useRef(null);
+  const imapPortRef = useRef(null);
+  const smtpHostRef = useRef(null);
+  const smtpPortRef = useRef(null);
 
   useEffect(() => {
     if (status?.email) setEmail(status.email);
@@ -73,19 +79,70 @@ export function AccountSetupForm({
   const selected = options.find((item) => item.id === provider) || options[0];
   const outlookBlocked = provider === "outlook";
   const configurationBlocked = outlookBlocked || Boolean(selected?.disabled);
+  const displayedError = validationError ? validationError.message : error;
+
+  const rejectInvalidField = (field, message, ref) => {
+    setValidationError({ field, message });
+    ref.current?.focus();
+  };
 
   const handleSubmit = (event) => {
     event.preventDefault();
     if (configurationBlocked || submitStatus === "saving") return;
     if (provider === "gmail") {
+      setValidationError(null);
       void onGoogle?.();
       return;
     }
+
+    const normalizedEmail = email.trim();
     const secret = secretRef.current?.value || "";
+    if (!normalizedEmail) {
+      rejectInvalidField("email", null, emailRef);
+      return;
+    }
+    if (!/^[^\s@]+@[^\s@]+$/.test(normalizedEmail)) {
+      rejectInvalidField("email", "邮箱地址格式不正确。", emailRef);
+      return;
+    }
+    if (!secret.trim()) {
+      rejectInvalidField("secret", null, secretRef);
+      return;
+    }
+    if (provider === "custom") {
+      if (!custom.imapHost.trim()) {
+        rejectInvalidField("imapHost", null, imapHostRef);
+        return;
+      }
+      const imapPort = Number(custom.imapPort);
+      if (!Number.isInteger(imapPort) || imapPort < 1 || imapPort > 65535) {
+        rejectInvalidField(
+          "imapPort",
+          "IMAP 端口应为 1–65535。",
+          imapPortRef,
+        );
+        return;
+      }
+      if (!custom.smtpHost.trim()) {
+        rejectInvalidField("smtpHost", null, smtpHostRef);
+        return;
+      }
+      const smtpPort = Number(custom.smtpPort);
+      if (!Number.isInteger(smtpPort) || smtpPort < 1 || smtpPort > 65535) {
+        rejectInvalidField(
+          "smtpPort",
+          "SMTP 端口应为 1–65535。",
+          smtpPortRef,
+        );
+        return;
+      }
+    }
+
+    setValidationError(null);
     if (secretRef.current) secretRef.current.value = "";
     const request = {
       provider,
-      email: email.trim(),
+      email: normalizedEmail,
       secret,
       ...(provider === "custom"
         ? {
@@ -101,7 +158,12 @@ export function AccountSetupForm({
   };
 
   return (
-    <form className="account-setup-form" autoComplete="off" onSubmit={handleSubmit}>
+    <form
+      className="account-setup-form"
+      autoComplete="off"
+      noValidate
+      onSubmit={handleSubmit}
+    >
       {showProviderPicker ? (
         <div className="account-provider-grid" role="radiogroup" aria-label="邮箱服务商">
           {options.map((option) => (
@@ -113,7 +175,10 @@ export function AccountSetupForm({
               aria-disabled={option.disabled || option.id === "outlook"}
               data-selected={provider === option.id}
               data-disabled={option.disabled || option.id === "outlook"}
-              onClick={() => setProvider(option.id)}
+              onClick={() => {
+                setProvider(option.id);
+                setValidationError(null);
+              }}
             >
               {option.label}
             </button>
@@ -150,11 +215,21 @@ export function AccountSetupForm({
             <span>邮箱地址</span>
             <span className="settings-input-shell settings-input-shell--text inset-input-shell">
               <input
+                ref={emailRef}
                 type="email"
-                required
                 autoComplete="off"
                 value={email}
-                onChange={(event) => setEmail(event.target.value)}
+                aria-invalid={validationError?.field === "email" || undefined}
+                aria-describedby={
+                  validationError?.field === "email" &&
+                  validationError?.message
+                    ? "account-setup-error"
+                    : undefined
+                }
+                onChange={(event) => {
+                  setEmail(event.target.value);
+                  setValidationError(null);
+                }}
                 placeholder="name@example.com"
               />
             </span>
@@ -167,8 +242,15 @@ export function AccountSetupForm({
                 ref={secretRef}
                 type="password"
                 aria-label={selected?.secretLabel}
-                required
+                aria-invalid={validationError?.field === "secret" || undefined}
+                aria-describedby={
+                  validationError?.field === "secret" &&
+                  validationError?.message
+                    ? "account-setup-error"
+                    : undefined
+                }
                 autoComplete="off"
+                onInput={() => setValidationError(null)}
                 placeholder="请输入授权密码"
               />
             </span>
@@ -181,12 +263,20 @@ export function AccountSetupForm({
                 <span>IMAP 主机</span>
                 <span className="settings-input-shell settings-input-shell--text inset-input-shell">
                   <input
-                    required
+                    ref={imapHostRef}
                     autoComplete="off"
                     value={custom.imapHost}
-                    onChange={(event) =>
-                      setCustom((current) => ({ ...current, imapHost: event.target.value }))
+                    aria-invalid={validationError?.field === "imapHost" || undefined}
+                    aria-describedby={
+                      validationError?.field === "imapHost" &&
+                      validationError?.message
+                        ? "account-setup-error"
+                        : undefined
                     }
+                    onChange={(event) => {
+                      setCustom((current) => ({ ...current, imapHost: event.target.value }));
+                      setValidationError(null);
+                    }}
                     placeholder="imap.example.com"
                   />
                 </span>
@@ -195,15 +285,23 @@ export function AccountSetupForm({
                 <span>IMAP 端口</span>
                 <span className="settings-input-shell settings-input-shell--text inset-input-shell">
                   <input
-                    required
+                    ref={imapPortRef}
                     type="number"
                     autoComplete="off"
                     min="1"
                     max="65535"
                     value={custom.imapPort}
-                    onChange={(event) =>
-                      setCustom((current) => ({ ...current, imapPort: event.target.value }))
+                    aria-invalid={validationError?.field === "imapPort" || undefined}
+                    aria-describedby={
+                      validationError?.field === "imapPort" &&
+                      validationError?.message
+                        ? "account-setup-error"
+                        : undefined
                     }
+                    onChange={(event) => {
+                      setCustom((current) => ({ ...current, imapPort: event.target.value }));
+                      setValidationError(null);
+                    }}
                   />
                 </span>
               </label>
@@ -211,12 +309,20 @@ export function AccountSetupForm({
                 <span>SMTP 主机</span>
                 <span className="settings-input-shell settings-input-shell--text inset-input-shell">
                   <input
-                    required
+                    ref={smtpHostRef}
                     autoComplete="off"
                     value={custom.smtpHost}
-                    onChange={(event) =>
-                      setCustom((current) => ({ ...current, smtpHost: event.target.value }))
+                    aria-invalid={validationError?.field === "smtpHost" || undefined}
+                    aria-describedby={
+                      validationError?.field === "smtpHost" &&
+                      validationError?.message
+                        ? "account-setup-error"
+                        : undefined
                     }
+                    onChange={(event) => {
+                      setCustom((current) => ({ ...current, smtpHost: event.target.value }));
+                      setValidationError(null);
+                    }}
                     placeholder="smtp.example.com"
                   />
                 </span>
@@ -225,15 +331,23 @@ export function AccountSetupForm({
                 <span>SMTP 端口</span>
                 <span className="settings-input-shell settings-input-shell--text inset-input-shell">
                   <input
-                    required
+                    ref={smtpPortRef}
                     type="number"
                     autoComplete="off"
                     min="1"
                     max="65535"
                     value={custom.smtpPort}
-                    onChange={(event) =>
-                      setCustom((current) => ({ ...current, smtpPort: event.target.value }))
+                    aria-invalid={validationError?.field === "smtpPort" || undefined}
+                    aria-describedby={
+                      validationError?.field === "smtpPort" &&
+                      validationError?.message
+                        ? "account-setup-error"
+                        : undefined
                     }
+                    onChange={(event) => {
+                      setCustom((current) => ({ ...current, smtpPort: event.target.value }));
+                      setValidationError(null);
+                    }}
                   />
                 </span>
               </label>
@@ -257,7 +371,11 @@ export function AccountSetupForm({
         )
       )}
 
-      {error ? <p className="settings-error" role="alert">{error}</p> : null}
+      {displayedError ? (
+        <p id="account-setup-error" className="settings-error" role="alert">
+          {displayedError}
+        </p>
+      ) : null}
 
       <button
         type="submit"

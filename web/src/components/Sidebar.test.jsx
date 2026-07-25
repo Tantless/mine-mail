@@ -122,6 +122,23 @@ describe("Sidebar account switcher", () => {
     expect(onAddAccount).toHaveBeenCalledOnce();
   });
 
+  it("uses an account remark as the visible account identity without hiding its address", () => {
+    renderSidebar(1, {
+      accountStatus: {
+        configured: true,
+        accounts: [{ ...accounts[0], remark: "工作邮箱" }],
+        activeAccountId: "netease",
+        maxAccounts: 3,
+      },
+    });
+
+    const account = screen.getByRole("button", {
+      name: "当前账户 工作邮箱 first@163.com",
+    });
+    expect(account.textContent).toContain("工作邮箱");
+    expect(account.textContent).toContain("first@163.com");
+  });
+
   it("moves the selected state between connected accounts", () => {
     const { rerenderSidebar } = renderSidebar(2);
     const firstAccount = screen.getByRole("button", { name: "当前账户 first@163.com" });

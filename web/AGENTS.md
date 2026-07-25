@@ -19,6 +19,9 @@ When implementing from a selected generated mock, treat that image as the source
 - The theme picker is a theme-tinted frosted popover. Any pointer interaction outside the picker, including another sidebar control, dismisses it before that target action continues.
 - The future-letter quotation ink is explicitly tuned per wallpaper: cool blue-black in Daylight, clear off-white in Night, warm wine-brown in Dusk, and deep pine green in Forest. The attribution retains the same ink, and contrast takes priority over decorative tint.
 - Settings text-field visuals and their actual input hit area are one surface: the full inset shell uses the text cursor and focuses the contained input when clicked.
+- Forms and consequential confirmations use Mine Mail-owned themed feedback. Do not expose browser constraint-validation bubbles or `window.alert`/`window.confirm`/`window.prompt`; show one relevant in-app message and avoid duplicate explanatory prompts.
+- Account remarks are local identity labels, not replacements for addresses. Prefer the remark for compact account provenance, retain the real address in supporting text, and use both on the new-mail surface.
+- The lower-right new-mail surface uses the sender's local-first `ProfileAvatar`, names the receiving account, and keeps its material more opaque than ordinary decorative glass so four-theme text remains immediately readable.
 
 ## Desktop integration decisions
 

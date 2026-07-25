@@ -30,7 +30,7 @@
         "title": "Mine Mail 新邮件",
         "url": "index.html?surface=new-mail-notification",
         "width": 388,
-        "height": 128,
+        "height": 148,
         "visible": false,
         "resizable": false,
         "decorations": false,

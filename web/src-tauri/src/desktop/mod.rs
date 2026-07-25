@@ -23,6 +23,7 @@ use tokio::time::Instant as TokioInstant;
 
 use crate::{
     account::{AccountRuntime, BackendState},
+    contacts::ContactRuntime,
     diagnostics::{self, ErrorKind, Fields},
 };
 
@@ -51,7 +52,12 @@ const NEW_MAIL_NOTIFICATION_MARGIN: i32 = 18;
 pub(crate) struct NewMailNotificationDto {
     pub notification_id: u64,
     pub sender: String,
+    pub sender_email: String,
+    pub sender_remark: Option<String>,
+    pub sender_avatar_data_url: Option<String>,
     pub subject: String,
+    pub recipient_email: String,
+    pub recipient_remark: Option<String>,
     pub uid: u32,
     pub account_id: String,
     pub count: usize,
@@ -257,6 +263,16 @@ impl DesktopRuntime {
             .map_err(|_| "Avatars could not be loaded.".to_owned())
     }
 
+    fn profile_avatar_for(
+        &self,
+        owner_type: settings::ProfileAvatarOwnerType,
+        owner_key: &str,
+    ) -> Option<String> {
+        self.store
+            .as_ref()
+            .and_then(|store| store.profile_avatar(owner_type, owner_key).ok().flatten())
+    }
+
     pub(crate) fn save_profile_avatar(
         &self,
         request: SaveProfileAvatarRequest,
@@ -303,7 +319,12 @@ impl DesktopRuntime {
     fn publish_new_mail_notification(
         &self,
         sender: String,
+        sender_email: String,
+        sender_remark: Option<String>,
+        sender_avatar_data_url: Option<String>,
         subject: String,
+        recipient_email: String,
+        recipient_remark: Option<String>,
         uid: u32,
         account_id: String,
         count: usize,
@@ -312,7 +333,12 @@ impl DesktopRuntime {
         let notification = NewMailNotificationDto {
             notification_id: self.notification_sequence.fetch_add(1, Ordering::Relaxed) + 1,
             sender,
+            sender_email,
+            sender_remark,
+            sender_avatar_data_url,
             subject,
+            recipient_email,
+            recipient_remark,
             uid,
             account_id,
             count,
@@ -1430,21 +1456,35 @@ fn update_notification_baseline_and_notify(
     let newest = new_unread
         .last()
         .expect("new_unread is known to contain at least one message");
-    let newest_sender = notification_sender(newest);
-    let newest_subject = notification_subject(newest);
     let count = new_unread.len();
-    let (sender, subject) = if count == 1 {
-        (newest_sender, newest_subject)
-    } else {
-        (
-            format!("收到 {count} 封新邮件"),
-            format!("最新：{newest_sender} · {newest_subject}"),
-        )
-    };
+    let sender_email = notification_sender_email(newest);
+    let sender_remark = (!sender_email.is_empty())
+        .then(|| {
+            app.state::<ContactRuntime>()
+                .remark_for(&sender_email)
+                .ok()
+                .flatten()
+        })
+        .flatten();
+    let sender = notification_sender(newest, sender_remark.as_deref());
+    let sender_avatar_data_url = (!sender_email.is_empty())
+        .then(|| {
+            runtime.profile_avatar_for(settings::ProfileAvatarOwnerType::Contact, &sender_email)
+        })
+        .flatten();
+    let (recipient_email, recipient_remark) = app
+        .state::<AccountRuntime>()
+        .account_email_and_remark(account_id)
+        .unwrap_or_else(|| (account_id.to_owned(), None));
     show_new_mail_notification(
         app,
         sender,
-        subject,
+        sender_email,
+        sender_remark,
+        sender_avatar_data_url,
+        notification_subject(newest),
+        recipient_email,
+        recipient_remark,
         newest.uid,
         account_id.to_owned(),
         count,
@@ -1463,7 +1503,12 @@ fn should_deliver_new_mail_notification(
 fn show_new_mail_notification(
     app: &AppHandle,
     sender: String,
+    sender_email: String,
+    sender_remark: Option<String>,
+    sender_avatar_data_url: Option<String>,
     subject: String,
+    recipient_email: String,
+    recipient_remark: Option<String>,
     uid: u32,
     account_id: String,
     count: usize,
@@ -1477,7 +1522,12 @@ fn show_new_mail_notification(
     };
     let Ok(notification) = runtime.publish_new_mail_notification(
         sanitize_notification_text(&sender, 80),
+        sanitize_notification_text(&sender_email, 320),
+        sender_remark.map(|value| sanitize_notification_text(&value, 40)),
+        sender_avatar_data_url,
         sanitize_notification_text(&subject, 140),
+        sanitize_notification_text(&recipient_email, 320),
+        recipient_remark.map(|value| sanitize_notification_text(&value, 40)),
         uid,
         account_id,
         count,
@@ -1501,7 +1551,18 @@ fn show_new_mail_notification(
     }
 }
 
-fn notification_sender(message: &InboxMessage) -> String {
+fn notification_sender_email(message: &InboxMessage) -> String {
+    message
+        .sender
+        .as_ref()
+        .map(|address| address.email.trim().to_owned())
+        .unwrap_or_default()
+}
+
+fn notification_sender(message: &InboxMessage, remark: Option<&str>) -> String {
+    if let Some(remark) = remark.filter(|value| !value.trim().is_empty()) {
+        return remark.to_owned();
+    }
     message
         .sender
         .as_ref()
@@ -1794,8 +1855,9 @@ mod tests {
     use super::settings::NotificationSound;
     use super::settings::StoredDesktopSettings;
     use super::{
-        BeforeExitEvent, DesktopRuntime, EXIT_HANDSHAKE_TIMEOUT, is_seen,
-        sanitize_notification_text, should_deliver_new_mail_notification,
+        BeforeExitEvent, DesktopRuntime, EXIT_HANDSHAKE_TIMEOUT, is_seen, notification_sender,
+        notification_sender_email, sanitize_notification_text,
+        should_deliver_new_mail_notification,
     };
 
     fn message(flags: Vec<String>) -> InboxMessage {
@@ -1844,6 +1906,14 @@ mod tests {
     }
 
     #[test]
+    fn notification_sender_keeps_address_and_prefers_local_remark() {
+        let message = message(Vec::new());
+        assert_eq!(notification_sender_email(&message), "sender@example.com");
+        assert_eq!(notification_sender(&message, None), "Sender");
+        assert_eq!(notification_sender(&message, Some("产品团队")), "产品团队");
+    }
+
+    #[test]
     fn foreground_notifications_can_be_disabled_without_silencing_background_mail() {
         let mut settings = StoredDesktopSettings::default();
         assert!(should_deliver_new_mail_notification(settings, false));
@@ -1864,7 +1934,12 @@ mod tests {
         let notification = runtime
             .publish_new_mail_notification(
                 "Sender".to_owned(),
+                "sender@example.com".to_owned(),
+                None,
+                None,
                 "Subject".to_owned(),
+                "mine@example.com".to_owned(),
+                Some("工作邮箱".to_owned()),
                 42,
                 "account-test".to_owned(),
                 1,
@@ -1877,14 +1952,14 @@ mod tests {
                 .clear_new_mail_notification(notification.notification_id + 1)
                 .unwrap()
         );
-        assert_eq!(
-            runtime
-                .latest_new_mail_notification()
-                .expect("notification state")
-                .expect("pending notification")
-                .uid,
-            42,
-        );
+        let pending = runtime
+            .latest_new_mail_notification()
+            .expect("notification state")
+            .expect("pending notification");
+        assert_eq!(pending.uid, 42);
+        assert_eq!(pending.sender_email, "sender@example.com");
+        assert_eq!(pending.recipient_email, "mine@example.com");
+        assert_eq!(pending.recipient_remark.as_deref(), Some("工作邮箱"));
         assert!(
             runtime
                 .clear_new_mail_notification(notification.notification_id)

@@ -7,6 +7,7 @@ import {
   EnvelopeSimple,
   Info,
   MicrosoftOutlookLogo,
+  NotePencil,
   Plus,
   Question,
   SlidersHorizontal,
@@ -113,8 +114,17 @@ function connectedAccounts(accountStatus) {
       accountId: accountStatus.accountId || "primary",
       provider: accountStatus.provider,
       email: accountStatus.email,
+      remark: accountStatus.remark || null,
     },
   ];
+}
+
+function accountDisplayName(account) {
+  return account?.remark?.trim() || account?.email || "邮箱账户";
+}
+
+function errorMessage(error, fallback) {
+  return error instanceof Error && error.message ? error.message : fallback;
 }
 
 function ProviderMark({ provider }) {
@@ -164,6 +174,7 @@ export function SettingsPanel({
   onConfigureAccount,
   onConnectGoogle,
   onSwitchAccount,
+  onSaveAccountRemark,
   onRemoveAccount,
   accountAvatarFor,
   onSetAccountAvatar,
@@ -187,6 +198,11 @@ export function SettingsPanel({
     repairAccountRequested,
   );
   const [accountMenu, setAccountMenu] = useState(null);
+  const [pendingAccountRemoval, setPendingAccountRemoval] = useState(null);
+  const [editingAccountRemark, setEditingAccountRemark] = useState(null);
+  const [accountRemarkValue, setAccountRemarkValue] = useState("");
+  const [accountRemarkError, setAccountRemarkError] = useState(null);
+  const [isAccountRemarkSaving, setIsAccountRemarkSaving] = useState(false);
   const scrollRef = useRef(null);
   const previousAccountSubmitStatusRef = useRef(accountSubmitStatus);
 
@@ -238,7 +254,33 @@ export function SettingsPanel({
   useEffect(() => {
     scrollRef.current?.scrollTo?.({ top: 0, behavior: "smooth" });
     setAccountMenu(null);
+    setPendingAccountRemoval(null);
+    setEditingAccountRemark(null);
+    setAccountRemarkError(null);
   }, [accountFlow, activeSection, selectedProvider]);
+
+  useEffect(() => {
+    if (!pendingAccountRemoval && !editingAccountRemark) return undefined;
+
+    const closeOnEscape = (event) => {
+      if (
+        event.key === "Escape" &&
+        accountSubmitStatus !== "saving" &&
+        !isAccountRemarkSaving
+      ) {
+        setPendingAccountRemoval(null);
+        setEditingAccountRemark(null);
+      }
+    };
+
+    document.addEventListener("keydown", closeOnEscape);
+    return () => document.removeEventListener("keydown", closeOnEscape);
+  }, [
+    accountSubmitStatus,
+    editingAccountRemark,
+    isAccountRemarkSaving,
+    pendingAccountRemoval,
+  ]);
 
   const updateSettings = (updater) => {
     const next = typeof updater === "function" ? updater(value) : updater;
@@ -258,6 +300,33 @@ export function SettingsPanel({
     setAccountFlow("providers");
     setSelectedProvider(null);
     setRepairingAccount(false);
+  };
+
+  const openAccountRemarkEditor = (account) => {
+    setAccountMenu(null);
+    setPendingAccountRemoval(null);
+    setEditingAccountRemark(account);
+    setAccountRemarkValue(account.remark || "");
+    setAccountRemarkError(null);
+  };
+
+  const saveAccountRemark = async () => {
+    if (!editingAccountRemark || isAccountRemarkSaving) return;
+    setIsAccountRemarkSaving(true);
+    setAccountRemarkError(null);
+    try {
+      await onSaveAccountRemark(
+        editingAccountRemark.accountId,
+        accountRemarkValue.trim(),
+      );
+      setEditingAccountRemark(null);
+    } catch (error) {
+      setAccountRemarkError(
+        errorMessage(error, "邮箱备注没有保存，请重试。"),
+      );
+    } finally {
+      setIsAccountRemarkSaving(false);
+    }
   };
 
   const saveStateLabel =
@@ -358,6 +427,9 @@ export function SettingsPanel({
                         connectedAccount.accountId ===
                         (accountStatus.activeAccountId || accountStatus.accountId);
                       const customAvatar = accountAvatarFor?.(connectedAccount.email);
+                      const displayName = accountDisplayName(connectedAccount);
+                      const providerLabel =
+                        providerNames[connectedAccount.provider] || "邮箱账户";
                       return (
                         <div
                           className="settings-account-card"
@@ -368,7 +440,7 @@ export function SettingsPanel({
                             className="settings-account-card__avatar-picker"
                             avatarClassName="settings-account-card__avatar"
                             email={connectedAccount.email}
-                            label={connectedAccount.email}
+                            label={displayName}
                             customSrc={customAvatar}
                             onSelectFile={(file) =>
                               onSetAccountAvatar(connectedAccount.email, file)
@@ -378,8 +450,12 @@ export function SettingsPanel({
                             }
                           />
                           <span className="settings-account-card__copy">
-                            <strong>{connectedAccount.email}</strong>
-                            <small>{providerNames[connectedAccount.provider] || "邮箱账户"}</small>
+                            <strong>{displayName}</strong>
+                            <small>
+                              {connectedAccount.remark
+                                ? `${connectedAccount.email} · ${providerLabel}`
+                                : providerLabel}
+                            </small>
                           </span>
                           {active ? (
                             <span className="settings-current-chip">当前</span>
@@ -415,9 +491,20 @@ export function SettingsPanel({
                                 <button
                                   type="button"
                                   role="menuitem"
+                                  onClick={() =>
+                                    openAccountRemarkEditor(connectedAccount)
+                                  }
+                                >
+                                  <NotePencil size={15} />
+                                  {connectedAccount.remark ? "编辑备注" : "添加备注"}
+                                </button>
+                                <button
+                                  type="button"
+                                  role="menuitem"
+                                  data-tone="danger"
                                   onClick={() => {
                                     setAccountMenu(null);
-                                    onRemoveAccount(connectedAccount);
+                                    setPendingAccountRemoval(connectedAccount);
                                   }}
                                 >
                                   <Trash size={15} />
@@ -455,8 +542,12 @@ export function SettingsPanel({
                   <div className="settings-inline-account">
                     <ProviderMark provider={activeAccount.provider} />
                     <span>
-                      <strong>{activeAccount.email}</strong>
-                      <small>新邮件将默认使用当前账户发出。</small>
+                      <strong>{accountDisplayName(activeAccount)}</strong>
+                      <small>
+                        {activeAccount.remark
+                          ? `${activeAccount.email} · 新邮件将默认使用此账户发出。`
+                          : "新邮件将默认使用当前账户发出。"}
+                      </small>
                     </span>
                   </div>
                 </section>
@@ -733,6 +824,158 @@ export function SettingsPanel({
           ) : null}
         </div>
       </div>
+
+      {editingAccountRemark ? (
+        <div
+          className="confirm-layer"
+          onMouseDown={(event) => {
+            if (
+              event.target === event.currentTarget &&
+              !isAccountRemarkSaving
+            ) {
+              setEditingAccountRemark(null);
+            }
+          }}
+        >
+          <form
+            className="confirm-dialog account-remark-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="account-remark-title"
+            noValidate
+            onSubmit={(event) => {
+              event.preventDefault();
+              void saveAccountRemark();
+            }}
+          >
+            <header>
+              <span className="confirm-dialog__icon">
+                <NotePencil size={22} weight="duotone" />
+              </span>
+              <IconButton
+                label="关闭邮箱备注编辑"
+                onClick={() => setEditingAccountRemark(null)}
+                disabled={isAccountRemarkSaving}
+              >
+                <X size={18} />
+              </IconButton>
+            </header>
+            <h2 id="account-remark-title">设置邮箱备注</h2>
+            <p>
+              备注会用于账户来源、收藏夹和新邮件通知；邮箱地址仍会同时显示。
+            </p>
+            <label className="settings-field account-remark-dialog__field">
+              <span>备注名</span>
+              <span className="settings-input-shell settings-input-shell--text inset-input-shell">
+                <input
+                  type="text"
+                  aria-label="备注名"
+                  value={accountRemarkValue}
+                  maxLength={40}
+                  autoComplete="off"
+                  autoFocus
+                  disabled={isAccountRemarkSaving}
+                  placeholder="例如：工作邮箱"
+                  onChange={(event) => {
+                    setAccountRemarkValue(event.target.value);
+                    setAccountRemarkError(null);
+                  }}
+                />
+              </span>
+              <small>留空并保存可删除备注，最多 40 个字符。</small>
+            </label>
+            {accountRemarkError ? (
+              <p className="settings-error" role="alert">
+                {accountRemarkError}
+              </p>
+            ) : null}
+            <footer>
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => setEditingAccountRemark(null)}
+                disabled={isAccountRemarkSaving}
+              >
+                取消
+              </button>
+              <button
+                type="submit"
+                className="send-button"
+                disabled={isAccountRemarkSaving}
+              >
+                {isAccountRemarkSaving ? "正在保存…" : "保存备注"}
+              </button>
+            </footer>
+          </form>
+        </div>
+      ) : null}
+
+      {pendingAccountRemoval ? (
+        <div
+          className="confirm-layer"
+          onMouseDown={(event) => {
+            if (
+              event.target === event.currentTarget &&
+              accountSubmitStatus !== "saving"
+            ) {
+              setPendingAccountRemoval(null);
+            }
+          }}
+        >
+          <section
+            className="confirm-dialog confirm-dialog--danger"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="remove-account-title"
+            aria-describedby="remove-account-description"
+          >
+            <header>
+              <span className="confirm-dialog__icon">
+                <Trash size={22} weight="duotone" />
+              </span>
+              <IconButton
+                label="取消移除账户"
+                onClick={() => setPendingAccountRemoval(null)}
+                disabled={accountSubmitStatus === "saving"}
+              >
+                <X size={18} />
+              </IconButton>
+            </header>
+            <h2 id="remove-account-title">移除这个邮箱账户？</h2>
+            <p id="remove-account-description">
+              系统凭据会被移除；本地邮件缓存会保留，重新连接后仍可恢复。
+            </p>
+            <div className="confirm-dialog__subject">
+              <small>将移除</small>
+              <strong>{pendingAccountRemoval.email}</strong>
+            </div>
+            <footer>
+              <button
+                type="button"
+                className="secondary-button"
+                autoFocus
+                onClick={() => setPendingAccountRemoval(null)}
+                disabled={accountSubmitStatus === "saving"}
+              >
+                保留账户
+              </button>
+              <button
+                type="button"
+                className="send-button confirm-dialog__danger-action"
+                onClick={() => {
+                  const account = pendingAccountRemoval;
+                  setPendingAccountRemoval(null);
+                  void onRemoveAccount(account);
+                }}
+                disabled={accountSubmitStatus === "saving"}
+              >
+                <Trash size={17} weight="fill" />
+                移除账户
+              </button>
+            </footer>
+          </section>
+        </div>
+      ) : null}
     </section>
   );
 }

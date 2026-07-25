@@ -41,21 +41,31 @@ describe("Mine Mail new mail notification surface", () => {
       notificationBridge.handler({
         payload: {
           notificationId: 12,
-          sender: "Tantless",
+          sender: "产品团队",
+          senderEmail: "sender@example.com",
+          senderRemark: "产品团队",
+          senderAvatarDataUrl: "data:image/png;base64,AQID",
           subject: "A new message",
+          recipientEmail: "me@163.com",
+          recipientRemark: "工作邮箱",
           uid: 88,
+          accountId: "account-163",
           count: 1,
           webSound: null,
         },
       });
     });
 
-    expect(screen.getByText("Tantless")).toBeTruthy();
+    expect(screen.getByText("产品团队")).toBeTruthy();
+    expect(screen.getByText("sender@example.com")).toBeTruthy();
     expect(screen.getByText("A new message")).toBeTruthy();
+    expect(screen.getByText("收信至 工作邮箱 · me@163.com")).toBeTruthy();
+    expect(screen.getByLabelText("产品团队 的自定义头像")).toBeTruthy();
     await user.click(screen.getByRole("button", { name: "打开新邮件" }));
     expect(notificationBridge.openNewMailNotification).toHaveBeenCalledWith(
       12,
       88,
+      "account-163",
     );
   });
 
@@ -71,8 +81,9 @@ describe("Mine Mail new mail notification surface", () => {
     });
     render(<NewMailNotification />);
 
+    expect(await screen.findByText("2 封新邮件 · 刚刚")).toBeTruthy();
     await user.click(
-      await screen.findByRole("button", { name: "关闭新邮件通知" }),
+      screen.getByRole("button", { name: "关闭新邮件通知" }),
     );
     expect(notificationBridge.dismissNewMailNotification).toHaveBeenCalledWith(14);
   });

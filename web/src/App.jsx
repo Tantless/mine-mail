@@ -1751,7 +1751,7 @@ export function App() {
       new Map(
         (accountStatus.accounts || []).map((account) => [
           account.accountId,
-          account.email || account.accountId,
+          account.remark?.trim() || account.email || account.accountId,
         ]),
       ),
     [accountStatus.accounts],
@@ -2573,16 +2573,19 @@ export function App() {
     void handleSwitchAccount(accountId);
   };
 
+  const handleSaveAccountRemark = async (accountId, remark) => {
+    const status = await mailApi.setAccountRemark(accountId, remark);
+    setAccountStatus(status);
+    showToast(remark.trim() ? "邮箱备注已保存" : "邮箱备注已删除");
+    return status;
+  };
+
   const handleRemoveAccount = async (connectedAccount) => {
     if (!connectedAccount?.accountId) return;
     if (composerRef.current) {
       showToast("请先关闭当前写信窗口，再移除邮箱账户。", "error");
       return;
     }
-    const confirmed = window.confirm(
-      `确定从 Mine Mail 移除 ${connectedAccount.email} 吗？\n\n系统凭据会被移除；本地邮件缓存会保留，重新连接后仍可恢复。`,
-    );
-    if (!confirmed) return;
     setAccountSubmitStatus("saving");
     try {
       const status = await mailApi.removeAccount(connectedAccount.accountId);
@@ -2818,6 +2821,7 @@ export function App() {
             onConfigureAccount={handleConfigureAccount}
             onConnectGoogle={handleConnectGoogle}
             onSwitchAccount={(accountId) => void handleSwitchAccount(accountId)}
+            onSaveAccountRemark={handleSaveAccountRemark}
             onRemoveAccount={(connectedAccount) =>
               void handleRemoveAccount(connectedAccount)
             }

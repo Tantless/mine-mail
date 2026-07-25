@@ -45,6 +45,7 @@ let webAccountStatus = {
   activeAccountId: "demo-primary",
   provider: "163",
   email: "demo@163.com",
+  remark: null,
   backendReady: true,
   credentialAvailable: true,
   networkReady: true,
@@ -54,6 +55,7 @@ let webAccountStatus = {
       accountId: "demo-primary",
       provider: "163",
       email: "demo@163.com",
+      remark: null,
       authentication: "password",
       backendReady: true,
       credentialAvailable: true,
@@ -171,6 +173,7 @@ function normalizeAccountStatus(status = {}) {
     accountId: account.accountId ?? account.account_id ?? null,
     provider: account.provider ?? null,
     email: account.email ?? null,
+    remark: (account.remark ?? "").trim() || null,
     authentication: account.authentication ?? "password",
     backendReady: Boolean(account.backendReady ?? account.backend_ready),
     credentialAvailable: Boolean(
@@ -186,6 +189,7 @@ function normalizeAccountStatus(status = {}) {
             accountId: status.accountId ?? status.account_id ?? "primary",
             provider: status.provider ?? status.provider_id,
             email: status.email,
+            remark: status.remark,
             authentication: status.authentication,
             backendReady: status.backendReady ?? status.backend_ready ?? true,
             credentialAvailable:
@@ -205,6 +209,7 @@ function normalizeAccountStatus(status = {}) {
       null,
     provider: status.provider ?? status.provider_id ?? null,
     email: status.email ?? null,
+    remark: (status.remark ?? "").trim() || null,
     authentication: status.authentication ?? null,
     backendReady: Boolean(
       status.backendReady ?? status.backend_ready ?? status.configured,
@@ -810,6 +815,39 @@ export const mailApi = {
           activeAccountId: selected.accountId,
         };
       }
+      return structuredClone(webAccountStatus);
+    })();
+  },
+
+  async setAccountRemark(accountId, remark) {
+    if (isTauri) {
+      return normalizeAccountStatus(
+        await desktopInvoke("set_account_remark", {
+          accountId,
+          remark,
+        }),
+      );
+    }
+    return webOnly(() => {
+      const normalizedRemark = (remark || "").trim();
+      if ([...normalizedRemark].length > 40)
+        throw new Error("邮箱备注最多 40 个字符");
+      if (/\p{Cc}/u.test(normalizedRemark))
+        throw new Error("邮箱备注不能包含控制字符");
+      const accounts = webAccountStatus.accounts.map((account) =>
+        account.accountId === accountId
+          ? { ...account, remark: normalizedRemark || null }
+          : account,
+      );
+      const active = accounts.find(
+        (account) => account.accountId === webAccountStatus.activeAccountId,
+      );
+      webAccountStatus = {
+        ...webAccountStatus,
+        ...(active || {}),
+        accounts,
+        remark: active?.remark || null,
+      };
       return structuredClone(webAccountStatus);
     })();
   },

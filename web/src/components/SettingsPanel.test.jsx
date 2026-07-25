@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { SettingsPanel } from "./SettingsPanel.jsx";
 
@@ -40,6 +40,7 @@ function panelProps(overrides = {}) {
     onConfigureAccount: vi.fn(),
     onConnectGoogle: vi.fn(),
     onSwitchAccount: vi.fn(),
+    onSaveAccountRemark: vi.fn().mockResolvedValue(accountStatus),
     onRemoveAccount: vi.fn(),
     accountAvatarFor: vi.fn(),
     onSetAccountAvatar: vi.fn(),
@@ -70,5 +71,48 @@ describe("SettingsPanel account flow", () => {
     view.rerender(<SettingsPanel {...props} accountSubmitStatus="saving" />);
     view.rerender(<SettingsPanel {...props} accountSubmitStatus="saved" />);
     expect(screen.getByRole("heading", { name: "账户与同步" })).toBeTruthy();
+  });
+
+  it("confirms account removal in a themed app dialog", async () => {
+    const user = userEvent.setup();
+    const onRemoveAccount = vi.fn();
+    render(<SettingsPanel {...panelProps({ onRemoveAccount })} />);
+
+    await user.click(
+      screen.getByRole("button", { name: "管理 first@163.com" }),
+    );
+    await user.click(screen.getByRole("menuitem", { name: "移除账户" }));
+
+    const dialog = screen.getByRole("alertdialog", {
+      name: "移除这个邮箱账户？",
+    });
+    expect(within(dialog).getByText("first@163.com")).toBeTruthy();
+    expect(onRemoveAccount).not.toHaveBeenCalled();
+
+    await user.click(within(dialog).getByRole("button", { name: "移除账户" }));
+    expect(onRemoveAccount).toHaveBeenCalledWith(accountStatus.accounts[0]);
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+  });
+
+  it("edits a connected account remark from the local account menu", async () => {
+    const user = userEvent.setup();
+    const onSaveAccountRemark = vi.fn().mockResolvedValue(accountStatus);
+    render(<SettingsPanel {...panelProps({ onSaveAccountRemark })} />);
+
+    await user.click(
+      screen.getByRole("button", { name: "管理 first@163.com" }),
+    );
+    await user.click(screen.getByRole("menuitem", { name: "添加备注" }));
+
+    const dialog = screen.getByRole("dialog", { name: "设置邮箱备注" });
+    const input = within(dialog).getByRole("textbox", { name: "备注名" });
+    await user.type(input, "工作邮箱");
+    await user.click(within(dialog).getByRole("button", { name: "保存备注" }));
+
+    expect(onSaveAccountRemark).toHaveBeenCalledWith(
+      "163-account",
+      "工作邮箱",
+    );
+    expect(screen.queryByRole("dialog", { name: "设置邮箱备注" })).toBeNull();
   });
 });

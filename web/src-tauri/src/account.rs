@@ -28,6 +28,7 @@ const ACCOUNT_METADATA_FILE: &str = "account.json";
 const ACCOUNT_STORE_VERSION: u8 = 2;
 const ACCOUNT_METADATA_VERSION: u8 = 1;
 const MAX_ACCOUNTS: usize = 3;
+const ACCOUNT_REMARK_MAX_CHARACTERS: usize = 40;
 const KEYRING_SERVICE: &str = "com.minemail.desktop";
 const LEGACY_KEYRING_USERNAME: &str = "primary";
 const KEYRING_USERNAME_PREFIX: &str = "account-";
@@ -87,6 +88,8 @@ struct AccountMetadata {
     #[serde(default)]
     authentication: AccountAuthentication,
     email: String,
+    #[serde(default)]
+    remark: Option<String>,
     imap: ServerConfig,
     smtp: ServerConfig,
     smtp_security: SmtpSecurity,
@@ -120,6 +123,7 @@ impl AccountMetadata {
             provider,
             authentication: AccountAuthentication::Password,
             email: email.trim().to_owned(),
+            remark: None,
             imap,
             smtp,
             smtp_security,
@@ -173,6 +177,7 @@ impl AccountMetadata {
             provider: AccountProvider::Custom,
             authentication: AccountAuthentication::Password,
             email: input.email.trim().to_owned(),
+            remark: None,
             imap: server(imap_host, imap_port),
             smtp: server(smtp_host, smtp_port),
             smtp_security,
@@ -264,6 +269,7 @@ impl StoredAccounts {
             .find(|existing| existing.same_identity(&metadata))
         {
             metadata.account_id = existing.account_id.clone();
+            metadata.remark = existing.remark.clone();
             *existing = metadata.clone();
         } else {
             if self.accounts.len() >= MAX_ACCOUNTS {
@@ -310,6 +316,7 @@ pub(crate) struct AccountSummaryDto {
     account_id: String,
     provider: AccountProvider,
     email: String,
+    remark: Option<String>,
     authentication: AccountAuthentication,
     backend_ready: bool,
     network_ready: bool,
@@ -326,6 +333,7 @@ pub(crate) struct AccountStatusDto {
     account_id: Option<String>,
     provider: Option<AccountProvider>,
     email: Option<String>,
+    remark: Option<String>,
     imap: Option<ServerConfig>,
     smtp: Option<ServerConfig>,
     smtp_security: Option<SmtpSecurity>,
@@ -748,6 +756,7 @@ impl AccountRuntime {
                     account_id: metadata.account_id.clone(),
                     provider: metadata.provider,
                     email: metadata.email.clone(),
+                    remark: metadata.remark.clone(),
                     authentication: metadata.authentication,
                     backend_ready,
                     network_ready,
@@ -764,6 +773,7 @@ impl AccountRuntime {
             account_id: active.map(|metadata| metadata.account_id.clone()),
             provider: active.map(|metadata| metadata.provider),
             email: active.map(|metadata| metadata.email.clone()),
+            remark: active.and_then(|metadata| metadata.remark.clone()),
             imap: active.map(|metadata| metadata.imap.clone()),
             smtp: active.map(|metadata| metadata.smtp.clone()),
             smtp_security: active.map(|metadata| metadata.smtp_security),
@@ -796,6 +806,45 @@ impl AccountRuntime {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    pub(crate) fn account_email_and_remark(
+        &self,
+        account_id: &str,
+    ) -> Option<(String, Option<String>)> {
+        self.stored.read().ok().and_then(|stored| {
+            stored
+                .accounts
+                .iter()
+                .find(|metadata| metadata.account_id == account_id)
+                .map(|metadata| (metadata.email.clone(), metadata.remark.clone()))
+        })
+    }
+
+    pub(crate) fn set_remark(
+        &self,
+        backend_state: &BackendState,
+        account_id: &str,
+        remark: &str,
+    ) -> Result<AccountStatusDto, String> {
+        let remark = normalize_account_remark(remark)?;
+        let mut next_stored = self
+            .stored
+            .read()
+            .map_err(|_| "Account state is temporarily unavailable.".to_owned())?
+            .clone();
+        let account = next_stored
+            .accounts
+            .iter_mut()
+            .find(|metadata| metadata.account_id == account_id)
+            .ok_or_else(|| "The selected account does not exist.".to_owned())?;
+        account.remark = remark;
+        self.store.save(&next_stored)?;
+        *self
+            .stored
+            .write()
+            .map_err(|_| "Account state is temporarily unavailable.".to_owned())? = next_stored;
+        Ok(self.status(backend_state))
     }
 
     pub(crate) async fn configure(
@@ -1313,6 +1362,22 @@ fn required_text(value: Option<&str>, field: &str) -> Result<String, String> {
     }
 }
 
+fn normalize_account_remark(value: &str) -> Result<Option<String>, String> {
+    let remark = value.trim();
+    if remark.is_empty() {
+        return Ok(None);
+    }
+    if remark.chars().count() > ACCOUNT_REMARK_MAX_CHARACTERS {
+        return Err(format!(
+            "Account remarks can contain at most {ACCOUNT_REMARK_MAX_CHARACTERS} characters."
+        ));
+    }
+    if remark.chars().any(char::is_control) {
+        return Err("Account remarks cannot contain control characters.".to_owned());
+    }
+    Ok(Some(remark.to_owned()))
+}
+
 fn server(host: impl Into<String>, port: u16) -> ServerConfig {
     ServerConfig {
         host: host.into(),
@@ -1635,7 +1700,8 @@ mod tests {
     use super::{
         AccountAuthentication, AccountMetadata, AccountProvider, AccountStore, BackendState,
         GoogleOAuthError, MAX_ACCOUNTS, StoredAccounts, account_database_path,
-        describe_google_token_error, google_client_id, keyring_username, open_local_backend,
+        describe_google_token_error, google_client_id, keyring_username, normalize_account_remark,
+        open_local_backend,
     };
 
     #[test]
@@ -1729,11 +1795,24 @@ mod tests {
                 .is_err()
         );
         let first_id = stored.accounts[0].account_id.clone();
+        stored.accounts[0].remark = Some("工作邮箱".to_owned());
         stored
             .upsert_and_activate(AccountMetadata::google("user0@gmail.com".to_owned()).unwrap())
             .unwrap();
         assert_eq!(stored.accounts[0].account_id, first_id);
+        assert_eq!(stored.accounts[0].remark.as_deref(), Some("工作邮箱"));
         assert_eq!(stored.accounts.len(), MAX_ACCOUNTS);
+    }
+
+    #[test]
+    fn account_remarks_are_trimmed_bounded_and_clearable() {
+        assert_eq!(
+            normalize_account_remark("  工作邮箱  ").unwrap().as_deref(),
+            Some("工作邮箱")
+        );
+        assert_eq!(normalize_account_remark("   ").unwrap(), None);
+        assert!(normalize_account_remark(&"邮".repeat(41)).is_err());
+        assert!(normalize_account_remark("工作\n邮箱").is_err());
     }
 
     #[test]

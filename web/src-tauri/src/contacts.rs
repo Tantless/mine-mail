@@ -7,7 +7,7 @@ use std::{
 };
 
 use mine_mail::{ContactActivity, normalize_contact_email};
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 
 const CONTACTS_DATABASE_NAME: &str = "desktop-contacts.sqlite3";
@@ -259,6 +259,22 @@ impl ContactStore {
         Ok(changed > 0)
     }
 
+    fn remark_for(&self, email: &str) -> Result<Option<String>, String> {
+        let email = normalize_contact_email(email).map_err(|error| error.to_string())?;
+        self.connection()
+            .map_err(|_| "Contact storage is unavailable.".to_owned())?
+            .query_row(
+                "SELECT NULLIF(TRIM(remark), '')
+                 FROM contacts
+                 WHERE email = ?1",
+                [&email],
+                |row| row.get(0),
+            )
+            .optional()
+            .map(|remark| remark.flatten())
+            .map_err(|_| "The contact remark could not be read.".to_owned())
+    }
+
     fn remove_account_favorites(&self, account_id: &str) -> Result<(), String> {
         self.connection()
             .map_err(|_| "Contact storage is unavailable.".to_owned())?
@@ -332,6 +348,13 @@ impl ContactRuntime {
             .as_ref()
             .ok_or_else(|| "Contact storage is unavailable.".to_owned())?
             .set_remark(email, remark)
+    }
+
+    pub(crate) fn remark_for(&self, email: &str) -> Result<Option<String>, String> {
+        self.store
+            .as_ref()
+            .ok_or_else(|| "Contact storage is unavailable.".to_owned())?
+            .remark_for(email)
     }
 
     pub(crate) fn remove_account(&self, account_id: &str) -> Result<(), String> {
@@ -561,6 +584,10 @@ mod tests {
                 .set_remark("friend@example.com", "  林老师  ")
                 .expect("remark")
         );
+        assert_eq!(
+            store.remark_for("FRIEND@example.com").expect("lookup"),
+            Some("林老师".to_owned())
+        );
 
         let reopened = ContactStore::open(path).expect("reopen");
         assert_eq!(
@@ -587,6 +614,7 @@ mod tests {
                 .set_remark("friend@example.com", " ")
                 .expect("clear")
         );
+        assert_eq!(reopened.remark_for("friend@example.com").unwrap(), None);
         assert!(reopened.list_records().expect("empty").is_empty());
         assert!(reopened.list_favorites().expect("no favorites").is_empty());
     }

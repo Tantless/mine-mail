@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { X } from "@phosphor-icons/react";
 import { mailApi } from "../services/mailApi.js";
-import { BrandLogo } from "./BrandLogo.jsx";
+import { ProfileAvatar } from "./ProfileAvatar.jsx";
 
 const visibleDurationMs = 8000;
 const validThemes = new Set(["daylight", "night", "dusk", "forest"]);
@@ -163,11 +163,25 @@ export function NewMailNotification() {
   };
 
   if (!notification) return null;
+  const senderEmail = notification.senderEmail || "";
+  const senderLabel =
+    notification.senderRemark ||
+    notification.sender ||
+    senderEmail ||
+    "未知发件人";
+  const recipientEmail = notification.recipientEmail || "";
+  const recipientLabel = notification.recipientRemark
+    ? `${notification.recipientRemark} · ${recipientEmail}`
+    : recipientEmail;
 
   return (
     <article
       className="new-mail-notification"
-      aria-label={`${notification.sender}：${notification.subject}`}
+      aria-label={`${senderLabel}${
+        senderEmail ? `，${senderEmail}` : ""
+      }：${notification.subject}${
+        recipientLabel ? `；收信至 ${recipientLabel}` : ""
+      }`}
       onMouseEnter={clearDismissTimer}
       onMouseLeave={() => scheduleDismiss(notification)}
     >
@@ -177,16 +191,31 @@ export function NewMailNotification() {
         aria-label="打开新邮件"
         onClick={openMessage}
       >
-        <span className="new-mail-notification__icon" aria-hidden="true">
-          <BrandLogo />
-        </span>
+        <ProfileAvatar
+          className="new-mail-notification__avatar"
+          email={senderEmail}
+          label={senderLabel}
+          customSrc={notification.senderAvatarDataUrl}
+        />
         <span className="new-mail-notification__copy">
           <span className="new-mail-notification__eyebrow">
             <span className="new-mail-notification__dot" />
-            MINE MAIL · 刚刚
+            {notification.count > 1
+              ? `${notification.count} 封新邮件 · 刚刚`
+              : "新邮件 · 刚刚"}
           </span>
-          <strong>{notification.sender}</strong>
-          <span>{notification.subject}</span>
+          <span className="new-mail-notification__sender">
+            <strong>{senderLabel}</strong>
+            {senderEmail ? <span>{senderEmail}</span> : null}
+          </span>
+          <span className="new-mail-notification__subject">
+            {notification.subject}
+          </span>
+          {recipientLabel ? (
+            <span className="new-mail-notification__recipient">
+              收信至 {recipientLabel}
+            </span>
+          ) : null}
         </span>
       </button>
       <button
