@@ -1,0 +1,17 @@
+{
+  "name": "Mine Mail",
+  "short_name": "Mine Mail",
+  "description": "Local-first desktop email client",
+  "start_url": "/",
+  "display": "browser",
+  "background_color": "#fffaf3",
+  "theme_color": "#fffaf3",
+  "icons": [
+    {
+      "src": "/brand/mine-mail-fox.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
+

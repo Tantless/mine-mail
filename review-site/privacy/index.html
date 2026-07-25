@@ -1,0 +1,297 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="Mine Mail Privacy Policy: how the local-first desktop client accesses, stores, uses, and deletes Gmail and other mailbox data."
+    />
+    <meta name="theme-color" content="#fffaf3" />
+    <link rel="canonical" href="https://minemail.tantless.online/privacy/" />
+    <link rel="icon" type="image/png" href="/brand/mine-mail-fox.png" />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <title>Mine Mail 隐私政策</title>
+  </head>
+  <body
+    data-language="zh"
+    data-title-zh="Mine Mail 隐私政策"
+    data-title-en="Mine Mail Privacy Policy"
+  >
+    <a class="skip-link" href="#main"><span data-copy="zh">跳到主要内容</span><span data-copy="en">Skip to main content</span></a>
+    <header class="site-header">
+      <div class="header-inner">
+        <a class="brand" href="/" aria-label="Mine Mail home">
+          <img src="/brand/mine-mail-fox.png" alt="" />
+          <span class="brand-name"><strong>Mine Mail</strong><small>Local-first mail</small></span>
+        </a>
+        <button class="menu-button" type="button" aria-label="Open navigation" aria-expanded="false" data-menu-toggle><span></span></button>
+        <nav class="site-nav" aria-label="Primary navigation" data-navigation data-open="false">
+          <a href="/"><span data-copy="zh">产品</span><span data-copy="en">Product</span></a>
+          <a href="/privacy/" aria-current="page"><span data-copy="zh">隐私</span><span data-copy="en">Privacy</span></a>
+          <a href="/terms/"><span data-copy="zh">条款</span><span data-copy="en">Terms</span></a>
+          <a href="/support/"><span data-copy="zh">支持</span><span data-copy="en">Support</span></a>
+          <a href="/data-deletion/"><span data-copy="zh">删除数据</span><span data-copy="en">Delete data</span></a>
+          <button class="language-button" type="button" data-language-toggle><span data-copy="zh">EN</span><span data-copy="en">中文</span></button>
+        </nav>
+      </div>
+    </header>
+
+    <main id="main">
+      <section class="page-hero">
+        <p class="eyebrow"><span data-copy="zh">隐私与 Google 用户数据</span><span data-copy="en">Privacy & Google user data</span></p>
+        <h1><span data-copy="zh">隐私政策</span><span data-copy="en">Privacy Policy</span></h1>
+        <p>
+          <span data-copy="zh">本政策说明 Mine Mail 如何在桌面设备上访问、使用、存储和删除邮箱数据，也说明 Google 用户数据不会流向哪里。</span>
+          <span data-copy="en">This policy explains how Mine Mail accesses, uses, stores, and deletes mailbox data on your desktop—and where Google user data does not go.</span>
+        </p>
+        <div class="page-meta">
+          <span><span data-copy="zh">生效日期：2026 年 7 月 25 日</span><span data-copy="en">Effective: July 25, 2026</span></span>
+          <span><span data-copy="zh">运营者：Tantless（个人开发者）</span><span data-copy="en">Operator: Tantless (independent developer)</span></span>
+        </div>
+      </section>
+
+      <div class="document-layout">
+        <aside class="document-index" aria-label="On this page">
+          <strong><span data-copy="zh">本页内容</span><span data-copy="en">On this page</span></strong>
+          <div data-copy="zh">
+            <a href="#overview">1. 概览</a>
+            <a href="#data">2. 处理的数据</a>
+            <a href="#google">3. Google 用户数据</a>
+            <a href="#storage">4. 存储与安全</a>
+            <a href="#sharing">5. 共享与传输</a>
+            <a href="#retention">6. 保留与删除</a>
+            <a href="#website">7. 网站与支持</a>
+            <a href="#choices">8. 你的选择</a>
+            <a href="#contact">9. 联系方式</a>
+          </div>
+          <div data-copy="en">
+            <a href="#overview-en">1. Overview</a>
+            <a href="#data-en">2. Data handled</a>
+            <a href="#google-en">3. Google user data</a>
+            <a href="#storage-en">4. Storage & security</a>
+            <a href="#sharing-en">5. Sharing & transfer</a>
+            <a href="#retention-en">6. Retention & deletion</a>
+            <a href="#website-en">7. Website & support</a>
+            <a href="#choices-en">8. Your choices</a>
+            <a href="#contact-en">9. Contact</a>
+          </div>
+        </aside>
+
+        <article class="document">
+          <div data-copy="zh">
+            <section id="overview">
+              <h2>1. 概览</h2>
+              <p>Mine Mail 是一款本地优先的桌面邮件客户端，由个人开发者 Tantless 运营。它没有开发者运营的邮件中转、同步或分析服务器。应用从你的设备直接连接 Google Gmail、163 邮箱或你配置的标准 IMAP/SMTP 服务。</p>
+              <p>除非你主动向支持邮箱发送资料，开发者不会接收你的邮箱 token、邮件、附件、联系人、草稿或本地数据库。Mine Mail 不出售个人信息，不投放广告，也不上传产品使用遥测。</p>
+            </section>
+
+            <section id="data">
+              <h2>2. Mine Mail 处理的数据</h2>
+              <table class="data-table">
+                <thead><tr><th>类别</th><th>用途</th><th>保存位置</th></tr></thead>
+                <tbody>
+                  <tr><td>账户身份</td><td>邮箱地址、显示名称、服务商类型和账户配置，用于显示账户并连接正确的邮箱服务。</td><td>设备本地应用数据目录。</td></tr>
+                  <tr><td>授权资料</td><td>Gmail OAuth token 或其他邮箱的授权密码，用于 IMAP/SMTP 登录。</td><td>操作系统凭据存储；不会保存到网页或 Mine Mail 服务器。</td></tr>
+                  <tr><td>邮箱内容</td><td>邮件头、正文、附件信息、文件夹、草稿、发件箱项目、已读/星标等状态，用于完整邮件客户端功能和离线访问。</td><td>邮箱服务商与设备本地 SQLite 缓存；凭据除外。</td></tr>
+                  <tr><td>本地联系人</td><td>从缓存邮件头派生的通信人、收藏、备注与用户选择的头像，用于通讯录和名称显示。</td><td>设备本地 SQLite 数据库。</td></tr>
+                  <tr><td>偏好设置</td><td>主题、同步间隔、通知、远程图片和开机启动等设置，用于按你的选择运行应用。</td><td>设备本地 SQLite 数据库。</td></tr>
+                  <tr><td>本地诊断日志</td><td>启动、同步模式和错误类别等事件，用于本机排查；不记录邮箱地址、主题、收发件人、正文、token 或完整路径。</td><td>设备本地日志目录。</td></tr>
+                </tbody>
+              </table>
+            </section>
+
+            <section id="google">
+              <h2>3. Google 用户数据</h2>
+              <h3>请求的权限</h3>
+              <ul>
+                <li><code>openid</code> 和 <code>email</code>：确认你授权的 Google 账户与邮箱地址。</li>
+                <li><code>https://mail.google.com/</code>：通过 Gmail IMAP 与 SMTP 使用 XOAUTH2 读取、同步、整理和发送邮件。</li>
+              </ul>
+              <h3>为什么不能使用更窄的权限</h3>
+              <p>Mine Mail 的核心架构使用标准 IMAP/SMTP，而不是 Gmail REST API。Google 对 Gmail 的 IMAP、POP 和 SMTP OAuth 访问要求使用 <code>https://mail.google.com/</code>。只读或单项 Gmail API scope 无法用于 IMAP/SMTP 身份验证，也不能维持草稿、文件夹状态、星标和发信等完整客户端能力。</p>
+              <h3>用途限制</h3>
+              <p>Google 用户数据只用于提供你明确请求的邮件客户端功能，包括显示和搜索本地同步的邮件、同步邮件状态和草稿、发送邮件，以及在你的设备上生成邮件通知。不会用于广告、用户画像、信用或贷款、监控、向人类审阅者开放，或训练通用 AI/机器学习模型。</p>
+              <div class="notice">
+                <p><strong>Google API Limited Use：</strong>Mine Mail 对从 Google API 接收的信息的使用以及向任何其他应用的传输，将遵守 <a href="https://developers.google.com/terms/api-services-user-data-policy" rel="noreferrer">Google API Services User Data Policy</a>，包括 Limited Use 要求。</p>
+              </div>
+            </section>
+
+            <section id="storage">
+              <h2>4. 本地存储与安全</h2>
+              <ul>
+                <li>OAuth token 与邮箱授权密码保存在操作系统凭据存储中，而不是 React 界面、网站或 SQLite 邮件缓存中。</li>
+                <li>账户元数据、邮件缓存、正文、草稿、发件箱、联系人和设置保存在应用数据目录的 SQLite 数据库中。</li>
+                <li>当前 SQLite 数据库没有整库加密。能够读取你操作系统用户文件的攻击者可能读取缓存邮件。请使用设备登录密码、磁盘加密和受信任的本机账户。</li>
+                <li>HTML 邮件作为不可信内容处理：危险内容会被清理、脚本被禁用，复杂内容在无脚本隔离区域中显示。</li>
+                <li>本地诊断日志按大小轮转，启动时清理七天前的历史文件，并限制总占用；日志设计上不包含邮件内容或身份信息。</li>
+              </ul>
+              <h3>远程图片</h3>
+              <p>远程图片默认自动加载，也可在设置中改为“询问”或“阻止”。加载远程图片会让图片服务器看到你的 IP 地址、客户端网络信息和大致打开时间。这些请求由你的设备直接发往发件人指定的第三方服务器，不经过 Mine Mail 开发者。</p>
+              <p>没有任何软件能保证绝对安全。如果发现可能影响 Mine Mail 用户数据的安全问题，请通过本政策末尾的邮箱联系。</p>
+            </section>
+
+            <section id="sharing">
+              <h2>5. 共享与传输</h2>
+              <p>Mine Mail 不向开发者服务器传输邮箱数据，也不出售、出租或将其用于广告。为完成你请求的功能，数据可能在以下有限情形中由你的设备直接处理或发送：</p>
+              <ul>
+                <li><strong>邮箱服务商：</strong>连接、同步和发送所必需，例如 Google Gmail 或你配置的 IMAP/SMTP 服务器。</li>
+                <li><strong>操作系统：</strong>保存授权凭据、显示通知以及运行桌面应用所必需。</li>
+                <li><strong>远程内容服务商：</strong>仅当邮件中的远程图片被允许加载时，图片 URL 会由设备直接请求。</li>
+                <li><strong>你选择的收件人：</strong>当你点击发送时，邮件内容和附件按你的指示交给邮箱服务商投递。</li>
+                <li><strong>法律要求：</strong>开发者仅能披露实际持有的信息；由于邮箱数据不在 Mine Mail 服务器上，通常不存在可供披露的服务器端邮箱副本。</li>
+              </ul>
+            </section>
+
+            <section id="retention">
+              <h2>6. 数据保留与删除</h2>
+              <p>邮箱服务商上的原始数据按该服务商的政策保留。设备上的 Mine Mail 缓存会一直保留，直到你执行完整本地数据删除。</p>
+              <div class="notice">
+                <p><strong>当前测试版的重要区别：</strong>在应用中“移除账户”会从 Mine Mail 账户列表中断开该账户并删除操作系统凭据，但会保留本地邮件缓存，便于重新连接。该操作目前不会代替 Google 账户中的授权撤销，也不会完成整个本地缓存删除。</p>
+              </div>
+              <p>完整删除包括三个可独立执行的动作：在 Mine Mail 中断开账户、在 Google 账户中撤销 Mine Mail 授权、退出应用后删除本地应用数据目录。请按<a href="/data-deletion/">数据删除指南</a>操作。</p>
+              <p>Windows 本地数据位于 <code>%LOCALAPPDATA%\com.minemail.desktop</code>。卸载程序可能因版本或系统安装行为而保留应用数据；若要确保删除，请在退出 Mine Mail 后手动删除该目录。</p>
+            </section>
+
+            <section id="website">
+              <h2>7. 网站与支持通信</h2>
+              <p>本网站不设置广告或分析 cookie，也不使用第三方行为分析脚本。网站服务器和网络服务商可能为建立 HTTPS 连接、交付页面及保障安全而处理 IP 地址、请求时间、浏览器信息和请求路径等标准网络数据。</p>
+              <p>如果你主动向 <a href="mailto:tantless8@gmail.com">tantless8@gmail.com</a> 发送支持邮件，开发者会收到你提供的邮箱地址和内容，并仅用于回应请求、诊断问题或履行删除请求。请勿发送密码、OAuth token 或完整私人邮件。你可以要求删除支持通信中由开发者持有的资料。</p>
+            </section>
+
+            <section id="choices">
+              <h2>8. 你的选择与权利</h2>
+              <ul>
+                <li>随时停止同步或从 Mine Mail 移除账户。</li>
+                <li>随时通过 Google 账户连接页面撤销 Mine Mail 授权。</li>
+                <li>删除本地应用数据目录，以清除 Mine Mail 在设备上的缓存、设置、联系人和日志。</li>
+                <li>将远程图片设置为自动、询问或阻止。</li>
+                <li>就支持通信中由开发者持有的数据提出访问、更正或删除请求。</li>
+              </ul>
+              <p>Mine Mail 不面向所在地区法定数字同意年龄以下的儿童，开发者也不会有意收集其个人信息。</p>
+              <p>本政策可能随功能、法律要求或发布状态更新。重大变化将在本页以新的生效日期说明。</p>
+            </section>
+
+            <section id="contact">
+              <h2>9. 联系方式</h2>
+              <p>数据控制者与应用运营者：Tantless（个人开发者）</p>
+              <p>隐私与支持邮箱：<a href="mailto:tantless8@gmail.com">tantless8@gmail.com</a></p>
+              <p>网站：<a href="https://minemail.tantless.online/">https://minemail.tantless.online/</a></p>
+            </section>
+          </div>
+
+          <div data-copy="en">
+            <section id="overview-en">
+              <h2>1. Overview</h2>
+              <p>Mine Mail is a local-first desktop email client operated by Tantless, an independent developer. It has no developer-operated mail relay, synchronization, or analytics server. The app connects directly from your device to Google Gmail, 163 Mail, or a standard IMAP/SMTP service you configure.</p>
+              <p>Unless you voluntarily send material to the support address, the developer does not receive your mailbox tokens, messages, attachments, contacts, drafts, or local database. Mine Mail does not sell personal information, display advertising, or upload product-usage telemetry.</p>
+            </section>
+
+            <section id="data-en">
+              <h2>2. Data Mine Mail handles</h2>
+              <table class="data-table">
+                <thead><tr><th>Category</th><th>Purpose</th><th>Stored where</th></tr></thead>
+                <tbody>
+                  <tr><td>Account identity</td><td>Email address, display name, provider type, and account configuration identify the account and connect to the correct service.</td><td>Your device’s local app-data directory.</td></tr>
+                  <tr><td>Authorization material</td><td>Gmail OAuth tokens or authorization secrets for other providers authenticate IMAP/SMTP sessions.</td><td>The operating-system credential store; never the website or a Mine Mail server.</td></tr>
+                  <tr><td>Mailbox content</td><td>Headers, bodies, attachment metadata, folders, drafts, outbox items, and read/starred state provide full-client and offline functionality.</td><td>Your mail provider and the device-local SQLite cache, except credentials.</td></tr>
+                  <tr><td>Local contacts</td><td>Correspondents derived from cached headers, favorites, remarks, and user-selected avatars support the contacts workspace and name display.</td><td>The device-local SQLite database.</td></tr>
+                  <tr><td>Preferences</td><td>Theme, sync interval, notifications, remote-image mode, and autostart operate the app as you choose.</td><td>The device-local SQLite database.</td></tr>
+                  <tr><td>Local diagnostic logs</td><td>Events such as startup, sync mode, and error category support on-device troubleshooting. Logs exclude addresses, subjects, recipients, bodies, tokens, and complete paths.</td><td>Your device’s local log directory.</td></tr>
+                </tbody>
+              </table>
+            </section>
+
+            <section id="google-en">
+              <h2>3. Google user data</h2>
+              <h3>Permissions requested</h3>
+              <ul>
+                <li><code>openid</code> and <code>email</code>: identify the Google account and email address you authorize.</li>
+                <li><code>https://mail.google.com/</code>: authenticate to Gmail IMAP and SMTP with XOAUTH2 so Mine Mail can read, synchronize, organize, and send mail.</li>
+              </ul>
+              <h3>Why narrower permissions are not sufficient</h3>
+              <p>Mine Mail’s core architecture uses standard IMAP/SMTP rather than the Gmail REST API. Google requires Gmail IMAP, POP, and SMTP OAuth access to use <code>https://mail.google.com/</code>. Read-only or task-specific Gmail API scopes cannot authenticate IMAP/SMTP and cannot preserve full-client behavior for drafts, folder state, stars, and sending.</p>
+              <h3>Use limitations</h3>
+              <p>Google user data is used only to provide mail-client features you explicitly request: displaying and searching locally synchronized mail, synchronizing message state and drafts, sending messages, and creating on-device mail notifications. It is not used for advertising, profiling, credit or lending, surveillance, access by human reviewers, or training generalized AI or machine-learning models.</p>
+              <div class="notice">
+                <p><strong>Google API Limited Use:</strong> Mine Mail’s use and transfer to any other app of information received from Google APIs will adhere to the <a href="https://developers.google.com/terms/api-services-user-data-policy" rel="noreferrer">Google API Services User Data Policy</a>, including the Limited Use requirements.</p>
+              </div>
+            </section>
+
+            <section id="storage-en">
+              <h2>4. Local storage and security</h2>
+              <ul>
+                <li>OAuth tokens and mail authorization secrets are stored in the operating-system credential store, not in the React interface, this website, or the SQLite mail cache.</li>
+                <li>Account metadata, mail cache, bodies, drafts, outbox, contacts, and settings are stored in SQLite under the app-data directory.</li>
+                <li>The current SQLite database is not encrypted as a whole. An attacker able to read files belonging to your OS user may read cached mail. Use an OS login password, disk encryption, and trusted local accounts.</li>
+                <li>HTML mail is treated as untrusted input: dangerous content is sanitized, scripts are disabled, and complex content is shown in a no-script isolated area.</li>
+                <li>Local diagnostic logs rotate by size, remove history older than seven days at startup, and have a total-size limit. They are designed not to contain mail content or identity data.</li>
+              </ul>
+              <h3>Remote images</h3>
+              <p>Remote images load automatically by default, and you can change the setting to Ask or Blocked. Loading an image can reveal your IP address, client network information, and approximate open time to the image host. Your device makes these requests directly to the sender-selected third party; they do not pass through the Mine Mail developer.</p>
+              <p>No software can guarantee absolute security. Please use the contact address below to report a security issue that may affect Mine Mail user data.</p>
+            </section>
+
+            <section id="sharing-en">
+              <h2>5. Sharing and transfer</h2>
+              <p>Mine Mail does not transmit mailbox data to developer servers and does not sell, rent, or use it for advertising. To perform a feature you request, data may be handled or sent directly from your device in these limited circumstances:</p>
+              <ul>
+                <li><strong>Your mail provider:</strong> as necessary to connect, synchronize, and send—for example, Google Gmail or the IMAP/SMTP server you configure.</li>
+                <li><strong>Your operating system:</strong> as necessary to protect credentials, display notifications, and run the desktop app.</li>
+                <li><strong>Remote-content hosts:</strong> only when remote images in a message are allowed to load and the device requests their URLs.</li>
+                <li><strong>Recipients you choose:</strong> when you click Send, your provider receives the content and attachments you instructed it to deliver.</li>
+                <li><strong>Legal requirements:</strong> the developer can disclose only information actually held. Because mailbox data is not stored on a Mine Mail server, there is ordinarily no server-side mailbox copy to disclose.</li>
+              </ul>
+            </section>
+
+            <section id="retention-en">
+              <h2>6. Retention and deletion</h2>
+              <p>Original data at your mail provider is retained under that provider’s policies. Mine Mail’s on-device cache remains until you perform a complete local-data deletion.</p>
+              <div class="notice">
+                <p><strong>Important current-beta distinction:</strong> Remove Account disconnects the account from Mine Mail and deletes its OS credential, but retains the local mail cache to support reconnection. It does not currently replace revocation in your Google Account or complete deletion of the full local cache.</p>
+              </div>
+              <p>Complete deletion has three independent actions: disconnect the account in Mine Mail, revoke Mine Mail in your Google Account, and—after quitting the app—delete the local app-data directory. Follow the <a href="/data-deletion/">Data Deletion Guide</a>.</p>
+              <p>On Windows, local data is under <code>%LOCALAPPDATA%\com.minemail.desktop</code>. An uninstaller may preserve app data depending on the release and OS behavior. To ensure deletion, quit Mine Mail and manually remove that directory.</p>
+            </section>
+
+            <section id="website-en">
+              <h2>7. Website and support communications</h2>
+              <p>This website sets no advertising or analytics cookies and uses no third-party behavioral-analytics scripts. The web server and network providers may process standard network data—such as IP address, request time, browser information, and path—to establish HTTPS connections, deliver pages, and protect the service.</p>
+              <p>If you voluntarily email <a href="mailto:tantless8@gmail.com">tantless8@gmail.com</a>, the developer receives the address and content you provide and uses it only to respond, diagnose the issue, or fulfill a deletion request. Do not send passwords, OAuth tokens, or complete private messages. You may ask for deletion of support material held by the developer.</p>
+            </section>
+
+            <section id="choices-en">
+              <h2>8. Your choices and rights</h2>
+              <ul>
+                <li>Stop synchronization or remove an account from Mine Mail at any time.</li>
+                <li>Revoke Mine Mail from your Google Account’s connected-apps page at any time.</li>
+                <li>Delete the local app-data directory to clear Mine Mail’s device cache, settings, contacts, and logs.</li>
+                <li>Set remote images to Automatic, Ask, or Blocked.</li>
+                <li>Request access, correction, or deletion of support data actually held by the developer.</li>
+              </ul>
+              <p>Mine Mail is not directed to children below the age of digital consent in their jurisdiction, and the developer does not knowingly collect their personal information.</p>
+              <p>This policy may be updated as features, legal requirements, or release status change. Material revisions will appear here with a new effective date.</p>
+            </section>
+
+            <section id="contact-en">
+              <h2>9. Contact</h2>
+              <p>Data controller and app operator: Tantless (independent developer)</p>
+              <p>Privacy and support email: <a href="mailto:tantless8@gmail.com">tantless8@gmail.com</a></p>
+              <p>Website: <a href="https://minemail.tantless.online/">https://minemail.tantless.online/</a></p>
+            </section>
+          </div>
+        </article>
+      </div>
+    </main>
+
+    <footer class="site-footer">
+      <div class="footer-inner">
+        <div class="footer-brand"><img src="/brand/mine-mail-fox.png" alt="" /><div><strong>Mine Mail</strong><p><span data-copy="zh">由个人开发者 Tantless 开发的本地优先桌面邮件客户端。</span><span data-copy="en">A local-first desktop email client developed by independent developer Tantless.</span></p></div></div>
+        <div class="footer-column"><strong><span data-copy="zh">政策</span><span data-copy="en">Policies</span></strong><a href="/privacy/"><span data-copy="zh">隐私政策</span><span data-copy="en">Privacy policy</span></a><a href="/terms/"><span data-copy="zh">服务条款</span><span data-copy="en">Terms of service</span></a><a href="/data-deletion/"><span data-copy="zh">数据删除</span><span data-copy="en">Data deletion</span></a></div>
+        <div class="footer-column"><strong><span data-copy="zh">联系</span><span data-copy="en">Contact</span></strong><a href="/support/"><span data-copy="zh">支持中心</span><span data-copy="en">Support</span></a><a href="mailto:tantless8@gmail.com">tantless8@gmail.com</a></div>
+      </div>
+      <div class="footer-bottom"><span>© <span data-year></span> Tantless. Mine Mail.</span><a href="https://beian.miit.gov.cn/" rel="noreferrer">冀ICP备2026010199号</a></div>
+    </footer>
+    <script type="module" src="/src/site.js"></script>
+  </body>
+</html>

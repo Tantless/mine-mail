@@ -1,0 +1,5 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://minemail.tantless.online/sitemap.xml
+
