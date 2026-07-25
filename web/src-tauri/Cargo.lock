@@ -2755,7 +2755,7 @@ checksum = "6877bb514081ee2a7ff5ef9de3281f14a4dd4bceac4c09388074a6b5df8a139a"
 
 [[package]]
 name = "mine-mail"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "async-imap",
  "async-native-tls",
@@ -2776,7 +2776,7 @@ dependencies = [
 
 [[package]]
 name = "mine-mail-desktop"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "ammonia",
  "base64 0.22.1",
