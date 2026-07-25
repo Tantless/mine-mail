@@ -7,7 +7,6 @@ const settings = {
   pollingIntervalMinutes: 5,
   autostartEnabled: false,
   notificationsEnabled: true,
-  foregroundNotificationsEnabled: true,
   notificationSoundEnabled: true,
   notificationSound: "mail",
   remoteImageMode: "automatic",
@@ -114,5 +113,45 @@ describe("SettingsPanel account flow", () => {
       "工作邮箱",
     );
     expect(screen.queryByRole("dialog", { name: "设置邮箱备注" })).toBeNull();
+  });
+
+  it("checks GitHub releases and asks before installing an update", async () => {
+    const installUpdate = vi.fn(async (_candidate, onEvent) => {
+      onEvent({ event: "Started", data: { contentLength: 100 } });
+      onEvent({ event: "Progress", data: { chunkLength: 100 } });
+      onEvent({ event: "Finished", data: {} });
+    });
+    const updateClient = {
+      isSupported: true,
+      bundledVersion: "0.1.2",
+      getCurrentVersion: vi.fn().mockResolvedValue("0.1.2"),
+      checkForUpdate: vi.fn().mockResolvedValue({
+        status: "available",
+        currentVersion: "0.1.2",
+        version: "0.1.3",
+        notes: "修复同步问题并改进更新体验。",
+        resource: { id: 1 },
+      }),
+      installUpdate,
+    };
+    const user = userEvent.setup();
+    render(<SettingsPanel {...panelProps({ updateClient })} />);
+
+    await user.click(screen.getByRole("button", { name: "关于 Mine Mail" }));
+    expect(screen.getByText("v0.1.2")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "检查更新" }));
+
+    const dialog = await screen.findByRole("dialog", {
+      name: "发现 Mine Mail v0.1.3",
+    });
+    expect(within(dialog).getByText(/当前为 v0.1.2/)).toBeTruthy();
+    expect(within(dialog).getByText(/修复同步问题/)).toBeTruthy();
+    expect(installUpdate).not.toHaveBeenCalled();
+
+    await user.click(
+      within(dialog).getByRole("button", { name: "下载并安装" }),
+    );
+    expect(installUpdate).toHaveBeenCalledOnce();
+    expect(await screen.findByText(/更新已安装/)).toBeTruthy();
   });
 });

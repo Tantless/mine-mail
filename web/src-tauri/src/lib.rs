@@ -1782,6 +1782,8 @@ pub fn run() {
             MacosLauncher::LaunchAgent,
             Some(vec!["--background"]),
         ))
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(initialize_state)
         .on_window_event(|window, event| match event {
             WindowEvent::CloseRequested { api, .. } => {

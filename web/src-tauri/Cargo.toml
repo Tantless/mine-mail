@@ -42,7 +42,9 @@ zeroize = { version = "1.8", features = ["alloc"] }
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
 open = "5"
 tauri-plugin-autostart = "2"
+tauri-plugin-process = "2"
 tauri-plugin-single-instance = "2"
+tauri-plugin-updater = "2"
 url = "2"
 
 [target.'cfg(windows)'.dependencies]

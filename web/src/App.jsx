@@ -37,7 +37,6 @@ const defaultSettings = {
   pollingIntervalMinutes: 5,
   autostartEnabled: false,
   notificationsEnabled: true,
-  foregroundNotificationsEnabled: true,
   notificationSoundEnabled: true,
   notificationSound: "mail",
   remoteImageMode: "automatic",

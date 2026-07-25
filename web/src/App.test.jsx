@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { App } from "./App.jsx";
+import { bundledAppVersion } from "./services/appUpdate.js";
 import { mailApi } from "./services/mailApi.js";
 
 function deferred() {
@@ -590,14 +591,16 @@ describe("Mine Mail MVP", () => {
       screen.getByRole("button", { name: "了解自动加载远程图片的隐私风险" }),
     ).toBeTruthy();
     expect(screen.getByRole("tooltip").textContent).toContain("邮件打开时间");
-    await user.click(screen.getByRole("checkbox", { name: /前台也提醒/ }));
+    expect(screen.queryByText("前台也提醒")).toBeNull();
+    await user.click(screen.getByRole("checkbox", { name: /桌面通知/ }));
+    await user.click(screen.getByRole("checkbox", { name: /桌面通知/ }));
     await user.click(screen.getByRole("combobox", { name: "通知声音类型" }));
     await user.click(screen.getByRole("option", { name: "提醒提示" }));
     await user.click(screen.getByRole("combobox", { name: "远程图片加载方式" }));
     await user.click(screen.getByRole("option", { name: "每次询问" }));
     await user.click(screen.getByRole("checkbox", { name: /开机启动/ }));
-    await user.click(screen.getByRole("button", { name: /版本/ }));
-    expect(screen.getByText("v0.0.1")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "关于 Mine Mail" }));
+    expect(screen.getByText(`v${bundledAppVersion}`)).toBeTruthy();
     expect(screen.getByRole("button", { name: "检查更新" }).disabled).toBe(true);
     expect(screen.queryByRole("button", { name: "保存设置" })).toBeNull();
 
@@ -606,7 +609,6 @@ describe("Mine Mail MVP", () => {
         pollingIntervalMinutes: 3,
         autostartEnabled: true,
         notificationsEnabled: true,
-        foregroundNotificationsEnabled: false,
         notificationSoundEnabled: true,
         notificationSound: "reminder",
         remoteImageMode: "ask",

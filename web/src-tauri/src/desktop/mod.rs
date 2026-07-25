@@ -206,7 +206,6 @@ impl DesktopRuntime {
             background_enabled: settings.background_enabled,
             poll_interval_minutes: settings.poll_interval_minutes,
             notifications_enabled: settings.notifications_enabled,
-            foreground_notifications_enabled: settings.foreground_notifications_enabled,
             notification_sound_enabled: settings.notification_sound_enabled,
             notification_sound: settings.notification_sound,
             remote_image_mode: settings.remote_image_mode,
@@ -232,9 +231,6 @@ impl DesktopRuntime {
         }
         if let Some(value) = update.notifications_enabled {
             settings.notifications_enabled = value;
-        }
-        if let Some(value) = update.foreground_notifications_enabled {
-            settings.foreground_notifications_enabled = value;
         }
         if let Some(value) = update.notification_sound_enabled {
             settings.notification_sound_enabled = value;
@@ -299,7 +295,6 @@ impl DesktopRuntime {
             background_enabled: Some(settings.background_enabled),
             poll_interval_minutes: Some(settings.poll_interval_minutes),
             notifications_enabled: Some(settings.notifications_enabled),
-            foreground_notifications_enabled: Some(settings.foreground_notifications_enabled),
             notification_sound_enabled: Some(settings.notification_sound_enabled),
             notification_sound: Some(settings.notification_sound),
             remote_image_mode: Some(settings.remote_image_mode),
@@ -1494,10 +1489,9 @@ fn update_notification_baseline_and_notify(
 
 fn should_deliver_new_mail_notification(
     settings: StoredDesktopSettings,
-    main_window_is_active: bool,
+    _main_window_is_active: bool,
 ) -> bool {
     settings.notifications_enabled
-        && (!main_window_is_active || settings.foreground_notifications_enabled)
 }
 
 fn show_new_mail_notification(
@@ -1914,17 +1908,14 @@ mod tests {
     }
 
     #[test]
-    fn foreground_notifications_can_be_disabled_without_silencing_background_mail() {
+    fn desktop_notifications_use_one_switch_in_foreground_and_background() {
         let mut settings = StoredDesktopSettings::default();
         assert!(should_deliver_new_mail_notification(settings, false));
         assert!(should_deliver_new_mail_notification(settings, true));
 
-        settings.foreground_notifications_enabled = false;
-        assert!(should_deliver_new_mail_notification(settings, false));
-        assert!(!should_deliver_new_mail_notification(settings, true));
-
         settings.notifications_enabled = false;
         assert!(!should_deliver_new_mail_notification(settings, false));
+        assert!(!should_deliver_new_mail_notification(settings, true));
     }
 
     #[test]

@@ -151,7 +151,6 @@ pub(super) struct StoredDesktopSettings {
     pub background_enabled: bool,
     pub poll_interval_minutes: u8,
     pub notifications_enabled: bool,
-    pub foreground_notifications_enabled: bool,
     pub notification_sound_enabled: bool,
     pub notification_sound: NotificationSound,
     pub remote_image_mode: RemoteImageMode,
@@ -171,7 +170,6 @@ impl Default for StoredDesktopSettings {
             background_enabled: true,
             poll_interval_minutes: DEFAULT_POLL_INTERVAL_MINUTES,
             notifications_enabled: true,
-            foreground_notifications_enabled: true,
             notification_sound_enabled: true,
             notification_sound: NotificationSound::Mail,
             remote_image_mode: RemoteImageMode::Automatic,
@@ -186,7 +184,6 @@ pub(crate) struct DesktopSettingsUpdate {
     pub background_enabled: Option<bool>,
     pub poll_interval_minutes: Option<u8>,
     pub notifications_enabled: Option<bool>,
-    pub foreground_notifications_enabled: Option<bool>,
     pub notification_sound_enabled: Option<bool>,
     pub notification_sound: Option<NotificationSound>,
     pub remote_image_mode: Option<RemoteImageMode>,
@@ -198,7 +195,6 @@ pub(crate) struct DesktopSettingsDto {
     pub background_enabled: bool,
     pub poll_interval_minutes: u8,
     pub notifications_enabled: bool,
-    pub foreground_notifications_enabled: bool,
     pub notification_sound_enabled: bool,
     pub notification_sound: NotificationSound,
     pub remote_image_mode: RemoteImageMode,
@@ -297,6 +293,12 @@ impl DesktopSettingsStore {
                 [],
             )?;
         }
+        connection.execute(
+            "UPDATE desktop_settings
+             SET foreground_notifications_enabled = notifications_enabled
+             WHERE foreground_notifications_enabled != notifications_enabled",
+            [],
+        )?;
         if !existing_columns
             .iter()
             .any(|column| column == "notification_sound_enabled")
@@ -327,8 +329,7 @@ impl DesktopSettingsStore {
             "SELECT background_enabled, poll_interval_minutes,
                     notifications_enabled, notification_baseline_initialized,
                     notification_baseline_uid, remote_image_mode,
-                    foreground_notifications_enabled, notification_sound_enabled,
-                    notification_sound
+                    notification_sound_enabled, notification_sound
              FROM desktop_settings WHERE id = 1",
             [],
             |row| {
@@ -341,10 +342,9 @@ impl DesktopSettingsStore {
                     remote_image_mode: RemoteImageMode::from_storage_value(
                         &row.get::<_, String>(5)?,
                     ),
-                    foreground_notifications_enabled: row.get::<_, i64>(6)? != 0,
-                    notification_sound_enabled: row.get::<_, i64>(7)? != 0,
+                    notification_sound_enabled: row.get::<_, i64>(6)? != 0,
                     notification_sound: NotificationSound::from_storage_value(
-                        &row.get::<_, String>(8)?,
+                        &row.get::<_, String>(7)?,
                     ),
                 })
             },
@@ -360,9 +360,9 @@ impl DesktopSettingsStore {
                  notification_baseline_initialized = ?4,
                  notification_baseline_uid = ?5,
                  remote_image_mode = ?6,
-                 foreground_notifications_enabled = ?7,
-                 notification_sound_enabled = ?8,
-                 notification_sound = ?9,
+                 foreground_notifications_enabled = ?3,
+                 notification_sound_enabled = ?7,
+                 notification_sound = ?8,
                  updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
              WHERE id = 1",
             params![
@@ -372,7 +372,6 @@ impl DesktopSettingsStore {
                 settings.notification_baseline_initialized,
                 settings.notification_baseline_uid,
                 settings.remote_image_mode.as_storage_value(),
-                settings.foreground_notifications_enabled,
                 settings.notification_sound_enabled,
                 settings.notification_sound.as_storage_value(),
             ],
@@ -628,7 +627,6 @@ mod tests {
         let defaults = store.load().expect("default settings");
         assert!(defaults.background_enabled);
         assert!(defaults.notifications_enabled);
-        assert!(defaults.foreground_notifications_enabled);
         assert!(defaults.notification_sound_enabled);
         assert_eq!(defaults.notification_sound, NotificationSound::Mail);
         #[cfg(target_os = "windows")]
@@ -644,7 +642,6 @@ mod tests {
             background_enabled: false,
             poll_interval_minutes: 3,
             notifications_enabled: false,
-            foreground_notifications_enabled: false,
             notification_sound_enabled: false,
             notification_sound: NotificationSound::Reminder,
             remote_image_mode: RemoteImageMode::Blocked,
@@ -682,9 +679,44 @@ mod tests {
             RemoteImageMode::Automatic,
         );
         let migrated = store.load().expect("migrated notification settings");
-        assert!(migrated.foreground_notifications_enabled);
         assert!(migrated.notification_sound_enabled);
         assert_eq!(migrated.notification_sound, NotificationSound::Mail);
+    }
+
+    #[test]
+    fn legacy_foreground_notification_value_is_folded_into_desktop_switch() {
+        let directory = tempdir().expect("temporary directory");
+        let path = directory.path().join("desktop.sqlite3");
+        DesktopSettingsStore::open(&path).expect("initial settings store");
+        Connection::open(&path)
+            .expect("settings connection")
+            .execute(
+                "UPDATE desktop_settings
+                 SET notifications_enabled = 1,
+                     foreground_notifications_enabled = 0
+                 WHERE id = 1",
+                [],
+            )
+            .expect("write legacy split notification values");
+
+        let store = DesktopSettingsStore::open(&path).expect("reopened settings store");
+        assert!(
+            store
+                .load()
+                .expect("normalized settings")
+                .notifications_enabled
+        );
+        let stored_foreground_value: i64 = Connection::open(&path)
+            .expect("settings connection")
+            .query_row(
+                "SELECT foreground_notifications_enabled
+                 FROM desktop_settings
+                 WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("legacy notification value");
+        assert_eq!(stored_foreground_value, 1);
     }
 
     #[test]

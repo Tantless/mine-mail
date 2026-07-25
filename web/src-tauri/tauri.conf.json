@@ -48,6 +48,7 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": "all",
     "icon": [
       "icons/32x32.png",
@@ -69,6 +70,17 @@
           "SimpChinese"
         ],
         "displayLanguageSelector": false
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEVFNzc4QkZEQUE2QUY1NgpSV1JXcjZiYXYzam5EcThPaDlRajVWaUxKcGlmMmR6MWZLV0k4Tkp6MTZjbjc3a0RXK1NTbUZvTAo=",
+      "endpoints": [
+        "https://github.com/Tantless/mine-mail/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
       }
     }
   }

@@ -148,7 +148,6 @@ describe("Mine Mail desktop state bridge", () => {
       pollingIntervalMinutes: 5,
       autostartEnabled: false,
       notificationsEnabled: true,
-      foregroundNotificationsEnabled: true,
       notificationSoundEnabled: true,
       notificationSound: "mail",
       remoteImageMode: "automatic",

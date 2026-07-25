@@ -199,6 +199,37 @@ npm run tauri:build
 
 产物位于 `web/src-tauri/target/release/bundle/`。本地构建成功不代表安装包已经完成 Windows 签名、macOS 签名/公证或 Linux 发行版兼容验收。
 
+### 应用内更新与发布签名
+
+设置页显示的版本来自 Tauri 运行时，浏览器预览则直接读取
+`web/src-tauri/tauri.conf.json`，不再维护单独的界面版本号。稳定版通过
+`https://github.com/Tantless/mine-mail/releases/latest/download/latest.json`
+检查更新；用户确认后，Tauri updater 才会下载、验签并安装更新。
+
+首次安装仍使用品牌化 Windows setup。应用内更新使用同一构建产生的
+Tauri NSIS 更新包，以便从当前安装上下文原位升级，包括初装时选择的自定义
+目录。Windows 更新安装使用 passive 模式，安装开始时应用会自动退出。
+
+updater 公钥已经内置在 `web/src-tauri/tauri.conf.json`。对应私钥不得进入
+仓库、日志或 Release 资产；发布前必须把私钥完整内容配置为 GitHub Actions
+Secret `TAURI_SIGNING_PRIVATE_KEY`，并把私钥密码配置为
+`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`。私钥和密码必须分开安全备份；丢失
+任意一项后，已经安装的客户端都将无法验证后续更新。
+
+本地需要生成更新产物时，先通过仓库外的私钥路径配置环境变量：
+
+```powershell
+$env:TAURI_SIGNING_PRIVATE_KEY = Get-Content -Raw "C:\private\mine-mail-updater.key"
+$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = Get-Content -Raw "C:\private\mine-mail-updater.key.password"
+cd web
+npm run tauri:build
+```
+
+推送与三个项目版本一致的 `vX.Y.Z` tag 后，Release workflow 会按顺序生成
+macOS、Linux 和 Windows 签名更新产物，合并并验证 `latest.json`，验证通过
+后才公开 Release。GitHub Actions 生成的是 updater 签名；面向公开发行仍需
+补齐 Windows 代码签名和 macOS 签名/公证。
+
 ## 后端 CLI
 
 根目录还提供不依赖 React 的邮件核心 CLI。真实邮箱联调必须通过 `--credentials` 显式传入仓库外的私有两行凭据文件（邮箱地址、客户端授权密码）；本地数据库默认使用 `data/mine-mail.db`：
@@ -285,4 +316,7 @@ cargo clean
 
 ## 发布状态与许可证
 
-Mine Mail 目前没有正式 Release，仓库也尚未提供面向终端用户的安装支持。两个 Cargo package 当前声明为 MIT；正式对外分发前仍需补充仓库级 `LICENSE`、贡献规范、CI 和平台签名流程。
+Mine Mail 当前提供开发预览 Release 和安装包，但尚未完成 Windows 代码签名、
+macOS 签名/公证及完整发行安全审计，不应视为正式稳定发行。两个 Cargo
+package 当前声明为 MIT；正式对外分发前仍需补充仓库级 `LICENSE`、贡献规范
+和平台签名流程。

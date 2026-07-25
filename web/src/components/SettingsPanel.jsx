@@ -4,6 +4,7 @@ import {
   ArrowsLeftRight,
   CaretRight,
   DotsThree,
+  DownloadSimple,
   EnvelopeSimple,
   Info,
   MicrosoftOutlookLogo,
@@ -15,6 +16,7 @@ import {
   UserCircle,
   X,
 } from "@phosphor-icons/react";
+import { appUpdateApi } from "../services/appUpdate.js";
 import { AccountSetupForm } from "./AccountSetup.jsx";
 import { BrandLogo } from "./BrandLogo.jsx";
 import { IconButton } from "./IconButton.jsx";
@@ -44,19 +46,16 @@ const menuItems = [
   {
     id: "account",
     label: "账户",
-    description: "连接与管理邮箱",
     icon: UserCircle,
   },
   {
     id: "features",
     label: "功能设定",
-    description: "通知、图片与启动",
     icon: SlidersHorizontal,
   },
   {
     id: "version",
     label: "关于 Mine Mail",
-    description: "版本与更新",
     icon: Info,
   },
 ];
@@ -127,6 +126,18 @@ function errorMessage(error, fallback) {
   return error instanceof Error && error.message ? error.message : fallback;
 }
 
+function displayVersion(version) {
+  return `v${String(version || "0.0.0").replace(/^v/i, "")}`;
+}
+
+function updateErrorMessage(error) {
+  const message = error instanceof Error ? error.message : String(error || "");
+  if (/404|latest\.json|not found/i.test(message)) {
+    return "最新 Release 暂未提供签名更新信息，请稍后重试。";
+  }
+  return "检查更新失败，请确认网络连接后重试。";
+}
+
 function ProviderMark({ provider }) {
   if (provider === "163") {
     return <ProfileAvatar className="settings-provider-mark" email="mail@163.com" label="163 邮箱" />;
@@ -180,6 +191,7 @@ export function SettingsPanel({
   onSetAccountAvatar,
   onRemoveAccountAvatar,
   focusTarget,
+  updateClient = appUpdateApi,
 }) {
   const addAccountRequested =
     typeof focusTarget === "string" && focusTarget.startsWith("account-form");
@@ -203,6 +215,13 @@ export function SettingsPanel({
   const [accountRemarkValue, setAccountRemarkValue] = useState("");
   const [accountRemarkError, setAccountRemarkError] = useState(null);
   const [isAccountRemarkSaving, setIsAccountRemarkSaving] = useState(false);
+  const [appVersion, setAppVersion] = useState(
+    updateClient.bundledVersion || "0.0.0",
+  );
+  const [updateStatus, setUpdateStatus] = useState("idle");
+  const [updateMessage, setUpdateMessage] = useState(null);
+  const [availableUpdate, setAvailableUpdate] = useState(null);
+  const [updateProgress, setUpdateProgress] = useState(null);
   const scrollRef = useRef(null);
   const previousAccountSubmitStatusRef = useRef(accountSubmitStatus);
 
@@ -222,6 +241,19 @@ export function SettingsPanel({
   useEffect(() => {
     setValue(settings);
   }, [settings]);
+
+  useEffect(() => {
+    let active = true;
+    void updateClient
+      .getCurrentVersion()
+      .then((version) => {
+        if (active && version) setAppVersion(version);
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [updateClient]);
 
   useEffect(() => {
     const addRequested =
@@ -260,16 +292,26 @@ export function SettingsPanel({
   }, [accountFlow, activeSection, selectedProvider]);
 
   useEffect(() => {
-    if (!pendingAccountRemoval && !editingAccountRemark) return undefined;
+    if (!pendingAccountRemoval && !editingAccountRemark && !availableUpdate) {
+      return undefined;
+    }
 
     const closeOnEscape = (event) => {
       if (
         event.key === "Escape" &&
         accountSubmitStatus !== "saving" &&
-        !isAccountRemarkSaving
+        !isAccountRemarkSaving &&
+        updateStatus !== "installing"
       ) {
         setPendingAccountRemoval(null);
         setEditingAccountRemark(null);
+        if (availableUpdate) {
+          setAvailableUpdate(null);
+          setUpdateStatus("idle");
+          setUpdateMessage(
+            `已暂缓 ${displayVersion(availableUpdate.version)} 更新。`,
+          );
+        }
       }
     };
 
@@ -280,6 +322,8 @@ export function SettingsPanel({
     editingAccountRemark,
     isAccountRemarkSaving,
     pendingAccountRemoval,
+    availableUpdate,
+    updateStatus,
   ]);
 
   const updateSettings = (updater) => {
@@ -329,6 +373,84 @@ export function SettingsPanel({
     }
   };
 
+  const checkForUpdate = async () => {
+    if (!updateClient.isSupported || ["checking", "installing"].includes(updateStatus)) {
+      return;
+    }
+    setUpdateStatus("checking");
+    setUpdateMessage(null);
+    setUpdateProgress(null);
+    try {
+      const result = await updateClient.checkForUpdate();
+      if (result.currentVersion) setAppVersion(result.currentVersion);
+      if (result.status === "available") {
+        setAvailableUpdate(result);
+        setUpdateStatus("available");
+        return;
+      }
+      if (result.status === "up-to-date") {
+        setUpdateStatus("up-to-date");
+        setUpdateMessage("已是最新版本。");
+        return;
+      }
+      setUpdateStatus("unsupported");
+      setUpdateMessage("请在 Mine Mail 桌面应用中检查更新。");
+    } catch (error) {
+      setUpdateStatus("error");
+      setUpdateMessage(updateErrorMessage(error));
+    }
+  };
+
+  const installAvailableUpdate = async () => {
+    if (!availableUpdate || updateStatus === "installing") return;
+    let downloaded = 0;
+    let total = null;
+    setUpdateStatus("installing");
+    setUpdateMessage(null);
+    setUpdateProgress({ stage: "starting", downloaded, total, percent: null });
+    try {
+      await updateClient.installUpdate(availableUpdate, (event) => {
+        if (event.event === "Started") {
+          total = event.data.contentLength || null;
+          setUpdateProgress({
+            stage: "downloading",
+            downloaded,
+            total,
+            percent: total ? 0 : null,
+          });
+          return;
+        }
+        if (event.event === "Progress") {
+          downloaded += event.data.chunkLength;
+          setUpdateProgress({
+            stage: "downloading",
+            downloaded,
+            total,
+            percent: total
+              ? Math.min(100, Math.round((downloaded / total) * 100))
+              : null,
+          });
+          return;
+        }
+        if (event.event === "Finished") {
+          setUpdateProgress({
+            stage: "installing",
+            downloaded,
+            total,
+            percent: 100,
+          });
+        }
+      });
+      setAvailableUpdate(null);
+      setUpdateStatus("installed");
+      setUpdateMessage("更新已安装，正在重新启动 Mine Mail…");
+    } catch {
+      setUpdateStatus("error");
+      setUpdateProgress(null);
+      setUpdateMessage("更新没有安装，当前版本不会受到影响，请重试。");
+    }
+  };
+
   const saveStateLabel =
     saveStatus === "saving"
       ? "正在保存…"
@@ -366,7 +488,6 @@ export function SettingsPanel({
                 </span>
                 <span className="settings-nav__copy">
                   <strong>{item.label}</strong>
-                  <small>{item.description}</small>
                 </span>
               </button>
             );
@@ -385,7 +506,12 @@ export function SettingsPanel({
           >
             {saveStateLabel}
           </span>
-          <IconButton className="settings-close" label="关闭设置" onClick={onClose}>
+          <IconButton
+            className="settings-close"
+            label="关闭设置"
+            onClick={onClose}
+            disabled={updateStatus === "installing"}
+          >
             <X size={18} />
           </IconButton>
         </header>
@@ -397,7 +523,6 @@ export function SettingsPanel({
                 <span>
                   <p className="eyebrow">ACCOUNT</p>
                   <h3 id="settings-account-title">账户与同步</h3>
-                  <p>管理已连接的邮箱、当前账户和同步身份。</p>
                 </span>
                 <button
                   type="button"
@@ -543,11 +668,9 @@ export function SettingsPanel({
                     <ProviderMark provider={activeAccount.provider} />
                     <span>
                       <strong>{accountDisplayName(activeAccount)}</strong>
-                      <small>
-                        {activeAccount.remark
-                          ? `${activeAccount.email} · 新邮件将默认使用此账户发出。`
-                          : "新邮件将默认使用当前账户发出。"}
-                      </small>
+                      {activeAccount.remark ? (
+                        <small>{activeAccount.email}</small>
+                      ) : null}
                     </span>
                   </div>
                 </section>
@@ -664,7 +787,6 @@ export function SettingsPanel({
                 <span>
                   <p className="eyebrow">PREFERENCES</p>
                   <h3 id="settings-features-title">功能设定</h3>
-                  <p>控制后台同步、新邮件通知、邮件图片和系统启动行为。</p>
                 </span>
               </header>
 
@@ -672,7 +794,6 @@ export function SettingsPanel({
                 <label className="settings-preference-row settings-preference-row--toggle">
                   <span>
                     <strong>桌面通知</strong>
-                    <small>新邮件到达时显示 Mine Mail 的主题通知卡片。</small>
                   </span>
                   <input
                     type="checkbox"
@@ -681,24 +802,6 @@ export function SettingsPanel({
                       updateSettings((current) => ({
                         ...current,
                         notificationsEnabled: event.target.checked,
-                      }))
-                    }
-                  />
-                </label>
-
-                <label className="settings-preference-row settings-preference-row--toggle">
-                  <span>
-                    <strong>前台也提醒</strong>
-                    <small>正在使用 Mine Mail 时也显示新邮件弹窗。</small>
-                  </span>
-                  <input
-                    type="checkbox"
-                    checked={value.foregroundNotificationsEnabled}
-                    disabled={!value.notificationsEnabled}
-                    onChange={(event) =>
-                      updateSettings((current) => ({
-                        ...current,
-                        foregroundNotificationsEnabled: event.target.checked,
                       }))
                     }
                   />
@@ -775,7 +878,6 @@ export function SettingsPanel({
                 <label className="settings-preference-row settings-preference-row--toggle">
                   <span>
                     <strong>开机启动</strong>
-                    <small>默认关闭；只在你主动开启后随系统启动。</small>
                   </span>
                   <input
                     type="checkbox"
@@ -808,14 +910,36 @@ export function SettingsPanel({
                 </span>
                 <span className="settings-version-card__copy">
                   <small>MINE MAIL FOR DESKTOP</small>
-                  <strong>v0.0.1</strong>
+                  <strong>{displayVersion(appVersion)}</strong>
                   <span>当前安装版本</span>
                 </span>
-                <button type="button" className="secondary-button" disabled>
-                  检查更新
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => void checkForUpdate()}
+                  disabled={
+                    !updateClient.isSupported ||
+                    ["checking", "installing", "available"].includes(updateStatus)
+                  }
+                >
+                  {updateStatus === "checking"
+                    ? "正在检查…"
+                    : updateStatus === "installing"
+                      ? "正在更新…"
+                      : "检查更新"}
                 </button>
               </div>
-              <p className="settings-version-note">自动检查更新将在后续版本中提供。</p>
+              <p
+                className="settings-version-note"
+                data-tone={updateStatus === "error" ? "danger" : undefined}
+                role={updateStatus === "error" ? "alert" : undefined}
+                aria-live="polite"
+              >
+                {updateMessage ||
+                  (updateClient.isSupported
+                    ? "更新来自 GitHub Releases。"
+                    : "浏览器预览不执行更新，请使用 Mine Mail 桌面应用。")}
+              </p>
             </section>
           ) : null}
 
@@ -824,6 +948,112 @@ export function SettingsPanel({
           ) : null}
         </div>
       </div>
+
+      {availableUpdate ? (
+        <div
+          className="confirm-layer"
+          onMouseDown={(event) => {
+            if (
+              event.target === event.currentTarget &&
+              updateStatus !== "installing"
+            ) {
+              setAvailableUpdate(null);
+              setUpdateStatus("idle");
+              setUpdateMessage(
+                `已暂缓 ${displayVersion(availableUpdate.version)} 更新。`,
+              );
+            }
+          }}
+        >
+          <section
+            className="confirm-dialog update-confirm-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="update-confirm-title"
+            aria-describedby="update-confirm-description"
+          >
+            <header>
+              <span className="confirm-dialog__icon">
+                <DownloadSimple size={22} weight="duotone" />
+              </span>
+              <IconButton
+                label="暂不更新"
+                onClick={() => {
+                  setAvailableUpdate(null);
+                  setUpdateStatus("idle");
+                  setUpdateMessage(
+                    `已暂缓 ${displayVersion(availableUpdate.version)} 更新。`,
+                  );
+                }}
+                disabled={updateStatus === "installing"}
+              >
+                <X size={18} />
+              </IconButton>
+            </header>
+            <h2 id="update-confirm-title">
+              发现 Mine Mail {displayVersion(availableUpdate.version)}
+            </h2>
+            <p id="update-confirm-description">
+              当前为 {displayVersion(appVersion)}。是否下载并安装来自 GitHub
+              Release 的签名更新？
+            </p>
+            {availableUpdate.notes ? (
+              <div className="update-confirm-dialog__notes">
+                <small>更新说明</small>
+                <p>{availableUpdate.notes}</p>
+              </div>
+            ) : null}
+            {updateStatus === "installing" ? (
+              <div className="update-confirm-dialog__progress" aria-live="polite">
+                <span>
+                  {updateProgress?.stage === "installing"
+                    ? "正在启动安装程序…"
+                    : updateProgress?.percent != null
+                      ? `正在下载… ${updateProgress.percent}%`
+                      : "正在准备下载…"}
+                </span>
+                <progress
+                  aria-label="更新下载进度"
+                  max="100"
+                  value={updateProgress?.percent ?? undefined}
+                />
+                <small>安装时应用会自动退出；完成后将重新打开。</small>
+              </div>
+            ) : null}
+            {updateStatus === "error" && updateMessage ? (
+              <p className="settings-error" role="alert">
+                {updateMessage}
+              </p>
+            ) : null}
+            <footer>
+              <button
+                type="button"
+                className="secondary-button"
+                autoFocus
+                onClick={() => {
+                  setAvailableUpdate(null);
+                  setUpdateStatus("idle");
+                  setUpdateMessage(
+                    `已暂缓 ${displayVersion(availableUpdate.version)} 更新。`,
+                  );
+                }}
+                disabled={updateStatus === "installing"}
+              >
+                暂不更新
+              </button>
+              <button
+                type="button"
+                className="send-button"
+                onClick={() => void installAvailableUpdate()}
+                disabled={updateStatus === "installing"}
+              >
+                <DownloadSimple size={17} weight="bold" />
+                {updateStatus === "installing" ? "正在更新…" : "下载并安装"}
+              </button>
+            </footer>
+          </section>
+        </div>
+      ) : null}
 
       {editingAccountRemark ? (
         <div

@@ -34,7 +34,6 @@ let webSettings = {
   pollingIntervalMinutes: 5,
   autostartEnabled: false,
   notificationsEnabled: true,
-  foregroundNotificationsEnabled: true,
   notificationSoundEnabled: true,
   notificationSound: "mail",
   remoteImageMode: "automatic",
@@ -133,11 +132,6 @@ function normalizeSettings(settings = {}) {
     notificationsEnabled: Boolean(
       settings.notificationsEnabled ?? settings.notifications_enabled ?? true,
     ),
-    foregroundNotificationsEnabled: Boolean(
-      settings.foregroundNotificationsEnabled ??
-      settings.foreground_notifications_enabled ??
-      true,
-    ),
     notificationSoundEnabled: Boolean(
       settings.notificationSoundEnabled ??
       settings.notification_sound_enabled ??
@@ -161,7 +155,6 @@ function settingsDto(settings) {
     poll_interval_minutes: normalized.pollingIntervalMinutes,
     autostart_enabled: normalized.autostartEnabled,
     notifications_enabled: normalized.notificationsEnabled,
-    foreground_notifications_enabled: normalized.foregroundNotificationsEnabled,
     notification_sound_enabled: normalized.notificationSoundEnabled,
     notification_sound: normalized.notificationSound,
     remote_image_mode: normalized.remoteImageMode,

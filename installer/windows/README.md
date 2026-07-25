@@ -44,5 +44,7 @@ cd ..
 ```
 
 The resulting public asset is written to
-`installer/windows/release-assets/`. The embedded NSIS payload is not uploaded
-separately as a user-facing `setup.exe`.
+`installer/windows/release-assets/`. Release builds also upload the maintained
+Tauri NSIS installer and its updater signature. The branded setup remains the
+user-facing first-install experience; the signed NSIS asset is used for
+in-place updates initiated by the running app.

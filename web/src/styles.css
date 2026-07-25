@@ -3833,6 +3833,63 @@ html[data-surface="new-mail-notification"] #root {
   margin-top: 20px;
 }
 
+.update-confirm-dialog {
+  width: min(490px, calc(100vw - 34px));
+}
+
+.update-confirm-dialog__notes {
+  display: grid;
+  max-height: 170px;
+  gap: 6px;
+  margin-top: 15px;
+  overflow-y: auto;
+  padding: 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: var(--color-panel-subtle);
+}
+
+.update-confirm-dialog__notes small {
+  color: var(--color-primary);
+  font-size: 9px;
+  font-weight: 720;
+  letter-spacing: 0.08em;
+}
+
+.update-confirm-dialog__notes p {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+}
+
+.update-confirm-dialog__progress {
+  display: grid;
+  gap: 7px;
+  margin-top: 16px;
+}
+
+.update-confirm-dialog__progress span {
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.update-confirm-dialog__progress progress {
+  width: 100%;
+  height: 8px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 999px;
+  accent-color: var(--color-primary);
+}
+
+.update-confirm-dialog__progress small {
+  color: var(--color-text-muted);
+  font-size: 10px;
+}
+
 .confirm-dialog__danger-action {
   border-color: color-mix(in srgb, var(--color-danger) 46%, var(--surface-edge));
   background: color-mix(in srgb, var(--color-danger) 88%, #801f2d);
@@ -4557,6 +4614,10 @@ html[data-surface="new-mail-notification"] #root {
 
 .settings-version-note {
   margin: 12px 2px 0;
+}
+
+.settings-version-note[data-tone="danger"] {
+  color: var(--color-danger);
 }
 
 .settings-text-button {

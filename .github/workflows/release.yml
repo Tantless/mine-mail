@@ -90,6 +90,7 @@ jobs:
     timeout-minutes: 90
     strategy:
       fail-fast: false
+      max-parallel: 1
       matrix:
         include:
           - label: macOS Apple Silicon
@@ -155,6 +156,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           APPLE_SIGNING_IDENTITY: ${{ matrix.apple_signing_identity }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: web
           tagName: ${{ github.ref_name }}
@@ -163,11 +166,12 @@ jobs:
           generateReleaseNotes: true
           releaseDraft: true
           prerelease: ${{ contains(github.ref_name, '-') }}
+          retryAttempts: 3
           args: ${{ matrix.args }}
 
   build-windows-release:
     name: Build Windows x64
-    needs: prepare-release
+    needs: build-release
     runs-on: windows-latest
     timeout-minutes: 120
     steps:
@@ -217,9 +221,23 @@ jobs:
           $path = Join-Path $env:GITHUB_WORKSPACE "web/src-tauri/google-oauth-client.json"
           [IO.File]::WriteAllBytes($path, $bytes)
 
-      - name: Build internal NSIS payload and MSI
-        working-directory: web
-        run: npm run tauri:build -- --bundles nsis,msi
+      - name: Build updater bundles and publish GitHub Release assets
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: web
+          tagName: ${{ github.ref_name }}
+          releaseName: Mine Mail ${{ github.ref_name }}
+          releaseBody: "Mine Mail desktop installers. Choose the file for your operating system."
+          generateReleaseNotes: true
+          releaseDraft: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          retryAttempts: 3
+          updaterJsonPreferNsis: true
+          args: "--bundles nsis,msi"
 
       - name: Build branded setup executable
         shell: pwsh
@@ -239,17 +257,8 @@ jobs:
             -Version $version
 
           $assetDirectory = "installer/windows/release-assets"
-          $msi = Get-ChildItem `
-            -LiteralPath "web/src-tauri/target/release/bundle/msi" `
-            -Filter "*.msi" |
-            Sort-Object LastWriteTime -Descending |
-            Select-Object -First 1
-          if ($null -eq $msi) {
-            throw "The Windows MSI was not produced."
-          }
-          Copy-Item -LiteralPath $msi.FullName -Destination $assetDirectory -Force
 
-      - name: Upload Windows release assets
+      - name: Upload branded Windows setup
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -258,8 +267,8 @@ jobs:
             -LiteralPath "installer/windows/release-assets" `
             -File |
             ForEach-Object FullName
-          if ($assets.Count -lt 2) {
-            throw "Expected the branded setup executable and the MSI."
+          if ($assets.Count -ne 1) {
+            throw "Expected exactly one branded setup executable."
           }
           $arguments = @(
             "release",
@@ -283,6 +292,98 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 5
     steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Validate updater manifest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          manifest_dir="$(mktemp -d)"
+          gh release download "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern latest.json \
+            --dir "$manifest_dir"
+          node - "$manifest_dir/latest.json" <<'NODE'
+          const fs = require("node:fs");
+
+          const path = process.argv[2];
+          const manifest = JSON.parse(fs.readFileSync(path, "utf8"));
+          const tauriConfig = JSON.parse(
+            fs.readFileSync("web/src-tauri/tauri.conf.json", "utf8")
+          );
+          const tag = process.env.RELEASE_TAG;
+          const expectedVersion = tag.replace(/^v/, "");
+          const requiredPlatforms = [
+            "darwin-aarch64",
+            "darwin-x86_64",
+            "linux-x86_64",
+            "windows-x86_64",
+          ];
+          const minisignKeyId = (encodedEnvelope, label) => {
+            const envelope = Buffer.from(
+              String(encodedEnvelope).trim(),
+              "base64"
+            ).toString("utf8");
+            const encodedPayload = envelope
+              .split(/\r?\n/)
+              .find(
+                (line) =>
+                  line &&
+                  !line.startsWith("untrusted comment") &&
+                  !line.startsWith("trusted comment")
+              );
+            if (!encodedPayload) {
+              throw new Error(`${label} is not a valid minisign envelope.`);
+            }
+            const payload = Buffer.from(encodedPayload, "base64");
+            if (payload.length < 10) {
+              throw new Error(`${label} does not contain a minisign key id.`);
+            }
+            return payload.subarray(2, 10).toString("hex");
+          };
+          const embeddedKeyId = minisignKeyId(
+            tauriConfig.plugins?.updater?.pubkey,
+            "embedded updater public key"
+          );
+
+          if (String(manifest.version).replace(/^v/, "") !== expectedVersion) {
+            throw new Error(
+              `latest.json version ${manifest.version} does not match ${tag}.`
+            );
+          }
+
+          for (const platform of requiredPlatforms) {
+            const entry = manifest.platforms?.[platform];
+            if (!entry?.url || !entry?.signature) {
+              throw new Error(`latest.json is missing ${platform}.`);
+            }
+            const url = new URL(entry.url);
+            const expectedPath =
+              `/Tantless/mine-mail/releases/download/${tag}/`;
+            if (
+              url.protocol !== "https:" ||
+              url.hostname !== "github.com" ||
+              !url.pathname.startsWith(expectedPath)
+            ) {
+              throw new Error(`${platform} has an unexpected update URL.`);
+            }
+            const signatureKeyId = minisignKeyId(
+              entry.signature,
+              `${platform} updater signature`
+            );
+            if (signatureKeyId !== embeddedKeyId) {
+              throw new Error(
+                `${platform} updater signature does not match the embedded public key.`
+              );
+            }
+          }
+
+          console.log(`Validated signed updater metadata for ${tag}.`);
+          NODE
+
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
