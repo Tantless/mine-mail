@@ -2563,6 +2563,16 @@ export function App() {
     }
   };
 
+  const handleSidebarAccountSwitch = (accountId) => {
+    if (isSettingsOpen) {
+      handleFolderChange("inbox");
+    }
+    const currentAccountId =
+      accountStatus.activeAccountId || accountStatus.accountId || null;
+    if (!accountId || accountId === currentAccountId) return;
+    void handleSwitchAccount(accountId);
+  };
+
   const handleRemoveAccount = async (connectedAccount) => {
     if (!connectedAccount?.accountId) return;
     if (composerRef.current) {
@@ -2714,6 +2724,17 @@ export function App() {
     <div
       className={`app-shell platform-${platform} ${isSidebarOpen ? "sidebar-is-open" : ""} ${isSettingsOpen ? "settings-is-open" : ""} ${selectedMessage || (isContactMode && selectedContact) ? "has-selection" : ""}`}
       data-runtime={isTauriRuntime ? "tauri" : "web"}
+      onClickCapture={(event) => {
+        if (
+          !isThemeMenuOpen ||
+          event.target?.closest?.(
+            ".theme-menu, [data-theme-menu-toggle='true']",
+          )
+        ) {
+          return;
+        }
+        setIsThemeMenuOpen(false);
+      }}
     >
       <div className="app-wallpaper" aria-hidden="true" />
       <WindowTitlebar platform={platform} isDesktop={isTauriRuntime} />
@@ -2758,11 +2779,12 @@ export function App() {
           }}
           isThemeMenuOpen={isThemeMenuOpen}
           onThemeMenuToggle={() => setIsThemeMenuOpen((open) => !open)}
+          onThemeMenuClose={() => setIsThemeMenuOpen(false)}
           counts={folderCounts}
           accountStatus={accountStatus}
           isSettingsOpen={isSettingsOpen}
           accountAvatarFor={(email) => profileAvatarFor("account", email)}
-          onAccountSwitch={(accountId) => void handleSwitchAccount(accountId)}
+          onAccountSwitch={handleSidebarAccountSwitch}
           onAddAccount={openAccountSetup}
           onOpenSettings={() => {
             setSettingsSaveStatus("idle");

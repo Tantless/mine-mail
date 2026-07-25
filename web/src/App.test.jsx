@@ -139,6 +139,29 @@ describe("Mine Mail MVP", () => {
     expect(screen.getByRole("textbox", { name: "邮箱地址" })).toBeTruthy();
   });
 
+  it("returns from settings to the inbox when the active sidebar account is clicked", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await screen.findByText("demo@163.com");
+    await user.click(screen.getByRole("button", { name: "设置" }));
+    expect(screen.getByRole("region", { name: "设置" })).toBeTruthy();
+
+    const accountSwitcher = screen.getByLabelText("已登录邮箱账户");
+    await user.click(
+      within(accountSwitcher).getByRole("button", {
+        name: "当前账户 demo@163.com",
+      }),
+    );
+
+    expect(screen.queryByRole("region", { name: "设置" })).toBeNull();
+    expect(
+      screen
+        .getByRole("button", { name: /^收件箱/ })
+        .getAttribute("aria-current"),
+    ).toBe("page");
+  });
+
   it("paints a prewarmed mailbox immediately while the native account switch is pending", async () => {
     const user = userEvent.setup();
     const pendingSwitch = deferred();
@@ -240,6 +263,24 @@ describe("Mine Mail MVP", () => {
 
     expect(document.documentElement.dataset.theme).toBe("night");
     expect(window.localStorage.getItem("mine-mail-theme")).toBe("night");
+  });
+
+  it("dismisses the theme picker before outside controls continue", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findAllByText("欢迎来到 Mine Mail");
+
+    await user.click(screen.getByRole("button", { name: "主题外观" }));
+    expect(screen.getByRole("menu", { name: "选择主题" })).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: "设置" }));
+    expect(screen.queryByRole("menu", { name: "选择主题" })).toBeNull();
+    const settings = screen.getByRole("region", { name: "设置" });
+
+    await user.click(screen.getByRole("button", { name: "主题外观" }));
+    expect(screen.getByRole("menu", { name: "选择主题" })).toBeTruthy();
+    fireEvent.click(settings);
+    expect(screen.queryByRole("menu", { name: "选择主题" })).toBeNull();
   });
 
   it("requires recipient confirmation before sending", async () => {

@@ -140,10 +140,16 @@
   --compose-highlight: rgba(255, 255, 255, 0.22);
   --compose-shadow: 0 9px 22px color-mix(in srgb, var(--color-primary) 18%, transparent),
     0 2px 7px rgba(18, 35, 52, 0.08), inset 0 1px 0 var(--compose-highlight);
+  --theme-menu-surface: rgba(229, 241, 248, 0.78);
+  --theme-menu-tint: rgba(43, 126, 181, 0.16);
+  --reader-idle-ink: #17394b;
   --focus-ring: 0 0 0 2px var(--color-panel), 0 0 0 4px var(--color-primary);
 }
 
 :root[data-theme="daylight"] {
+  --theme-menu-surface: rgba(229, 241, 248, 0.78);
+  --theme-menu-tint: rgba(43, 126, 181, 0.16);
+  --reader-idle-ink: #17394b;
   --mail-list-surface: rgba(236, 244, 248, 0.68);
   --reader-surface: rgba(244, 249, 252, 0.58);
   --reader-toolbar-surface: rgba(250, 253, 255, 0.14);
@@ -236,6 +242,9 @@
   --compose-surface-pressed: rgba(67, 129, 216, 0.85);
   --compose-edge: rgba(226, 239, 255, 0.26);
   --compose-highlight: rgba(255, 255, 255, 0.14);
+  --theme-menu-surface: rgba(17, 25, 38, 0.8);
+  --theme-menu-tint: rgba(114, 174, 252, 0.16);
+  --reader-idle-ink: #f2f6fc;
 }
 
 :root[data-theme="dusk"] {
@@ -298,6 +307,9 @@
   --compose-control-surface: rgba(248, 237, 229, 0.48);
   --compose-control-hover: rgba(255, 247, 241, 0.62);
   --compose-divider: rgba(118, 77, 73, 0.18);
+  --theme-menu-surface: rgba(244, 224, 214, 0.8);
+  --theme-menu-tint: rgba(185, 88, 72, 0.15);
+  --reader-idle-ink: #4c2931;
 }
 
 :root[data-theme="forest"] {
@@ -360,6 +372,9 @@
   --compose-control-surface: rgba(231, 240, 231, 0.48);
   --compose-control-hover: rgba(244, 250, 245, 0.62);
   --compose-divider: rgba(51, 88, 65, 0.18);
+  --theme-menu-surface: rgba(220, 235, 222, 0.8);
+  --theme-menu-tint: rgba(53, 122, 85, 0.14);
+  --reader-idle-ink: #183c2b;
 }
 
 * {
@@ -1295,11 +1310,22 @@ html[data-surface="new-mail-notification"] #root {
   left: 0;
   z-index: 8;
   padding: 14px;
-  border: 1px solid var(--color-border);
+  overflow: hidden;
+  border: 1px solid
+    color-mix(in srgb, var(--color-primary) 20%, var(--surface-edge));
   border-radius: 12px;
-  background: var(--color-panel);
+  background:
+    linear-gradient(145deg, var(--theme-menu-tint), transparent 58%),
+    var(--theme-menu-surface);
   color: var(--color-text);
-  box-shadow: var(--panel-shadow);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--surface-highlight) 88%, transparent),
+    0 18px 42px color-mix(in srgb, var(--color-text) 18%, transparent),
+    var(--panel-shadow);
+  backdrop-filter: blur(26px) saturate(1.18)
+    brightness(var(--surface-brightness));
+  -webkit-backdrop-filter: blur(26px) saturate(1.18)
+    brightness(var(--surface-brightness));
   animation: menu-in var(--motion-normal) ease-out;
 }
 
@@ -1919,7 +1945,7 @@ html[data-surface="new-mail-notification"] #root {
 }
 
 .reader-idle {
-  --idle-ink: color-mix(in srgb, var(--color-text) 92%, var(--color-primary));
+  --idle-ink: var(--reader-idle-ink);
   --reader-idle-quote-cap: 56px;
   position: relative;
   display: grid;
@@ -5277,6 +5303,19 @@ html[data-surface="new-mail-notification"] #root {
   color: var(--color-text);
   font: inherit;
   font-size: 12px;
+}
+
+.settings-input-shell.settings-input-shell--text {
+  padding: 0;
+  cursor: text;
+}
+
+.settings-input-shell--text input {
+  min-height: 38px;
+  align-self: stretch;
+  padding: 0 11px;
+  border-radius: inherit;
+  cursor: text;
 }
 
 .settings-input-shell input[type="number"] {

@@ -148,7 +148,7 @@ export function AccountSetupForm({
           <>
           <label className="settings-field">
             <span>邮箱地址</span>
-            <span className="settings-input-shell inset-input-shell">
+            <span className="settings-input-shell settings-input-shell--text inset-input-shell">
               <input
                 type="email"
                 required
@@ -162,7 +162,7 @@ export function AccountSetupForm({
           {selected?.note ? <p className="account-preset-note">{selected.note}</p> : null}
           <label className="settings-field">
             <span>{selected?.secretLabel}</span>
-            <span className="settings-input-shell inset-input-shell">
+            <span className="settings-input-shell settings-input-shell--text inset-input-shell">
               <input
                 ref={secretRef}
                 type="password"
@@ -179,7 +179,7 @@ export function AccountSetupForm({
             <div className="custom-server-grid">
               <label className="settings-field">
                 <span>IMAP 主机</span>
-                <span className="settings-input-shell inset-input-shell">
+                <span className="settings-input-shell settings-input-shell--text inset-input-shell">
                   <input
                     required
                     autoComplete="off"
@@ -193,7 +193,7 @@ export function AccountSetupForm({
               </label>
               <label className="settings-field settings-field--port">
                 <span>IMAP 端口</span>
-                <span className="settings-input-shell inset-input-shell">
+                <span className="settings-input-shell settings-input-shell--text inset-input-shell">
                   <input
                     required
                     type="number"
@@ -209,7 +209,7 @@ export function AccountSetupForm({
               </label>
               <label className="settings-field">
                 <span>SMTP 主机</span>
-                <span className="settings-input-shell inset-input-shell">
+                <span className="settings-input-shell settings-input-shell--text inset-input-shell">
                   <input
                     required
                     autoComplete="off"
@@ -223,7 +223,7 @@ export function AccountSetupForm({
               </label>
               <label className="settings-field settings-field--port">
                 <span>SMTP 端口</span>
-                <span className="settings-input-shell inset-input-shell">
+                <span className="settings-input-shell settings-input-shell--text inset-input-shell">
                   <input
                     required
                     type="number"

@@ -16,6 +16,9 @@ When implementing from a selected generated mock, treat that image as the source
 - The MVP ships four selectable themes: Daylight, Night, Dusk, and Forest.
 - Email text is always rendered on an opaque or near-opaque surface; decorative wallpaper must never reduce readability.
 - The compose action, message list, and reading pane share semantic frosted-material tokens. The list is lighter than the reading pane, the reading pane stays near-opaque, and the compose action uses a translucent theme accent. New themes must inherit or override these tokens rather than introducing flat opaque cards.
+- The theme picker is a theme-tinted frosted popover. Any pointer interaction outside the picker, including another sidebar control, dismisses it before that target action continues.
+- The future-letter quotation ink is explicitly tuned per wallpaper: cool blue-black in Daylight, clear off-white in Night, warm wine-brown in Dusk, and deep pine green in Forest. The attribution retains the same ink, and contrast takes priority over decorative tint.
+- Settings text-field visuals and their actual input hit area are one surface: the full inset shell uses the text cursor and focuses the contained input when clicked.
 
 ## Desktop integration decisions
 

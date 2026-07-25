@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import {
   AddressBook,
   Archive,
@@ -59,6 +60,7 @@ export function Sidebar({
   onThemeChange,
   isThemeMenuOpen,
   onThemeMenuToggle,
+  onThemeMenuClose,
   counts = {},
   accountStatus,
   isSettingsOpen = false,
@@ -72,6 +74,19 @@ export function Sidebar({
   const emptySlots = Math.max(0, maxAccounts - accounts.length);
   const hasAvailableAccountSlot = emptySlots > 0;
   const activeAccountId = accountStatus?.activeAccountId || accountStatus?.accountId;
+
+  useEffect(() => {
+    if (!isThemeMenuOpen) return undefined;
+
+    const closeOnEscape = (event) => {
+      if (event.key === "Escape") onThemeMenuClose?.();
+    };
+
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [isThemeMenuOpen, onThemeMenuClose]);
 
   return (
     <aside className="sidebar" aria-label="邮箱导航">
@@ -158,7 +173,11 @@ export function Sidebar({
 
           <div className="theme-control">
             {isThemeMenuOpen ? (
-              <div className="theme-menu" role="menu" aria-label="选择主题">
+              <div
+                className="theme-menu"
+                role="menu"
+                aria-label="选择主题"
+              >
                 <p>界面主题</p>
                 <div className="theme-menu__grid">
                   {themeOptions.map((option) => (
@@ -181,6 +200,7 @@ export function Sidebar({
             <button
               type="button"
               className="sidebar-action"
+              data-theme-menu-toggle="true"
               onClick={onThemeMenuToggle}
               aria-expanded={isThemeMenuOpen}
             >

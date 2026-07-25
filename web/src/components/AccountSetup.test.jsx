@@ -18,6 +18,27 @@ const presets = [
 describe("AccountSetupForm", () => {
   afterEach(() => cleanup());
 
+  it("makes each visible text-field shell the input interaction surface", () => {
+    render(
+      <AccountSetupForm
+        presets={presets}
+        status={{ configured: false }}
+        submitStatus="idle"
+        error={null}
+        onSubmit={vi.fn()}
+      />,
+    );
+
+    const email = screen.getByLabelText("邮箱地址");
+    const secret = screen.getByPlaceholderText("请输入授权密码");
+    expect(
+      email.closest(".settings-input-shell--text"),
+    ).toBe(email.parentElement);
+    expect(
+      secret.closest(".settings-input-shell--text"),
+    ).toBe(secret.parentElement);
+  });
+
   it("clears the uncontrolled secret input immediately after submit", async () => {
     const onSubmit = vi.fn().mockResolvedValue(undefined);
     const user = userEvent.setup();
