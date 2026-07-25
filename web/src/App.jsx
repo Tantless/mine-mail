@@ -2579,7 +2579,7 @@ export function App() {
     return status;
   };
 
-  const handleRemoveAccount = async (connectedAccount) => {
+  const handleRemoveAccount = async (connectedAccount, options = {}) => {
     if (!connectedAccount?.accountId) return;
     if (composerRef.current) {
       showToast("请先关闭当前写信窗口，再移除邮箱账户。", "error");
@@ -2587,8 +2587,35 @@ export function App() {
     }
     setAccountSubmitStatus("saving");
     try {
-      const status = await mailApi.removeAccount(connectedAccount.accountId);
-      await applyActiveAccount(status, "邮箱账户已移除");
+      const result = await mailApi.removeAccount(
+        connectedAccount.accountId,
+        options,
+      );
+      await applyActiveAccount(result.status, null);
+      if (result.localDataDeleted) {
+        const ownerKey = normalizeAvatarEmail(connectedAccount.email);
+        setProfileAvatars((current) =>
+          current.filter(
+            (avatar) =>
+              avatar.ownerType !== "account" || avatar.ownerKey !== ownerKey,
+          ),
+        );
+      }
+      if (result.warning) {
+        showToast(`账户已移除，但本地数据清理未完成：${result.warning}`, "error");
+      } else if (result.googleAuthorizationRevoked) {
+        showToast(
+          result.localDataDeleted
+            ? "Google 授权、系统凭据和本地邮件缓存均已删除"
+            : "Google 授权和系统凭据已删除；本地邮件缓存已保留",
+        );
+      } else if (options.deleteLocalData) {
+        showToast("邮箱账户、系统凭据和本地邮件缓存均已删除");
+      } else if (connectedAccount.provider === "gmail") {
+        showToast("Gmail 已仅断开；Google 授权和本地邮件缓存仍然保留");
+      } else {
+        showToast("邮箱账户已移除；本地邮件缓存已保留");
+      }
     } catch (error) {
       setAccountSubmitStatus("error");
       showToast(describeError(error, "邮箱账户移除失败"), "error");
@@ -2821,9 +2848,10 @@ export function App() {
             onConnectGoogle={handleConnectGoogle}
             onSwitchAccount={(accountId) => void handleSwitchAccount(accountId)}
             onSaveAccountRemark={handleSaveAccountRemark}
-            onRemoveAccount={(connectedAccount) =>
-              void handleRemoveAccount(connectedAccount)
+            onRemoveAccount={(connectedAccount, options) =>
+              void handleRemoveAccount(connectedAccount, options)
             }
+            onOpenExternalLink={(url) => void handleOpenExternalLink(url)}
             accountAvatarFor={(email) => profileAvatarFor("account", email)}
             onSetAccountAvatar={(email, file) =>
               handleSaveProfileAvatar("account", email, file)

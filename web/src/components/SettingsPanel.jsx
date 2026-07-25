@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
+  ArrowSquareOut,
   ArrowsLeftRight,
   CaretRight,
   DotsThree,
@@ -17,6 +18,7 @@ import {
   X,
 } from "@phosphor-icons/react";
 import { appUpdateApi } from "../services/appUpdate.js";
+import { AccountRemovalDialog } from "./AccountRemovalDialog.jsx";
 import { AccountSetupForm } from "./AccountSetup.jsx";
 import { BrandLogo } from "./BrandLogo.jsx";
 import { IconButton } from "./IconButton.jsx";
@@ -83,6 +85,24 @@ const providerDescriptions = {
 
 const remoteImageRisk =
   "自动加载会连接发件人的图片服务器，可能暴露邮件打开时间、IP 地址和设备信息，并让追踪像素确认邮箱处于活跃状态。";
+
+const productLinks = [
+  {
+    label: "隐私政策",
+    description: "了解 Gmail 数据、本地缓存和凭据的处理方式",
+    url: "https://minemail.tantless.online/privacy/",
+  },
+  {
+    label: "服务条款",
+    description: "查看使用 Mine Mail 时适用的条款",
+    url: "https://minemail.tantless.online/terms/",
+  },
+  {
+    label: "数据删除指南",
+    description: "了解如何撤销授权并删除本地数据",
+    url: "https://minemail.tantless.online/data-deletion/",
+  },
+];
 
 function normalizeProvider(preset) {
   const id = preset.id ?? preset.provider ?? preset.provider_id;
@@ -187,6 +207,7 @@ export function SettingsPanel({
   onSwitchAccount,
   onSaveAccountRemark,
   onRemoveAccount,
+  onOpenExternalLink,
   accountAvatarFor,
   onSetAccountAvatar,
   onRemoveAccountAvatar,
@@ -943,6 +964,31 @@ export function SettingsPanel({
             </section>
           ) : null}
 
+          {activeSection === "version" ? (
+            <section className="settings-legal-card" aria-labelledby="settings-legal-title">
+              <header>
+                <strong id="settings-legal-title">隐私与数据</strong>
+                <small>这些说明会在系统浏览器中打开，方便保存和查阅。</small>
+              </header>
+              <div>
+                {productLinks.map((link) => (
+                  <button
+                    type="button"
+                    className="settings-legal-link"
+                    key={link.url}
+                    onClick={() => onOpenExternalLink(link.url)}
+                  >
+                    <span>
+                      <strong>{link.label}</strong>
+                      <small>{link.description}</small>
+                    </span>
+                    <ArrowSquareOut size={17} />
+                  </button>
+                ))}
+              </div>
+            </section>
+          ) : null}
+
           {saveStatus === "error" ? (
             <p className="settings-error" role="alert">设置没有保存，请重试。</p>
           ) : null}
@@ -1140,72 +1186,16 @@ export function SettingsPanel({
         </div>
       ) : null}
 
-      {pendingAccountRemoval ? (
-        <div
-          className="confirm-layer"
-          onMouseDown={(event) => {
-            if (
-              event.target === event.currentTarget &&
-              accountSubmitStatus !== "saving"
-            ) {
-              setPendingAccountRemoval(null);
-            }
-          }}
-        >
-          <section
-            className="confirm-dialog confirm-dialog--danger"
-            role="alertdialog"
-            aria-modal="true"
-            aria-labelledby="remove-account-title"
-            aria-describedby="remove-account-description"
-          >
-            <header>
-              <span className="confirm-dialog__icon">
-                <Trash size={22} weight="duotone" />
-              </span>
-              <IconButton
-                label="取消移除账户"
-                onClick={() => setPendingAccountRemoval(null)}
-                disabled={accountSubmitStatus === "saving"}
-              >
-                <X size={18} />
-              </IconButton>
-            </header>
-            <h2 id="remove-account-title">移除这个邮箱账户？</h2>
-            <p id="remove-account-description">
-              系统凭据会被移除；本地邮件缓存会保留，重新连接后仍可恢复。
-            </p>
-            <div className="confirm-dialog__subject">
-              <small>将移除</small>
-              <strong>{pendingAccountRemoval.email}</strong>
-            </div>
-            <footer>
-              <button
-                type="button"
-                className="secondary-button"
-                autoFocus
-                onClick={() => setPendingAccountRemoval(null)}
-                disabled={accountSubmitStatus === "saving"}
-              >
-                保留账户
-              </button>
-              <button
-                type="button"
-                className="send-button confirm-dialog__danger-action"
-                onClick={() => {
-                  const account = pendingAccountRemoval;
-                  setPendingAccountRemoval(null);
-                  void onRemoveAccount(account);
-                }}
-                disabled={accountSubmitStatus === "saving"}
-              >
-                <Trash size={17} weight="fill" />
-                移除账户
-              </button>
-            </footer>
-          </section>
-        </div>
-      ) : null}
+      <AccountRemovalDialog
+        account={pendingAccountRemoval}
+        isRemoving={accountSubmitStatus === "saving"}
+        onCancel={() => setPendingAccountRemoval(null)}
+        onConfirm={(options) => {
+          const accountToRemove = pendingAccountRemoval;
+          setPendingAccountRemoval(null);
+          if (accountToRemove) onRemoveAccount(accountToRemove, options);
+        }}
+      />
     </section>
   );
 }

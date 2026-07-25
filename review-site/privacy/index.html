@@ -145,11 +145,11 @@
 
             <section id="retention">
               <h2>6. 数据保留与删除</h2>
-              <p>邮箱服务商上的原始数据按该服务商的政策保留。设备上的 Mine Mail 缓存会一直保留，直到你执行完整本地数据删除。</p>
+              <p>邮箱服务商上的原始数据按该服务商的政策保留。设备上的 Mine Mail 缓存会一直保留，直到你在移除账户时选择删除本地邮件缓存，或执行完整本地数据删除。</p>
               <div class="notice">
-                <p><strong>当前测试版的重要区别：</strong>在应用中“移除账户”会从 Mine Mail 账户列表中断开该账户并删除操作系统凭据，但会保留本地邮件缓存，便于重新连接。该操作目前不会代替 Google 账户中的授权撤销，也不会完成整个本地缓存删除。</p>
+                <p><strong>应用会明确区分删除范围：</strong>“仅断开”会删除 Mine Mail 账户记录和操作系统凭据，但保留 Google 授权与本地邮件缓存；“撤销授权并移除”会先请求 Google 撤销 Mine Mail 的 OAuth 授权，再删除本机凭据。你还可以勾选“同时删除本地邮件缓存”，删除该账户的 SQLite 邮件、草稿与发件队列缓存。</p>
               </div>
-              <p>完整删除包括三个可独立执行的动作：在 Mine Mail 中断开账户、在 Google 账户中撤销 Mine Mail 授权、退出应用后删除本地应用数据目录。请按<a href="/data-deletion/">数据删除指南</a>操作。</p>
+              <p>只有在 Google 确认撤销后，应用才会报告授权已撤销；本地缓存清理未完成时会显示明确警告。若应用无法启动，或你还要删除设置、联系人、头像与日志，请按<a href="/data-deletion/">数据删除指南</a>完成手动步骤。</p>
               <p>Windows 本地数据位于 <code>%LOCALAPPDATA%\com.minemail.desktop</code>。卸载程序可能因版本或系统安装行为而保留应用数据；若要确保删除，请在退出 Mine Mail 后手动删除该目录。</p>
             </section>
 
@@ -163,7 +163,7 @@
               <h2>8. 你的选择与权利</h2>
               <ul>
                 <li>随时停止同步或从 Mine Mail 移除账户。</li>
-                <li>随时通过 Google 账户连接页面撤销 Mine Mail 授权。</li>
+                <li>随时通过 Mine Mail 的“撤销授权并移除”，或 Google 账户连接页面撤销 Mine Mail 授权。</li>
                 <li>删除本地应用数据目录，以清除 Mine Mail 在设备上的缓存、设置、联系人和日志。</li>
                 <li>将远程图片设置为自动、询问或阻止。</li>
                 <li>就支持通信中由开发者持有的数据提出访问、更正或删除请求。</li>
@@ -246,11 +246,11 @@
 
             <section id="retention-en">
               <h2>6. Retention and deletion</h2>
-              <p>Original data at your mail provider is retained under that provider’s policies. Mine Mail’s on-device cache remains until you perform a complete local-data deletion.</p>
+              <p>Original data at your mail provider is retained under that provider’s policies. Mine Mail’s on-device cache remains until you select local mail-cache deletion while removing the account or perform a complete local-data deletion.</p>
               <div class="notice">
-                <p><strong>Important current-beta distinction:</strong> Remove Account disconnects the account from Mine Mail and deletes its OS credential, but retains the local mail cache to support reconnection. It does not currently replace revocation in your Google Account or complete deletion of the full local cache.</p>
+                <p><strong>The app distinguishes each deletion scope:</strong> “Disconnect only” removes the Mine Mail account entry and OS credential while retaining the Google grant and local mail cache. “Revoke authorization and remove” first asks Google to revoke Mine Mail’s OAuth grant, then removes the device credential. You may also select “Delete local mail cache” to delete that account’s SQLite mail, draft, and outbox cache.</p>
               </div>
-              <p>Complete deletion has three independent actions: disconnect the account in Mine Mail, revoke Mine Mail in your Google Account, and—after quitting the app—delete the local app-data directory. Follow the <a href="/data-deletion/">Data Deletion Guide</a>.</p>
+              <p>Mine Mail reports authorization as revoked only after Google confirms it, and displays an explicit warning if local cache cleanup is incomplete. If the app cannot start, or if you also want to remove settings, contacts, avatars, and logs, follow the manual steps in the <a href="/data-deletion/">Data Deletion Guide</a>.</p>
               <p>On Windows, local data is under <code>%LOCALAPPDATA%\com.minemail.desktop</code>. An uninstaller may preserve app data depending on the release and OS behavior. To ensure deletion, quit Mine Mail and manually remove that directory.</p>
             </section>
 
@@ -264,7 +264,7 @@
               <h2>8. Your choices and rights</h2>
               <ul>
                 <li>Stop synchronization or remove an account from Mine Mail at any time.</li>
-                <li>Revoke Mine Mail from your Google Account’s connected-apps page at any time.</li>
+                <li>Revoke Mine Mail either through “Revoke authorization and remove” in the app or from your Google Account’s connected-apps page at any time.</li>
                 <li>Delete the local app-data directory to clear Mine Mail’s device cache, settings, contacts, and logs.</li>
                 <li>Set remote images to Automatic, Ask, or Blocked.</li>
                 <li>Request access, correction, or deletion of support data actually held by the developer.</li>

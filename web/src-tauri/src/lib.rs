@@ -20,6 +20,7 @@ use url::Url;
 
 use account::{
     AccountPresetDto, AccountRuntime, AccountStatusDto, BackendState, ConfigureAccountRequest,
+    RemoveAccountRequest, RemoveAccountResultDto,
 };
 use contacts::{ContactDirectoryDto, ContactRuntime};
 use desktop::{
@@ -1639,21 +1640,33 @@ async fn remove_account(
     backend: State<'_, BackendState>,
     contacts: State<'_, ContactRuntime>,
     desktop_runtime: State<'_, DesktopRuntime>,
-    account_id: String,
-) -> CommandResult<AccountStatusDto> {
+    request: RemoveAccountRequest,
+) -> CommandResult<RemoveAccountResultDto> {
     let _sync_guard = desktop_runtime.acquire_sync_gate().await;
-    let status = account.remove_account(&backend, &account_id)?;
-    if let Err(error) = desktop_runtime.remove_notification_baseline(&account_id) {
-        desktop_runtime.record_startup_error(error);
+    let account_id = request.account_id.clone();
+    let mut result = account.remove_account(&backend, &request).await?;
+    if request.delete_local_data {
+        let mut cleanup_warnings = result.warning.take().into_iter().collect::<Vec<_>>();
+        if let Err(error) = desktop_runtime.remove_notification_baseline(&account_id) {
+            desktop_runtime.record_startup_error(error);
+            cleanup_warnings.push("The notification baseline could not be deleted.".to_owned());
+        }
+        if let Err(error) = contacts.remove_account(&account_id) {
+            desktop_runtime.record_startup_error(error);
+            cleanup_warnings.push("Account-scoped contact favorites could not be deleted.".to_owned());
+        }
+        if let Err(error) = desktop_runtime.remove_account_avatar(&result.removed_email) {
+            desktop_runtime.record_startup_error(error);
+            cleanup_warnings.push("The account avatar could not be deleted.".to_owned());
+        }
+        result.local_data_deleted = cleanup_warnings.is_empty();
+        result.warning = (!cleanup_warnings.is_empty()).then(|| cleanup_warnings.join(" "));
     }
-    if let Err(error) = contacts.remove_account(&account_id) {
-        desktop_runtime.record_startup_error(error);
-    }
-    let _ = app.emit("mail:account-updated", status.clone());
-    if status.configured {
+    let _ = app.emit("mail:account-updated", result.status.clone());
+    if result.status.configured {
         desktop::request_sync(&app, true, "account_change");
     }
-    Ok(status)
+    Ok(result)
 }
 
 fn safe_mail_error(error: mine_mail::MailError) -> String {

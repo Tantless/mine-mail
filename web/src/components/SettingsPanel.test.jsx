@@ -41,6 +41,7 @@ function panelProps(overrides = {}) {
     onSwitchAccount: vi.fn(),
     onSaveAccountRemark: vi.fn().mockResolvedValue(accountStatus),
     onRemoveAccount: vi.fn(),
+    onOpenExternalLink: vi.fn(),
     accountAvatarFor: vi.fn(),
     onSetAccountAvatar: vi.fn(),
     onRemoveAccountAvatar: vi.fn(),
@@ -72,25 +73,53 @@ describe("SettingsPanel account flow", () => {
     expect(screen.getByRole("heading", { name: "账户与同步" })).toBeTruthy();
   });
 
-  it("confirms account removal in a themed app dialog", async () => {
+  it("explains Google revocation separately from local cache deletion", async () => {
     const user = userEvent.setup();
     const onRemoveAccount = vi.fn();
     render(<SettingsPanel {...panelProps({ onRemoveAccount })} />);
 
+    const gmailCard = screen
+      .getByText("second@gmail.com")
+      .closest(".settings-account-card");
+    const cardButtons = within(gmailCard).getAllByRole("button");
+    await user.click(cardButtons[cardButtons.length - 1]);
     await user.click(
-      screen.getByRole("button", { name: "管理 first@163.com" }),
+      within(gmailCard).getByRole("menuitem", { name: "移除账户" }),
     );
-    await user.click(screen.getByRole("menuitem", { name: "移除账户" }));
 
-    const dialog = screen.getByRole("alertdialog", {
-      name: "移除这个邮箱账户？",
-    });
-    expect(within(dialog).getByText("first@163.com")).toBeTruthy();
-    expect(onRemoveAccount).not.toHaveBeenCalled();
+    expect(
+      screen.getByRole("alertdialog", { name: "移除 Gmail 账户？" }),
+    ).toBeTruthy();
+    await user.click(
+      screen.getByRole("checkbox", { name: /同时删除本地邮件缓存/ }),
+    );
+    await user.click(
+      screen.getByRole("button", { name: "撤销授权并移除" }),
+    );
 
-    await user.click(within(dialog).getByRole("button", { name: "移除账户" }));
-    expect(onRemoveAccount).toHaveBeenCalledWith(accountStatus.accounts[0]);
-    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(onRemoveAccount).toHaveBeenCalledWith(
+      expect.objectContaining({ accountId: "gmail-account" }),
+      {
+        revokeGoogleAuthorization: true,
+        deleteLocalData: true,
+      },
+    );
+
+    await user.click(cardButtons[cardButtons.length - 1]);
+    await user.click(
+      within(gmailCard).getByRole("menuitem", { name: "移除账户" }),
+    );
+    await user.click(
+      screen.getByRole("checkbox", { name: /同时删除本地邮件缓存/ }),
+    );
+    await user.click(screen.getByRole("button", { name: "仅断开" }));
+    expect(onRemoveAccount).toHaveBeenLastCalledWith(
+      expect.objectContaining({ accountId: "gmail-account" }),
+      {
+        revokeGoogleAuthorization: false,
+        deleteLocalData: false,
+      },
+    );
   });
 
   it("edits a connected account remark from the local account menu", async () => {
@@ -153,5 +182,21 @@ describe("SettingsPanel account flow", () => {
     );
     expect(installUpdate).toHaveBeenCalledOnce();
     expect(await screen.findByText(/更新已安装/)).toBeTruthy();
+  });
+
+  it("opens the public privacy policy from the About page", async () => {
+    const user = userEvent.setup();
+    const onOpenExternalLink = vi.fn();
+    render(<SettingsPanel {...panelProps({ onOpenExternalLink })} />);
+
+    const aboutButton = screen
+      .getAllByRole("button")
+      .find((button) => button.textContent.includes("Mine Mail"));
+    await user.click(aboutButton);
+    await user.click(screen.getByRole("button", { name: /隐私政策/ }));
+
+    expect(onOpenExternalLink).toHaveBeenCalledWith(
+      "https://minemail.tantless.online/privacy/",
+    );
   });
 });

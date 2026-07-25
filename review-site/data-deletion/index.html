@@ -31,7 +31,7 @@
       <section class="page-hero">
         <p class="eyebrow"><span data-copy="zh">账户、授权与设备数据</span><span data-copy="en">Account, authorization & device data</span></p>
         <h1><span data-copy="zh">数据删除指南</span><span data-copy="en">Data Deletion Guide</span></h1>
-        <p><span data-copy="zh">Mine Mail 没有保存邮箱内容的云端服务器。完整退出包含三个独立动作：断开应用账户、撤销 Google 授权、删除设备本地数据。</span><span data-copy="en">Mine Mail has no cloud server holding your mailbox. A complete exit has three independent actions: disconnect the app account, revoke Google authorization, and delete on-device data.</span></p>
+        <p><span data-copy="zh">Mine Mail 没有保存邮箱内容的云端服务器。应用会让你分别选择仅断开、撤销 Google 授权，以及删除该账户的设备本地邮件缓存。</span><span data-copy="en">Mine Mail has no cloud server holding your mailbox. The app lets you separately choose to disconnect, revoke Google authorization, and delete that account’s on-device mail cache.</span></p>
         <div class="page-meta"><span><span data-copy="zh">更新日期：2026 年 7 月 25 日</span><span data-copy="en">Updated: July 25, 2026</span></span></div>
       </section>
 
@@ -49,35 +49,36 @@
               <table class="data-table">
                 <thead><tr><th>动作</th><th>会删除什么</th><th>不会删除什么</th></tr></thead>
                 <tbody>
-                  <tr><td>在 Mine Mail 中移除账户</td><td>账户连接记录与操作系统凭据存储中的该账户授权资料。</td><td>当前测试版会保留该账户的本地邮件缓存；也不会替你撤销 Google 账户中的应用授权。</td></tr>
-                  <tr><td>在 Google 账户中撤销授权</td><td>Mine Mail 继续访问 Gmail 的 Google OAuth 权限。</td><td>已经保存在设备上的本地缓存，以及 Gmail 服务商保存的原始邮件。</td></tr>
+                  <tr><td>仅断开</td><td>Mine Mail 账户连接记录与操作系统凭据存储中的该账户授权资料。</td><td>Google 账户中的 Mine Mail 授权和设备本地邮件缓存。</td></tr>
+                  <tr><td>撤销授权并移除</td><td>Mine Mail 会先请求 Google 撤销 OAuth 授权，确认成功后再删除账户记录和操作系统凭据。</td><td>除非同时勾选删除本地邮件缓存，否则会保留设备缓存；不会删除 Gmail 服务商上的原始邮件。</td></tr>
                   <tr><td>删除 Mine Mail 本地数据目录</td><td>设备上的账户元数据、SQLite 邮件缓存、草稿、发件箱、联系人、头像、设置与日志。</td><td>Google 或其他邮箱服务商服务器上的原始邮件和账户。</td></tr>
                 </tbody>
               </table>
-              <div class="notice"><p><strong>要完成最彻底的退出，请依次执行下面 1、2、3 三步。</strong>执行前请确认重要的本地草稿或尚未发送内容已经备份；删除本地目录后无法由 Mine Mail 恢复。</p></div>
+              <div class="notice"><p><strong>要完成最彻底的退出，请在第 1 步选择撤销授权并勾选删除缓存，再按需执行第 3 步。</strong>执行前请确认重要的本地草稿或尚未发送内容已经备份；删除后无法由 Mine Mail 恢复。</p></div>
             </section>
 
             <section id="disconnect">
-              <h2>1. 从 Mine Mail 断开账户</h2>
+              <h2>1. 从 Mine Mail 移除或断开账户</h2>
               <ol>
                 <li>打开 Mine Mail。</li>
                 <li>进入 <strong>设置 → 账户</strong>。</li>
-                <li>选择要断开的账户并点击移除账户。</li>
-                <li>阅读确认提示后完成移除。</li>
+                <li>打开目标账户的更多菜单并点击<strong>移除账户</strong>。</li>
+                <li>若只想暂时断开并保留 Google 授权与缓存，选择<strong>仅断开</strong>。</li>
+                <li>若不再使用该连接，选择<strong>撤销授权并移除</strong>；如需同时删除该账户的 SQLite 邮件缓存，先勾选<strong>同时删除本地邮件缓存</strong>。</li>
               </ol>
-              <p>当前测试版会删除 Mine Mail 账户列表中的连接和操作系统凭据存储中的该账户凭据，但为重新连接保留本地邮件缓存。若要清除缓存，继续执行第 3 步。</p>
-              <p>如果应用无法启动，可跳过本步，先执行 Google 撤权，再删除完整本地数据目录。</p>
+              <p>Google 撤销请求失败时，Mine Mail 不会继续删除账户，并会显示失败原因；请检查网络后重试。若本地缓存清理失败，账户和授权仍可能已经移除，但应用会显示明确的部分完成警告。</p>
+              <p>如果应用无法启动，可跳过本步，先执行第 2 步手动撤权，再删除完整本地数据目录。</p>
             </section>
 
             <section id="revoke">
-              <h2>2. 撤销 Google 授权</h2>
+              <h2>2. 手动撤销 Google 授权（备用方式）</h2>
               <ol>
                 <li>打开 Google 账户的<a href="https://myaccount.google.com/connections" rel="noreferrer">第三方应用和服务连接页面</a>。</li>
                 <li>登录连接 Mine Mail 时使用的 Google 账户。</li>
                 <li>在列表中选择 <strong>Mine Mail</strong>。</li>
                 <li>选择删除所有关联或撤销访问权限，并按 Google 页面确认。</li>
               </ol>
-              <p>撤权后，Mine Mail 不能再使用已有 token 访问该 Gmail 账户。以后重新连接需要你再次在 Google 页面明确授权。</p>
+              <p>如果你已经在应用中成功选择“撤销授权并移除”，无需重复本步。撤权后，Mine Mail 不能再使用已有 token 访问该 Gmail 账户；以后重新连接需要再次明确授权。</p>
             </section>
 
             <section id="local">
@@ -88,7 +89,7 @@
                 <li>确认打开的目录名为 <code>com.minemail.desktop</code>，然后删除整个目录。</li>
                 <li>清空回收站，完成设备上的永久删除。</li>
               </ol>
-              <p>目录删除后，Mine Mail 的本地缓存、账户元数据、设置、联系人和诊断日志无法恢复。操作系统凭据通常已在第 1 步删除；如跳过第 1 步，可同时检查 Windows 凭据管理器中是否仍有 Mine Mail 相关条目。</p>
+              <p>应用内的缓存选项只删除目标账户的邮件数据库；目录删除还会清除设置、联系人、头像和诊断日志。目录删除后这些数据无法恢复。操作系统凭据通常已在第 1 步删除；如跳过第 1 步，可同时检查 Windows 凭据管理器中是否仍有 Mine Mail 相关条目。</p>
               <h3>卸载是否足够？</h3>
               <p>卸载行为可能因安装版本和 Windows 行为而保留应用数据。若要确保完整删除，请不要只依赖卸载；在退出应用后明确删除上述目录，并单独完成 Google 撤权。</p>
             </section>
@@ -111,35 +112,36 @@
               <table class="data-table">
                 <thead><tr><th>Action</th><th>What it deletes</th><th>What it does not delete</th></tr></thead>
                 <tbody>
-                  <tr><td>Remove the account in Mine Mail</td><td>The app’s connection entry and authorization material for that account in the OS credential store.</td><td>The current beta retains the account’s local mail cache and does not revoke the app in your Google Account.</td></tr>
-                  <tr><td>Revoke access in your Google Account</td><td>Mine Mail’s Google OAuth permission to keep accessing Gmail.</td><td>Data already cached on the device, or original mail held by Gmail.</td></tr>
+                  <tr><td>Disconnect only</td><td>The Mine Mail connection entry and that account’s authorization material in the OS credential store.</td><td>The Mine Mail grant in your Google Account and the on-device mail cache.</td></tr>
+                  <tr><td>Revoke authorization and remove</td><td>Mine Mail first asks Google to revoke its OAuth grant, then removes the account entry and OS credential after confirmation.</td><td>The device cache unless you also select local mail-cache deletion; original mail held by Gmail is never deleted.</td></tr>
                   <tr><td>Delete Mine Mail’s local data directory</td><td>On-device account metadata, SQLite mail cache, drafts, outbox, contacts, avatars, settings, and logs.</td><td>Original mail and the account held by Google or another provider.</td></tr>
                 </tbody>
               </table>
-              <div class="notice"><p><strong>For the most complete exit, perform steps 1, 2, and 3 below.</strong> First back up important local drafts or unsent content. Mine Mail cannot recover the local directory after deletion.</p></div>
+              <div class="notice"><p><strong>For the most complete exit, choose revocation plus cache deletion in step 1, then use step 3 if needed.</strong> First back up important local drafts or unsent content. Mine Mail cannot recover deleted local data.</p></div>
             </section>
 
             <section id="disconnect-en">
-              <h2>1. Disconnect the account from Mine Mail</h2>
+              <h2>1. Remove or disconnect the account from Mine Mail</h2>
               <ol>
                 <li>Open Mine Mail.</li>
                 <li>Go to <strong>Settings → Accounts</strong>.</li>
-                <li>Select the account and choose Remove Account.</li>
-                <li>Read the confirmation and complete removal.</li>
+                <li>Open the target account’s More menu and choose <strong>Remove Account</strong>.</li>
+                <li>To disconnect temporarily while retaining the Google grant and cache, choose <strong>Disconnect only</strong>.</li>
+                <li>If you no longer want the connection, choose <strong>Revoke authorization and remove</strong>. First select <strong>Delete local mail cache</strong> if you also want to delete that account’s SQLite mail cache.</li>
               </ol>
-              <p>The current beta removes the connection from Mine Mail’s account list and deletes that account’s OS credential, but retains the local mail cache for reconnection. Continue to step 3 to remove the cache.</p>
-              <p>If the app cannot start, you can skip this step, revoke Google access, and then delete the complete local-data directory.</p>
+              <p>If Google does not confirm revocation, Mine Mail stops before removing the account and reports the failure; check the network and retry. If local cache cleanup fails, the account and grant may already be removed, but the app displays an explicit partial-completion warning.</p>
+              <p>If the app cannot start, skip this step, revoke Google access manually in step 2, and then delete the complete local-data directory.</p>
             </section>
 
             <section id="revoke-en">
-              <h2>2. Revoke Google authorization</h2>
+              <h2>2. Revoke Google authorization manually (fallback)</h2>
               <ol>
                 <li>Open your Google Account’s <a href="https://myaccount.google.com/connections" rel="noreferrer">third-party apps and services page</a>.</li>
                 <li>Sign in to the Google Account you connected to Mine Mail.</li>
                 <li>Select <strong>Mine Mail</strong> in the list.</li>
                 <li>Choose the option to delete connections or revoke access, then confirm on Google’s page.</li>
               </ol>
-              <p>After revocation, Mine Mail cannot use the existing token to access that Gmail account. Reconnecting later requires new, explicit authorization on Google’s page.</p>
+              <p>If “Revoke authorization and remove” already succeeded in the app, you do not need to repeat this step. After revocation, Mine Mail cannot use the existing token to access that Gmail account. Reconnecting later requires new, explicit authorization.</p>
             </section>
 
             <section id="local-en">
@@ -150,7 +152,7 @@
                 <li>Confirm the directory is named <code>com.minemail.desktop</code>, then delete the entire directory.</li>
                 <li>Empty the Recycle Bin to complete permanent on-device deletion.</li>
               </ol>
-              <p>After deletion, Mine Mail cannot recover the local cache, account metadata, settings, contacts, or diagnostic logs. Step 1 normally deletes the OS credential. If you skipped it, also check Windows Credential Manager for remaining Mine Mail entries.</p>
+              <p>The in-app cache option deletes only the selected account’s mail database. Deleting the complete directory also removes settings, contacts, avatars, and diagnostic logs. Mine Mail cannot recover these deleted items. Step 1 normally deletes the OS credential. If you skipped it, also check Windows Credential Manager for remaining Mine Mail entries.</p>
               <h3>Is uninstalling enough?</h3>
               <p>Uninstall behavior may preserve app data depending on the build and Windows behavior. To ensure complete deletion, do not rely on uninstall alone: explicitly remove the directory after quitting the app, and revoke Google access separately.</p>
             </section>
@@ -181,4 +183,3 @@
     <script type="module" src="/src/site.js"></script>
   </body>
 </html>
-

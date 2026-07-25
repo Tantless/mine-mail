@@ -35,7 +35,8 @@ test("privacy policy contains Google restricted-scope and Limited Use disclosure
   assert.match(html, /https:\/\/mail\.google\.com\//);
   assert.match(html, /Google API Services User Data Policy/);
   assert.match(html, /Limited Use requirements/);
-  assert.match(html, /current-beta distinction/);
+  assert.match(html, /The app distinguishes each deletion scope/);
+  assert.match(html, /Revoke authorization and remove/);
   assert.match(html, /SQLite database is not encrypted as a whole/);
 });
 

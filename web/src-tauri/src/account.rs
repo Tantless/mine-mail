@@ -38,6 +38,7 @@ const GOOGLE_CLIENT_ID: &str =
     "609932488435-4h4fffcvl0hcpe0u9svc8k610tstvia7.apps.googleusercontent.com";
 const GOOGLE_AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
+const GOOGLE_REVOCATION_URL: &str = "https://oauth2.googleapis.com/revoke";
 const GOOGLE_USERINFO_URL: &str = "https://openidconnect.googleapis.com/v1/userinfo";
 const GOOGLE_MAIL_SCOPE: &str = "https://mail.google.com/";
 const OAUTH_CALLBACK_TIMEOUT: Duration = Duration::from_secs(180);
@@ -346,6 +347,27 @@ pub(crate) struct AccountStatusDto {
     max_accounts: usize,
     can_add_account: bool,
     google_oauth_configured: bool,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RemoveAccountRequest {
+    pub(crate) account_id: String,
+    #[serde(default)]
+    pub(crate) revoke_google_authorization: bool,
+    #[serde(default)]
+    pub(crate) delete_local_data: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RemoveAccountResultDto {
+    pub(crate) status: AccountStatusDto,
+    google_authorization_revoked: bool,
+    pub(crate) local_data_deleted: bool,
+    pub(crate) warning: Option<String>,
+    #[serde(skip)]
+    pub(crate) removed_email: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -996,11 +1018,12 @@ impl AccountRuntime {
         Ok(self.status(backend_state))
     }
 
-    pub(crate) fn remove_account(
+    pub(crate) async fn remove_account(
         &self,
         backend_state: &BackendState,
-        account_id: &str,
-    ) -> Result<AccountStatusDto, String> {
+        request: &RemoveAccountRequest,
+    ) -> Result<RemoveAccountResultDto, String> {
+        let account_id = request.account_id.trim();
         let previous_stored = self
             .stored
             .read()
@@ -1012,6 +1035,33 @@ impl AccountRuntime {
             .find(|metadata| metadata.account_id == account_id)
             .cloned()
             .ok_or_else(|| "The selected account does not exist.".to_owned())?;
+        let is_google_oauth =
+            metadata.authentication == AccountAuthentication::GoogleOAuth;
+        if request.revoke_google_authorization && !is_google_oauth {
+            return Err(
+                "Google authorization can only be revoked for a Google OAuth account.".to_owned(),
+            );
+        }
+        let entry = keyring_entry(&metadata)?;
+        let google_authorization_revoked = if request.revoke_google_authorization {
+            let encoded = Zeroizing::new(entry.get_password().map_err(|error| match error {
+                keyring::Error::NoEntry => {
+                    "Google authorization is not available locally, so Mine Mail cannot revoke it. Disconnect the account here and remove Mine Mail from your Google Account permissions."
+                        .to_owned()
+                }
+                _ => "The OS credential store could not read Google authorization; nothing was removed."
+                    .to_owned(),
+            })?);
+            let tokens: OAuthTokenBundle = serde_json::from_str(encoded.as_str()).map_err(|_| {
+                "Saved Google authorization is invalid, so Mine Mail cannot revoke it. Nothing was removed."
+                    .to_owned()
+            })?;
+            revoke_google_token(&tokens.refresh_token).await?;
+            true
+        } else {
+            false
+        };
+
         let mut next_stored = previous_stored.clone();
         next_stored
             .accounts
@@ -1022,22 +1072,60 @@ impl AccountRuntime {
                 .first()
                 .map(|metadata| metadata.account_id.clone());
         }
-        self.store.save(&next_stored)?;
+        if let Err(error) = self.store.save(&next_stored) {
+            return Err(if google_authorization_revoked {
+                format!(
+                    "Google authorization was revoked, but Mine Mail could not update its local account list: {error} Restart the app and retry local removal."
+                )
+            } else {
+                error
+            });
+        }
 
-        let entry = keyring_entry(&metadata)?;
         match entry.delete_credential() {
             Ok(()) | Err(keyring::Error::NoEntry) => {}
             Err(_) => {
                 let _ = self.store.save(&previous_stored);
-                return Err("The OS credential store could not remove this account.".to_owned());
+                return Err(if google_authorization_revoked {
+                    "Google authorization was revoked, but the OS credential could not be removed. The account remains listed so you can retry the local cleanup."
+                        .to_owned()
+                } else {
+                    "The OS credential store could not remove this account.".to_owned()
+                });
             }
         }
-        backend_state.remove(account_id, next_stored.active_account_id.clone())?;
-        *self
-            .stored
-            .write()
-            .map_err(|_| "Account state is temporarily unavailable.".to_owned())? = next_stored;
-        Ok(self.status(backend_state))
+        if backend_state
+            .remove(account_id, next_stored.active_account_id.clone())
+            .is_err()
+        {
+            return Err(
+                "The account credential and saved account entry were removed, but the running interface could not finish the update. Restart Mine Mail."
+                    .to_owned(),
+            );
+        }
+        let mut stored = self.stored.write().map_err(|_| {
+            "The account credential and saved account entry were removed, but the running interface could not refresh. Restart Mine Mail."
+                .to_owned()
+        })?;
+        *stored = next_stored;
+        drop(stored);
+
+        let (local_data_deleted, warning) = if request.delete_local_data {
+            let database_path = account_database_path(&self.app_data, &metadata);
+            match remove_sqlite_cache_files(&database_path) {
+                Ok(()) => (true, None),
+                Err(error) => (false, Some(error)),
+            }
+        } else {
+            (false, None)
+        };
+        Ok(RemoveAccountResultDto {
+            status: self.status(backend_state),
+            google_authorization_revoked,
+            local_data_deleted,
+            warning,
+            removed_email: metadata.email,
+        })
     }
 
     pub(crate) async fn refresh_oauth_backends(
@@ -1334,6 +1422,33 @@ fn keyring_username(metadata: &AccountMetadata) -> String {
 fn account_database_path(app_data: &Path, metadata: &AccountMetadata) -> PathBuf {
     let hash = account_identity_hash(metadata);
     app_data.join(format!("mine-mail-{}.sqlite3", &hash[..24]))
+}
+
+fn sqlite_sidecar_path(database_path: &Path, suffix: &str) -> PathBuf {
+    let mut path = database_path.as_os_str().to_os_string();
+    path.push(suffix);
+    PathBuf::from(path)
+}
+
+fn remove_sqlite_cache_files(database_path: &Path) -> Result<(), String> {
+    let paths = [
+        sqlite_sidecar_path(database_path, "-wal"),
+        sqlite_sidecar_path(database_path, "-shm"),
+        database_path.to_path_buf(),
+    ];
+    for path in paths {
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => {
+                return Err(
+                    "The account was removed, but its local mail cache could not be completely deleted. Close Mine Mail and follow the data-deletion instructions."
+                        .to_owned(),
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 fn generated_account_id(metadata: &AccountMetadata) -> String {
@@ -1649,6 +1764,36 @@ async fn refresh_google_tokens(
         .map_err(|_| "Google 返回了无法识别的刷新结果。".to_owned())
 }
 
+async fn revoke_google_token(refresh_token: &str) -> Result<(), String> {
+    if refresh_token.trim().is_empty() {
+        return Err(
+            "Saved Google authorization has no refresh token, so Mine Mail cannot revoke it. Nothing was removed."
+                .to_owned(),
+        );
+    }
+    let client = reqwest::Client::builder()
+        .timeout(OAUTH_HTTP_TIMEOUT)
+        .build()
+        .map_err(|_| "Google authorization revocation could not be initialized.".to_owned())?;
+    let response = client
+        .post(GOOGLE_REVOCATION_URL)
+        .form(&[("token", refresh_token)])
+        .send()
+        .await
+        .map_err(|_| {
+            "Mine Mail could not reach Google to revoke authorization. Nothing was removed; check the network and retry."
+                .to_owned()
+        })?;
+    if response.status().is_success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "Google did not confirm authorization revocation (HTTP {}). Nothing was removed; retry or remove Mine Mail from your Google Account permissions.",
+            response.status().as_u16()
+        ))
+    }
+}
+
 fn describe_google_token_error(
     status: u16,
     error: Option<&GoogleOAuthError>,
@@ -1701,7 +1846,7 @@ mod tests {
         AccountAuthentication, AccountMetadata, AccountProvider, AccountStore, BackendState,
         GoogleOAuthError, MAX_ACCOUNTS, StoredAccounts, account_database_path,
         describe_google_token_error, google_client_id, keyring_username, normalize_account_remark,
-        open_local_backend,
+        open_local_backend, remove_sqlite_cache_files, sqlite_sidecar_path,
     };
 
     #[test]
@@ -1831,6 +1976,24 @@ mod tests {
         let filename = path.file_name().unwrap().to_str().unwrap();
         assert!(filename.starts_with("mine-mail-"));
         assert!(!filename.contains("first"));
+    }
+
+    #[test]
+    fn deleting_local_cache_removes_sqlite_database_and_sidecars() {
+        let directory = tempdir().expect("temporary directory");
+        let database_path = directory.path().join("mail.sqlite3");
+        let wal_path = sqlite_sidecar_path(&database_path, "-wal");
+        let shm_path = sqlite_sidecar_path(&database_path, "-shm");
+        std::fs::write(&database_path, b"database").expect("database");
+        std::fs::write(&wal_path, b"wal").expect("wal");
+        std::fs::write(&shm_path, b"shm").expect("shm");
+
+        remove_sqlite_cache_files(&database_path).expect("remove cache");
+
+        assert!(!database_path.exists());
+        assert!(!wal_path.exists());
+        assert!(!shm_path.exists());
+        remove_sqlite_cache_files(&database_path).expect("missing cache is already deleted");
     }
 
     #[test]

@@ -845,11 +845,26 @@ export const mailApi = {
     })();
   },
 
-  async removeAccount(accountId) {
+  async removeAccount(accountId, options = {}) {
+    const request = {
+      accountId,
+      revokeGoogleAuthorization: Boolean(options.revokeGoogleAuthorization),
+      deleteLocalData: Boolean(options.deleteLocalData),
+    };
     if (isTauri) {
-      return normalizeAccountStatus(
-        await desktopInvoke("remove_account", { accountId }),
-      );
+      const result = await desktopInvoke("remove_account", { request });
+      return {
+        ...result,
+        status: normalizeAccountStatus(result.status),
+        googleAuthorizationRevoked: Boolean(
+          result.googleAuthorizationRevoked ??
+            result.google_authorization_revoked,
+        ),
+        localDataDeleted: Boolean(
+          result.localDataDeleted ?? result.local_data_deleted,
+        ),
+        warning: result.warning ?? null,
+      };
     }
     return webOnly(() => {
       const accounts = webAccountStatus.accounts.filter(
@@ -864,7 +879,12 @@ export const mailApi = {
         accountCount: accounts.length,
         activeAccountId: selected.accountId ?? null,
       };
-      return structuredClone(webAccountStatus);
+      return {
+        status: structuredClone(webAccountStatus),
+        googleAuthorizationRevoked: request.revokeGoogleAuthorization,
+        localDataDeleted: request.deleteLocalData,
+        warning: null,
+      };
     })();
   },
 

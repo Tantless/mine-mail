@@ -32,7 +32,8 @@ pub(crate) use settings::{
     SaveProfileAvatarRequest,
 };
 use settings::{
-    DesktopSettingsStore, NotificationBaseline, StoredDesktopSettings, valid_poll_interval,
+    DesktopSettingsStore, NotificationBaseline, ProfileAvatarOwnerType, StoredDesktopSettings,
+    valid_poll_interval,
 };
 
 const MINIMUM_AUTOMATIC_SYNC_GAP: Duration = Duration::from_secs(30);
@@ -287,6 +288,13 @@ impl DesktopRuntime {
             .as_ref()
             .ok_or_else(|| "Avatar storage is unavailable.".to_owned())?
             .delete_profile_avatar(request)
+    }
+
+    pub(crate) fn remove_account_avatar(&self, email: &str) -> Result<(), String> {
+        self.delete_profile_avatar(DeleteProfileAvatarRequest {
+            owner_type: ProfileAvatarOwnerType::Account,
+            owner_key: email.to_owned(),
+        })
     }
 
     pub(crate) fn user_settings_snapshot(&self) -> Result<DesktopSettingsUpdate, String> {

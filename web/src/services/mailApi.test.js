@@ -337,7 +337,10 @@ describe("mailApi desktop IPC contract", () => {
     await mailApi.connectGoogleAccount();
     await mailApi.switchAccount("account-b");
     await mailApi.setAccountRemark("account-b", "私人邮箱");
-    await mailApi.removeAccount("account-a");
+    await mailApi.removeAccount("account-a", {
+      revokeGoogleAuthorization: true,
+      deleteLocalData: true,
+    });
 
     expect(ipc.invoke).toHaveBeenNthCalledWith(
       2,
@@ -352,7 +355,11 @@ describe("mailApi desktop IPC contract", () => {
       remark: "私人邮箱",
     });
     expect(ipc.invoke).toHaveBeenNthCalledWith(5, "remove_account", {
-      accountId: "account-a",
+      request: {
+        accountId: "account-a",
+        revokeGoogleAuthorization: true,
+        deleteLocalData: true,
+      },
     });
   });
 
