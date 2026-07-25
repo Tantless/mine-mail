@@ -152,7 +152,7 @@ jobs:
           [IO.File]::WriteAllBytes($path, $bytes)
 
       - name: Build installers and publish GitHub Release
-        uses: tauri-apps/tauri-action@v1
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           APPLE_SIGNING_IDENTITY: ${{ matrix.apple_signing_identity }}
@@ -222,7 +222,7 @@ jobs:
           [IO.File]::WriteAllBytes($path, $bytes)
 
       - name: Build updater bundles and publish GitHub Release assets
-        uses: tauri-apps/tauri-action@v1
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -306,11 +306,24 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --pattern latest.json \
             --dir "$manifest_dir"
-          node - "$manifest_dir/latest.json" <<'NODE'
+          release_id="$(
+            gh api \
+              "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" \
+              --jq ".id"
+          )"
+          gh api --paginate \
+            "repos/$GITHUB_REPOSITORY/releases/$release_id/assets?per_page=100" \
+            | jq -s "add" > "$manifest_dir/release-assets.json"
+          node - \
+            "$manifest_dir/latest.json" \
+            "$manifest_dir/release-assets.json" <<'NODE'
           const fs = require("node:fs");
 
           const path = process.argv[2];
           const manifest = JSON.parse(fs.readFileSync(path, "utf8"));
+          const releaseAssets = JSON.parse(
+            fs.readFileSync(process.argv[3], "utf8")
+          );
           const tauriConfig = JSON.parse(
             fs.readFileSync("web/src-tauri/tauri.conf.json", "utf8")
           );
@@ -322,6 +335,15 @@ jobs:
             "linux-x86_64",
             "windows-x86_64",
           ];
+          if (!Array.isArray(releaseAssets) || releaseAssets.length === 0) {
+            throw new Error(`Release ${tag} has no downloadable assets.`);
+          }
+          const allowedAssetUrls = new Set(
+            releaseAssets
+              .flatMap((asset) => [asset.url, asset.browser_download_url])
+              .filter(Boolean)
+              .map((url) => new URL(url).href)
+          );
           const minisignKeyId = (encodedEnvelope, label) => {
             const envelope = Buffer.from(
               String(encodedEnvelope).trim(),
@@ -361,14 +383,10 @@ jobs:
               throw new Error(`latest.json is missing ${platform}.`);
             }
             const url = new URL(entry.url);
-            const expectedPath =
-              `/Tantless/mine-mail/releases/download/${tag}/`;
-            if (
-              url.protocol !== "https:" ||
-              url.hostname !== "github.com" ||
-              !url.pathname.startsWith(expectedPath)
-            ) {
-              throw new Error(`${platform} has an unexpected update URL.`);
+            if (url.protocol !== "https:" || !allowedAssetUrls.has(url.href)) {
+              throw new Error(
+                `${platform} update URL does not belong to release ${tag}.`
+              );
             }
             const signatureKeyId = minisignKeyId(
               entry.signature,
