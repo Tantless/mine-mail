@@ -153,6 +153,12 @@
   --theme-menu-surface: rgba(229, 241, 248, 0.78);
   --theme-menu-tint: rgba(43, 126, 181, 0.16);
   --reader-idle-ink: #17394b;
+  --switch-off-surface: color-mix(in srgb, var(--color-text-muted) 18%, transparent);
+  --switch-off-surface-hover: color-mix(in srgb, var(--color-text-muted) 24%, transparent);
+  --switch-off-edge: color-mix(in srgb, var(--color-border) 88%, transparent);
+  --switch-off-edge-hover: color-mix(in srgb, var(--color-primary) 28%, var(--color-border));
+  --switch-thumb-off: var(--color-panel);
+  --switch-thumb-on: var(--color-panel);
   --focus-ring: 0 0 0 2px var(--color-panel), 0 0 0 4px var(--color-primary);
 }
 
@@ -255,6 +261,12 @@
   --theme-menu-surface: rgba(17, 25, 38, 0.8);
   --theme-menu-tint: rgba(114, 174, 252, 0.16);
   --reader-idle-ink: #f2f6fc;
+  --switch-off-surface: #4b5666;
+  --switch-off-surface-hover: #586577;
+  --switch-off-edge: #657286;
+  --switch-off-edge-hover: #7f8da2;
+  --switch-thumb-off: #f2f4f7;
+  --switch-thumb-on: #171b23;
 }
 
 :root[data-theme="dusk"] {
@@ -5643,10 +5655,12 @@ html[data-surface="new-mail-notification"] #root {
   height: 20px;
   flex: 0 0 auto;
   appearance: none;
-  border: 1px solid color-mix(in srgb, var(--color-border) 88%, transparent);
+  border: 1px solid var(--switch-off-edge);
   border-radius: 999px;
-  background: color-mix(in srgb, var(--color-text-muted) 18%, transparent);
-  transition: border-color var(--motion-fast), background var(--motion-fast);
+  background: var(--switch-off-surface);
+  cursor: pointer;
+  transition: border-color var(--motion-fast), background var(--motion-fast),
+    box-shadow var(--motion-fast);
 }
 
 .settings-preference-row--toggle input::after,
@@ -5657,10 +5671,22 @@ html[data-surface="new-mail-notification"] #root {
   width: 14px;
   height: 14px;
   border-radius: 50%;
-  background: var(--color-panel);
+  background: var(--switch-thumb-off);
   box-shadow: 0 1px 4px color-mix(in srgb, var(--color-text) 22%, transparent);
   content: "";
-  transition: transform var(--motion-fast);
+  transition: background var(--motion-fast), transform var(--motion-fast);
+}
+
+.settings-preference-row--toggle input:not(:checked):hover:not(:disabled),
+.settings-notification-sound-control > input:not(:checked):hover:not(:disabled) {
+  border-color: var(--switch-off-edge-hover);
+  background: var(--switch-off-surface-hover);
+}
+
+.settings-preference-row--toggle input:focus-visible,
+.settings-notification-sound-control > input:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
 }
 
 .settings-preference-row--toggle input:checked,
@@ -5671,6 +5697,7 @@ html[data-surface="new-mail-notification"] #root {
 
 .settings-preference-row--toggle input:checked::after,
 .settings-notification-sound-control > input:checked::after {
+  background: var(--switch-thumb-on);
   transform: translateX(16px);
 }
 
