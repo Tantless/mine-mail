@@ -216,7 +216,7 @@ describe("SettingsPanel account flow", () => {
     expect(await screen.findByText(/更新已安装/)).toBeTruthy();
   });
 
-  it("opens the public privacy policy from the About page", async () => {
+  it("keeps the legal resources as compact links inside the version card", async () => {
     const user = userEvent.setup();
     const onOpenExternalLink = vi.fn();
     render(<SettingsPanel {...panelProps({ onOpenExternalLink })} />);
@@ -225,7 +225,19 @@ describe("SettingsPanel account flow", () => {
       .getAllByRole("button")
       .find((button) => button.textContent.includes("Mine Mail"));
     await user.click(aboutButton);
-    await user.click(screen.getByRole("button", { name: /隐私政策/ }));
+    const privacyLink = screen.getByRole("link", { name: "隐私政策" });
+    const termsLink = screen.getByRole("link", { name: "服务条款" });
+    const deletionLink = screen.getByRole("link", { name: "数据删除指南" });
+
+    expect(privacyLink.closest(".settings-version-card")).toBeTruthy();
+    expect(termsLink.closest(".settings-version-card")).toBeTruthy();
+    expect(deletionLink.closest(".settings-version-card")).toBeTruthy();
+    expect(screen.queryByText("隐私与数据")).toBeNull();
+    expect(
+      screen.queryByText("了解 Gmail 数据、本地缓存和凭据的处理方式"),
+    ).toBeNull();
+
+    await user.click(privacyLink);
 
     expect(onOpenExternalLink).toHaveBeenCalledWith(
       "https://minemail.tantless.online/privacy/",

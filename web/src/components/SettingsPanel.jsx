@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
-  ArrowSquareOut,
   ArrowsLeftRight,
   CaretRight,
   DotsThree,
@@ -90,17 +89,14 @@ const remoteImageRisk =
 const productLinks = [
   {
     label: "隐私政策",
-    description: "了解 Gmail 数据、本地缓存和凭据的处理方式",
     url: "https://minemail.tantless.online/privacy/",
   },
   {
     label: "服务条款",
-    description: "查看使用 Mine Mail 时适用的条款",
     url: "https://minemail.tantless.online/terms/",
   },
   {
     label: "数据删除指南",
-    description: "了解如何撤销授权并删除本地数据",
     url: "https://minemail.tantless.online/data-deletion/",
   },
 ];
@@ -941,6 +937,24 @@ export function SettingsPanel({
                   <strong>{displayVersion(appVersion)}</strong>
                   <span>当前安装版本</span>
                 </span>
+                <nav
+                  className="settings-version-links"
+                  aria-label="隐私、条款与数据说明"
+                >
+                  {productLinks.map((link) => (
+                    <a
+                      className="settings-version-link"
+                      href={link.url}
+                      key={link.url}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        onOpenExternalLink(link.url);
+                      }}
+                    >
+                      {link.label}
+                    </a>
+                  ))}
+                </nav>
                 <button
                   type="button"
                   className="secondary-button"
@@ -968,31 +982,6 @@ export function SettingsPanel({
                     ? "更新来自 GitHub Releases。"
                     : "浏览器预览不执行更新，请使用 Mine Mail 桌面应用。")}
               </p>
-            </section>
-          ) : null}
-
-          {activeSection === "version" ? (
-            <section className="settings-legal-card" aria-labelledby="settings-legal-title">
-              <header>
-                <strong id="settings-legal-title">隐私与数据</strong>
-                <small>这些说明会在系统浏览器中打开，方便保存和查阅。</small>
-              </header>
-              <div>
-                {productLinks.map((link) => (
-                  <button
-                    type="button"
-                    className="settings-legal-link"
-                    key={link.url}
-                    onClick={() => onOpenExternalLink(link.url)}
-                  >
-                    <span>
-                      <strong>{link.label}</strong>
-                      <small>{link.description}</small>
-                    </span>
-                    <ArrowSquareOut size={17} />
-                  </button>
-                ))}
-              </div>
             </section>
           ) : null}
 

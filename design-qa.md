@@ -563,3 +563,50 @@ No P3 follow-up is required for this focused feature.
 final result: passed
 
 ---
+
+# About-page Legal Links Design QA — 2026-07-26
+
+- Source visual truth: the two user-provided About-page screenshots in the current conversation, especially the focused screenshot marking the empty center track of the version card.
+- Source dimensions: 1914 × 1275 px for the focused reference.
+- Implementation screenshot: unavailable because this session does not expose the in-app browser capture runtime.
+- Intended viewport: desktop Mine Mail settings workspace.
+- State: 设置 → 关于 Mine Mail, dark theme.
+- Density normalization: unavailable without an implementation capture.
+
+## Full-view Comparison Evidence
+
+Blocked. The source screenshots are available, but the rendered implementation could not be opened and captured in the required browser surface.
+
+## Focused Region Comparison Evidence
+
+Blocked. Code inspection confirms that the three labels now occupy the version card's center grid track and the former legal-information card is removed, but code inspection is not visual evidence.
+
+## Required Fidelity Surfaces
+
+- Fonts and typography: compact 10 px link text uses the existing application font and muted/primary semantic colors; rendered optical weight remains unverified.
+- Spacing and layout rhythm: the version card now has a dedicated center link track and a narrow-window full-row fallback; rendered alignment and wrapping remain unverified.
+- Colors and visual tokens: links use existing muted text, primary hover/focus, divider, and focus-ring tokens.
+- Image quality and asset fidelity: the existing fox asset is unchanged; no new image or icon asset is introduced.
+- Copy and content: only “隐私政策”, “服务条款”, and “数据删除指南” remain; the former descriptions and “隐私与数据” card are removed.
+
+## Findings
+
+- [Blocked] Same-state rendered placement and responsive wrapping have not been visually compared with the supplied screenshots.
+
+## Interaction and Build Checks
+
+- Component tests confirm all three entries expose link semantics inside the version card.
+- The privacy link still dispatches the existing external-browser action.
+- Full React suite: 18 files and 169 tests passed.
+- Production Vite build passed.
+- Browser console errors checked: no; browser capture runtime unavailable.
+
+## Comparison History
+
+- Iteration 1: removed the large legal-information card and placed the three compact links in the version card's center track.
+- Iteration 2: moved the complete link row 24 px downward into the exact lower-center region marked in the user's follow-up screenshot, without changing link density or hit areas.
+- Post-fix visual evidence: blocked by unavailable browser capture.
+
+final result: blocked
+
+---
