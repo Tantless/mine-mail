@@ -69,9 +69,10 @@ jobs:
             --pattern latest.json \
             --dir "$manifest_dir"
           release_id="$(
-            gh api \
-              "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" \
-              --jq ".id"
+            gh release view "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --json databaseId \
+              --jq ".databaseId"
           )"
           gh api --paginate \
             "repos/$GITHUB_REPOSITORY/releases/$release_id/assets?per_page=100" \
