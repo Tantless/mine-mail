@@ -11,7 +11,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use mine_mail::{DraftSyncReport, InboxMessage, InboxMonitorMode, SyncReport};
+use mine_mail::{DraftSyncReport, InboxMessage, InboxMonitorMode, SyncBatchProgress, SyncReport};
 use serde::Serialize;
 use tauri::{
     App, AppHandle, Emitter, Manager, PhysicalPosition, WebviewWindow,
@@ -36,7 +36,6 @@ use settings::{
     valid_poll_interval,
 };
 
-const MINIMUM_AUTOMATIC_SYNC_GAP: Duration = Duration::from_secs(30);
 const DRAFT_SYNC_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const MONITOR_SUPERVISOR_INTERVAL: Duration = Duration::from_secs(2);
 const IDLE_MAINTENANCE_INTERVAL: Duration = Duration::from_secs(28 * 60);
@@ -602,7 +601,7 @@ impl DesktopRuntime {
             .last_sync_started
             .lock()
             .map_err(|_| "The sync coordinator is temporarily unavailable.".to_owned())?;
-        Ok(last.is_some_and(|instant| instant.elapsed() < MINIMUM_AUTOMATIC_SYNC_GAP))
+        Ok(last.is_some_and(|instant| instant.elapsed() < self.poll_duration()))
     }
 
     fn record_sync_start(&self) -> Result<(), String> {
@@ -626,18 +625,25 @@ pub(crate) struct SyncAllReport {
 #[derive(Clone, Debug, Serialize)]
 struct InboxUpdatedEvent {
     account_id: String,
-    report: SyncReport,
+    completed: usize,
+    total: Option<usize>,
+    is_complete: bool,
+    report: Option<SyncReport>,
 }
 
 #[derive(Clone, Debug, Serialize)]
 struct SentUpdatedEvent {
     account_id: String,
-    report: SyncReport,
+    completed: usize,
+    total: Option<usize>,
+    is_complete: bool,
+    report: Option<SyncReport>,
 }
 
 #[derive(Clone, Debug, Serialize)]
 struct SyncErrorEvent {
     operation: &'static str,
+    trigger: &'static str,
     message: String,
 }
 
@@ -650,28 +656,55 @@ struct BeforeExitEvent {
 
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct DraftsUpdatedEvent {
+    account_id: Option<String>,
     reason: &'static str,
+    completed: usize,
+    total: Option<usize>,
+    is_complete: bool,
     report: Option<DraftSyncReport>,
 }
 
 impl DraftsUpdatedEvent {
     pub(crate) fn saved() -> Self {
         Self {
+            account_id: None,
             reason: "saved",
+            completed: 0,
+            total: None,
+            is_complete: true,
             report: None,
         }
     }
 
     pub(crate) fn deleted() -> Self {
         Self {
+            account_id: None,
             reason: "deleted",
+            completed: 0,
+            total: None,
+            is_complete: true,
             report: None,
         }
     }
 
-    fn synced(report: DraftSyncReport) -> Self {
+    fn progress(account_id: String, progress: SyncBatchProgress) -> Self {
         Self {
+            account_id: Some(account_id),
+            reason: "syncing",
+            completed: progress.completed,
+            total: Some(progress.total),
+            is_complete: false,
+            report: None,
+        }
+    }
+
+    fn synced(account_id: String, report: DraftSyncReport) -> Self {
+        Self {
+            account_id: Some(account_id),
             reason: "synced",
+            completed: report.local_total,
+            total: Some(report.local_total),
+            is_complete: true,
             report: Some(report),
         }
     }
@@ -687,10 +720,12 @@ pub(crate) fn start_inbox_monitor_supervisor(
     tauri::async_runtime::spawn(async move {
         let mut monitors: HashMap<String, tauri::async_runtime::JoinHandle<()>> = HashMap::new();
         loop {
+            let backend_state = app.state::<BackendState>();
             let account_ids: HashSet<String> = app
                 .state::<AccountRuntime>()
                 .account_ids()
                 .into_iter()
+                .filter(|account_id| backend_state.network_ready_for(account_id))
                 .collect();
 
             monitors.retain(|account_id, task| {
@@ -894,13 +929,15 @@ pub(crate) fn start_background_loop(
             tokio::select! {
                 _ = tokio::time::sleep_until(inbox_deadline) => {
                     if let Err(error) = perform_inbox_reconciliation_all(&app).await {
-                        emit_sync_error(&app, "inbox", error);
+                        emit_sync_error(&app, "inbox", "schedule", error);
                     }
                     inbox_deadline = TokioInstant::now() + app.state::<DesktopRuntime>().poll_duration();
                 }
                 _ = tokio::time::sleep_until(draft_deadline) => {
-                    if let Err(error) = perform_draft_sync(&app).await {
-                        emit_sync_error(&app, "drafts", error);
+                    if app.state::<BackendState>().network().is_ok()
+                        && let Err(error) = perform_draft_sync(&app).await
+                    {
+                        emit_sync_error(&app, "drafts", "schedule", error);
                     }
                     draft_deadline = TokioInstant::now() + DRAFT_SYNC_INTERVAL;
                 }
@@ -908,7 +945,7 @@ pub(crate) fn start_background_loop(
                     match request {
                         Some(BackgroundRequest::Sync { force, trigger }) => {
                             if let Err(error) = perform_sync_all(&app, force, trigger).await {
-                                emit_sync_error(&app, "all", error);
+                                emit_sync_error(&app, "all", trigger, error);
                             }
                             inbox_deadline = TokioInstant::now() + app.state::<DesktopRuntime>().poll_duration();
                             draft_deadline = TokioInstant::now() + DRAFT_SYNC_INTERVAL;
@@ -919,7 +956,7 @@ pub(crate) fn start_background_loop(
                         Some(BackgroundRequest::InboxChanged { account_id }) => {
                             app.state::<DesktopRuntime>().begin_incremental_inbox_sync(&account_id);
                             if let Err(error) = perform_incremental_inbox_sync(&app, &account_id).await {
-                                emit_sync_error(&app, "inbox", error);
+                                emit_sync_error(&app, "inbox", "monitor", error);
                             }
                         }
                         None => break,
@@ -935,8 +972,20 @@ pub(crate) fn start_background_loop(
     });
 }
 
-fn emit_sync_error(app: &AppHandle, operation: &'static str, message: String) {
-    let _ = app.emit("mail:sync-error", SyncErrorEvent { operation, message });
+fn emit_sync_error(
+    app: &AppHandle,
+    operation: &'static str,
+    trigger: &'static str,
+    message: String,
+) {
+    let _ = app.emit(
+        "mail:sync-error",
+        SyncErrorEvent {
+            operation,
+            trigger,
+            message,
+        },
+    );
 }
 
 fn emit_account_status(
@@ -982,22 +1031,22 @@ pub(crate) async fn perform_sync_all(
         .await
         .err();
     emit_account_status(app, &account_runtime, &backend_state);
-    let account_ids = account_runtime.account_ids();
+    let active_account_id = backend_state.active_account_id();
+    let account_ids =
+        prioritize_active_account(account_runtime.account_ids(), active_account_id.as_deref());
     if account_ids.is_empty() {
-        diagnostics::warn(
+        diagnostics::info(
             "sync_skipped",
             Fields::default()
                 .operation_id(operation_id)
                 .operation("all")
                 .trigger(trigger)
                 .outcome("no_accounts")
-                .error(ErrorKind::Config)
                 .duration(started.elapsed()),
         );
-        return Err("No mail account is configured.".to_owned());
+        return Ok(None);
     }
     let account_count = account_ids.len();
-    let active_account_id = backend_state.active_account_id();
     let mut active_inbox = None;
     let mut active_sent = None;
     let mut active_drafts = None;
@@ -1005,9 +1054,14 @@ pub(crate) async fn perform_sync_all(
     let mut errors = Vec::new();
 
     for account_id in account_ids {
-        let inbox = sync_inbox_for(app, &account_id).await;
-        let sent = sync_sent_for(app, &account_id).await;
-        let drafts = sync_drafts_for(app, &account_id).await;
+        if !backend_state.network_ready_for(&account_id) {
+            continue;
+        }
+        let (inbox, sent, drafts) = tokio::join!(
+            sync_inbox_for(app, &account_id),
+            sync_sent_for(app, &account_id),
+            sync_drafts_for(app, &account_id),
+        );
         let is_active = active_account_id.as_deref() == Some(account_id.as_str());
         match inbox {
             Ok(report) => {
@@ -1057,11 +1111,26 @@ pub(crate) async fn perform_sync_all(
                 .failures(errors.len())
                 .duration(started.elapsed()),
         );
-        return Err(format!(
-            "Some account synchronization failed: {}",
-            errors.join(" ")
-        ));
+        return Err("部分账户同步失败，请检查网络或账户凭证。".to_owned());
     }
+    let (Some(inbox), Some(sent), Some(drafts)) = (active_inbox, active_sent, active_drafts) else {
+        diagnostics::info(
+            "sync_completed",
+            Fields::default()
+                .operation_id(operation_id)
+                .operation("all")
+                .trigger(trigger)
+                .outcome("active_account_unavailable")
+                .accounts(account_count)
+                .successes(accounts_synced)
+                .duration(started.elapsed()),
+        );
+        return if trigger == "manual" {
+            Err("当前账户凭证失效，请重新登录或更新授权凭证。".to_owned())
+        } else {
+            Ok(None)
+        };
+    };
     diagnostics::limited_recovery("sync_failed", "sync_recovered", "sync_all", None);
     diagnostics::info(
         "sync_completed",
@@ -1075,13 +1144,31 @@ pub(crate) async fn perform_sync_all(
             .duration(started.elapsed()),
     );
     Ok(Some(SyncAllReport {
-        inbox: active_inbox.ok_or_else(|| "The active Inbox was not synchronized.".to_owned())?,
-        sent: active_sent
-            .ok_or_else(|| "The active Sent mailbox was not synchronized.".to_owned())?,
-        drafts: active_drafts
-            .ok_or_else(|| "The active Drafts mailbox was not synchronized.".to_owned())?,
+        inbox,
+        sent,
+        drafts,
         accounts_synced,
     }))
+}
+
+fn prioritize_active_account(
+    mut account_ids: Vec<String>,
+    active_account_id: Option<&str>,
+) -> Vec<String> {
+    let Some(active_account_id) = active_account_id else {
+        return account_ids;
+    };
+    let Some(index) = account_ids
+        .iter()
+        .position(|account_id| account_id == active_account_id)
+    else {
+        return account_ids;
+    };
+    if index > 0 {
+        let active = account_ids.remove(index);
+        account_ids.insert(0, active);
+    }
+    account_ids
 }
 
 async fn perform_inbox_reconciliation_all(app: &AppHandle) -> Result<(), String> {
@@ -1096,11 +1183,22 @@ async fn perform_inbox_reconciliation_all(app: &AppHandle) -> Result<(), String>
         .err();
     emit_account_status(app, &account_runtime, &backend_state);
     let mut errors = Vec::new();
-    for account_id in account_runtime.account_ids() {
-        if let Err(error) = sync_inbox_for(app, &account_id).await {
+    let account_ids = prioritize_active_account(
+        account_runtime.account_ids(),
+        backend_state.active_account_id().as_deref(),
+    );
+    for account_id in account_ids {
+        if !backend_state.network_ready_for(&account_id) {
+            continue;
+        }
+        let (inbox, sent) = tokio::join!(
+            sync_inbox_for(app, &account_id),
+            sync_sent_for(app, &account_id),
+        );
+        if let Err(error) = inbox {
             errors.push(format!("{account_id} Inbox: {error}"));
         }
-        if let Err(error) = sync_sent_for(app, &account_id).await {
+        if let Err(error) = sent {
             errors.push(format!("{account_id} Sent: {error}"));
         }
     }
@@ -1110,10 +1208,7 @@ async fn perform_inbox_reconciliation_all(app: &AppHandle) -> Result<(), String>
     if errors.is_empty() {
         Ok(())
     } else {
-        Err(format!(
-            "Some account mailbox reconciliation failed: {}",
-            errors.join(" ")
-        ))
+        Err("后台邮箱校准未完成，将在稍后自动重试。".to_owned())
     }
 }
 
@@ -1209,10 +1304,48 @@ async fn sync_inbox_with_operation(
             return Err(error);
         }
     };
+    let _ = app.emit(
+        "mail:inbox-updated",
+        InboxUpdatedEvent {
+            account_id: account_id.to_owned(),
+            completed: 0,
+            total: None,
+            is_complete: false,
+            report: None,
+        },
+    );
+    let progress_app = app.clone();
+    let progress_account_id = account_id.to_owned();
     let report = match if incremental {
-        backend.sync_new_inbox(crate::INBOX_SYNC_LIMIT).await
+        backend
+            .sync_new_inbox_with_progress(crate::INBOX_SYNC_LIMIT, move |progress| {
+                let _ = progress_app.emit(
+                    "mail:inbox-updated",
+                    InboxUpdatedEvent {
+                        account_id: progress_account_id.clone(),
+                        completed: progress.completed,
+                        total: Some(progress.total),
+                        is_complete: false,
+                        report: None,
+                    },
+                );
+            })
+            .await
     } else {
-        backend.sync_inbox(crate::INBOX_SYNC_LIMIT).await
+        backend
+            .sync_inbox_with_progress(crate::INBOX_SYNC_LIMIT, move |progress| {
+                let _ = progress_app.emit(
+                    "mail:inbox-updated",
+                    InboxUpdatedEvent {
+                        account_id: progress_account_id.clone(),
+                        completed: progress.completed,
+                        total: Some(progress.total),
+                        is_complete: false,
+                        report: None,
+                    },
+                );
+            })
+            .await
     } {
         Ok(report) => report,
         Err(error) => {
@@ -1264,7 +1397,33 @@ async fn sync_sent_for(app: &AppHandle, account_id: &str) -> Result<SyncReport, 
             return Err(error);
         }
     };
-    let report = match backend.sync_sent(crate::SENT_SYNC_LIMIT).await {
+    let _ = app.emit(
+        "mail:sent-updated",
+        SentUpdatedEvent {
+            account_id: account_id.to_owned(),
+            completed: 0,
+            total: None,
+            is_complete: false,
+            report: None,
+        },
+    );
+    let progress_app = app.clone();
+    let progress_account_id = account_id.to_owned();
+    let report = match backend
+        .sync_sent_with_progress(crate::SENT_SYNC_LIMIT, move |progress| {
+            let _ = progress_app.emit(
+                "mail:sent-updated",
+                SentUpdatedEvent {
+                    account_id: progress_account_id.clone(),
+                    completed: progress.completed,
+                    total: Some(progress.total),
+                    is_complete: false,
+                    report: None,
+                },
+            );
+        })
+        .await
+    {
         Ok(report) => report,
         Err(error) => {
             diagnostics::limited_failure(
@@ -1280,7 +1439,10 @@ async fn sync_sent_for(app: &AppHandle, account_id: &str) -> Result<SyncReport, 
         "mail:sent-updated",
         SentUpdatedEvent {
             account_id: account_id.to_owned(),
-            report: report.clone(),
+            completed: report.fetched,
+            total: Some(report.fetched),
+            is_complete: true,
+            report: Some(report.clone()),
         },
     );
     let prefetch_backend = backend.clone();
@@ -1301,7 +1463,10 @@ async fn sync_sent_for(app: &AppHandle, account_id: &str) -> Result<SyncReport, 
                 "mail:sent-updated",
                 SentUpdatedEvent {
                     account_id: prefetch_account_id,
-                    report: prefetch_report,
+                    completed: prefetch_report.fetched,
+                    total: Some(prefetch_report.fetched),
+                    is_complete: true,
+                    report: Some(prefetch_report),
                 },
             );
         }
@@ -1337,7 +1502,10 @@ fn finish_inbox_sync(
         "mail:inbox-updated",
         InboxUpdatedEvent {
             account_id: account_id.to_owned(),
-            report: report.clone(),
+            completed: report.fetched,
+            total: Some(report.fetched),
+            is_complete: true,
+            report: Some(report.clone()),
         },
     );
     let prefetch_backend = backend.clone();
@@ -1358,7 +1526,10 @@ fn finish_inbox_sync(
                 "mail:inbox-updated",
                 InboxUpdatedEvent {
                     account_id: prefetch_account_id,
-                    report: prefetch_report,
+                    completed: prefetch_report.fetched,
+                    total: Some(prefetch_report.fetched),
+                    is_complete: true,
+                    report: Some(prefetch_report),
                 },
             );
         }
@@ -1380,7 +1551,27 @@ async fn sync_drafts_for(app: &AppHandle, account_id: &str) -> Result<DraftSyncR
             return Err(error);
         }
     };
-    let report = match backend.sync_drafts(None).await {
+    let _ = app.emit(
+        "mail:drafts-updated",
+        DraftsUpdatedEvent::progress(
+            account_id.to_owned(),
+            SyncBatchProgress {
+                completed: 0,
+                total: 0,
+            },
+        ),
+    );
+    let progress_app = app.clone();
+    let progress_account_id = account_id.to_owned();
+    let report = match backend
+        .sync_drafts_with_progress(None, move |progress| {
+            let _ = progress_app.emit(
+                "mail:drafts-updated",
+                DraftsUpdatedEvent::progress(progress_account_id.clone(), progress),
+            );
+        })
+        .await
+    {
         Ok(report) => report,
         Err(error) => {
             diagnostics::limited_failure(
@@ -1394,7 +1585,7 @@ async fn sync_drafts_for(app: &AppHandle, account_id: &str) -> Result<DraftSyncR
     };
     let _ = app.emit(
         "mail:drafts-updated",
-        DraftsUpdatedEvent::synced(report.clone()),
+        DraftsUpdatedEvent::synced(account_id.to_owned(), report.clone()),
     );
     diagnostics::limited_recovery(
         "account_sync_failed",
@@ -1858,7 +2049,7 @@ mod tests {
     use super::settings::StoredDesktopSettings;
     use super::{
         BeforeExitEvent, DesktopRuntime, EXIT_HANDSHAKE_TIMEOUT, is_seen, notification_sender,
-        notification_sender_email, sanitize_notification_text,
+        notification_sender_email, prioritize_active_account, sanitize_notification_text,
         should_deliver_new_mail_notification,
     };
 
@@ -1896,6 +2087,25 @@ mod tests {
     fn seen_flag_check_is_case_insensitive() {
         assert!(is_seen(&message(vec!["\\seen".to_owned()])));
         assert!(!is_seen(&message(vec!["\\Flagged".to_owned()])));
+    }
+
+    #[test]
+    fn active_account_is_synchronized_before_other_accounts() {
+        assert_eq!(
+            prioritize_active_account(
+                vec![
+                    "account-a".to_owned(),
+                    "account-b".to_owned(),
+                    "account-c".to_owned(),
+                ],
+                Some("account-c"),
+            ),
+            vec![
+                "account-c".to_owned(),
+                "account-a".to_owned(),
+                "account-b".to_owned(),
+            ],
+        );
     }
 
     #[test]

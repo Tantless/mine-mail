@@ -21,6 +21,7 @@ import { appUpdateApi } from "../services/appUpdate.js";
 import { AccountRemovalDialog } from "./AccountRemovalDialog.jsx";
 import { AccountSetupForm } from "./AccountSetup.jsx";
 import { BrandLogo } from "./BrandLogo.jsx";
+import { CredentialWarning } from "./CredentialWarning.jsx";
 import { IconButton } from "./IconButton.jsx";
 import { EditableProfileAvatar, ProfileAvatar } from "./ProfileAvatar.jsx";
 import { ThemedSelect } from "./ThemedSelect.jsx";
@@ -134,6 +135,8 @@ function connectedAccounts(accountStatus) {
       provider: accountStatus.provider,
       email: accountStatus.email,
       remark: accountStatus.remark || null,
+      credentialAvailable: accountStatus.credentialAvailable,
+      credentialInvalid: accountStatus.credentialInvalid,
     },
   ];
 }
@@ -576,6 +579,9 @@ export function SettingsPanel({
                       const displayName = accountDisplayName(connectedAccount);
                       const providerLabel =
                         providerNames[connectedAccount.provider] || "邮箱账户";
+                      const credentialIssue =
+                        connectedAccount.credentialInvalid ||
+                        connectedAccount.credentialAvailable === false;
                       return (
                         <div
                           className="settings-account-card"
@@ -602,6 +608,7 @@ export function SettingsPanel({
                                 ? `${connectedAccount.email} · ${providerLabel}`
                                 : providerLabel}
                             </small>
+                            {credentialIssue ? <CredentialWarning /> : null}
                           </span>
                           {active ? (
                             <span className="settings-current-chip">当前</span>

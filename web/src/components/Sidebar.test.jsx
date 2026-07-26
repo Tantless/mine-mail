@@ -161,4 +161,33 @@ describe("Sidebar account switcher", () => {
     expect(googleAccount.dataset.active).toBe("true");
     expect(googleAccount.getAttribute("aria-pressed")).toBe("true");
   });
+
+  it("marks the exact account whose credential is invalid", () => {
+    renderSidebar(2, {
+      accountStatus: {
+        configured: true,
+        accounts: [
+          accounts[0],
+          {
+            ...accounts[1],
+            credentialAvailable: false,
+            credentialInvalid: true,
+          },
+        ],
+        activeAccountId: "netease",
+        maxAccounts: 3,
+      },
+    });
+
+    const healthy = screen.getByRole("button", {
+      name: "当前账户 first@163.com",
+    });
+    const invalid = screen.getByRole("button", {
+      name: "切换到 second@gmail.com，凭证失效",
+    });
+    expect(healthy.querySelector(".account-card__credential-warning")).toBeNull();
+    expect(
+      invalid.querySelector(".account-card__credential-warning"),
+    ).toBeTruthy();
+  });
 });

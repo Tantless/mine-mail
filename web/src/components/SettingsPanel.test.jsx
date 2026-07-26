@@ -53,6 +53,38 @@ function panelProps(overrides = {}) {
 describe("SettingsPanel account flow", () => {
   afterEach(() => cleanup());
 
+  it("labels an invalid credential and explains how to repair it", async () => {
+    const user = userEvent.setup();
+    render(
+      <SettingsPanel
+        {...panelProps({
+          accountStatus: {
+            ...accountStatus,
+            accounts: [
+              accountStatus.accounts[0],
+              {
+                ...accountStatus.accounts[1],
+                credentialAvailable: false,
+                credentialInvalid: true,
+              },
+            ],
+          },
+        })}
+      />,
+    );
+
+    const gmailCard = screen
+      .getByText("second@gmail.com")
+      .closest(".settings-account-card");
+    const warning = within(gmailCard).getByText("凭证失效");
+    await user.hover(warning);
+    expect(
+      await screen.findByRole("tooltip", {
+        name: /需要重新登录.*新的授权凭证/,
+      }),
+    ).toBeTruthy();
+  });
+
   it("does not collapse Add account because of a stale saved status", async () => {
     const user = userEvent.setup();
     render(<SettingsPanel {...panelProps({ accountSubmitStatus: "saved" })} />);

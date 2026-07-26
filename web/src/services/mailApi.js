@@ -47,6 +47,7 @@ let webAccountStatus = {
   remark: null,
   backendReady: true,
   credentialAvailable: true,
+  credentialInvalid: false,
   networkReady: true,
   startupError: null,
   accounts: [
@@ -58,6 +59,7 @@ let webAccountStatus = {
       authentication: "password",
       backendReady: true,
       credentialAvailable: true,
+      credentialInvalid: false,
       networkReady: true,
     },
   ],
@@ -172,6 +174,9 @@ function normalizeAccountStatus(status = {}) {
     credentialAvailable: Boolean(
       account.credentialAvailable ?? account.credential_available,
     ),
+    credentialInvalid: Boolean(
+      account.credentialInvalid ?? account.credential_invalid,
+    ),
     networkReady: Boolean(account.networkReady ?? account.network_ready),
   });
   const accounts = Array.isArray(status.accounts)
@@ -187,6 +192,8 @@ function normalizeAccountStatus(status = {}) {
             backendReady: status.backendReady ?? status.backend_ready ?? true,
             credentialAvailable:
               status.credentialAvailable ?? status.credential_available ?? true,
+            credentialInvalid:
+              status.credentialInvalid ?? status.credential_invalid ?? false,
             networkReady: status.networkReady ?? status.network_ready ?? true,
           }),
         ]
@@ -211,6 +218,9 @@ function normalizeAccountStatus(status = {}) {
       status.credentialAvailable ??
       status.credential_available ??
       status.configured,
+    ),
+    credentialInvalid: Boolean(
+      status.credentialInvalid ?? status.credential_invalid,
     ),
     networkReady: Boolean(
       status.networkReady ??
@@ -775,6 +785,7 @@ export const mailApi = {
         email: request.email,
         backendReady: true,
         credentialAvailable: true,
+        credentialInvalid: false,
         networkReady: true,
         startupError: null,
       };

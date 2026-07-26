@@ -1653,7 +1653,8 @@ async fn remove_account(
         }
         if let Err(error) = contacts.remove_account(&account_id) {
             desktop_runtime.record_startup_error(error);
-            cleanup_warnings.push("Account-scoped contact favorites could not be deleted.".to_owned());
+            cleanup_warnings
+                .push("Account-scoped contact favorites could not be deleted.".to_owned());
         }
         if let Err(error) = desktop_runtime.remove_account_avatar(&result.removed_email) {
             desktop_runtime.record_startup_error(error);

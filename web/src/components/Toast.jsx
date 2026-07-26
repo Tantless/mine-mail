@@ -13,6 +13,7 @@ export function Toast({ toast, onClose }) {
       className="toast"
       role={toast.tone === "error" ? "alert" : "status"}
       data-tone={toast.tone || "success"}
+      data-state={toast.exiting ? "exiting" : "visible"}
     >
       <span className="toast__icon" aria-hidden="true">
         <Icon size={18} weight="fill" />

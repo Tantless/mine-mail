@@ -278,6 +278,92 @@ describe("Mine Mail desktop state bridge", () => {
     });
   });
 
+  it("renders persisted mailbox batches while synchronization continues", async () => {
+    desktop.mailApi.listInbox.mockResolvedValue([]);
+    render(<App />);
+    await waitFor(() =>
+      expect(desktop.listeners.has("mail:inbox-updated")).toBe(true),
+    );
+    await screen.findByText("没有找到邮件");
+    const contactsCallsBeforeProgress =
+      desktop.mailApi.listContacts.mock.calls.length;
+    desktop.mailApi.listInbox.mockResolvedValue(
+      Array.from({ length: 10 }, (_, index) =>
+        summary(index + 1, `Progress mail ${index + 1}`),
+      ),
+    );
+
+    await act(async () => {
+      desktop.listeners.get("mail:inbox-updated")?.({
+        payload: {
+          account_id: "desktop-account",
+          completed: 10,
+          total: 100,
+          is_complete: false,
+        },
+      });
+    });
+
+    expect(
+      await screen.findByText("正在同步，已加载 10/100 封"),
+    ).toBeTruthy();
+    expect(await screen.findByText("Progress mail 10")).toBeTruthy();
+    await waitFor(() =>
+      expect(desktop.mailApi.listContacts.mock.calls.length).toBeGreaterThan(
+        contactsCallsBeforeProgress,
+      ),
+    );
+
+    await act(async () => {
+      desktop.listeners.get("mail:inbox-updated")?.({
+        payload: {
+          account_id: "desktop-account",
+          completed: 100,
+          total: 100,
+          is_complete: true,
+        },
+      });
+    });
+    await waitFor(() =>
+      expect(
+        screen.queryByText("正在同步，已加载 10/100 封"),
+      ).toBeNull(),
+    );
+  });
+
+  it("keeps scheduled synchronization failures silent but reports an explicit tray refresh", async () => {
+    render(<App />);
+    await waitFor(() =>
+      expect(desktop.listeners.has("mail:sync-error")).toBe(true),
+    );
+
+    act(() => {
+      desktop.listeners.get("mail:sync-error")?.({
+        payload: {
+          trigger: "schedule",
+          operation: "inbox",
+          message: "后台邮箱校准未完成，将在稍后自动重试。",
+        },
+      });
+    });
+    expect(
+      screen.queryByText("后台邮箱校准未完成，将在稍后自动重试。"),
+    ).toBeNull();
+
+    act(() => {
+      desktop.listeners.get("mail:sync-error")?.({
+        payload: {
+          trigger: "tray",
+          operation: "all",
+          message: "部分账户同步失败，请检查网络或账户凭证。",
+        },
+      });
+    });
+    expect(
+      await screen.findByText("部分账户同步失败，请检查网络或账户凭证。"),
+    ).toBeTruthy();
+  });
+
   it("removes the repair notice when OAuth refresh restores the account backend", async () => {
     const degradedStatus = {
       configured: true,

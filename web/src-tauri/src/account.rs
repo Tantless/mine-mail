@@ -322,6 +322,7 @@ pub(crate) struct AccountSummaryDto {
     backend_ready: bool,
     network_ready: bool,
     credential_available: bool,
+    credential_invalid: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -331,6 +332,7 @@ pub(crate) struct AccountStatusDto {
     backend_ready: bool,
     network_ready: bool,
     credential_available: bool,
+    credential_invalid: bool,
     account_id: Option<String>,
     provider: Option<AccountProvider>,
     email: Option<String>,
@@ -457,6 +459,7 @@ struct BackendAccountSlots {
     local: Arc<MailBackend>,
     network: Option<Arc<MailBackend>>,
     credential_available: bool,
+    credential_invalid: bool,
 }
 
 struct BackendSlots {
@@ -482,6 +485,7 @@ impl BackendState {
                         local: Arc::new(local),
                         network: network.map(Arc::new),
                         credential_available,
+                        credential_invalid: false,
                     },
                 )
             })
@@ -551,6 +555,7 @@ impl BackendState {
                 local: Arc::new(local),
                 network: Some(Arc::new(network)),
                 credential_available: true,
+                credential_invalid: false,
             },
         );
         slots.active_account_id = Some(account_id);
@@ -573,6 +578,22 @@ impl BackendState {
             .ok_or_else(|| "The selected account is unavailable.".to_owned())?;
         account.network = Some(Arc::new(network));
         account.credential_available = credential_available;
+        account.credential_invalid = false;
+        Ok(())
+    }
+
+    fn invalidate_credential(&self, account_id: &str) -> Result<(), String> {
+        let mut slots = self
+            .slots
+            .write()
+            .map_err(|_| "The mail backend is temporarily unavailable.".to_owned())?;
+        let account = slots
+            .accounts
+            .get_mut(account_id)
+            .ok_or_else(|| "The selected account is unavailable.".to_owned())?;
+        account.network = None;
+        account.credential_available = false;
+        account.credential_invalid = true;
         Ok(())
     }
 
@@ -621,6 +642,23 @@ impl BackendState {
             .unwrap_or((false, false, false))
     }
 
+    pub(crate) fn network_ready_for(&self, account_id: &str) -> bool {
+        self.readiness(account_id).1
+    }
+
+    fn credential_invalid_for(&self, account_id: &str) -> bool {
+        self.slots
+            .read()
+            .ok()
+            .and_then(|slots| {
+                slots
+                    .accounts
+                    .get(account_id)
+                    .map(|account| account.credential_invalid)
+            })
+            .unwrap_or(false)
+    }
+
     pub(crate) fn is_local_ready(&self) -> bool {
         self.active_account_id()
             .is_some_and(|account_id| self.readiness(&account_id).0)
@@ -634,6 +672,11 @@ impl BackendState {
     fn credential_available(&self) -> bool {
         self.active_account_id()
             .is_some_and(|account_id| self.readiness(&account_id).2)
+    }
+
+    fn credential_invalid(&self) -> bool {
+        self.active_account_id()
+            .is_some_and(|account_id| self.credential_invalid_for(&account_id))
     }
 }
 
@@ -783,6 +826,7 @@ impl AccountRuntime {
                     backend_ready,
                     network_ready,
                     credential_available,
+                    credential_invalid: backend.credential_invalid_for(&metadata.account_id),
                 }
             })
             .collect();
@@ -792,6 +836,7 @@ impl AccountRuntime {
             backend_ready: backend.is_local_ready(),
             network_ready: backend.is_network_ready(),
             credential_available: backend.credential_available(),
+            credential_invalid: backend.credential_invalid(),
             account_id: active.map(|metadata| metadata.account_id.clone()),
             provider: active.map(|metadata| metadata.provider),
             email: active.map(|metadata| metadata.email.clone()),
@@ -1035,8 +1080,7 @@ impl AccountRuntime {
             .find(|metadata| metadata.account_id == account_id)
             .cloned()
             .ok_or_else(|| "The selected account does not exist.".to_owned())?;
-        let is_google_oauth =
-            metadata.authentication == AccountAuthentication::GoogleOAuth;
+        let is_google_oauth = metadata.authentication == AccountAuthentication::GoogleOAuth;
         if request.revoke_google_authorization && !is_google_oauth {
             return Err(
                 "Google authorization can only be revoked for a Google OAuth account.".to_owned(),
@@ -1186,6 +1230,9 @@ impl AccountRuntime {
         backend_state: &BackendState,
         force: bool,
     ) -> Result<(), String> {
+        if !force && backend_state.credential_invalid_for(&metadata.account_id) {
+            return Ok(());
+        }
         let entry = keyring_entry(metadata)?;
         let encoded = Zeroizing::new(entry.get_password().map_err(|error| match error {
             keyring::Error::NoEntry => "Google authorization is missing; sign in again.".to_owned(),
@@ -1217,8 +1264,11 @@ impl AccountRuntime {
             match refresh_google_tokens(&client_id, client_secret, &tokens.refresh_token).await {
                 Ok(refreshed) => refreshed,
                 Err(error) => {
+                    if error.credential_invalid {
+                        let _ = backend_state.invalidate_credential(&metadata.account_id);
+                    }
                     log_oauth_refresh_failure(&metadata.account_id, started);
-                    return Err(error);
+                    return Err(error.message);
                 }
             };
         tokens.access_token.zeroize();
@@ -1535,6 +1585,11 @@ struct GoogleRefreshResponse {
     expires_in: u64,
 }
 
+struct GoogleRefreshFailure {
+    message: String,
+    credential_invalid: bool,
+}
+
 #[derive(Deserialize)]
 struct GoogleOAuthError {
     error: String,
@@ -1737,11 +1792,14 @@ async fn refresh_google_tokens(
     client_id: &str,
     client_secret: &str,
     refresh_token: &str,
-) -> Result<GoogleRefreshResponse, String> {
+) -> Result<GoogleRefreshResponse, GoogleRefreshFailure> {
     let client = reqwest::Client::builder()
         .timeout(OAUTH_HTTP_TIMEOUT)
         .build()
-        .map_err(|_| "Google 登录网络客户端无法初始化。".to_owned())?;
+        .map_err(|_| GoogleRefreshFailure {
+            message: "Google 登录网络客户端无法初始化。".to_owned(),
+            credential_invalid: false,
+        })?;
     let response = client
         .post(GOOGLE_TOKEN_URL)
         .form(&[
@@ -1752,16 +1810,26 @@ async fn refresh_google_tokens(
         ])
         .send()
         .await
-        .map_err(|_| "无法连接 Google 刷新登录。".to_owned())?;
+        .map_err(|_| GoogleRefreshFailure {
+            message: "无法连接 Google 刷新登录。".to_owned(),
+            credential_invalid: false,
+        })?;
     if !response.status().is_success() {
         let status = response.status().as_u16();
         let error = response.json::<GoogleOAuthError>().await.ok();
-        return Err(describe_google_token_error(status, error.as_ref(), true));
+        return Err(google_refresh_failure(status, error.as_ref()));
     }
-    response
-        .json()
-        .await
-        .map_err(|_| "Google 返回了无法识别的刷新结果。".to_owned())
+    response.json().await.map_err(|_| GoogleRefreshFailure {
+        message: "Google 返回了无法识别的刷新结果。".to_owned(),
+        credential_invalid: false,
+    })
+}
+
+fn google_refresh_failure(status: u16, error: Option<&GoogleOAuthError>) -> GoogleRefreshFailure {
+    GoogleRefreshFailure {
+        message: describe_google_token_error(status, error, true),
+        credential_invalid: error.is_some_and(|error| error.error == "invalid_grant"),
+    }
 }
 
 async fn revoke_google_token(refresh_token: &str) -> Result<(), String> {
@@ -1845,8 +1913,9 @@ mod tests {
     use super::{
         AccountAuthentication, AccountMetadata, AccountProvider, AccountStore, BackendState,
         GoogleOAuthError, MAX_ACCOUNTS, StoredAccounts, account_database_path,
-        describe_google_token_error, google_client_id, keyring_username, normalize_account_remark,
-        open_local_backend, remove_sqlite_cache_files, sqlite_sidecar_path,
+        describe_google_token_error, google_client_id, google_refresh_failure, keyring_username,
+        normalize_account_remark, open_local_backend, remove_sqlite_cache_files,
+        sqlite_sidecar_path,
     };
 
     #[test]
@@ -1881,6 +1950,17 @@ mod tests {
         let message = describe_google_token_error(400, Some(&secret_required), false);
         assert!(message.contains("桌面应用"));
         assert!(!message.contains("client_secret is missing"));
+
+        let expired = GoogleOAuthError {
+            error: "invalid_grant".to_owned(),
+            error_description: "expired or revoked".to_owned(),
+        };
+        let failure = google_refresh_failure(400, Some(&expired));
+        assert!(failure.credential_invalid);
+        assert!(failure.message.contains("登录授权已过期或被撤销"));
+
+        let transient = google_refresh_failure(503, None);
+        assert!(!transient.credential_invalid);
     }
 
     #[test]

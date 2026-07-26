@@ -1177,6 +1177,7 @@ html[data-surface="new-mail-notification"] #root {
 }
 
 .account-card {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -1303,6 +1304,10 @@ html[data-surface="new-mail-notification"] #root {
   min-width: 0;
 }
 
+.account-card[data-credential-issue="true"] .account-card__copy {
+  padding-right: 18px;
+}
+
 .account-card__copy strong {
   font-size: 12px;
   font-weight: 650;
@@ -1314,6 +1319,20 @@ html[data-surface="new-mail-notification"] #root {
   font-size: 10px;
   white-space: nowrap;
   text-overflow: ellipsis;
+}
+
+.account-card__credential-warning {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  display: grid;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--color-danger) 24%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-danger) 12%, transparent);
+  color: var(--color-danger);
 }
 
 .account-card[data-active="true"] .account-card__copy small {
@@ -1685,6 +1704,91 @@ html[data-surface="new-mail-notification"] #root {
   padding: 6px 8px 12px;
   scrollbar-color: color-mix(in srgb, var(--color-text-muted) 36%, transparent) transparent;
   scrollbar-width: thin;
+}
+
+.mail-load-progress {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  min-height: 32px;
+  align-items: center;
+  gap: 7px;
+  margin: 0 2px 5px;
+  padding: 0 10px;
+  border: 1px solid color-mix(in srgb, var(--color-primary) 22%, var(--color-border));
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--color-control) 92%, transparent);
+  color: var(--color-text-secondary);
+  box-shadow: inset 0 1px 0 var(--surface-highlight);
+  font-size: 10px;
+  backdrop-filter: blur(12px);
+}
+
+.mail-load-progress svg,
+.mail-loading-state > svg {
+  flex: 0 0 auto;
+  color: var(--color-primary);
+  animation: spin 900ms linear infinite;
+}
+
+.mail-loading-state {
+  display: grid;
+  justify-items: center;
+  gap: 7px;
+  padding: 48px 14px 20px;
+  color: var(--color-text-muted);
+  text-align: center;
+}
+
+.mail-loading-state strong {
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.mail-loading-state > span {
+  font-size: 10px;
+}
+
+.mail-loading-skeletons {
+  display: grid;
+  width: 100%;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.mail-loading-skeleton {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 10px;
+  min-height: 60px;
+  align-items: center;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--color-divider);
+}
+
+.mail-loading-skeleton i {
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--color-control) 82%, transparent);
+  animation: pulse 1.25s ease-in-out infinite;
+}
+
+.mail-loading-skeleton b {
+  height: 28px;
+  border-radius: 7px;
+  background:
+    linear-gradient(
+      to bottom,
+      color-mix(in srgb, var(--color-control) 88%, transparent) 0 7px,
+      transparent 7px 12px,
+      color-mix(in srgb, var(--color-control) 66%, transparent) 12px 18px,
+      transparent 18px 23px,
+      color-mix(in srgb, var(--color-control) 48%, transparent) 23px 28px
+    );
+  animation: pulse 1.25s 120ms ease-in-out infinite;
 }
 
 .mail-row {
@@ -5261,6 +5365,24 @@ html[data-surface="new-mail-notification"] #root {
   font-size: 10px;
 }
 
+.settings-credential-warning {
+  display: inline-flex;
+  width: fit-content;
+  align-items: center;
+  gap: 4px;
+  color: var(--color-danger);
+  font-size: 10px;
+  font-weight: 680;
+  line-height: 1.35;
+  cursor: help;
+}
+
+.settings-credential-warning:focus-visible {
+  border-radius: 5px;
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
 .settings-current-chip {
   padding: 5px 9px;
   border: 1px solid color-mix(in srgb, var(--color-primary) 18%, transparent);
@@ -5793,6 +5915,11 @@ html[data-surface="new-mail-notification"] #root {
   --toast-accent: var(--color-primary);
 }
 
+.toast[data-state="exiting"] {
+  pointer-events: none;
+  animation: notice-out var(--motion-normal) ease-in forwards;
+}
+
 .toast__icon {
   display: grid;
   width: 30px;
@@ -5845,6 +5972,12 @@ html[data-surface="new-mail-notification"] #root {
 @keyframes dialog-in { from { opacity: 0; transform: translateY(8px) scale(0.985); } }
 @keyframes notice-in {
   from {
+    opacity: 0;
+    transform: translateY(7px);
+  }
+}
+@keyframes notice-out {
+  to {
     opacity: 0;
     transform: translateY(7px);
   }

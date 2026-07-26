@@ -13,6 +13,7 @@ import {
   Trash,
 } from "@phosphor-icons/react";
 import { BrandLogo } from "./BrandLogo.jsx";
+import { CredentialWarning } from "./CredentialWarning.jsx";
 import { ProfileAvatar } from "./ProfileAvatar.jsx";
 
 const folders = [
@@ -49,6 +50,8 @@ function connectedAccounts(accountStatus) {
       provider: accountStatus.provider,
       email: accountStatus.email,
       remark: accountStatus.remark || null,
+      credentialAvailable: accountStatus.credentialAvailable,
+      credentialInvalid: accountStatus.credentialInvalid,
     },
   ];
 }
@@ -148,18 +151,21 @@ export function Sidebar({
               const accountLabel = providerNames[account.provider] || "邮箱账户";
               const displayName = account.remark?.trim() || accountLabel;
               const active = account.accountId === activeAccountId;
+              const credentialIssue =
+                account.credentialInvalid || account.credentialAvailable === false;
               return (
                 <button
                   key={account.accountId}
                   type="button"
                   className="account-card"
                   data-active={active}
+                  data-credential-issue={credentialIssue}
                   aria-pressed={active}
                   aria-label={`${active ? "当前账户" : "切换到"} ${
                     account.remark
                       ? `${displayName} ${account.email}`
                       : account.email
-                  }`}
+                  }${credentialIssue ? "，凭证失效" : ""}`}
                   onClick={() => onAccountSwitch(account.accountId)}
                 >
                   <ProfileAvatar
@@ -172,6 +178,7 @@ export function Sidebar({
                     <strong>{displayName}</strong>
                     <small>{account.email}</small>
                   </span>
+                  {credentialIssue ? <CredentialWarning compact /> : null}
                 </button>
               );
             })}

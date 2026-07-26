@@ -15,6 +15,7 @@ type ImapSession = Session<TlsStream<TcpStream>>;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(45);
+const DRAFT_FETCH_BATCH_SIZE: usize = 10;
 
 #[derive(Clone, Debug)]
 pub(crate) struct MailboxSnapshot {
@@ -587,10 +588,14 @@ impl ImapConnection {
     /// Fetch all drafts from the selected Drafts mailbox. Draft synchronization
     /// needs full RFC822 data because another client may have created the draft
     /// without Mine Mail's private identity headers.
-    pub async fn fetch_draft_snapshot(
+    pub async fn fetch_draft_snapshot_with_progress<F>(
         &mut self,
         mailbox_override: Option<&str>,
-    ) -> Result<RemoteDraftSnapshot> {
+        mut on_progress: F,
+    ) -> Result<RemoteDraftSnapshot>
+    where
+        F: FnMut(usize, usize) + Send,
+    {
         let mailbox = match mailbox_override {
             Some(mailbox) => mailbox.to_owned(),
             None => self.discover_drafts_mailbox().await?,
@@ -612,7 +617,9 @@ impl ImapConnection {
         uids.sort_unstable();
 
         let mut messages = Vec::with_capacity(uids.len());
-        for batch in uids.chunks(100) {
+        let total = uids.len();
+        on_progress(0, total);
+        for batch in uids.chunks(DRAFT_FETCH_BATCH_SIZE) {
             messages.extend(
                 self.fetch_messages(
                     batch,
@@ -621,6 +628,7 @@ impl ImapConnection {
                 )
                 .await?,
             );
+            on_progress(messages.len(), total);
         }
         Ok(RemoteDraftSnapshot {
             mailbox,

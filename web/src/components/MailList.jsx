@@ -1,5 +1,6 @@
 import {
   ArrowClockwise,
+  CircleNotch,
   FunnelSimple,
   List,
   MagnifyingGlass,
@@ -34,6 +35,7 @@ export function MailList({
   onFilterChange,
   onSync,
   syncState,
+  loadState = { phase: "ready", completed: 0, total: null },
   canSync = true,
   onOpenMobileNav,
   avatarForEmail = () => null,
@@ -41,6 +43,15 @@ export function MailList({
   referenceJump = null,
 }) {
   const messageListRef = useRef(null);
+  const isLoading =
+    loadState.phase === "loading" || loadState.phase === "syncing";
+  const isSyncing = syncState === "syncing" || loadState.phase === "syncing";
+  const progressLabel =
+    loadState.phase === "loading"
+      ? "正在读取本地邮件…"
+      : loadState.total
+        ? `正在同步，已加载 ${loadState.completed}/${loadState.total} 封`
+        : "正在连接邮箱并同步…";
 
   useEffect(() => {
     if (!referenceJump?.key || !messageListRef.current) return;
@@ -84,10 +95,10 @@ export function MailList({
           <h1>{folderLabel}</h1>
         </div>
         <IconButton
-          label={syncState === "syncing" ? "正在同步" : "同步收件箱"}
+          label={isSyncing ? "正在同步" : "同步收件箱"}
           onClick={onSync}
-          disabled={syncState === "syncing" || !canSync}
-          className={syncState === "syncing" ? "is-spinning" : ""}
+          disabled={isSyncing || !canSync}
+          className={isSyncing ? "is-spinning" : ""}
         >
           <ArrowClockwise size={19} />
         </IconButton>
@@ -116,6 +127,12 @@ export function MailList({
         aria-label="邮件"
         ref={messageListRef}
       >
+        {isLoading && messages.length ? (
+          <div className="mail-load-progress" role="status">
+            <CircleNotch size={15} aria-hidden="true" />
+            <span>{progressLabel}</span>
+          </div>
+        ) : null}
         {messages.length ? (
           messages.map((message, index) => {
             const navigationKey = messageNavigationKey(message);
@@ -190,6 +207,26 @@ export function MailList({
               </article>
             );
           })
+        ) : isLoading ? (
+          <div className="mail-loading-state" role="status">
+            <CircleNotch size={24} aria-hidden="true" />
+            <strong>{progressLabel}</strong>
+            <span>邮件会分批显示，无需等待全部同步完成</span>
+            <div className="mail-loading-skeletons" aria-hidden="true">
+              {[0, 1, 2].map((index) => (
+                <span className="mail-loading-skeleton" key={index}>
+                  <i />
+                  <b />
+                </span>
+              ))}
+            </div>
+          </div>
+        ) : loadState.phase === "error" ? (
+          <div className="empty-list" role="alert">
+            <ArrowClockwise size={26} />
+            <strong>部分邮件暂时没有加载完成</strong>
+            <span>可以点击右上角的同步按钮重试</span>
+          </div>
         ) : (
           <div className="empty-list">
             <MagnifyingGlass size={26} />

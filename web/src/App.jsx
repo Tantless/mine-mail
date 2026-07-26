@@ -44,6 +44,33 @@ const defaultSettings = {
 const supportedAvatarTypes = new Set(["image/png", "image/jpeg", "image/webp"]);
 const maxAvatarBytes = 2 * 1024 * 1024;
 const accountRepairDelayMs = 750;
+const toastVisibleMs = 3800;
+const importantToastVisibleMs = 8000;
+const toastExitMs = 180;
+const mailboxFolders = ["inbox", "sent", "drafts"];
+
+function createMailboxLoadStates(phase = "loading") {
+  return Object.fromEntries(
+    mailboxFolders.map((folder) => [
+      folder,
+      { phase, completed: 0, total: null },
+    ]),
+  );
+}
+
+function mailboxProgress(payload) {
+  const completed = Number(payload?.completed);
+  const total = Number(payload?.total);
+  return {
+    complete: Boolean(payload?.isComplete ?? payload?.is_complete ?? true),
+    completed: Number.isFinite(completed) && completed >= 0 ? completed : 0,
+    total: Number.isFinite(total) && total > 0 ? total : null,
+  };
+}
+
+function eventAccountId(payload) {
+  return payload?.accountId ?? payload?.account_id ?? null;
+}
 
 function canUseAccountNetwork(status) {
   return Boolean(
@@ -329,6 +356,9 @@ export function App() {
   const [contactMessagesState, setContactMessagesState] = useState("idle");
   const [contactMessagesError, setContactMessagesError] = useState(null);
   const [syncState, setSyncState] = useState("idle");
+  const [mailboxLoadStates, setMailboxLoadStates] = useState(() =>
+    createMailboxLoadStates(),
+  );
   const [isThemeMenuOpen, setIsThemeMenuOpen] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [composer, setComposer] = useState(null);
@@ -367,9 +397,11 @@ export function App() {
   const referenceJumpRequestRef = useRef(0);
   const contactsRequestRef = useRef(0);
   const contactMessagesRequestRef = useRef(0);
+  const contactsRefreshTimerRef = useRef(null);
   const starRequestRef = useRef(new Map());
   const starStateRef = useRef(new Map());
   const settingsSaveRequestRef = useRef(0);
+  const toastSequenceRef = useRef(0);
   const platform = /Mac|iPhone|iPad/.test(navigator.platform)
     ? "mac"
     : "windows";
@@ -400,10 +432,55 @@ export function App() {
 
   const showToast = useCallback(
     (message, tone = "success", persistent = false) => {
-      setToast({ message, tone, persistent, id: Date.now() });
+      toastSequenceRef.current += 1;
+      setToast({
+        message,
+        tone,
+        persistent,
+        exiting: false,
+        id: toastSequenceRef.current,
+      });
     },
     [],
   );
+
+  const updateMailboxLoadState = useCallback((folder, update) => {
+    setMailboxLoadStates((current) => ({
+      ...current,
+      [folder]: {
+        ...current[folder],
+        ...(typeof update === "function" ? update(current[folder]) : update),
+      },
+    }));
+  }, []);
+
+  const beginMailboxLoading = useCallback((phase = "syncing") => {
+    setMailboxLoadStates(createMailboxLoadStates(phase));
+  }, []);
+
+  const settleMailboxSnapshot = useCallback((view, { preserveSyncing = true } = {}) => {
+    const counts = {
+      inbox: view?.messages?.length || 0,
+      sent: view?.sentMessages?.length || 0,
+      drafts: view?.drafts?.length || 0,
+    };
+    setMailboxLoadStates((current) =>
+      Object.fromEntries(
+        mailboxFolders.map((folder) => [
+          folder,
+          preserveSyncing && current[folder]?.phase === "syncing"
+            ? current[folder]
+            : { phase: "ready", completed: counts[folder], total: null },
+        ]),
+      ),
+    );
+  }, []);
+
+  const dismissToast = useCallback(() => {
+    setToast((current) =>
+      current && !current.exiting ? { ...current, exiting: true } : current,
+    );
+  }, []);
 
   const profileAvatarMap = useMemo(
     () =>
@@ -455,9 +532,6 @@ export function App() {
           ),
           saved,
         ]);
-        showToast(
-          ownerType === "account" ? "Mine Mail 头像已更新" : "联系人头像已更新",
-        );
       } catch (error) {
         showToast(describeError(error, "头像没有保存，请重试"), "error");
       }
@@ -476,11 +550,6 @@ export function App() {
             (avatar) =>
               avatar.ownerType !== ownerType || avatar.ownerKey !== ownerKey,
           ),
-        );
-        showToast(
-          ownerType === "account"
-            ? "已恢复默认账户头像"
-            : "已恢复默认联系人头像",
         );
       } catch (error) {
         showToast(describeError(error, "头像没有移除，请重试"), "error");
@@ -618,7 +687,6 @@ export function App() {
           if (selectionRequestRef.current === requestId) {
             const messageText = describeError(error, "已发送邮件正文加载失败");
             setMessageError(messageText);
-            showToast(messageText, "error");
           }
         } finally {
           if (selectionRequestRef.current === requestId)
@@ -702,7 +770,6 @@ export function App() {
         if (selectionRequestRef.current === requestId) {
           const messageText = describeError(error, "邮件正文加载失败");
           setMessageError(messageText);
-          showToast(messageText, "error");
         }
       } finally {
         if (selectionRequestRef.current === requestId)
@@ -981,8 +1048,12 @@ export function App() {
   const prefetchAccountViews = useCallback(
     async (status) => {
       const accounts = status?.accounts || [];
+      const activeAccountId =
+        status?.activeAccountId || status?.accountId || null;
       return Promise.allSettled(
-        accounts.map((account) => loadAccountView(account.accountId)),
+        accounts
+          .filter((account) => account.accountId !== activeAccountId)
+          .map((account) => loadAccountView(account.accountId)),
       );
     },
     [loadAccountView],
@@ -994,31 +1065,63 @@ export function App() {
       accountId = activeAccountIdRef.current,
     } = {}) => {
       if (!accountId) return null;
-      try {
-        const view = await loadAccountView(accountId, { force: true });
-        if (activeAccountIdRef.current !== accountId) return view;
-        setMessages(view.messages);
-        setSentMessages(view.sentMessages);
-        draftsRef.current = view.drafts;
-        setDrafts(view.drafts);
-        setOutbox(view.outbox);
-        if (
-          selectFirst &&
-          view.selectedUid === null &&
-          view.messages.length &&
-          window.innerWidth >= 720
-        ) {
-          void handleSelect(view.messages[0]);
-        }
-        return view;
-      } catch (error) {
-        if (activeAccountIdRef.current === accountId) {
-          showToast("部分本地邮箱数据没有加载完成", "error");
-        }
-        throw error;
+      const trackLocalLoad = (folder, operation) =>
+        operation
+          .then((items) => {
+            updateMailboxLoadState(folder, (current) =>
+              current?.phase === "syncing"
+                ? current
+                : {
+                    phase: "ready",
+                    completed: items.length,
+                    total: null,
+                  },
+            );
+            return items;
+          })
+          .catch((error) => {
+            updateMailboxLoadState(folder, (current) => ({
+              ...current,
+              phase: "error",
+            }));
+            throw error;
+          });
+      const results = await Promise.allSettled([
+        trackLocalLoad("inbox", refreshInbox({ selectFirst })),
+        trackLocalLoad("sent", refreshSent()),
+        trackLocalLoad("drafts", refreshDrafts()),
+        refreshOutbox(),
+      ]);
+      const previous = accountViewsRef.current.get(accountId) || {};
+      const valueOr = (index, fallback) =>
+        results[index].status === "fulfilled"
+          ? results[index].value
+          : fallback;
+      const view = {
+        messages: valueOr(0, previous.messages || []),
+        sentMessages: valueOr(1, previous.sentMessages || []),
+        drafts: valueOr(2, previous.drafts || []),
+        outbox: valueOr(3, previous.outbox || []),
+        selectedUid: previous.selectedUid ?? null,
+        selectedMessage: previous.selectedMessage ?? null,
+      };
+      accountViewsRef.current.set(accountId, view);
+      if (
+        results.some((result) => result.status === "rejected") &&
+        activeAccountIdRef.current === accountId
+      ) {
+        showToast("部分本地邮箱数据没有加载完成", "error");
       }
+      return view;
     },
-    [handleSelect, loadAccountView, showToast],
+    [
+      refreshDrafts,
+      refreshInbox,
+      refreshOutbox,
+      refreshSent,
+      showToast,
+      updateMailboxLoadState,
+    ],
   );
 
   const restoreAccountView = useCallback(
@@ -1043,6 +1146,7 @@ export function App() {
       setSelectedMessage(restored.selectedMessage);
       setMessageError(null);
       setIsMessageLoading(false);
+      settleMailboxSnapshot(restored, { preserveSyncing: false });
       if (
         selectFirst &&
         restored.selectedUid === null &&
@@ -1053,7 +1157,7 @@ export function App() {
       }
       return restored;
     },
-    [handleSelect],
+    [handleSelect, settleMailboxSnapshot],
   );
 
   const loadContacts = useCallback(
@@ -1154,10 +1258,10 @@ export function App() {
   );
 
   const refreshActiveContactWorkspace = useCallback(async () => {
-    if (activeFolderRef.current !== "contacts") return;
     const accountId = activeAccountIdRef.current;
     if (!accountId) return;
     await loadContacts({ accountId, silent: true });
+    if (activeFolderRef.current !== "contacts") return;
     const email = selectedContactEmailRef.current;
     const contactAccountId = selectedContactAccountIdRef.current || accountId;
     if (email) {
@@ -1167,6 +1271,23 @@ export function App() {
       });
     }
   }, [loadContactMessages, loadContacts]);
+
+  const scheduleContactsRefresh = useCallback(() => {
+    if (contactsRefreshTimerRef.current !== null) return;
+    contactsRefreshTimerRef.current = window.setTimeout(() => {
+      contactsRefreshTimerRef.current = null;
+      void refreshActiveContactWorkspace().catch(() => {});
+    }, 80);
+  }, [refreshActiveContactWorkspace]);
+
+  useEffect(
+    () => () => {
+      if (contactsRefreshTimerRef.current !== null) {
+        window.clearTimeout(contactsRefreshTimerRef.current);
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     if (!activeAccountId) return;
@@ -1280,8 +1401,20 @@ export function App() {
   }, [theme]);
 
   useEffect(() => {
-    if (!toast || toast.persistent) return undefined;
-    const timer = window.setTimeout(() => setToast(null), 3800);
+    if (!toast || toast.exiting) return undefined;
+    const timer = window.setTimeout(
+      dismissToast,
+      toast.persistent ? importantToastVisibleMs : toastVisibleMs,
+    );
+    return () => window.clearTimeout(timer);
+  }, [dismissToast, toast]);
+
+  useEffect(() => {
+    if (!toast?.exiting) return undefined;
+    const toastId = toast.id;
+    const timer = window.setTimeout(() => {
+      setToast((current) => (current?.id === toastId ? null : current));
+    }, toastExitMs);
     return () => window.clearTimeout(timer);
   }, [toast]);
 
@@ -1411,6 +1544,39 @@ export function App() {
     const reportEventError = (error, fallback) => {
       if (!cancelled) showToast(describeError(error, fallback), "error");
     };
+    const handleMailboxUpdate = (
+      folder,
+      event,
+      refresh,
+      fallback,
+      { refreshContacts = false, refreshWhileSyncing = true } = {},
+    ) => {
+      const payload = event?.payload || {};
+      const targetAccountId = eventAccountId(payload);
+      const activeAccountId = activeAccountIdRef.current;
+      const progress = mailboxProgress(payload);
+      if (
+        targetAccountId &&
+        activeAccountId &&
+        targetAccountId !== activeAccountId
+      ) {
+        if (progress.complete) {
+          void loadAccountView(targetAccountId, { force: true }).catch(() => {});
+        }
+        return;
+      }
+      updateMailboxLoadState(folder, {
+        phase: progress.complete ? "ready" : "syncing",
+        completed: progress.completed,
+        total: progress.total,
+      });
+      if (!progress.complete && !refreshWhileSyncing) return;
+      void refresh()
+        .then(() => {
+          if (refreshContacts) scheduleContactsRefresh();
+        })
+        .catch((error) => reportEventError(error, fallback));
+    };
     const subscribe = async () => {
       try {
         const accountUnlisten = await mailApi.onMailEvent(
@@ -1436,10 +1602,14 @@ export function App() {
 
         const inboxUnlisten = await mailApi.onMailEvent(
           "mail:inbox-updated",
-          () => {
-            void refreshInbox()
-              .then(() => refreshActiveContactWorkspace())
-              .catch((error) => reportEventError(error, "收件箱刷新失败"));
+          (event) => {
+            handleMailboxUpdate(
+              "inbox",
+              event,
+              refreshInbox,
+              "收件箱刷新失败",
+              { refreshContacts: true },
+            );
           },
         );
         if (cancelled) inboxUnlisten();
@@ -1447,10 +1617,14 @@ export function App() {
 
         const sentUnlisten = await mailApi.onMailEvent(
           "mail:sent-updated",
-          () => {
-            void refreshSent()
-              .then(() => refreshActiveContactWorkspace())
-              .catch((error) => reportEventError(error, "已发送刷新失败"));
+          (event) => {
+            handleMailboxUpdate(
+              "sent",
+              event,
+              refreshSent,
+              "已发送刷新失败",
+              { refreshContacts: true },
+            );
           },
         );
         if (cancelled) sentUnlisten();
@@ -1496,9 +1670,13 @@ export function App() {
 
         const draftsUnlisten = await mailApi.onMailEvent(
           "mail:drafts-updated",
-          () => {
-            void Promise.all([refreshDrafts(), refreshOutbox()]).catch(
-              (error) => reportEventError(error, "草稿或发件队列刷新失败"),
+          (event) => {
+            handleMailboxUpdate(
+              "drafts",
+              event,
+              () => Promise.all([refreshDrafts(), refreshOutbox()]),
+              "草稿或发件队列刷新失败",
+              { refreshWhileSyncing: false },
             );
           },
         );
@@ -1508,9 +1686,28 @@ export function App() {
         const syncErrorUnlisten = await mailApi.onMailEvent(
           "mail:sync-error",
           (event) => {
+            const operation = event?.payload?.operation;
+            setMailboxLoadStates((current) =>
+              Object.fromEntries(
+                mailboxFolders.map((folder) => [
+                  folder,
+                  (operation === "all" || operation === folder) &&
+                  current[folder]?.phase === "syncing"
+                    ? { ...current[folder], phase: "error" }
+                    : current[folder],
+                ]),
+              ),
+            );
+            const trigger = event?.payload?.trigger;
+            if (trigger !== "manual" && trigger !== "tray") {
+              setSyncState("idle");
+              return;
+            }
             setSyncState("error");
-            const message = event?.payload?.message || "邮箱同步失败";
-            showToast(message, "error");
+            showToast(
+              event?.payload?.message || "部分邮箱暂时未能同步，请稍后重试",
+              "error",
+            );
           },
         );
         if (cancelled) syncErrorUnlisten();
@@ -1612,13 +1809,15 @@ export function App() {
   }, [
     commitComposer,
     handleSelect,
+    loadAccountView,
     refreshDrafts,
-    refreshActiveContactWorkspace,
     refreshInbox,
     refreshOutbox,
     refreshSent,
     saveDraftNow,
+    scheduleContactsRefresh,
     showToast,
+    updateMailboxLoadState,
   ]);
 
   useEffect(() => {
@@ -1910,6 +2109,37 @@ export function App() {
     });
   }, [contactRemarkForEmail, filter, folderMessages, query]);
 
+  const activeMailboxLoadState = useMemo(() => {
+    if (mailboxLoadStates[activeFolder]) {
+      return mailboxLoadStates[activeFolder];
+    }
+    if (activeFolder === "starred") {
+      const sources = [
+        mailboxLoadStates.inbox,
+        mailboxLoadStates.sent,
+      ].filter(Boolean);
+      const phase = sources.some((state) => state.phase === "syncing")
+        ? "syncing"
+        : sources.some((state) => state.phase === "loading")
+          ? "loading"
+          : sources.some((state) => state.phase === "error")
+            ? "error"
+            : "ready";
+      const totals = sources.map((state) => state.total);
+      return {
+        phase,
+        completed: sources.reduce(
+          (sum, state) => sum + (state.completed || 0),
+          0,
+        ),
+        total: totals.every((total) => Number.isFinite(total))
+          ? totals.reduce((sum, total) => sum + total, 0)
+          : null,
+      };
+    }
+    return { phase: "ready", completed: visibleMessages.length, total: null };
+  }, [activeFolder, mailboxLoadStates, visibleMessages.length]);
+
   const selectedMessageKey = remoteFlagKey(selectedMessage);
   const selectedIndex = visibleMessages.findIndex((message) => {
     const key = remoteFlagKey(message);
@@ -2055,7 +2285,6 @@ export function App() {
     try {
       await mailApi.setContactRemark(contact.email, nextRemark);
       await loadContacts({ accountId: activeAccountId, silent: true });
-      showToast(nextRemark ? "联系人备注已保存" : "联系人备注已清除");
     } catch (error) {
       setContacts(applyRemark(previousRemark));
       setFavoriteContacts(applyRemark(previousRemark));
@@ -2074,14 +2303,20 @@ export function App() {
       return;
     }
     setSyncState("syncing");
+    beginMailboxLoading("syncing");
     try {
       const report = await mailApi.syncAll();
-      await Promise.all([
+      const [inbox, sent, localDrafts] = await Promise.all([
         refreshInbox(),
         refreshSent(),
         refreshDrafts(),
         refreshOutbox(),
       ]);
+      settleMailboxSnapshot({
+        messages: inbox,
+        sentMessages: sent,
+        drafts: localDrafts,
+      }, { preserveSyncing: false });
       if (activeFolder === "contacts" && activeAccountId) {
         await loadContacts({ accountId: activeAccountId, silent: true });
         if (selectedContactEmail) {
@@ -2098,6 +2333,16 @@ export function App() {
       );
     } catch (error) {
       setSyncState("error");
+      setMailboxLoadStates((current) =>
+        Object.fromEntries(
+          mailboxFolders.map((folder) => [
+            folder,
+            current[folder]?.phase === "syncing"
+              ? { ...current[folder], phase: "error" }
+              : current[folder],
+          ]),
+        ),
+      );
       showToast(describeError(error, "同步失败，请检查网络"), "error");
     }
   };
@@ -2398,6 +2643,7 @@ export function App() {
       showToast("请先关闭当前写信窗口，再连接其他账户。", "error");
       return;
     }
+    const previousAccountId = activeAccountIdRef.current;
     setAccountSubmitStatus("saving");
     setAccountError(null);
     try {
@@ -2413,12 +2659,19 @@ export function App() {
         return;
       }
 
-      clearSelection();
-      setMessages([]);
-      setDrafts([]);
-      setOutbox([]);
+      const nextAccountId = status.activeAccountId || status.accountId || null;
+      activeAccountIdRef.current = nextAccountId;
+      accountStatusRef.current = status;
+      if (previousAccountId !== nextAccountId) {
+        clearSelection();
+        setMessages([]);
+        setSentMessages([]);
+        setDrafts([]);
+        setOutbox([]);
+      }
       const networkUsable =
         status.credentialAvailable && status.networkReady !== false;
+      beginMailboxLoading(networkUsable ? "syncing" : "loading");
       await loadMailboxData({ selectFirst: true });
       if (!networkUsable) {
         setAccountError(
@@ -2437,15 +2690,26 @@ export function App() {
     }
   };
 
-  const applyActiveAccount = async (status, successMessage) => {
+  const applyActiveAccount = async (
+    status,
+    successMessage,
+    previousAccountId = activeAccountIdRef.current,
+  ) => {
     setAccountStatus(status);
-    activeAccountIdRef.current =
-      status.activeAccountId || status.accountId || null;
-    clearSelection();
-    messageBodyCacheRef.current.clear();
-    setMessages([]);
-    setDrafts([]);
-    setOutbox([]);
+    const nextAccountId = status.activeAccountId || status.accountId || null;
+    activeAccountIdRef.current = nextAccountId;
+    accountStatusRef.current = status;
+    beginMailboxLoading(
+      canUseAccountNetwork(status) ? "syncing" : "loading",
+    );
+    if (previousAccountId !== nextAccountId) {
+      clearSelection();
+      messageBodyCacheRef.current.clear();
+      setMessages([]);
+      setSentMessages([]);
+      setDrafts([]);
+      setOutbox([]);
+    }
     if (status.configured && status.backendReady) {
       await loadMailboxData({ selectFirst: true });
     }
@@ -2460,11 +2724,16 @@ export function App() {
       showToast("请先关闭当前写信窗口，再连接其他账户。", "error");
       return;
     }
+    const previousAccountId = activeAccountIdRef.current;
     setAccountSubmitStatus("saving");
     setAccountError(null);
     try {
       const status = await mailApi.connectGoogleAccount();
-      await applyActiveAccount(status, "Gmail 已通过 Google 安全连接");
+      await applyActiveAccount(
+        status,
+        "Gmail 已通过 Google 安全连接",
+        previousAccountId,
+      );
     } catch (error) {
       const message = describeError(error, "Google 登录失败，请重试");
       setAccountError(message);
@@ -2542,7 +2811,6 @@ export function App() {
       }
       setAccountSubmitStatus("saved");
       setAccountError(null);
-      showToast(`已切换到 ${status.email}`);
       void loadMailboxData({
         accountId,
         selectFirst: false,
@@ -2575,7 +2843,6 @@ export function App() {
   const handleSaveAccountRemark = async (accountId, remark) => {
     const status = await mailApi.setAccountRemark(accountId, remark);
     setAccountStatus(status);
-    showToast(remark.trim() ? "邮箱备注已保存" : "邮箱备注已删除");
     return status;
   };
 
@@ -2926,6 +3193,7 @@ export function App() {
               onFilterChange={setFilter}
               onSync={handleSync}
               syncState={syncState}
+              loadState={activeMailboxLoadState}
               canSync={networkActionsAvailable}
               onOpenMobileNav={() => setIsSidebarOpen(true)}
               avatarForEmail={(email) => profileAvatarFor("contact", email)}
@@ -2966,7 +3234,7 @@ export function App() {
         onConfirm={handleConfirmSend}
       />
 
-      <Toast toast={toast} onClose={() => setToast(null)} />
+      <Toast toast={toast} onClose={dismissToast} />
     </div>
   );
 }

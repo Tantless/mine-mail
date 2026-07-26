@@ -12,7 +12,7 @@ use crate::{
     AccountConfig, ComposeRequest, ConnectionReport, ContactActivity, ContactMessage,
     ContactMessageDirection, Draft, DraftDeleteKind, DraftSaveKind, DraftSaveOutcome, InboxMessage,
     MailAddress, MailError, MailboxRole, OutboxItem, OutboxStatus, ReplyContext, Result,
-    SyncReport,
+    SyncBatchProgress, SyncReport,
     database::{DraftRecord, MailboxState, Repository},
     imap_client::{ImapConnection, MailboxHint, RemoteMessage},
     mime::{
@@ -25,7 +25,7 @@ use crate::{
 };
 
 const INBOX: &str = "INBOX";
-const SUMMARY_BATCH_SIZE: usize = 100;
+const SUMMARY_BATCH_SIZE: usize = 10;
 const FLAG_BATCH_SIZE: usize = 250;
 const MAX_CACHED_MESSAGE_BYTES: u32 = 50 * 1024 * 1024;
 const MAX_REPLY_QUOTED_TEXT_BYTES: usize = 2 * 1024 * 1024;
@@ -142,7 +142,10 @@ enum RemoteForkPreservation {
 pub struct MailBackend {
     config: AccountConfig,
     repository: Repository,
-    imap_gate: Mutex<()>,
+    general_imap_gate: Mutex<()>,
+    inbox_imap_gate: Mutex<()>,
+    sent_imap_gate: Mutex<()>,
+    draft_imap_gate: Mutex<()>,
     body_imap: Mutex<Option<BodyImapSession>>,
     smtp_gate: Mutex<()>,
 }
@@ -152,7 +155,10 @@ impl MailBackend {
         Ok(Self {
             config,
             repository: Repository::open(database_path)?,
-            imap_gate: Mutex::new(()),
+            general_imap_gate: Mutex::new(()),
+            inbox_imap_gate: Mutex::new(()),
+            sent_imap_gate: Mutex::new(()),
+            draft_imap_gate: Mutex::new(()),
             body_imap: Mutex::new(None),
             smtp_gate: Mutex::new(()),
         })
@@ -185,7 +191,7 @@ impl MailBackend {
 
     pub async fn check_connections(&self) -> Result<ConnectionReport> {
         let imap_ok = {
-            let _guard = self.imap_gate.lock().await;
+            let _guard = self.general_imap_gate.lock().await;
             match ImapConnection::connect(&self.config).await {
                 Ok(connection) => connection.probe().await.is_ok(),
                 Err(_) => false,
@@ -204,7 +210,7 @@ impl MailBackend {
     }
 
     pub async fn list_remote_mailboxes(&self) -> Result<Vec<String>> {
-        let _guard = self.imap_gate.lock().await;
+        let _guard = self.general_imap_gate.lock().await;
         let mut connection = ImapConnection::connect(&self.config).await?;
         let mut names: Vec<String> = connection
             .list_mailboxes()
@@ -223,12 +229,23 @@ impl MailBackend {
     /// Later runs fetch new UIDs, reconcile flags and remove locally cached UIDs
     /// that no longer exist on the server.
     pub async fn sync_inbox(&self, initial_limit: usize) -> Result<SyncReport> {
+        self.sync_inbox_with_progress(initial_limit, |_| {}).await
+    }
+
+    pub async fn sync_inbox_with_progress<F>(
+        &self,
+        initial_limit: usize,
+        mut on_progress: F,
+    ) -> Result<SyncReport>
+    where
+        F: FnMut(SyncBatchProgress) + Send,
+    {
         self.validate_sync_limit(initial_limit)?;
 
-        let _guard = self.imap_gate.lock().await;
+        let _guard = self.inbox_imap_gate.lock().await;
         let mut connection = ImapConnection::connect(&self.config).await?;
         let report = self
-            .sync_selected_mailbox(&mut connection, INBOX, initial_limit)
+            .sync_selected_mailbox(&mut connection, INBOX, initial_limit, &mut on_progress)
             .await;
         let _ = connection.logout().await;
         report
@@ -238,13 +255,24 @@ impl MailBackend {
     /// name is persisted as a role so all later local reads stay offline-first
     /// and do not have to guess provider-specific or localized folder names.
     pub async fn sync_sent(&self, initial_limit: usize) -> Result<SyncReport> {
+        self.sync_sent_with_progress(initial_limit, |_| {}).await
+    }
+
+    pub async fn sync_sent_with_progress<F>(
+        &self,
+        initial_limit: usize,
+        mut on_progress: F,
+    ) -> Result<SyncReport>
+    where
+        F: FnMut(SyncBatchProgress) + Send,
+    {
         self.validate_sync_limit(initial_limit)?;
 
-        let _guard = self.imap_gate.lock().await;
+        let _guard = self.sent_imap_gate.lock().await;
         let mut connection = ImapConnection::connect(&self.config).await?;
         let mailbox = connection.discover_sent_mailbox().await?;
         let report = self
-            .sync_selected_mailbox(&mut connection, &mailbox, initial_limit)
+            .sync_selected_mailbox(&mut connection, &mailbox, initial_limit, &mut on_progress)
             .await;
         let _ = connection.logout().await;
         let report = report?;
@@ -262,12 +290,16 @@ impl MailBackend {
         Ok(())
     }
 
-    async fn sync_selected_mailbox(
+    async fn sync_selected_mailbox<F>(
         &self,
         connection: &mut ImapConnection,
         mailbox: &str,
         initial_limit: usize,
-    ) -> Result<SyncReport> {
+        on_progress: &mut F,
+    ) -> Result<SyncReport>
+    where
+        F: FnMut(SyncBatchProgress) + Send,
+    {
         let snapshot = connection.select_mailbox(mailbox).await?;
 
         if snapshot.exists > 0 && snapshot.all_uids.is_empty() {
@@ -332,6 +364,11 @@ impl MailBackend {
         }
 
         let requested: Vec<u32> = requested.into_iter().collect();
+        let total = requested.len();
+        on_progress(SyncBatchProgress {
+            completed: 0,
+            total,
+        });
         let mut fetched = 0;
         for batch in requested.chunks(SUMMARY_BATCH_SIZE) {
             for remote in connection.fetch_summaries(batch).await? {
@@ -351,6 +388,10 @@ impl MailBackend {
                 self.repository.upsert_message(&message)?;
                 fetched += 1;
             }
+            on_progress(SyncBatchProgress {
+                completed: fetched,
+                total,
+            });
         }
 
         let existing_remote_uids: Vec<u32> =
@@ -397,13 +438,25 @@ impl MailBackend {
     /// historical flag changes, and UIDVALIDITY recovery intentionally remain
     /// the job of the periodic full reconciliation in [`Self::sync_inbox`].
     pub async fn sync_new_inbox(&self, initial_limit: usize) -> Result<SyncReport> {
+        self.sync_new_inbox_with_progress(initial_limit, |_| {})
+            .await
+    }
+
+    pub async fn sync_new_inbox_with_progress<F>(
+        &self,
+        initial_limit: usize,
+        mut on_progress: F,
+    ) -> Result<SyncReport>
+    where
+        F: FnMut(SyncBatchProgress) + Send,
+    {
         if initial_limit == 0 {
             return Err(MailError::Validation(
                 "initial sync limit must be greater than zero".to_owned(),
             ));
         }
 
-        let guard = self.imap_gate.lock().await;
+        let guard = self.inbox_imap_gate.lock().await;
         let mut connection = ImapConnection::connect(&self.config).await?;
         let hint = connection.select_inbox_hint().await?;
         let previous_state = self
@@ -417,7 +470,9 @@ impl MailBackend {
         if needs_full_sync {
             let _ = connection.logout().await;
             drop(guard);
-            return self.sync_inbox(initial_limit).await;
+            return self
+                .sync_inbox_with_progress(initial_limit, on_progress)
+                .await;
         }
 
         let previous_state = previous_state.expect("full sync fallback handles a missing cursor");
@@ -431,6 +486,11 @@ impl MailBackend {
             .flush_pending_flagged_updates(&mut connection, INBOX)
             .await;
         let requested = connection.search_uids_after(previous_highest_uid).await?;
+        let total = requested.len();
+        on_progress(SyncBatchProgress {
+            completed: 0,
+            total,
+        });
         let mut fetched = 0;
         for batch in requested.chunks(SUMMARY_BATCH_SIZE) {
             for remote in connection.fetch_summaries(batch).await? {
@@ -450,6 +510,10 @@ impl MailBackend {
                 self.repository.upsert_message(&message)?;
                 fetched += 1;
             }
+            on_progress(SyncBatchProgress {
+                completed: fetched,
+                total,
+            });
         }
 
         let highest_uid = requested
@@ -664,7 +728,7 @@ impl MailBackend {
     /// Pushes every pending Inbox read action through UID STORE and clears a
     /// write-behind row only after a FLAGS fetch confirms `\Seen` persisted.
     pub async fn sync_pending_inbox_read_flags(&self) -> Result<usize> {
-        let _guard = self.imap_gate.lock().await;
+        let _guard = self.inbox_imap_gate.lock().await;
         let mut connection = ImapConnection::connect(&self.config).await?;
         let selected_uid_validity = connection.select_mailbox_for_seen_update(INBOX).await?;
         let local_uid_validity = self
@@ -703,7 +767,16 @@ impl MailBackend {
                 "message mailbox must not be blank".to_owned(),
             ));
         }
-        let _guard = self.imap_gate.lock().await;
+        if mailbox.eq_ignore_ascii_case(INBOX) {
+            let _guard = self.inbox_imap_gate.lock().await;
+            self.sync_pending_message_star_flags_locked(mailbox).await
+        } else {
+            let _guard = self.sent_imap_gate.lock().await;
+            self.sync_pending_message_star_flags_locked(mailbox).await
+        }
+    }
+
+    async fn sync_pending_message_star_flags_locked(&self, mailbox: &str) -> Result<usize> {
         let mut connection = ImapConnection::connect(&self.config).await?;
         let selected_uid_validity = connection
             .select_mailbox_for_flagged_update(mailbox)
@@ -1512,9 +1585,25 @@ impl MailBackend {
     /// Mail identity. See `DraftSyncReport` for the deterministic conflict and
     /// deletion policy.
     pub async fn sync_drafts(&self, mailbox_override: Option<&str>) -> Result<DraftSyncReport> {
-        let _guard = self.imap_gate.lock().await;
+        self.sync_drafts_with_progress(mailbox_override, |_| {})
+            .await
+    }
+
+    pub async fn sync_drafts_with_progress<F>(
+        &self,
+        mailbox_override: Option<&str>,
+        mut on_progress: F,
+    ) -> Result<DraftSyncReport>
+    where
+        F: FnMut(SyncBatchProgress) + Send,
+    {
+        let _guard = self.draft_imap_gate.lock().await;
         let mut connection = ImapConnection::connect(&self.config).await?;
-        let snapshot = connection.fetch_draft_snapshot(mailbox_override).await?;
+        let snapshot = connection
+            .fetch_draft_snapshot_with_progress(mailbox_override, |completed, total| {
+                on_progress(SyncBatchProgress { completed, total });
+            })
+            .await?;
         let mut report = DraftSyncReport {
             mailbox: snapshot.mailbox.clone(),
             ..DraftSyncReport::default()

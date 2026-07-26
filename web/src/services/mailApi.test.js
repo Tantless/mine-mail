@@ -136,7 +136,8 @@ describe("mailApi desktop IPC contract", () => {
         provider: "163",
         email: "me@163.com",
         backend_ready: true,
-        credential_available: true,
+        credential_available: false,
+        credential_invalid: true,
         startup_error: null,
       })
       .mockResolvedValueOnce({
@@ -166,7 +167,8 @@ describe("mailApi desktop IPC contract", () => {
     expect(await mailApi.getAccountStatus()).toMatchObject({
       configured: true,
       backendReady: true,
-      credentialAvailable: true,
+      credentialAvailable: false,
+      credentialInvalid: true,
     });
     const accountRequest = {
       provider: "163",

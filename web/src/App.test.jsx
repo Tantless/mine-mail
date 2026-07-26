@@ -250,8 +250,8 @@ describe("Mine Mail MVP", () => {
     expect(fetchMessage).not.toHaveBeenCalled();
 
     pendingSwitch.resolve(statusB);
-    expect(await screen.findByText("已切换到 b@gmail.com")).toBeTruthy();
     await waitFor(() => expect(fetchMessage).toHaveBeenCalledWith(202));
+    expect(screen.queryByText("已切换到 b@gmail.com")).toBeNull();
   });
 
   it("switches and persists an MVP theme", async () => {
@@ -822,7 +822,7 @@ describe("Mine Mail MVP", () => {
         },
       ],
     });
-    const getSnapshot = vi.spyOn(mailApi, "getAccountMailboxSnapshot");
+    const listInbox = vi.spyOn(mailApi, "listInbox");
     render(<App />);
 
     expect(await screen.findAllByText("欢迎来到 Mine Mail")).toHaveLength(2);
@@ -830,7 +830,7 @@ describe("Mine Mail MVP", () => {
       (await screen.findByRole("alert", {}, { timeout: 1600 })).textContent,
     ).toContain("系统凭据不可用");
     expect(screen.queryByText("尚未连接邮箱")).toBeNull();
-    expect(getSnapshot).toHaveBeenCalledWith("offline-account", 50);
+    expect(listInbox).toHaveBeenCalledWith(50);
     expect(screen.getByRole("button", { name: "同步收件箱" }).disabled).toBe(true);
   });
 });

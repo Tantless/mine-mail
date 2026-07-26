@@ -321,6 +321,16 @@ pub struct SyncReport {
     pub uid_validity_reset: bool,
 }
 
+/// Progress emitted after one bounded synchronization batch has been persisted.
+///
+/// The desktop layer uses this body-free counter to refresh SQLite-backed
+/// summaries without exposing protocol responses or message contents.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SyncBatchProgress {
+    pub completed: usize,
+    pub total: usize,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
 pub struct ConnectionReport {
     pub imap_ok: bool,
