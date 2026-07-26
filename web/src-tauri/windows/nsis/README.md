@@ -17,9 +17,10 @@ silent-install behavior.
   title bar text-only without changing the branded `setup.exe` file icon.
 - `../../icons/icon.ico`: installer and uninstaller executable icon.
 
-The two BMP files were generated for the approved cute frosted Mine Mail
-direction and contain no UI text. All Chinese copy remains native NSIS text so
-it stays sharp and accessible at different display scales.
+The two BMP files follow the fox-only brand and material direction in the root
+[`DESIGN.md`](../../../../DESIGN.md) and contain no UI text. All Chinese copy
+remains native NSIS text so it stays sharp and accessible at different display
+scales.
 
 ## Local verification
 

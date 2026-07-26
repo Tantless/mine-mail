@@ -1,58 +1,114 @@
-# Mine Mail
+# Mine Mail — Agent Contract
 
-Cross-platform desktop mail client. Product decisions in this file are durable; ask the user before changing them.
+Mine Mail is a cross-platform desktop mail client built with Tauri 2, React, Rust,
+and SQLite. This file contains repository-wide rules for coding agents. Keep it
+short and durable.
 
-## Architecture
+## Source of truth
 
-- Desktop only: Tauri 2 + React + Rust + SQLite. Do not build a parallel Web mail runtime.
-- Rust/SQLite own credentials, IMAP/SMTP, synchronization, drafts, outbox, and notification decisions. React only calls narrow Tauri commands and renders local state.
-- Never log or return authorization secrets, raw credentials, or complete RFC822 messages to React.
-- Preserve offline-first startup: render SQLite immediately, then synchronize in Rust.
-- Inbox summaries must not carry raw RFC822 or full HTML. Paint a local preview immediately, hydrate the selected body silently, and prefetch recent bounded-size bodies after sync.
-- Keep one reader scrollbar. Simple HTML with a readable text alternative uses the native themed reader; this includes compact, text-dominant notification/profile templates whose ornamental CSS and small flat table can be discarded without losing meaning. Complex sender-designed HTML stays sanitized and isolated in a no-script iframe whose height is owned by the outer reader. When isolated sender content is wider than the reader, scale the complete document proportionally to fit without changing the app's column layout or rewriting the sender's structure.
-- Render recognized reply history as sibling collapsible cards from newest to oldest; show subject, sender → recipient, and time when parsed, use a numbered fallback, and never recursively nest quote panels.
-- A reply-history card shows a separate local-navigation affordance only when its exact cached ancestor is present in the active account's loaded Inbox or Sent list. The affordance opens and focuses that list row without toggling the card; unavailable or third-party history keeps no affordance.
-- Parse replies in Rust into ordered authored/quoted segments. Prefer standards and reply headers, then maintained client adapters (NetEase, Gmail, Outlook); never delete low-confidence content. High-confidence history is collapsed in a themed quote surface with an original-format fallback.
-- The HTML boundary is deterministic: wrapper-only HTML with a readable text alternative stays plain regardless of redundant wrapper count or depth. Native semantic HTML strips sender styles and layout attributes and is limited to 32 KiB of structural markup, 100 elements, depth 10, and 3 images; a small DOM without class/id styling hooks may discard an otherwise unused style block. One unnested signature table may use the native reader when it has at most 4 rows, 8 cells, no merged cells, no style block, and no background or positioning layout; it uses a depth limit of 24. Other tables, styled DOM, media/forms, and anything outside those limits use the no-script iframe.
+- Read this file before changing the repository.
+- Read `DESIGN.md` before changing any visible UI, interaction, theme, copy
+  hierarchy, asset, or layout. It is the only visual specification.
+- Read the relevant section of `docs/PRODUCT.md` before changing user-visible
+  behavior, synchronization, accounts, drafts, sending, notifications, contacts,
+  or identity rules.
+- Read `docs/MAIL_RENDERING.md` before changing MIME parsing, HTML sanitization,
+  body render modes, remote images, or reply-history parsing.
+- `README.md` is the human setup guide. `docs/RELEASE.md` is a mutable release
+  checklist, not a product specification.
+- Do not create nested `AGENTS.md` files that repeat these rules. Add a scoped
+  instruction only when a subproject has a genuinely different build or safety
+  constraint.
 
-## MVP behavior
+When documents conflict, this file controls agent behavior; the domain document
+controls its named domain. Existing code or an old screenshot does not silently
+override a documented decision. Durable product, architecture, or design changes
+require the user's approval and an update to the corresponding canonical document.
 
-- Inbox sync runs at startup, tray **刷新**, and manual wake. Runtime capability detection prefers standard IMAP IDLE with a pre-29-minute reconnect; non-IDLE servers keep an authenticated connection and probe mailbox counters every 15 seconds while visible or 30 seconds while hidden. Only a detected change fetches new UIDs. User-selectable 1/3/5 minutes (default 5) is the full reconciliation cadence for deletions, flags, and recovery.
-- First historical import establishes a notification baseline. Later unread arrivals notify with sender identity + address, subject, and the receiving account identity + address, never body text.
-- New-mail alerts use Mine Mail's theme-aware, always-on-top lower-right desktop card rather than the PowerShell-identified development toast. The card uses the sender's local-first avatar instead of the Mine Mail brand mark, applies a contact remark before the sender-owned header name, identifies the receiving account by its local remark plus address, and remains sufficiently opaque for readable text. One **桌面通知** setting controls popup delivery both while Mine Mail is active and while it is in the background; sound and sound preset remain separately configurable. Clicking the card opens that local message.
-- Closing the window hides it to the tray while background mode is active. Tray labels are exactly **打开 / 刷新 / 退出**.
-- Login autostart is a setting and defaults off.
-- Remote images are user-selectable as automatic/ask/blocked and default to automatic loading. The setting includes a nearby help affordance explaining the privacy risk of automatic remote requests.
-- Message stars use the standard IMAP `\Flagged` system flag and synchronize both ways for cached remote Inbox and Sent messages. Star and unstar actions update SQLite immediately, persist across offline periods, and are removed from the write-behind queue only after the server confirms the requested flag state.
-- Drafts synchronize both ways. Editing reuses one stable draft ID; save locally during editing and upload remotely every five minutes.
-- Closing or pressing Escape never forces a draft save. For a new compose session, close removes any recovery draft created by that session; for an existing draft, close leaves the previously persisted draft intact. Minimize keeps the editing session active.
-- Draft editor writes must carry the SQLite `local_version`; stale edits become conflict copies and stale deletes never remove the newer canonical draft. HTML/attachment drafts remain read-only until that MIME is supported.
-- Sending binds exact-recipient confirmation and Outbox state to one draft `local_version`. Preserve newer edits, supersede safe older retry items, and never automatically retry `delivery_unknown` items.
-- Repository-local `password.txt` is a human-only debugging note. The app, build, and CLI must never read or depend on it. Accounts are configured through the desktop account settings; keep provider presets (163, Gmail, Outlook) and a custom IMAP/SMTP option. Password-based providers use an account and authorization secret, while Gmail uses Google OAuth.
-- Gmail uses Google OAuth 2.0 Authorization Code + PKCE in the system browser with a random loopback callback; IMAP and SMTP authenticate through XOAUTH2, and refresh/access tokens stay in the OS credential store and Rust runtime.
-- Support up to three connected accounts. One account is active in the interface at a time, while startup, tray, manual, and scheduled synchronization cover every connected account with per-account caches and notification baselines.
-- When an account credential is missing, expired, or revoked, stop network synchronization and Inbox monitoring for that account while keeping its cached mail readable. Mark that exact account with a red exclamation icon in the lower-left account switcher, and show the exact text **凭证失效** on its Settings account row with theme-owned hover/focus help explaining that the user must sign in again or obtain a new authorization credential. Do not repeat background error toasts for this state.
-- Connected accounts support an optional Mine Mail-local remark keyed by the stable account ID. A non-empty account remark takes display priority anywhere account provenance is shown—including the sidebar, settings, aggregated favorites, and new-mail notifications—while the real mailbox address remains visible wherever space permits.
-- Contacts are local-first. The **通讯录** workspace derives correspondents from cached message headers and offers two durable organization actions: **收藏** and a local **备注**. **全部** shows only correspondents derived from the active account. Favorites are keyed by account plus normalized email; **收藏** aggregates favorites from every connected account and visibly identifies the owning account on every row. Remarks remain app-wide metadata keyed by normalized email. A non-empty remark takes display-name priority in the contacts workspace and the mail list/reader, while the contact detail keeps the latest mail-header name visible beneath it. There is no separate save-contact state. IMAP never owns contact synchronization. Provider contact sync remains a separate opt-in adapter layer (Google People API, Microsoft Graph, or CardDAV), while 163 uses local favorites and remarks plus import/export unless an official public sync interface becomes available.
+## Architecture and safety invariants
 
-## Visual baseline
+- The product is a desktop application. The Vite browser build is only an
+  explicit, no-network UI demo and test surface; never create a parallel Web mail
+  runtime.
+- Rust and SQLite own credentials, IMAP/SMTP, MIME processing, synchronization,
+  drafts, Outbox state, and notification decisions. React calls narrow Tauri
+  commands and renders local state.
+- Preserve offline-first startup: render cached SQLite state immediately, then
+  synchronize in Rust without replacing usable content with loading placeholders.
+- Keep account data, caches, notification baselines, queued mutations, and
+  synchronization state scoped by stable account ID.
+- Never expose authorization secrets, passwords, OAuth tokens, complete RFC822
+  messages, or unrestricted database/file/network access to React.
+- Never write mailbox addresses, subjects, message bodies, raw HTML/RFC822,
+  credentials, tokens, or complete local paths to logs. Keep errors useful but
+  privacy-safe.
+- End-user mailbox passwords, authorization secrets, and OAuth access/refresh
+  tokens belong in the OS credential store and Rust runtime, not SQLite,
+  frontend state, repository files, or build configuration.
+- Provider-issued desktop OAuth client metadata is a separate, ignored Rust-only
+  build input. Never treat it as an end-user credential, expose it to React or
+  logs, or commit production configuration.
+- Treat mail content as untrusted. Sanitize in Rust, preserve low-confidence
+  content, and isolate sender-controlled complex HTML without scripts.
+- Operations that can be retried must be idempotent or explicitly model an
+  uncertain outcome. Never turn an unknown SMTP result into an automatic resend.
 
-- Mine Mail's primary brand mark is the transparent fox holding an envelope in `web/src/assets/brand/mine-mail-fox.png`; use it for app/package icons, tray, onboarding, and the sidebar brand. New-mail cards use the sender avatar instead. Preserve `mine-mail-cat-candidate.png` as the approved alternate, but do not mix both mascots in one build.
-- The approved MVP material is the layered frosted treatment in `web/design/references/mine-mail-frosted-material-reference.png`: one continuous painterly wallpaper, quieter glass for the message list, more atmospheric glass for the reader, and a theme-tinted compose control. All themes inherit the shared material structure and only tune semantic tokens.
-- The native window chrome is visually fused into the app shell: keep a transparent draggable top safe area with the platform window controls in their standard positions, but no separate titlebar surface, divider, title, or duplicate logo. The single Mine Mail brand lives at the top of the left navigation.
-- When no message is selected in the desktop mail workspace, the transparent reader area becomes a quiet, theme-aware "future letter" stage: the approved 42-entry quotation library plays in random order without an immediate repeat, and each quotation forms one glyph at a time in one bundled Chinese brush-script typeface. The attribution uses the same typeface and color, is independently right-aligned on a stable track, and is prefixed by one continuous rule rather than separate dash glyphs. Balanced two-line couplets offset their starts by 4 glyph widths while the complete composition stays centered; other long or unequal quotations use punctuation-aware, single-line rows inside a centered frame, with the first row left-anchored, the last row right-anchored, and intervening row starts interpolated between them. The longest row dynamically reduces the shared type size when necessary so no row is cropped. Motion may vary by glyph, but the stage adds no canvas, glow, gradient text, or other background layer over the wallpaper. Opening a message unmounts the entire effect immediately, hidden windows pause it, and reduced-motion users receive a static scene.
-- Reader reply and forward actions use the active theme accent as emphasized buttons. Their shared action row spans the native reading width, with reply anchored left and forward anchored right.
-- The left navigation includes **通讯录**. Contact mode keeps the established three-column shell: the middle column lists/searches favorite and recent correspondents, while the right column stays unselected by default and reuses the existing "future letter" quotation stage until the user explicitly opens a contact. Contact details provide a persistent return control that clears the selection and restores that quotation stage. Opening a correspondence message reuses the existing reader in that right column with a separate way back to the contact history. Background mailbox events refresh contact data silently without replacing visible rows or correspondence with loading placeholders.
-- Routine backend health and cache state are not persistent main-interface chrome. The sidebar identifies the configured account without connection labels or status dots, and the mail list has no cache/sync footer; surface only progress tied to an explicit user action and failures that require attention.
-- Settings is an embedded workspace inside the main three-column shell rather than a modal overlay: the primary sidebar remains visible, the middle column becomes the settings category rail, and the right column shows the active setting. The complete workspace uses wallpaper-aware glass that is slightly denser than the reader but never an opaque flat fill. Preferences save immediately without a global footer, account avatars are edited by clicking the avatar, secondary account actions use compact icon controls or a local menu, and adding an account is a right-pane provider-first drill-in flow rather than an always-expanded form. Visible choice menus are theme-owned combobox/listbox surfaces rather than native operating-system select popups.
-- Avatar resolution is local-first: an exact-email contact override wins over the built-in known-brand domain map, then falls back to initials; the account card similarly prefers its Mine Mail-local account avatar. Never query remote avatar services. Store user-selected PNG/JPEG/WebP images in desktop SQLite, scoped by account/contact email, with a 2 MB limit.
-- The compose window uses that same layered glass system for its shell, fields, editor, footer, and controls. It has no visible title bar; only minimize and close remain at the top-right. The floating surface can be dragged and resized from every edge/corner, remembers the user's last normal position and size across messages and app restarts, and stays within the visible app bounds.
-- Compose address and subject inputs use inset rounded focus surfaces with visible spacing from the grouped field shell. The icon-only copy-recipient toggle expands and collapses CC/BCC without clearing their values.
-- A minimized composer is a 340 × 44 subject-only glass bar at the bottom center. It removes the compose backdrop blur and all status/action chrome; clicking the bar restores the exact pre-minimize geometry. An empty subject is shown as **新邮件**.
+## Product invariants
+
+- Support at most three connected accounts. The interface has one active account,
+  while startup, scheduled, tray, and manual synchronization cover every account.
+- A missing, expired, or revoked credential stops network work only for that
+  account; its cached mail remains readable and the UI offers reauthentication
+  without repeated background-error notifications.
+- Message stars are the IMAP `\Flagged` system flag. Local changes are immediate
+  and remain queued until the server confirms the requested state.
+- Draft edits use a stable draft ID plus SQLite `local_version`. Stale writes
+  create conflict copies, stale deletes cannot remove a newer draft, and sending
+  binds recipient confirmation and Outbox state to one exact version.
+- First historical import establishes the notification baseline. Later unread
+  arrivals may notify with sender identity/address, subject, and receiving account
+  identity/address, but never body text.
+- Contacts, favorites, remarks, account remarks, and avatar overrides are
+  Mine Mail-local metadata. IMAP does not own them. A local remark or avatar
+  override wins over sender/provider presentation without hiding the real address
+  where identity must be clear.
+- Never query a remote avatar service. Runtime avatar assets come from local
+  overrides, the built-in known-domain map, or initials.
+
+Detailed behavior belongs in `docs/PRODUCT.md`; do not expand this section with
+screen-specific copy, timing constants, pixel values, or speculative future plans.
+
+## Working rules
+
+- Inspect the working tree before editing. Preserve user changes and unrelated
+  work; do not reformat or rewrite files outside the task.
+- Prefer existing Rust boundaries, React components, semantic tokens, and tests.
+  Fix shared primitives instead of copying a nearby implementation.
+- Keep Tauri commands narrow, typed, and privacy-safe. Validate inputs again at
+  the Rust boundary even when React already validates them.
+- Schema and persistent-state changes need migrations, backward-compatible reads
+  where practical, and failure-path tests.
+- User-visible failures must preserve recoverable local state and explain the next
+  action. Do not use browser-native `alert`, `confirm`, `prompt`, validation
+  bubbles, or native select styling in product UI.
+- A durable behavior or design change is incomplete until its canonical document
+  and relevant tests change with the implementation.
+- Do not commit dated QA journals, AI discussion notes, generated comparison
+  boards, screenshots, absolute local paths, or alternate “final” design files.
+  Keep temporary evidence in the OS temporary directory and retain durable
+  conclusions only in canonical docs and tests.
 
 ## Verification
 
-- Root Rust: `cargo test`
+Run the smallest relevant checks while iterating, then the applicable project
+checks before handoff:
+
+- Rust core: `cargo test`
 - React: `cd web && npm test -- --run && npm run build`
 - Tauri: `cd web/src-tauri && cargo test && cargo check`
-- Network acceptance tests may read/sync the configured 163 mailbox. The approved SMTP acceptance recipient is `1193894851@qq.com`; use an unmistakable test subject.
+- Documentation-only changes: `git diff --check` plus repository link/path checks
+
+Tests that connect to a real mailbox, mutate server state, send mail, publish,
+sign, or release are never part of the default verification set. Run them only
+when the user explicitly requests that external action and supplies the intended
+private test configuration.

@@ -7,6 +7,10 @@ Mine Mail 使用 **Tauri 2 + React 19 + Rust + SQLite** 构建。项目希望在
 > [!IMPORTANT]
 > Mine Mail 目前是开发预览版（MVP），尚未提供经过签名的公开安装包，也未达到生产环境所需的完整兼容性与安全审计标准。当前实机开发和验收平台为 Windows 11；macOS 与 Linux 是目标平台，但仍需要真实设备验证。
 
+开发协作先阅读 [`AGENTS.md`](AGENTS.md)。视觉与交互以
+[`DESIGN.md`](DESIGN.md) 为唯一规范；详细产品、邮件渲染和发行文档见
+[`docs/`](docs/README.md)。
+
 
 ## 当前进度
 
@@ -35,7 +39,7 @@ Mine Mail 使用 **Tauri 2 + React 19 + Rust + SQLite** 构建。项目希望在
 - 多账户统一收件箱。
 - 更早邮件的分页回填。
 - 富文本写信、内嵌图片和完整附件收发流程。
-- 已读、收藏、归档、垃圾箱、已发送等服务器操作的完整闭环。
+- 已读、归档、垃圾箱以及移动/删除等服务器操作的完整闭环。
 - macOS/Linux 实机适配、签名、公证和发行包验收。
 
 ## 架构
@@ -74,11 +78,12 @@ mine-mail/
 ├─ web/
 │  ├─ src/                   # React UI
 │  ├─ src-tauri/             # Tauri 桌面 runtime
-│  └─ design/                # 设计参考与历史 QA 图
-├─ design-qa/                # 当前产品视觉验收记录
+│  └─ package.json            # React/Tauri 开发命令
+├─ docs/                      # 产品、邮件渲染与发行文档
+├─ DESIGN.md                 # 唯一视觉与交互规范
 ├─ Cargo.toml                # Rust 邮件核心
 ├─ rust-toolchain.toml       # 项目 Rust 工具链
-└─ AGENTS.md                 # 持久架构和产品约束
+└─ AGENTS.md                 # Agent 路由、架构与安全约束
 ```
 
 ## 快速开始
@@ -290,7 +295,7 @@ git diff --check
 
 ## 磁盘空间
 
-GitHub 仓库本身主要由代码、主题资源和设计 QA 图片组成。开发目录变大通常来自两套 Cargo `target`、前端依赖和打包产物，而不是 Git 下载内容。
+GitHub 仓库本身主要由代码、文档和运行时主题资源组成。开发目录变大通常来自两套 Cargo `target`、前端依赖和打包产物，而不是 Git 下载内容。
 
 需要释放本地编译缓存时可以分别执行：
 
@@ -312,7 +317,7 @@ cargo clean
 - 不让 UI 直接等待 IMAP/SMTP。
 - 邮件 HTML 必须经过 Rust 清理和结构判定。
 - 同步、草稿和发送逻辑必须支持失败恢复，并避免隐式重复投递。
-- 修改产品的持久架构或交互约束前，请先阅读 `AGENTS.md`。
+- 修改持久架构或行为前先阅读 `AGENTS.md` 与 `docs/PRODUCT.md`；修改任何可见 UI 前必须阅读 `DESIGN.md`。
 
 ## 发布状态与许可证
 

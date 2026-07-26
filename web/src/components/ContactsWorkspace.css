@@ -286,7 +286,7 @@
 
 .contacts-row__favorite[data-active="true"],
 .contacts-profile__favorite[data-active="true"] {
-  color: #e4a82c;
+  color: var(--color-favorite);
 }
 
 .contacts-row__favorite:hover,

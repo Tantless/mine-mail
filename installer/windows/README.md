@@ -19,7 +19,7 @@ This prevents publishing an attractive installer that cannot install the app.
 
 ```powershell
 cd installer/windows
-npm install
+npm ci
 npm run dev
 ```
 
@@ -39,10 +39,11 @@ Then build the branded shell:
 ```powershell
 cd ..
 .\installer\windows\scripts\build-release.ps1 `
-  -PayloadPath ".\web\src-tauri\target\release\bundle\nsis\Mine Mail_0.1.4_x64-setup.exe" `
-  -Version "0.1.4"
+  -PayloadPath ".\web\src-tauri\target\release\bundle\nsis\Mine Mail_<version>_x64-setup.exe" `
+  -Version "<version>"
 ```
 
+Replace `<version>` with the version in `web/src-tauri/tauri.conf.json`.
 The resulting public asset is written to
 `installer/windows/release-assets/`. Release builds also upload the maintained
 Tauri NSIS installer and its updater signature. The branded setup remains the

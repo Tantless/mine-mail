@@ -52,7 +52,9 @@
   --color-hover: #f2f5f8;
   --color-unread: #0a7cff;
   --color-success: #31b56c;
+  --color-warning: #aa6a13;
   --color-danger: #d34747;
+  --color-favorite: #e4a82c;
   --sidebar-text: #18313f;
   --sidebar-muted: rgba(18, 45, 59, 0.7);
   --sidebar-hover: rgba(247, 252, 255, 0.46);
@@ -218,6 +220,7 @@
   --color-selection-border: #315278;
   --color-hover: #202630;
   --color-unread: #65a8ff;
+  --color-warning: #dda04d;
   --sidebar-text: #f3f6fa;
   --sidebar-muted: rgba(229, 236, 244, 0.72);
   --sidebar-hover: rgba(238, 245, 255, 0.1);
@@ -756,7 +759,7 @@ html[data-surface="new-mail-notification"] #root {
 }
 
 .account-repair-banner {
-  --notice-accent: #aa6a13;
+  --notice-accent: var(--color-warning);
   position: fixed;
   z-index: 20;
   top: calc(var(--titlebar-height) + 10px);
@@ -839,10 +842,6 @@ html[data-surface="new-mail-notification"] #root {
 .account-repair-banner__action:focus-visible {
   outline: none;
   box-shadow: var(--focus-ring);
-}
-
-:root[data-theme="night"] .account-repair-banner {
-  --notice-accent: #dda04d;
 }
 
 .app-wallpaper {
@@ -2005,7 +2004,7 @@ html[data-surface="new-mail-notification"] #root {
 }
 
 .star-button[data-active="true"] {
-  color: #e4a82c;
+  color: var(--color-favorite);
 }
 
 .star-button:not(:disabled) {
@@ -2773,7 +2772,7 @@ html[data-surface="new-mail-notification"] #root {
 .native-html-message__content h5,
 .native-html-message__content h6 {
   margin: 1.35em 0 0.55em;
-  color: var(--color-text-primary);
+  color: var(--color-text);
   font: inherit;
   font-weight: 720;
   line-height: 1.3;
@@ -3308,7 +3307,7 @@ html[data-surface="new-mail-notification"] #root {
 }
 
 .compose-save-state[data-state="readonly"] {
-  color: var(--color-warning, #a66a20);
+  color: var(--color-warning);
 }
 
 .compose-fields {
@@ -4461,7 +4460,7 @@ html[data-surface="new-mail-notification"] #root {
 }
 
 .settings-account-card[data-active="true"] {
-  border-color: color-mix(in srgb, var(--color-accent) 38%, var(--compose-divider));
+  border-color: color-mix(in srgb, var(--color-primary) 38%, var(--compose-divider));
 }
 
 .settings-account-card__actions {
@@ -5861,10 +5860,10 @@ html[data-surface="new-mail-notification"] #root {
   gap: 10px;
   align-items: start;
   padding: 13px;
-  border: 1px solid color-mix(in srgb, #e9a23b 45%, var(--color-border));
+  border: 1px solid color-mix(in srgb, var(--color-warning) 45%, var(--color-border));
   border-radius: 12px;
-  background: color-mix(in srgb, #e9a23b 7%, var(--settings-detail-surface));
-  color: #b56d10;
+  background: color-mix(in srgb, var(--color-warning) 7%, var(--settings-detail-surface));
+  color: var(--color-warning);
   box-shadow: inset 0 1px 0 color-mix(in srgb, var(--surface-highlight) 64%, transparent);
   backdrop-filter: blur(14px) saturate(1.06);
   -webkit-backdrop-filter: blur(14px) saturate(1.06);
@@ -5888,10 +5887,10 @@ html[data-surface="new-mail-notification"] #root {
   gap: 11px;
   align-items: start;
   padding: 14px;
-  border: 1px solid color-mix(in srgb, var(--color-accent) 30%, var(--color-border));
+  border: 1px solid color-mix(in srgb, var(--color-primary) 30%, var(--color-border));
   border-radius: 11px;
-  background: color-mix(in srgb, var(--color-accent) 8%, var(--color-panel));
-  color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-primary) 8%, var(--color-panel));
+  color: var(--color-primary);
 }
 
 .account-google-auth > span {
