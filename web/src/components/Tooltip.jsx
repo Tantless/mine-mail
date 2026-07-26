@@ -1,8 +1,17 @@
-import { useLayoutEffect, useRef, useState } from "react";
+import {
+  cloneElement,
+  isValidElement,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { createPortal } from "react-dom";
 
 const VIEWPORT_MARGIN = 8;
 const TOOLTIP_GAP = 8;
+const TOOLTIP_DELAY_MS = 380;
 
 function clamp(value, minimum, maximum) {
   return Math.min(Math.max(value, minimum), Math.max(minimum, maximum));
@@ -71,5 +80,98 @@ export function Tooltip({ anchorRef, children, open }) {
       {children}
     </span>,
     document.body,
+  );
+}
+
+function assignRef(ref, value) {
+  if (typeof ref === "function") {
+    ref(value);
+  } else if (ref && typeof ref === "object") {
+    ref.current = value;
+  }
+}
+
+export function TooltipTarget({ children, label }) {
+  const anchorRef = useRef(null);
+  const openTimerRef = useRef(null);
+  const [tooltipOpen, setTooltipOpen] = useState(false);
+  const child = isValidElement(children) ? children : null;
+  const childRef = child?.props?.ref;
+
+  const setAnchorRef = useCallback(
+    (node) => {
+      anchorRef.current = node;
+      assignRef(childRef, node);
+    },
+    [childRef],
+  );
+
+  const cancelPendingOpen = useCallback(() => {
+    if (openTimerRef.current !== null) {
+      window.clearTimeout(openTimerRef.current);
+      openTimerRef.current = null;
+    }
+  }, []);
+
+  const closeTooltip = useCallback(() => {
+    cancelPendingOpen();
+    setTooltipOpen(false);
+  }, [cancelPendingOpen]);
+
+  const scheduleTooltip = useCallback(() => {
+    if (!label) return;
+    cancelPendingOpen();
+    openTimerRef.current = window.setTimeout(() => {
+      openTimerRef.current = null;
+      setTooltipOpen(true);
+    }, TOOLTIP_DELAY_MS);
+  }, [cancelPendingOpen, label]);
+
+  useEffect(() => () => cancelPendingOpen(), [cancelPendingOpen]);
+
+  useEffect(() => {
+    if (!tooltipOpen) return undefined;
+    const dismissOnViewportChange = () => closeTooltip();
+    window.addEventListener("scroll", dismissOnViewportChange, true);
+    return () => window.removeEventListener("scroll", dismissOnViewportChange, true);
+  }, [closeTooltip, tooltipOpen]);
+
+  if (!child) return children;
+
+  return (
+    <>
+      {cloneElement(child, {
+        ref: setAnchorRef,
+        title: undefined,
+        onBlur: (event) => {
+          closeTooltip();
+          child.props.onBlur?.(event);
+        },
+        onClick: (event) => {
+          closeTooltip();
+          child.props.onClick?.(event);
+        },
+        onFocus: (event) => {
+          cancelPendingOpen();
+          if (label) setTooltipOpen(true);
+          child.props.onFocus?.(event);
+        },
+        onKeyDown: (event) => {
+          if (event.key === "Escape") closeTooltip();
+          child.props.onKeyDown?.(event);
+        },
+        onPointerEnter: (event) => {
+          scheduleTooltip();
+          child.props.onPointerEnter?.(event);
+        },
+        onPointerLeave: (event) => {
+          closeTooltip();
+          child.props.onPointerLeave?.(event);
+        },
+      })}
+      <Tooltip anchorRef={anchorRef} open={tooltipOpen}>
+        {label}
+      </Tooltip>
+    </>
   );
 }

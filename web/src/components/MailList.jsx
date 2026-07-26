@@ -9,6 +9,7 @@ import {
 import { useEffect, useRef } from "react";
 import { IconButton } from "./IconButton.jsx";
 import { ProfileAvatar } from "./ProfileAvatar.jsx";
+import { TooltipTarget } from "./Tooltip.jsx";
 import {
   formatMailTime,
   hasFlag,
@@ -188,22 +189,23 @@ export function MailList({
                   <span className="mail-row__subject">{message.subject || "（无主题）"}</span>
                   <span className="mail-row__preview">{message.preview || "暂无摘要"}</span>
                 </span>
-                <button
-                  type="button"
-                  className="star-button"
-                  data-active={starred}
-                  aria-label={starred ? `取消收藏：${subject}` : `添加收藏：${subject}`}
-                  aria-pressed={starred}
-                  title={starred ? "取消收藏" : "添加收藏"}
-                  disabled={!canToggleStar}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    if (canToggleStar) onToggleStar(message);
-                  }}
-                  onKeyDown={(event) => event.stopPropagation()}
-                >
-                  <Star size={17} weight={starred ? "fill" : "regular"} />
-                </button>
+                <TooltipTarget label={starred ? "取消收藏" : "添加收藏"}>
+                  <button
+                    type="button"
+                    className="star-button"
+                    data-active={starred}
+                    aria-label={starred ? `取消收藏：${subject}` : `添加收藏：${subject}`}
+                    aria-pressed={starred}
+                    disabled={!canToggleStar}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      if (canToggleStar) onToggleStar(message);
+                    }}
+                    onKeyDown={(event) => event.stopPropagation()}
+                  >
+                    <Star size={17} weight={starred ? "fill" : "regular"} />
+                  </button>
+                </TooltipTarget>
               </article>
             );
           })

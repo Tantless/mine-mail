@@ -1,5 +1,6 @@
 import { PencilSimple, X } from "@phosphor-icons/react";
 import { initials } from "../utils/formatters.js";
+import { TooltipTarget } from "./Tooltip.jsx";
 
 const brandRules = [
   { id: "github", label: "GitHub", domains: ["github.com"] },
@@ -110,37 +111,40 @@ export function EditableProfileAvatar({
 }) {
   return (
     <span className={`avatar-picker ${className}`.trim()}>
-      <label className="avatar-picker__choose" title={`设置 ${label || email} 的头像`}>
-        <ProfileAvatar
-          email={email}
-          label={label}
-          customSrc={customSrc}
-          className={avatarClassName}
-        />
-        <span className="avatar-picker__edit" aria-hidden="true">
-          <PencilSimple size={10} weight="bold" />
-        </span>
-        <input
-          type="file"
-          accept="image/png,image/jpeg,image/webp"
-          aria-label={`设置 ${label || email} 的头像`}
-          onChange={(event) => {
-            const file = event.target.files?.[0];
-            if (file) void onSelectFile(file);
-            event.target.value = "";
-          }}
-        />
-      </label>
+      <TooltipTarget label={`设置 ${label || email} 的头像`}>
+        <label className="avatar-picker__choose">
+          <ProfileAvatar
+            email={email}
+            label={label}
+            customSrc={customSrc}
+            className={avatarClassName}
+          />
+          <span className="avatar-picker__edit" aria-hidden="true">
+            <PencilSimple size={10} weight="bold" />
+          </span>
+          <input
+            type="file"
+            accept="image/png,image/jpeg,image/webp"
+            aria-label={`设置 ${label || email} 的头像`}
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              if (file) void onSelectFile(file);
+              event.target.value = "";
+            }}
+          />
+        </label>
+      </TooltipTarget>
       {customSrc ? (
-        <button
-          type="button"
-          className="avatar-picker__remove"
-          aria-label={`移除 ${label || email} 的自定义头像`}
-          title="恢复默认头像"
-          onClick={onRemove}
-        >
-          <X size={10} weight="bold" />
-        </button>
+        <TooltipTarget label="恢复默认头像">
+          <button
+            type="button"
+            className="avatar-picker__remove"
+            aria-label={`移除 ${label || email} 的自定义头像`}
+            onClick={onRemove}
+          >
+            <X size={10} weight="bold" />
+          </button>
+        </TooltipTarget>
       ) : null}
     </span>
   );

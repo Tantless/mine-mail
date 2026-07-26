@@ -159,6 +159,10 @@
   --switch-off-edge-hover: color-mix(in srgb, var(--color-primary) 28%, var(--color-border));
   --switch-thumb-off: var(--color-panel);
   --switch-thumb-on: var(--color-panel);
+  --scrollbar-track: transparent;
+  --scrollbar-thumb: color-mix(in srgb, var(--color-text-muted) 34%, transparent);
+  --scrollbar-thumb-hover: color-mix(in srgb, var(--color-text-muted) 54%, transparent);
+  --scrollbar-thumb-active: color-mix(in srgb, var(--color-primary) 58%, transparent);
   --focus-ring: 0 0 0 2px var(--color-panel), 0 0 0 4px var(--color-primary);
 }
 
@@ -403,6 +407,56 @@
 
 * {
   box-sizing: border-box;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+  scrollbar-width: thin;
+}
+
+/*
+ * Tauri's Windows WebView otherwise falls back to the operating-system
+ * scrollbar, including its arrow buttons. Keep every app-owned scroll surface
+ * on the same slim, theme-token-driven treatment.
+ */
+@supports selector(::-webkit-scrollbar) {
+  * {
+    scrollbar-color: auto;
+    scrollbar-width: auto;
+  }
+
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  *::-webkit-scrollbar-track,
+  *::-webkit-scrollbar-corner {
+    background: var(--scrollbar-track);
+  }
+
+  *::-webkit-scrollbar-thumb {
+    min-width: 30px;
+    min-height: 30px;
+    border: 3px solid transparent;
+    border-radius: 999px;
+    background: var(--scrollbar-thumb);
+    background-clip: padding-box;
+  }
+
+  *::-webkit-scrollbar-thumb:hover {
+    background: var(--scrollbar-thumb-hover);
+    background-clip: padding-box;
+  }
+
+  *::-webkit-scrollbar-thumb:active {
+    background: var(--scrollbar-thumb-active);
+    background-clip: padding-box;
+  }
+
+  *::-webkit-scrollbar-button,
+  *::-webkit-scrollbar-button:single-button {
+    display: none;
+    width: 0;
+    height: 0;
+  }
 }
 
 html,
@@ -1714,8 +1768,6 @@ html[data-surface="new-mail-notification"] #root {
 .message-list {
   min-height: 0;
   padding: 6px 8px 12px;
-  scrollbar-color: color-mix(in srgb, var(--color-text-muted) 36%, transparent) transparent;
-  scrollbar-width: thin;
 }
 
 .mail-load-progress {
@@ -2245,8 +2297,6 @@ html[data-surface="new-mail-notification"] #root {
   min-height: 0;
   padding: 32px clamp(28px, 3.1vw, 46px) 46px;
   background: var(--reader-content-surface);
-  scrollbar-color: color-mix(in srgb, var(--color-text-muted) 36%, transparent) transparent;
-  scrollbar-width: thin;
 }
 
 .message-header,
@@ -4632,8 +4682,6 @@ html[data-surface="new-mail-notification"] #root {
     inset 0 1px 0 color-mix(in srgb, var(--surface-highlight) 88%, transparent);
   backdrop-filter: blur(22px) saturate(1.08);
   -webkit-backdrop-filter: blur(22px) saturate(1.08);
-  scrollbar-color: color-mix(in srgb, var(--color-text-muted) 34%, transparent) transparent;
-  scrollbar-width: thin;
   animation: themed-select-menu-in var(--motion-fast) ease-out;
 }
 
@@ -5167,9 +5215,7 @@ html[data-surface="new-mail-notification"] #root {
 .settings-scroll {
   min-height: 0;
   padding: 8px clamp(28px, 4vw, 58px) 44px;
-  scrollbar-color: color-mix(in srgb, var(--color-text-muted) 32%, transparent) transparent;
   scrollbar-gutter: stable;
-  scrollbar-width: thin;
 }
 
 .settings-scroll::-webkit-scrollbar {
@@ -5177,18 +5223,18 @@ html[data-surface="new-mail-notification"] #root {
 }
 
 .settings-scroll::-webkit-scrollbar-track {
-  background: transparent;
+  background: var(--scrollbar-track);
 }
 
 .settings-scroll::-webkit-scrollbar-thumb {
   border: 3px solid transparent;
   border-radius: 99px;
-  background: color-mix(in srgb, var(--color-text-muted) 34%, transparent);
+  background: var(--scrollbar-thumb);
   background-clip: padding-box;
 }
 
 .settings-scroll::-webkit-scrollbar-thumb:hover {
-  background: color-mix(in srgb, var(--color-text-muted) 52%, transparent);
+  background: var(--scrollbar-thumb-hover);
   background-clip: padding-box;
 }
 

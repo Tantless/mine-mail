@@ -14,6 +14,7 @@ import {
 import { useState } from "react";
 import { formatFullDate, formatMailTime } from "../utils/formatters.js";
 import { EditableProfileAvatar, ProfileAvatar } from "./ProfileAvatar.jsx";
+import { TooltipTarget } from "./Tooltip.jsx";
 import "./ContactsWorkspace.css";
 
 const contactFilters = [
@@ -178,12 +179,11 @@ function ContactList({
                 <span className="contacts-row__heading">
                   <strong>{label}</strong>
                   {contact.lastMessageAt ? (
-                    <time
-                      dateTime={contact.lastMessageAt}
-                      title={formatFullDate(contact.lastMessageAt)}
-                    >
-                      {formatMailTime(contact.lastMessageAt)}
-                    </time>
+                    <TooltipTarget label={formatFullDate(contact.lastMessageAt)}>
+                      <time dateTime={contact.lastMessageAt}>
+                        {formatMailTime(contact.lastMessageAt)}
+                      </time>
+                    </TooltipTarget>
                   ) : null}
                 </span>
                 <span className="contacts-row__email">{contact.email}</span>
@@ -201,24 +201,27 @@ function ContactList({
                 </span>
               </span>
             </button>
-            <button
-              type="button"
-              className="contacts-row__favorite"
-              data-active={Boolean(contact.isFavorite)}
-              aria-label={
-                contact.isFavorite
-                  ? `取消收藏 ${scopedLabel}`
-                  : `收藏 ${scopedLabel}`
-              }
-              aria-pressed={Boolean(contact.isFavorite)}
-              title={contact.isFavorite ? "取消收藏" : "收藏联系人"}
-              onClick={() => onToggleFavorite(contact)}
+            <TooltipTarget
+              label={contact.isFavorite ? "取消收藏" : "收藏联系人"}
             >
-              <Star
-                size={18}
-                weight={contact.isFavorite ? "fill" : "regular"}
-              />
-            </button>
+              <button
+                type="button"
+                className="contacts-row__favorite"
+                data-active={Boolean(contact.isFavorite)}
+                aria-label={
+                  contact.isFavorite
+                    ? `取消收藏 ${scopedLabel}`
+                    : `收藏 ${scopedLabel}`
+                }
+                aria-pressed={Boolean(contact.isFavorite)}
+                onClick={() => onToggleFavorite(contact)}
+              >
+                <Star
+                  size={18}
+                  weight={contact.isFavorite ? "fill" : "regular"}
+                />
+              </button>
+            </TooltipTarget>
           </article>
         );
       })}
@@ -409,12 +412,11 @@ function ContactDetails({
                         <span className="contacts-message-row__topline">
                           <strong>{subject}</strong>
                           {timestamp ? (
-                            <time
-                              dateTime={timestamp}
-                              title={formatFullDate(timestamp)}
-                            >
-                              {formatMailTime(timestamp)}
-                            </time>
+                            <TooltipTarget label={formatFullDate(timestamp)}>
+                              <time dateTime={timestamp}>
+                                {formatMailTime(timestamp)}
+                              </time>
+                            </TooltipTarget>
                           ) : null}
                         </span>
                         <span className="contacts-message-row__preview">
@@ -474,27 +476,30 @@ function ContactRemarkEditor({ contact, onSaveRemark }) {
         if (!isSaving) void save();
       }}
     >
-      <button
-        type="button"
-        className="contacts-remark-editor__toggle"
-        data-active={Boolean(savedRemark)}
-        aria-label={savedRemark ? "编辑备注" : "添加备注"}
-        aria-expanded={isOpen}
-        title={savedRemark ? `编辑备注：${savedRemark}` : "添加备注"}
-        onClick={() => {
-          if (isOpen) {
-            setIsOpen(false);
+      <TooltipTarget
+        label={savedRemark ? `编辑备注：${savedRemark}` : "添加备注"}
+      >
+        <button
+          type="button"
+          className="contacts-remark-editor__toggle"
+          data-active={Boolean(savedRemark)}
+          aria-label={savedRemark ? "编辑备注" : "添加备注"}
+          aria-expanded={isOpen}
+          onClick={() => {
+            if (isOpen) {
+              setIsOpen(false);
+              setValue(savedRemark);
+              setError(null);
+              return;
+            }
             setValue(savedRemark);
             setError(null);
-            return;
-          }
-          setValue(savedRemark);
-          setError(null);
-          setIsOpen(true);
-        }}
-      >
-        <NotePencil size={18} weight={savedRemark ? "fill" : "regular"} />
-      </button>
+            setIsOpen(true);
+          }}
+        >
+          <NotePencil size={18} weight={savedRemark ? "fill" : "regular"} />
+        </button>
+      </TooltipTarget>
       {isOpen ? (
         <span className="contacts-remark-editor__fields">
           <input

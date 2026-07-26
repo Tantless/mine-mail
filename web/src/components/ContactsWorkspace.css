@@ -95,9 +95,6 @@
 .contacts-list-body {
   min-height: 0;
   padding: 6px 8px 12px;
-  scrollbar-color: color-mix(in srgb, var(--color-text-muted) 36%, transparent)
-    transparent;
-  scrollbar-width: thin;
 }
 
 .contacts-list {
@@ -362,9 +359,6 @@
   height: 100%;
   padding: clamp(28px, 3.1vw, 46px);
   background: var(--reader-content-surface);
-  scrollbar-color: color-mix(in srgb, var(--color-text-muted) 36%, transparent)
-    transparent;
-  scrollbar-width: thin;
 }
 
 .contacts-detail-back {

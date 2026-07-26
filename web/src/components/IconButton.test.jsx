@@ -1,6 +1,7 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IconButton } from "./IconButton.jsx";
+import { TooltipTarget } from "./Tooltip.jsx";
 
 describe("IconButton tooltip", () => {
   beforeEach(() => {
@@ -8,6 +9,7 @@ describe("IconButton tooltip", () => {
   });
 
   afterEach(() => {
+    cleanup();
     vi.useRealTimers();
   });
 
@@ -67,5 +69,40 @@ describe("IconButton tooltip", () => {
 
     expect(onPointerEnter).toHaveBeenCalledOnce();
     expect(onFocus).toHaveBeenCalledOnce();
+  });
+
+  it("uses a short themed tooltip without weakening the accessible name", () => {
+    render(
+      <IconButton
+        label="切换到 mine@example.com"
+        title="设为当前账户"
+      >
+        切换
+      </IconButton>,
+    );
+    const button = screen.getByRole("button", {
+      name: "切换到 mine@example.com",
+    });
+
+    expect(button.getAttribute("title")).toBeNull();
+    fireEvent.pointerEnter(button);
+    act(() => vi.advanceTimersByTime(380));
+
+    expect(screen.getByRole("tooltip").textContent).toBe("设为当前账户");
+  });
+
+  it("replaces native titles on non-icon controls too", () => {
+    render(
+      <TooltipTarget label="完整时间">
+        <time title="系统提示">刚刚</time>
+      </TooltipTarget>,
+    );
+    const time = screen.getByText("刚刚");
+
+    expect(time.getAttribute("title")).toBeNull();
+    fireEvent.pointerEnter(time);
+    act(() => vi.advanceTimersByTime(380));
+
+    expect(screen.getByRole("tooltip").textContent).toBe("完整时间");
   });
 });

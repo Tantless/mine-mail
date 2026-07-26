@@ -26,6 +26,8 @@ describe("HTML message body", () => {
     expect(document).not.toContain("img-src data: blob: http: https:");
     expect(document).toContain('img[src^="https://"]');
     expect(document).toContain("overflow: hidden !important");
+    expect(document).toContain("pre {");
+    expect(document).toContain("overflow: visible");
   });
 
   it("loads remote images automatically by default", () => {

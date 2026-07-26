@@ -195,7 +195,12 @@ export function buildEmailDocument(fragment, allowRemoteImages = false) {
         visibility: hidden !important;
       }`}
       table { max-width: 100%; }
-      pre { max-width: 100%; overflow: auto; white-space: pre-wrap; }
+      pre {
+        max-width: 100%;
+        overflow: visible;
+        overflow-wrap: anywhere;
+        white-space: pre-wrap;
+      }
     </style>
   </head>
   <body data-mine-mail-document>${fragment}

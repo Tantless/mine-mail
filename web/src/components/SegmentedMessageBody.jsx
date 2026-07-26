@@ -2,6 +2,7 @@ import { CaretRight, EnvelopeOpen, Quotes } from "@phosphor-icons/react";
 import { useState } from "react";
 import { HtmlMessageBody } from "./HtmlMessageBody.jsx";
 import { NativeHtmlMessageBody } from "./NativeHtmlMessageBody.jsx";
+import { TooltipTarget } from "./Tooltip.jsx";
 
 function PlainContent({ text }) {
   return text.split(/\n{2,}/).map((paragraph, index) => {
@@ -106,20 +107,20 @@ function QuotedSegment({
           <Quotes size={16} weight="fill" />
         </span>
         <span className="quoted-message__metadata">
-          <strong className="quoted-message__subject" title={subject}>
-            {subject}
-          </strong>
+          <TooltipTarget label={subject}>
+            <strong className="quoted-message__subject">{subject}</strong>
+          </TooltipTarget>
           {hasRoute ? (
             <span className="quoted-message__route">
-              <span title={metadata.sender || undefined}>
-                {metadata.sender || "未知发件人"}
-              </span>
+              <TooltipTarget label={metadata.sender || "未知发件人"}>
+                <span>{metadata.sender || "未知发件人"}</span>
+              </TooltipTarget>
               <span className="quoted-message__route-arrow" aria-hidden="true">
                 →
               </span>
-              <span title={metadata.recipient || undefined}>
-                {metadata.recipient || "未知收件人"}
-              </span>
+              <TooltipTarget label={metadata.recipient || "未知收件人"}>
+                <span>{metadata.recipient || "未知收件人"}</span>
+              </TooltipTarget>
             </span>
           ) : null}
           {metadata.sent_at ? (
@@ -127,19 +128,20 @@ function QuotedSegment({
           ) : null}
         </span>
         {destination ? (
-          <button
-            type="button"
-            className="quoted-message__open-source"
-            aria-label={`在${destinationLabel}中打开原邮件：${subject}`}
-            title={`在${destinationLabel}中打开原邮件`}
-            onClick={(event) => {
-              event.preventDefault();
-              event.stopPropagation();
-              onOpenReferencedMessage?.(navigationTarget);
-            }}
-          >
-            <EnvelopeOpen size={17} weight="regular" aria-hidden="true" />
-          </button>
+          <TooltipTarget label={`在${destinationLabel}中打开原邮件`}>
+            <button
+              type="button"
+              className="quoted-message__open-source"
+              aria-label={`在${destinationLabel}中打开原邮件：${subject}`}
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                onOpenReferencedMessage?.(navigationTarget);
+              }}
+            >
+              <EnvelopeOpen size={17} weight="regular" aria-hidden="true" />
+            </button>
+          </TooltipTarget>
         ) : null}
         <CaretRight className="quoted-message__caret" size={16} weight="bold" />
       </summary>

@@ -19,6 +19,7 @@ import { NativeHtmlMessageBody } from "./NativeHtmlMessageBody.jsx";
 import { ReaderIdleExperience } from "./ReaderIdleExperience.jsx";
 import { SegmentedMessageBody } from "./SegmentedMessageBody.jsx";
 import { EditableProfileAvatar, ProfileAvatar } from "./ProfileAvatar.jsx";
+import { TooltipTarget } from "./Tooltip.jsx";
 import { formatFullDate, senderLabel } from "../utils/formatters.js";
 
 function fileSizeLabel(bytes) {
@@ -236,23 +237,26 @@ export function MessageView({
             </h3>
             <div className="attachment-grid">
               {message.attachment_names.map((name, index) => (
-                <button
-                  className="attachment-card"
-                  type="button"
+                <TooltipTarget
+                  label="附件下载尚未实现"
                   key={`${index}-${name}`}
-                  aria-label={`${name}（附件下载尚未实现）`}
-                  title="附件下载尚未实现"
-                  disabled
                 >
-                  <span className="attachment-card__icon">
-                    <FilePdf size={25} weight="duotone" />
-                  </span>
-                  <span className="attachment-card__copy">
-                    <strong>{name}</strong>
-                    <small>{fileSizeLabel(message.size_bytes)}</small>
-                  </span>
-                  <DownloadSimple size={18} />
-                </button>
+                  <button
+                    className="attachment-card"
+                    type="button"
+                    aria-label={`${name}（附件下载尚未实现）`}
+                    disabled
+                  >
+                    <span className="attachment-card__icon">
+                      <FilePdf size={25} weight="duotone" />
+                    </span>
+                    <span className="attachment-card__copy">
+                      <strong>{name}</strong>
+                      <small>{fileSizeLabel(message.size_bytes)}</small>
+                    </span>
+                    <DownloadSimple size={18} />
+                  </button>
+                </TooltipTarget>
               ))}
             </div>
           </section>
