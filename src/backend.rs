@@ -33,6 +33,19 @@ const MAX_REPLY_QUOTED_HTML_BYTES: usize = 12 * 1024 * 1024;
 const MAX_LOCAL_DRAFT_CAS_RETRIES: usize = 32;
 const BODY_IMAP_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(60);
 
+fn advance_draft_sync_progress<F>(completed: &mut usize, total: usize, on_progress: &mut F)
+where
+    F: FnMut(SyncBatchProgress),
+{
+    *completed += 1;
+    if *completed % SUMMARY_BATCH_SIZE == 0 || *completed == total {
+        on_progress(SyncBatchProgress {
+            completed: *completed,
+            total,
+        });
+    }
+}
+
 struct BodyImapSession {
     connection: ImapConnection,
     last_used: Instant,
@@ -1599,11 +1612,7 @@ impl MailBackend {
     {
         let _guard = self.draft_imap_gate.lock().await;
         let mut connection = ImapConnection::connect(&self.config).await?;
-        let snapshot = connection
-            .fetch_draft_snapshot_with_progress(mailbox_override, |completed, total| {
-                on_progress(SyncBatchProgress { completed, total });
-            })
-            .await?;
+        let snapshot = connection.fetch_draft_snapshot(mailbox_override).await?;
         let mut report = DraftSyncReport {
             mailbox: snapshot.mailbox.clone(),
             ..DraftSyncReport::default()
@@ -1626,6 +1635,13 @@ impl MailBackend {
             .into_iter()
             .map(|record| (record.draft.id.clone(), record))
             .collect();
+        let total = remote_groups
+            .keys()
+            .chain(local_records.keys())
+            .collect::<HashSet<_>>()
+            .len();
+        let mut completed = 0;
+        on_progress(SyncBatchProgress { completed, total });
 
         for (id, mut candidates) in remote_groups {
             candidates.sort_by_key(|candidate| (candidate.revision, candidate.uid));
@@ -1657,6 +1673,7 @@ impl MailBackend {
                     }
                 }
                 report.deleted_remote += connection.delete_draft_uids(&cleanup_uids).await?;
+                advance_draft_sync_progress(&mut completed, total, &mut on_progress);
                 continue;
             }
 
@@ -1703,6 +1720,7 @@ impl MailBackend {
                     // snapshot. Preserve both sides for the next sync.
                     report.skipped += 1;
                 }
+                advance_draft_sync_progress(&mut completed, total, &mut on_progress);
                 continue;
             };
 
@@ -1718,6 +1736,7 @@ impl MailBackend {
                 } else {
                     report.skipped += 1;
                 }
+                advance_draft_sync_progress(&mut completed, total, &mut on_progress);
                 continue;
             }
 
@@ -1751,6 +1770,7 @@ impl MailBackend {
                         report.skipped += 1;
                     }
                 }
+                advance_draft_sync_progress(&mut completed, total, &mut on_progress);
                 continue;
             }
 
@@ -1819,16 +1839,19 @@ impl MailBackend {
                     }
                 }
             }
+            advance_draft_sync_progress(&mut completed, total, &mut on_progress);
         }
 
         for record in local_records.into_values() {
             if record.draft.status == "sent" || record.draft.status == "conflict" {
+                advance_draft_sync_progress(&mut completed, total, &mut on_progress);
                 continue;
             }
             if record.is_deleted {
                 if !self.repository.delete_draft_if_unchanged(&record)? {
                     report.skipped += 1;
                 }
+                advance_draft_sync_progress(&mut completed, total, &mut on_progress);
                 continue;
             }
 
@@ -1852,6 +1875,7 @@ impl MailBackend {
                 )
                 .await?;
             }
+            advance_draft_sync_progress(&mut completed, total, &mut on_progress);
         }
 
         let _ = connection.logout().await;
@@ -2522,9 +2546,9 @@ mod tests {
 
     use super::{
         DraftReconciliation, INBOX, InboxUidScope, MailBackend, RemoteDraftCandidate,
-        RemoteForkPreservation, classify_draft_reconciliation, classify_inbox_uid_scope,
-        draft_record_matches_remote, mailbox_hint_changed, remote_candidates_equivalent,
-        remote_draft_candidate, validate_manual_retry,
+        RemoteForkPreservation, advance_draft_sync_progress, classify_draft_reconciliation,
+        classify_inbox_uid_scope, draft_record_matches_remote, mailbox_hint_changed,
+        remote_candidates_equivalent, remote_draft_candidate, validate_manual_retry,
     };
     use crate::{
         AccountConfig, ComposeRequest, ContactMessageDirection, Draft, DraftDeleteKind,
@@ -2543,6 +2567,19 @@ mod tests {
             body_text: body_text.to_owned(),
             reply_context: None,
         }
+    }
+
+    #[test]
+    fn draft_sync_progress_is_emitted_after_each_persisted_ten_records() {
+        let mut completed = 0;
+        let mut updates = Vec::new();
+        for _ in 0..25 {
+            advance_draft_sync_progress(&mut completed, 25, &mut |progress| {
+                updates.push((progress.completed, progress.total));
+            });
+        }
+
+        assert_eq!(updates, vec![(10, 25), (20, 25), (25, 25)]);
     }
 
     fn cached_message(

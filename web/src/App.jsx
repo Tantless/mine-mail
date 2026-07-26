@@ -1363,6 +1363,7 @@ export function App() {
         if (backendUsable) {
           const networkUsable =
             status.credentialAvailable && status.networkReady !== false;
+          beginMailboxLoading(networkUsable && isTauri ? "syncing" : "loading");
           if (!networkUsable) {
             setAccountError(
               status.startupError ||
@@ -1393,7 +1394,7 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [loadMailboxData, prefetchAccountViews]);
+  }, [beginMailboxLoading, loadMailboxData, prefetchAccountViews]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -1549,7 +1550,7 @@ export function App() {
       event,
       refresh,
       fallback,
-      { refreshContacts = false, refreshWhileSyncing = true } = {},
+      { refreshContacts = false } = {},
     ) => {
       const payload = event?.payload || {};
       const targetAccountId = eventAccountId(payload);
@@ -1565,12 +1566,20 @@ export function App() {
         }
         return;
       }
-      updateMailboxLoadState(folder, {
-        phase: progress.complete ? "ready" : "syncing",
-        completed: progress.completed,
-        total: progress.total,
+      updateMailboxLoadState(folder, (current) => {
+        if (
+          !progress.complete &&
+          current?.phase !== "loading" &&
+          current?.phase !== "syncing"
+        ) {
+          return current;
+        }
+        return {
+          phase: progress.complete ? "ready" : "syncing",
+          completed: progress.completed,
+          total: progress.total,
+        };
       });
-      if (!progress.complete && !refreshWhileSyncing) return;
       void refresh()
         .then(() => {
           if (refreshContacts) scheduleContactsRefresh();
@@ -1676,7 +1685,6 @@ export function App() {
               event,
               () => Promise.all([refreshDrafts(), refreshOutbox()]),
               "草稿或发件队列刷新失败",
-              { refreshWhileSyncing: false },
             );
           },
         );

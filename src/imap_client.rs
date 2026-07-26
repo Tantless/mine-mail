@@ -588,14 +588,10 @@ impl ImapConnection {
     /// Fetch all drafts from the selected Drafts mailbox. Draft synchronization
     /// needs full RFC822 data because another client may have created the draft
     /// without Mine Mail's private identity headers.
-    pub async fn fetch_draft_snapshot_with_progress<F>(
+    pub async fn fetch_draft_snapshot(
         &mut self,
         mailbox_override: Option<&str>,
-        mut on_progress: F,
-    ) -> Result<RemoteDraftSnapshot>
-    where
-        F: FnMut(usize, usize) + Send,
-    {
+    ) -> Result<RemoteDraftSnapshot> {
         let mailbox = match mailbox_override {
             Some(mailbox) => mailbox.to_owned(),
             None => self.discover_drafts_mailbox().await?,
@@ -617,8 +613,6 @@ impl ImapConnection {
         uids.sort_unstable();
 
         let mut messages = Vec::with_capacity(uids.len());
-        let total = uids.len();
-        on_progress(0, total);
         for batch in uids.chunks(DRAFT_FETCH_BATCH_SIZE) {
             messages.extend(
                 self.fetch_messages(
@@ -628,7 +622,6 @@ impl ImapConnection {
                 )
                 .await?,
             );
-            on_progress(messages.len(), total);
         }
         Ok(RemoteDraftSnapshot {
             mailbox,

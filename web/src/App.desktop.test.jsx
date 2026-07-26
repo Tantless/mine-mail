@@ -284,7 +284,8 @@ describe("Mine Mail desktop state bridge", () => {
     await waitFor(() =>
       expect(desktop.listeners.has("mail:inbox-updated")).toBe(true),
     );
-    await screen.findByText("没有找到邮件");
+    await screen.findByText("正在连接邮箱并同步…");
+    expect(screen.queryByText("没有找到邮件")).toBeNull();
     const contactsCallsBeforeProgress =
       desktop.mailApi.listContacts.mock.calls.length;
     desktop.mailApi.listInbox.mockResolvedValue(
@@ -329,6 +330,32 @@ describe("Mine Mail desktop state bridge", () => {
         screen.queryByText("正在同步，已加载 10/100 封"),
       ).toBeNull(),
     );
+
+    desktop.mailApi.listDrafts.mockResolvedValue([
+      draftSnapshot(1, "Progress draft"),
+    ]);
+    const draftsCallsBeforeProgress =
+      desktop.mailApi.listDrafts.mock.calls.length;
+    await act(async () => {
+      desktop.listeners.get("mail:drafts-updated")?.({
+        payload: {
+          account_id: "desktop-account",
+          completed: 10,
+          total: 20,
+          is_complete: false,
+        },
+      });
+    });
+    await waitFor(() =>
+      expect(desktop.mailApi.listDrafts.mock.calls.length).toBeGreaterThan(
+        draftsCallsBeforeProgress,
+      ),
+    );
+    await userEvent.click(screen.getByRole("button", { name: /草稿/ }));
+    expect(
+      await screen.findByText("正在同步，已加载 10/20 封"),
+    ).toBeTruthy();
+    expect(await screen.findByText("Progress draft")).toBeTruthy();
   });
 
   it("keeps scheduled synchronization failures silent but reports an explicit tray refresh", async () => {
@@ -1556,9 +1583,9 @@ describe("Mine Mail desktop state bridge", () => {
     await user.click(screen.getByText("Rich remote draft"));
 
     expect(screen.getByRole("heading", { name: "查看草稿" })).toBeTruthy();
-    expect(screen.getByRole("status").textContent).toContain(
-      "含当前不支持的HTML/附件，未作修改",
-    );
+    expect(
+      screen.getByText("含当前不支持的HTML/附件，未作修改"),
+    ).toBeTruthy();
     expect(screen.getByLabelText("收件人").disabled).toBe(true);
     expect(screen.getByLabelText("主题").disabled).toBe(true);
     expect(screen.getByLabelText("邮件正文").disabled).toBe(true);
