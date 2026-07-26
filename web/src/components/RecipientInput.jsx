@@ -99,6 +99,7 @@ export function RecipientInput({
   const popupRef = useRef(null);
   const closeTimerRef = useRef(null);
   const entryTrackingDeadlineRef = useRef(0);
+  const initialAutoFocusHandledRef = useRef(!autoFocus);
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
   const [expanded, setExpanded] = useState(false);
@@ -515,7 +516,12 @@ export function RecipientInput({
               : undefined
           }
           onFocus={() => {
-            if (!disabled) openSuggestions(true);
+            if (disabled) return;
+            if (!initialAutoFocusHandledRef.current) {
+              initialAutoFocusHandledRef.current = true;
+              return;
+            }
+            openSuggestions(true);
           }}
           onPointerDown={() => {
             if (!disabled && !open) openSuggestions();

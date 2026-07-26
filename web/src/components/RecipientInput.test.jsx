@@ -59,12 +59,17 @@ const contacts = [
   },
 ];
 
-function RecipientHarness({ initialRecipients = [], onRecipientsChange = vi.fn() }) {
+function RecipientHarness({
+  autoFocus = false,
+  initialRecipients = [],
+  onRecipientsChange = vi.fn(),
+}) {
   const [recipients, setRecipients] = useState(initialRecipients);
   return (
     <RecipientInput
       id="test-recipient"
       label="收件人"
+      autoFocus={autoFocus}
       recipients={recipients}
       contacts={contacts}
       onChange={(next) => {
@@ -81,6 +86,29 @@ afterEach(() => {
 });
 
 describe("RecipientInput", () => {
+  it("keeps the initial auto-focused recipient field quiet until the user acts", async () => {
+    const user = userEvent.setup();
+    render(
+      <>
+        <RecipientHarness autoFocus />
+        <button type="button">其他位置</button>
+      </>,
+    );
+    const input = screen.getByRole("combobox", { name: "收件人" });
+
+    expect(document.activeElement).toBe(input);
+    expect(screen.queryByRole("listbox")).toBeNull();
+
+    await user.type(input, "n");
+    expect(screen.getByRole("listbox")).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: "其他位置" }));
+    expect(screen.queryByRole("listbox")).toBeNull();
+
+    await user.click(input);
+    expect(screen.getByRole("listbox")).toBeTruthy();
+  });
+
   it("pins favorites, shows five contacts first, and expands into a scrollable list", async () => {
     const user = userEvent.setup();
     render(<RecipientHarness />);
