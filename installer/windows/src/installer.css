@@ -37,7 +37,6 @@ button,
 .installer-root {
   width: 100%;
   height: 100%;
-  padding: 12px;
   background: transparent;
 }
 
@@ -51,10 +50,7 @@ button,
   border: 1px solid rgba(91, 143, 193, 0.38);
   border-radius: 28px;
   background: rgba(255, 251, 247, 0.97);
-  box-shadow:
-    0 24px 70px rgba(34, 67, 100, 0.24),
-    0 7px 22px rgba(255, 132, 88, 0.12),
-    inset 0 1px 0 rgba(255, 255, 255, 0.94);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.94);
   backdrop-filter: blur(26px) saturate(1.08);
 }
 

@@ -5,13 +5,13 @@
 - Supporting approved cute artwork:
   `C:\Users\tantl\.codex\generated_images\019f91fb-d608-7180-ae38-f00def2d3b7e\call_maWhiqX3PwgXONOTelJfFIad.png`
 - Implementation URL: `http://127.0.0.1:1431`
-- Intended desktop viewport: 940 × 610 CSS px at device scale factor 1
+- Intended desktop viewport: 916 × 586 CSS px at device scale factor 1
 - States: ready, installing, close-blocked, success, error
 - Implementation screenshots:
   - ready: `%TEMP%\mine-mail-installer-qa\ready-settled.png`
   - success: `%TEMP%\mine-mail-installer-qa\success-final.png`
 - Source pixels: 1536 × 1024 for the full visual reference
-- Density normalization: implementation captures use the native 940 × 610
+- Density normalization: implementation captures use the native 916 × 586
   installer viewport.
 
 ## Full-view comparison evidence
@@ -52,7 +52,7 @@ completion symbol.
 - Fonts and typography: bundled Nunito plus Chinese system fallbacks are
   rendered cleanly; the completion line uses a restrained Chinese editorial
   fallback for hierarchy.
-- Spacing and layout rhythm: fixed 940 × 610 single-window composition is
+- Spacing and layout rhythm: fixed 916 × 586 single-window composition is
   implemented and confirmed in the ready and success states.
 - Colors and visual tokens: approved warm white, coral orange, deep navy and
   blue accents remain consistent; green is reserved for completed rail rows and
@@ -83,7 +83,7 @@ completion symbol.
 - Iteration 2: removed completion checkmark artwork, retained stable rail icons
   and added green completed-row state.
 - Iteration 3: added the two completion switches, shortened helper copy and
-  confirmed the final 940 × 610 composition without clipping.
+  confirmed the final 916 × 586 composition without clipping.
 
 ## Implementation checklist
 

@@ -13,19 +13,19 @@
       {
         "label": "main",
         "title": "Mine Mail Installer",
-        "width": 940,
-        "height": 610,
-        "minWidth": 940,
-        "minHeight": 610,
-        "maxWidth": 940,
-        "maxHeight": 610,
+        "width": 916,
+        "height": 586,
+        "minWidth": 916,
+        "minHeight": 586,
+        "maxWidth": 916,
+        "maxHeight": 586,
         "center": true,
         "visible": true,
         "resizable": false,
         "maximizable": false,
         "decorations": false,
         "transparent": true,
-        "shadow": true
+        "shadow": false
       }
     ],
     "security": {
