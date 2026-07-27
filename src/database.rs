@@ -137,6 +137,8 @@ impl Repository {
                  flags_json TEXT NOT NULL DEFAULT '[]',
                  size_bytes INTEGER NOT NULL DEFAULT 0,
                  preview TEXT NOT NULL DEFAULT '',
+                 preview_fetched INTEGER NOT NULL DEFAULT 0
+                     CHECK (preview_fetched IN (0, 1)),
                  body_text TEXT,
                  body_html TEXT,
                  attachment_names_json TEXT NOT NULL DEFAULT '[]',
@@ -231,10 +233,14 @@ impl Repository {
         migrate_drafts_v7(&connection)?;
         migrate_pending_seen_v8(&connection)?;
         migrate_pending_flagged_v9(&connection)?;
+        migrate_message_previews_v10(&connection)?;
         connection.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_drafts_remote_identity
                  ON drafts(account_id, remote_mailbox, remote_uid);
-             PRAGMA user_version = 9;",
+             CREATE INDEX IF NOT EXISTS idx_messages_preview_backfill
+                 ON messages(account_id, mailbox, internal_date DESC, uid DESC)
+                 WHERE preview_fetched = 0 AND body_fetched = 0;
+             PRAGMA user_version = 10;",
         )?;
         Ok(repository)
     }
@@ -439,6 +445,22 @@ impl Repository {
     /// Inserts a summary or refreshes it without discarding an already-fetched
     /// body when the incoming record contains summary-only data.
     pub(crate) fn upsert_message(&self, message: &InboxMessage) -> Result<i64> {
+        let preview_fetched = message.body_fetched || !message.preview.trim().is_empty();
+        self.upsert_message_with_preview_state(message, preview_fetched)
+    }
+
+    /// Persists a bounded preview attempt. An empty preview is still resolved:
+    /// it may represent a genuinely body-free or attachment-only message and
+    /// must not be downloaded again on every synchronization.
+    pub(crate) fn upsert_message_summary(&self, message: &InboxMessage) -> Result<i64> {
+        self.upsert_message_with_preview_state(message, true)
+    }
+
+    fn upsert_message_with_preview_state(
+        &self,
+        message: &InboxMessage,
+        preview_fetched: bool,
+    ) -> Result<i64> {
         let connection = self.connection()?;
         connection.execute(
             "INSERT INTO mailboxes (account_id, name) VALUES (?1, ?2)
@@ -457,11 +479,11 @@ impl Repository {
             "INSERT INTO messages (
                  account_id, mailbox, uid, message_id, in_reply_to_json, references_json, subject, sender_json,
                  to_json, cc_json, sent_at, internal_date, flags_json, size_bytes,
-                 preview, body_text, body_html, attachment_names_json, body_fetched,
+                 preview, preview_fetched, body_text, body_html, attachment_names_json, body_fetched,
                  raw_rfc822, synced_at
              ) VALUES (
                  ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
-                 ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21
+                 ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22
              )
              ON CONFLICT(account_id, mailbox, uid) DO UPDATE SET
                  message_id = excluded.message_id,
@@ -475,7 +497,11 @@ impl Repository {
                  internal_date = excluded.internal_date,
                  flags_json = excluded.flags_json,
                  size_bytes = excluded.size_bytes,
-                 preview = excluded.preview,
+                 preview = CASE
+                     WHEN excluded.preview_fetched THEN excluded.preview
+                     ELSE messages.preview
+                 END,
+                 preview_fetched = MAX(messages.preview_fetched, excluded.preview_fetched),
                  body_text = CASE WHEN excluded.body_fetched THEN excluded.body_text ELSE messages.body_text END,
                  body_html = CASE WHEN excluded.body_fetched THEN excluded.body_html ELSE messages.body_html END,
                  attachment_names_json = CASE WHEN excluded.body_fetched THEN excluded.attachment_names_json ELSE messages.attachment_names_json END,
@@ -498,6 +524,7 @@ impl Repository {
                 encode_json(&flags)?,
                 message.size_bytes,
                 message.preview,
+                preview_fetched,
                 message.body_text,
                 message.body_html,
                 encode_json(&message.attachment_names)?,
@@ -861,6 +888,30 @@ impl Repository {
             params![account_id, excluded_id, usize_to_i64(limit)],
             row_to_message,
         )?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    pub(crate) fn mailbox_preview_backfill_candidates(
+        &self,
+        account_id: &str,
+        mailbox: &str,
+        limit: usize,
+    ) -> Result<Vec<u32>> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT uid FROM messages
+             WHERE account_id = ?1
+               AND mailbox = ?2
+               AND preview_fetched = 0
+               AND body_fetched = 0
+             ORDER BY COALESCE(internal_date, sent_at, synced_at) DESC, uid DESC
+             LIMIT ?3",
+        )?;
+        let rows = statement
+            .query_map(params![account_id, mailbox, usize_to_i64(limit)], |row| {
+                row.get(0)
+            })?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(Into::into)
     }
@@ -1733,6 +1784,24 @@ fn migrate_pending_flagged_v9(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn migrate_message_previews_v10(connection: &Connection) -> Result<()> {
+    if !table_has_column(connection, "messages", "preview_fetched")? {
+        connection.execute_batch(
+            "ALTER TABLE messages
+                 ADD COLUMN preview_fetched INTEGER NOT NULL DEFAULT 0
+                 CHECK (preview_fetched IN (0, 1));",
+        )?;
+    }
+    connection.execute(
+        "UPDATE messages
+         SET preview_fetched = 1
+         WHERE preview_fetched = 0
+           AND (body_fetched = 1 OR trim(preview) <> '')",
+        [],
+    )?;
+    Ok(())
+}
+
 fn flags_with_pending_updates(
     connection: &Connection,
     account_id: &str,
@@ -2073,7 +2142,7 @@ mod tests {
     use rusqlite::Connection;
     use tempfile::TempDir;
 
-    use super::{DraftRecord, MailboxState, Repository};
+    use super::{DraftRecord, MailboxState, Repository, migrate_message_previews_v10};
     use crate::{
         AccountConfig, Draft, InboxMessage, MailAddress, MailError, OutboxItem, OutboxStatus,
     };
@@ -2449,6 +2518,73 @@ mod tests {
         assert_eq!(summary.body_html.as_deref(), Some(""));
         assert!(summary.raw_rfc822.is_empty());
         assert!(summary.body_fetched);
+    }
+
+    #[test]
+    fn preview_backfill_tracks_empty_and_resolved_summaries_without_fetching_bodies() {
+        let (_directory, repository, account) = setup();
+        let mut pending = message(&account.account_id, false);
+        pending.preview.clear();
+        repository
+            .upsert_message(&pending)
+            .expect("pending preview");
+
+        assert_eq!(
+            repository
+                .mailbox_preview_backfill_candidates(&account.account_id, "INBOX", 10)
+                .expect("preview candidates"),
+            vec![pending.uid]
+        );
+
+        pending.preview = "Bounded synchronized preview".to_owned();
+        repository
+            .upsert_message_summary(&pending)
+            .expect("resolved preview");
+        assert!(
+            repository
+                .mailbox_preview_backfill_candidates(&account.account_id, "INBOX", 10)
+                .expect("resolved candidates")
+                .is_empty()
+        );
+        let stored = repository
+            .get_message_by_uid(&account.account_id, "INBOX", pending.uid)
+            .expect("stored preview");
+        assert_eq!(stored.preview, "Bounded synchronized preview");
+        assert_eq!(stored.body_text, None);
+        assert!(!stored.body_fetched);
+
+        pending.preview.clear();
+        repository
+            .upsert_message_summary(&pending)
+            .expect("resolved empty preview");
+        assert!(
+            repository
+                .mailbox_preview_backfill_candidates(&account.account_id, "INBOX", 10)
+                .expect("empty preview candidates")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn unresolved_header_refresh_does_not_erase_a_cached_preview() {
+        let (_directory, repository, account) = setup();
+        let mut full = message(&account.account_id, true);
+        full.preview = "Canonical body preview".to_owned();
+        repository.upsert_message(&full).expect("full message");
+
+        let mut header_only = message(&account.account_id, false);
+        header_only.preview.clear();
+        repository
+            .upsert_message(&header_only)
+            .expect("header refresh");
+
+        assert_eq!(
+            repository
+                .get_message_by_uid(&account.account_id, "INBOX", full.uid)
+                .expect("preserved message")
+                .preview,
+            "Canonical body preview"
+        );
     }
 
     #[test]
@@ -3109,6 +3245,38 @@ mod tests {
     }
 
     #[test]
+    fn preview_migration_marks_existing_preview_and_body_rows_as_resolved() {
+        let connection = Connection::open_in_memory().expect("legacy database");
+        connection
+            .execute_batch(
+                "CREATE TABLE messages (
+                     id INTEGER PRIMARY KEY,
+                     preview TEXT NOT NULL DEFAULT '',
+                     body_fetched INTEGER NOT NULL DEFAULT 0
+                 );
+                 INSERT INTO messages (id, preview, body_fetched) VALUES
+                     (1, '', 0),
+                     (2, 'Existing preview', 0),
+                     (3, '', 1);",
+            )
+            .expect("legacy messages");
+
+        migrate_message_previews_v10(&connection).expect("preview migration");
+
+        let states = {
+            let mut statement = connection
+                .prepare("SELECT preview_fetched FROM messages ORDER BY id")
+                .expect("preview state query");
+            statement
+                .query_map([], |row| row.get::<_, bool>(0))
+                .expect("preview state rows")
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .expect("preview states")
+        };
+        assert_eq!(states, [false, true, true]);
+    }
+
+    #[test]
     fn upgrades_legacy_drafts_with_synced_revision_metadata() {
         let directory = TempDir::new().expect("temporary directory");
         let path = directory.path().join("legacy.sqlite3");
@@ -3175,7 +3343,7 @@ Body' AS BLOB)
         let version: u32 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("schema version");
-        assert_eq!(version, 9);
+        assert_eq!(version, 10);
         for column in [
             "local_version",
             "has_unsupported_content",

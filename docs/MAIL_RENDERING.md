@@ -9,6 +9,8 @@ reader's visual language.
 - Rust owns MIME parsing, body selection, HTML sanitization, structural
   classification, remote-image detection, reply segmentation, and cached-body
   persistence.
+- Rust may derive a list preview from a bounded, non-marking IMAP body prefix.
+  The prefix is discarded after parsing and never counts as a fetched body.
 - React receives only the bounded body representation needed by the selected
   render mode. It never receives a complete raw RFC822 message.
 - Inbox/list summaries never contain full HTML or raw message source.

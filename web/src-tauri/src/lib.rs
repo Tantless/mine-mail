@@ -309,8 +309,13 @@ fn quote_navigation_target(
 }
 
 impl InboxMessageDto {
-    fn summary(value: InboxMessage) -> Self {
+    fn summary(mut value: InboxMessage) -> Self {
         let body_html_available = value.body_html.is_some();
+        // List commands expose only the bounded preview. A locally cached full
+        // text body remains available through the selected-message command but
+        // must not cross the desktop boundary with every list row.
+        value.body_text = None;
+        value.body_html = None;
         Self::from_parts(
             value,
             None,
@@ -2024,6 +2029,7 @@ mod tests {
 
         assert_eq!(json["body_html_available"], true);
         assert_eq!(json["body_html_loaded"], false);
+        assert!(json["body_text"].is_null());
         assert!(json["body_html"].is_null());
         assert!(json["body_render_mode"].is_null());
         assert!(json.get("raw_rfc822").is_none());
@@ -2066,6 +2072,7 @@ mod tests {
             .expect("serialize Sent summary");
 
         assert_eq!(json["preview"], "测试222");
+        assert!(json["body_text"].is_null());
     }
 
     #[test]

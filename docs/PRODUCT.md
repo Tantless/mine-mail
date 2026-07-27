@@ -83,6 +83,8 @@ must be updated here when an intentional product change lands.
 
 - Inbox summaries contain only bounded list/preview data, never raw RFC822,
   complete HTML, or an unrestricted body payload.
+- Synchronization derives bounded list previews without requiring the user to
+  select each message. Preview readiness is independent from full-body caching.
 - The primary sidebar shows numeric badges only for unread Inbox messages and
   Outbox items not yet confirmed sent. Zero counts are omitted. Starred,
   Contacts, Sent, Drafts, Archive, and Trash never show numeric badges.

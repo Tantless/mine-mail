@@ -16,6 +16,7 @@ type ImapSession = Session<TlsStream<TcpStream>>;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(45);
 const DRAFT_FETCH_BATCH_SIZE: usize = 10;
+const SUMMARY_PREVIEW_BYTES: usize = 32 * 1024;
 
 #[derive(Clone, Debug)]
 pub(crate) struct MailboxSnapshot {
@@ -382,12 +383,8 @@ impl ImapConnection {
     }
 
     pub async fn fetch_summaries(&mut self, uids: &[u32]) -> Result<Vec<RemoteMessage>> {
-        self.fetch_messages(
-            uids,
-            "(UID FLAGS INTERNALDATE RFC822.SIZE BODY.PEEK[HEADER])",
-            false,
-        )
-        .await
+        let query = summary_fetch_query();
+        self.fetch_messages(uids, &query, true).await
     }
 
     pub async fn fetch_full_message(&mut self, uid: u32) -> Result<RemoteMessage> {
@@ -790,6 +787,10 @@ impl ImapConnection {
     }
 }
 
+fn summary_fetch_query() -> String {
+    format!("(UID FLAGS INTERNALDATE RFC822.SIZE BODY.PEEK[]<0.{SUMMARY_PREVIEW_BYTES}>)")
+}
+
 struct OAuth2Authenticator<'a> {
     email: &'a str,
     access_token: &'a str,
@@ -871,7 +872,19 @@ fn mailbox_allows_flagged_updates(permanent_flags: &[Flag<'_>]) -> bool {
 mod tests {
     use async_imap::types::Flag;
 
-    use super::{compress_uid_set, mailbox_allows_flagged_updates, mailbox_allows_seen_updates};
+    use super::{
+        SUMMARY_PREVIEW_BYTES, compress_uid_set, mailbox_allows_flagged_updates,
+        mailbox_allows_seen_updates, summary_fetch_query,
+    };
+
+    #[test]
+    fn summary_fetch_is_bounded_and_does_not_mark_messages_seen() {
+        let query = summary_fetch_query();
+
+        assert!(query.contains("BODY.PEEK[]"));
+        assert!(query.contains(&format!("<0.{SUMMARY_PREVIEW_BYTES}>")));
+        assert!(!query.contains("BODY[]"));
+    }
 
     #[test]
     fn compresses_sorted_or_unsorted_uid_sets() {

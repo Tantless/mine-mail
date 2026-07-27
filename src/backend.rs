@@ -26,6 +26,7 @@ use crate::{
 
 const INBOX: &str = "INBOX";
 const SUMMARY_BATCH_SIZE: usize = 10;
+const PREVIEW_BACKFILL_LIMIT: usize = 250;
 const FLAG_BATCH_SIZE: usize = 250;
 const MAX_CACHED_MESSAGE_BYTES: u32 = 50 * 1024 * 1024;
 const MAX_REPLY_QUOTED_TEXT_BYTES: usize = 2 * 1024 * 1024;
@@ -303,6 +304,33 @@ impl MailBackend {
         Ok(())
     }
 
+    async fn fetch_and_cache_summaries(
+        &self,
+        connection: &mut ImapConnection,
+        mailbox: &str,
+        uids: &[u32],
+    ) -> Result<usize> {
+        let remotes = connection.fetch_summaries(uids).await?;
+        let fetched = remotes.len();
+        for remote in remotes {
+            let message = parse_incoming_summary_or_fallback(
+                &remote.raw,
+                IncomingMetadata {
+                    account_id: &self.config.account_id,
+                    mailbox,
+                    uid: remote.uid,
+                    flags: remote.flags,
+                    internal_date: remote.internal_date,
+                    size_bytes: remote.size_bytes,
+                    synced_at: now(),
+                    body_fetched: false,
+                },
+            );
+            self.repository.upsert_message_summary(&message)?;
+        }
+        Ok(fetched)
+    }
+
     async fn sync_selected_mailbox<F>(
         &self,
         connection: &mut ImapConnection,
@@ -377,34 +405,30 @@ impl MailBackend {
         }
 
         let requested: Vec<u32> = requested.into_iter().collect();
-        let total = requested.len();
+        let preview_backfill = self.repository.mailbox_preview_backfill_candidates(
+            &self.config.account_id,
+            mailbox,
+            PREVIEW_BACKFILL_LIMIT,
+        )?;
+        let total = requested.len() + preview_backfill.len();
         on_progress(SyncBatchProgress {
             completed: 0,
             total,
         });
         let mut fetched = 0;
+        let mut completed = 0;
         for batch in requested.chunks(SUMMARY_BATCH_SIZE) {
-            for remote in connection.fetch_summaries(batch).await? {
-                let message = parse_incoming_summary_or_fallback(
-                    &remote.raw,
-                    IncomingMetadata {
-                        account_id: &self.config.account_id,
-                        mailbox,
-                        uid: remote.uid,
-                        flags: remote.flags,
-                        internal_date: remote.internal_date,
-                        size_bytes: remote.size_bytes,
-                        synced_at: now(),
-                        body_fetched: false,
-                    },
-                );
-                self.repository.upsert_message(&message)?;
-                fetched += 1;
-            }
-            on_progress(SyncBatchProgress {
-                completed: fetched,
-                total,
-            });
+            fetched += self
+                .fetch_and_cache_summaries(connection, mailbox, batch)
+                .await?;
+            completed += batch.len();
+            on_progress(SyncBatchProgress { completed, total });
+        }
+        for batch in preview_backfill.chunks(SUMMARY_BATCH_SIZE) {
+            self.fetch_and_cache_summaries(connection, mailbox, batch)
+                .await?;
+            completed += batch.len();
+            on_progress(SyncBatchProgress { completed, total });
         }
 
         let existing_remote_uids: Vec<u32> =
@@ -499,34 +523,30 @@ impl MailBackend {
             .flush_pending_flagged_updates(&mut connection, INBOX)
             .await;
         let requested = connection.search_uids_after(previous_highest_uid).await?;
-        let total = requested.len();
+        let preview_backfill = self.repository.mailbox_preview_backfill_candidates(
+            &self.config.account_id,
+            INBOX,
+            PREVIEW_BACKFILL_LIMIT,
+        )?;
+        let total = requested.len() + preview_backfill.len();
         on_progress(SyncBatchProgress {
             completed: 0,
             total,
         });
         let mut fetched = 0;
+        let mut completed = 0;
         for batch in requested.chunks(SUMMARY_BATCH_SIZE) {
-            for remote in connection.fetch_summaries(batch).await? {
-                let message = parse_incoming_summary_or_fallback(
-                    &remote.raw,
-                    IncomingMetadata {
-                        account_id: &self.config.account_id,
-                        mailbox: INBOX,
-                        uid: remote.uid,
-                        flags: remote.flags,
-                        internal_date: remote.internal_date,
-                        size_bytes: remote.size_bytes,
-                        synced_at: now(),
-                        body_fetched: false,
-                    },
-                );
-                self.repository.upsert_message(&message)?;
-                fetched += 1;
-            }
-            on_progress(SyncBatchProgress {
-                completed: fetched,
-                total,
-            });
+            fetched += self
+                .fetch_and_cache_summaries(&mut connection, INBOX, batch)
+                .await?;
+            completed += batch.len();
+            on_progress(SyncBatchProgress { completed, total });
+        }
+        for batch in preview_backfill.chunks(SUMMARY_BATCH_SIZE) {
+            self.fetch_and_cache_summaries(&mut connection, INBOX, batch)
+                .await?;
+            completed += batch.len();
+            on_progress(SyncBatchProgress { completed, total });
         }
 
         let highest_uid = requested

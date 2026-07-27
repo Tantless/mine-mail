@@ -278,6 +278,46 @@ describe("Mine Mail desktop state bridge", () => {
     });
   });
 
+  it("shows a synchronized Sent preview without selecting the message", async () => {
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: 600,
+    });
+    const sent = {
+      ...summary(71, "Backfilled sent mail"),
+      mailbox: "Sent",
+      to: [{ name: "Friend", email: "friend@example.com" }],
+      preview: "",
+    };
+    desktop.mailApi.listInbox.mockResolvedValue([]);
+    desktop.mailApi.listSent.mockResolvedValue([sent]);
+    const user = userEvent.setup();
+
+    render(<App />);
+    await user.click(await screen.findByRole("button", { name: /已发送/ }));
+    expect(await screen.findByText("暂无摘要")).toBeTruthy();
+    await waitFor(() =>
+      expect(desktop.listeners.has("mail:sent-updated")).toBe(true),
+    );
+
+    desktop.mailApi.listSent.mockResolvedValue([
+      { ...sent, preview: "同步后直接显示的有界摘要" },
+    ]);
+    await act(async () => {
+      desktop.listeners.get("mail:sent-updated")?.({
+        payload: {
+          account_id: "desktop-account",
+          completed: 1,
+          total: 1,
+          is_complete: true,
+        },
+      });
+    });
+
+    expect(await screen.findByText("同步后直接显示的有界摘要")).toBeTruthy();
+    expect(desktop.mailApi.fetchSentMessage).not.toHaveBeenCalled();
+  });
+
   it("renders persisted mailbox batches while synchronization continues", async () => {
     desktop.mailApi.listInbox.mockResolvedValue([]);
     render(<App />);

@@ -994,7 +994,21 @@ pub(crate) fn parse_incoming_summary_or_fallback(
         synced_at: metadata.synced_at.clone(),
     };
 
-    parse_incoming_message(raw, metadata).unwrap_or(fallback)
+    match parse_incoming_message(raw, metadata) {
+        Ok(mut summary) => {
+            // Summary synchronization may receive a bounded RFC822 prefix, not
+            // a complete message. Persist only the derived list preview and
+            // header metadata so truncated body data can never be mistaken for
+            // a hydrated body or retained as raw RFC822.
+            summary.body_text = None;
+            summary.body_html = None;
+            summary.attachment_names.clear();
+            summary.body_fetched = false;
+            summary.raw_rfc822.clear();
+            summary
+        }
+        Err(_) => fallback,
+    }
 }
 
 fn message_ids(value: &HeaderValue<'_>) -> Vec<String> {
@@ -1384,6 +1398,64 @@ mod tests {
         );
 
         assert!(draft_has_unsupported_content(b"not an RFC822 message"));
+    }
+
+    #[test]
+    fn bounded_summary_prefix_produces_only_a_preview() {
+        let raw = "From: sender@example.com\r\n\
+                   To: receiver@example.com\r\n\
+                   Subject: Preview\r\n\
+                   Content-Type: text/plain; charset=utf-8\r\n\
+                   \r\n\
+                   这是同步阶段提取的列表摘要，完整正文仍然需要稍后获取。";
+        let summary = parse_incoming_summary_or_fallback(
+            raw.as_bytes(),
+            IncomingMetadata {
+                account_id: "primary",
+                mailbox: "INBOX",
+                uid: 39,
+                flags: Vec::new(),
+                internal_date: Some("2026-07-14T00:00:00Z".to_owned()),
+                size_bytes: 4096,
+                synced_at: "2026-07-14T00:01:00Z".to_owned(),
+                body_fetched: false,
+            },
+        );
+
+        assert!(summary.preview.contains("同步阶段提取的列表摘要"));
+        assert_eq!(summary.body_text, None);
+        assert_eq!(summary.body_html, None);
+        assert!(summary.attachment_names.is_empty());
+        assert!(!summary.body_fetched);
+        assert!(summary.raw_rfc822.is_empty());
+    }
+
+    #[test]
+    fn bounded_html_summary_is_converted_to_readable_text() {
+        let raw = b"From: sender@example.com\r\n\
+                    To: receiver@example.com\r\n\
+                    Subject: HTML preview\r\n\
+                    Content-Type: text/html; charset=utf-8\r\n\
+                    \r\n\
+                    <html><body><p>Readable <strong>HTML</strong> preview.</p></body></html>";
+        let summary = parse_incoming_summary_or_fallback(
+            raw,
+            IncomingMetadata {
+                account_id: "primary",
+                mailbox: "Sent",
+                uid: 40,
+                flags: Vec::new(),
+                internal_date: None,
+                size_bytes: 8192,
+                synced_at: "2026-07-14T00:01:00Z".to_owned(),
+                body_fetched: false,
+            },
+        );
+
+        assert_eq!(summary.preview.trim(), "Readable HTML preview.");
+        assert_eq!(summary.body_text, None);
+        assert_eq!(summary.body_html, None);
+        assert!(summary.raw_rfc822.is_empty());
     }
 
     #[test]
