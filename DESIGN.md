@@ -273,6 +273,14 @@ family. Preserve the relative hierarchy when tuning optical values.
   detail pane.
 - Persistent backend health is not decorative chrome. Show only explicit action
   progress and failures that require user attention.
+- About keeps the compact version card first, then presents local storage as one
+  quiet subsection rather than a dashboard. Show the active path, total size,
+  compact category rows, and a secondary **更改位置** action using the existing
+  settings material and semantic progress treatment.
+- Selecting a directory uses the platform folder picker. The consequential
+  restart migration uses the standard Mine Mail confirmation surface, exposes
+  the chosen path with truncation and a full hover title, and disables dismissal
+  only while the migration task is being scheduled.
 
 ### Compose
 

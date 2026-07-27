@@ -12,6 +12,7 @@
   "app": {
     "windows": [
       {
+        "create": false,
         "label": "main",
         "title": "Mine Mail",
         "width": 1440,
@@ -26,6 +27,7 @@
         "transparent": false
       },
       {
+        "create": false,
         "label": "new-mail-notification",
         "title": "Mine Mail 新邮件",
         "url": "index.html?surface=new-mail-notification",

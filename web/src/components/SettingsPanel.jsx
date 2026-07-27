@@ -6,6 +6,8 @@ import {
   DotsThree,
   DownloadSimple,
   EnvelopeSimple,
+  FolderOpen,
+  HardDrives,
   Info,
   MicrosoftOutlookLogo,
   NotePencil,
@@ -16,6 +18,7 @@ import {
   UserCircle,
   X,
 } from "@phosphor-icons/react";
+import { appStorageApi } from "../services/appStorage.js";
 import { appUpdateApi } from "../services/appUpdate.js";
 import { AccountRemovalDialog } from "./AccountRemovalDialog.jsx";
 import { AccountSetupForm } from "./AccountSetup.jsx";
@@ -149,6 +152,25 @@ function displayVersion(version) {
   return `v${String(version || "0.0.0").replace(/^v/i, "")}`;
 }
 
+function formatStorageBytes(bytes) {
+  const value = Number(bytes) || 0;
+  if (value < 1024) return `${value} B`;
+  const units = ["KiB", "MiB", "GiB", "TiB"];
+  let size = value / 1024;
+  let unit = units[0];
+  for (let index = 1; index < units.length && size >= 1024; index += 1) {
+    size /= 1024;
+    unit = units[index];
+  }
+  return `${size >= 100 ? size.toFixed(0) : size.toFixed(1)} ${unit}`;
+}
+
+function storageLocationLabel(kind) {
+  if (kind === "install_directory") return "随应用安装位置";
+  if (kind === "custom") return "自定义位置";
+  return "Windows 默认位置";
+}
+
 function updateErrorMessage(error) {
   const message = error instanceof Error ? error.message : String(error || "");
   if (/404|latest\.json|not found/i.test(message)) {
@@ -212,6 +234,7 @@ export function SettingsPanel({
   onRemoveAccountAvatar,
   focusTarget,
   updateClient = appUpdateApi,
+  storageClient = appStorageApi,
 }) {
   const addAccountRequested =
     typeof focusTarget === "string" && focusTarget.startsWith("account-form");
@@ -242,6 +265,10 @@ export function SettingsPanel({
   const [updateMessage, setUpdateMessage] = useState(null);
   const [availableUpdate, setAvailableUpdate] = useState(null);
   const [updateProgress, setUpdateProgress] = useState(null);
+  const [storageStatus, setStorageStatus] = useState(null);
+  const [storageState, setStorageState] = useState("idle");
+  const [storageMessage, setStorageMessage] = useState(null);
+  const [pendingStorageDirectory, setPendingStorageDirectory] = useState(null);
   const scrollRef = useRef(null);
   const previousAccountSubmitStatusRef = useRef(accountSubmitStatus);
 
@@ -274,6 +301,43 @@ export function SettingsPanel({
       active = false;
     };
   }, [updateClient]);
+
+  useEffect(() => {
+    if (activeSection !== "version") return undefined;
+    let active = true;
+    setStorageState("loading");
+    setStorageMessage(null);
+    void storageClient
+      .getStatus()
+      .then((status) => {
+        if (!active) return;
+        setStorageStatus(status);
+        setStorageState("idle");
+        if (status.migrationNotice) {
+          setStorageMessage({
+            text: status.migrationNotice.message,
+            tone:
+              status.migrationNotice.status === "failed" ? "danger" : "success",
+          });
+        } else if (!status.available) {
+          setStorageMessage({
+            text: "当前数据目录不可用。请重新连接对应磁盘，然后重启 Mine Mail。",
+            tone: "danger",
+          });
+        }
+      })
+      .catch((error) => {
+        if (!active) return;
+        setStorageState("error");
+        setStorageMessage({
+          text: errorMessage(error, "无法读取本地存储信息。"),
+          tone: "danger",
+        });
+      });
+    return () => {
+      active = false;
+    };
+  }, [activeSection, storageClient]);
 
   useEffect(() => {
     const addRequested =
@@ -312,7 +376,12 @@ export function SettingsPanel({
   }, [accountFlow, activeSection, selectedProvider]);
 
   useEffect(() => {
-    if (!pendingAccountRemoval && !editingAccountRemark && !availableUpdate) {
+    if (
+      !pendingAccountRemoval &&
+      !editingAccountRemark &&
+      !availableUpdate &&
+      !pendingStorageDirectory
+    ) {
       return undefined;
     }
 
@@ -321,10 +390,12 @@ export function SettingsPanel({
         event.key === "Escape" &&
         accountSubmitStatus !== "saving" &&
         !isAccountRemarkSaving &&
-        updateStatus !== "installing"
+        updateStatus !== "installing" &&
+        storageState !== "migrating"
       ) {
         setPendingAccountRemoval(null);
         setEditingAccountRemark(null);
+        setPendingStorageDirectory(null);
         if (availableUpdate) {
           setAvailableUpdate(null);
           setUpdateStatus("idle");
@@ -342,6 +413,8 @@ export function SettingsPanel({
     editingAccountRemark,
     isAccountRemarkSaving,
     pendingAccountRemoval,
+    pendingStorageDirectory,
+    storageState,
     availableUpdate,
     updateStatus,
   ]);
@@ -471,6 +544,58 @@ export function SettingsPanel({
     }
   };
 
+  const chooseStorageDirectory = async () => {
+    if (
+      !storageClient.isSupported ||
+      !storageStatus?.available ||
+      ["loading", "choosing", "migrating"].includes(storageState)
+    ) {
+      return;
+    }
+    setStorageState("choosing");
+    setStorageMessage(null);
+    try {
+      const selected = await storageClient.chooseDirectory(storageStatus.dataPath);
+      setStorageState("idle");
+      if (selected) setPendingStorageDirectory(selected);
+    } catch (error) {
+      setStorageState("error");
+      setStorageMessage({
+        text: errorMessage(error, "无法打开数据目录选择器。"),
+        tone: "danger",
+      });
+    }
+  };
+
+  const migrateStorageDirectory = async () => {
+    if (!pendingStorageDirectory || storageState === "migrating") return;
+    setStorageState("migrating");
+    setStorageMessage(null);
+    let migrationPrepared = false;
+    try {
+      await storageClient.prepareMigration(pendingStorageDirectory);
+      migrationPrepared = true;
+      await storageClient.relaunch();
+    } catch (error) {
+      let migrationCancelled = true;
+      if (migrationPrepared) {
+        try {
+          await storageClient.cancelMigration();
+        } catch {
+          migrationCancelled = false;
+        }
+      }
+      setStorageState("error");
+      setPendingStorageDirectory(null);
+      setStorageMessage({
+        text: migrationCancelled
+          ? errorMessage(error, "数据迁移没有开始，原目录不会改变。")
+          : "应用重启失败，待执行的迁移任务也无法撤销。请先不要重启 Mine Mail，并确认当前系统数据目录可写。",
+        tone: "danger",
+      });
+    }
+  };
+
   const saveStateLabel =
     saveStatus === "saving"
       ? "正在保存…"
@@ -530,7 +655,9 @@ export function SettingsPanel({
             className="settings-close"
             label="关闭设置"
             onClick={onClose}
-            disabled={updateStatus === "installing"}
+            disabled={
+              updateStatus === "installing" || storageState === "migrating"
+            }
           >
             <X size={18} />
           </IconButton>
@@ -982,6 +1109,87 @@ export function SettingsPanel({
                     ? "更新来自 GitHub Releases。"
                     : "浏览器预览不执行更新，请使用 Mine Mail 桌面应用。")}
               </p>
+
+              <section
+                className="settings-storage-section"
+                aria-labelledby="settings-storage-title"
+                aria-busy={storageState === "loading"}
+              >
+                <header className="settings-storage-section__heading">
+                  <span className="settings-storage-section__icon">
+                    <HardDrives size={21} weight="duotone" />
+                  </span>
+                  <span>
+                    <strong id="settings-storage-title">本地数据存储</strong>
+                    <small>邮件、用户资源和界面缓存保存在此目录。</small>
+                  </span>
+                  <strong className="settings-storage-section__total">
+                    {storageState === "loading"
+                      ? "正在统计…"
+                      : formatStorageBytes(storageStatus?.totalBytes)}
+                  </strong>
+                </header>
+
+                <div className="settings-storage-location">
+                  <span>
+                    <small>
+                      {storageLocationLabel(storageStatus?.locationKind)}
+                    </small>
+                    <strong title={storageStatus?.dataPath}>
+                      {storageStatus?.dataPath || "正在读取数据目录…"}
+                    </strong>
+                  </span>
+                  <button
+                    type="button"
+                    className="secondary-button settings-storage-change"
+                    onClick={() => void chooseStorageDirectory()}
+                    disabled={
+                      !storageClient.isSupported ||
+                      !storageStatus?.available ||
+                      ["loading", "choosing", "migrating"].includes(storageState)
+                    }
+                  >
+                    <FolderOpen size={17} weight="bold" />
+                    {storageState === "choosing" ? "正在选择…" : "更改位置"}
+                  </button>
+                </div>
+
+                <div className="settings-storage-usage" aria-label="本地数据空间占用">
+                  {(storageStatus?.categories || []).map((category) => {
+                    const share =
+                      storageStatus.totalBytes > 0
+                        ? Math.round(
+                            (category.bytes / storageStatus.totalBytes) * 100,
+                          )
+                        : 0;
+                    return (
+                      <div className="settings-storage-usage__row" key={category.id}>
+                        <span>
+                          <strong>{category.label}</strong>
+                          <small>{formatStorageBytes(category.bytes)}</small>
+                        </span>
+                        <progress
+                          aria-label={`${category.label}占用`}
+                          max="100"
+                          value={share}
+                        />
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <p
+                  className="settings-storage-message"
+                  data-tone={storageMessage?.tone}
+                  role={storageMessage?.tone === "danger" ? "alert" : undefined}
+                  aria-live="polite"
+                >
+                  {storageMessage?.text ||
+                    (storageClient.isSupported
+                      ? "更改位置时，Mine Mail 会在重启后校验并迁移原数据。"
+                      : "浏览器预览不读取或迁移桌面数据。")}
+                </p>
+              </section>
             </section>
           ) : null}
 
@@ -990,6 +1198,76 @@ export function SettingsPanel({
           ) : null}
         </div>
       </div>
+
+      {pendingStorageDirectory ? (
+        <div
+          className="confirm-layer"
+          onMouseDown={(event) => {
+            if (
+              event.target === event.currentTarget &&
+              storageState !== "migrating"
+            ) {
+              setPendingStorageDirectory(null);
+            }
+          }}
+        >
+          <section
+            className="confirm-dialog storage-migration-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="storage-migration-title"
+            aria-describedby="storage-migration-description"
+          >
+            <header>
+              <span className="confirm-dialog__icon">
+                <HardDrives size={22} weight="duotone" />
+              </span>
+              <IconButton
+                label="取消数据迁移"
+                onClick={() => setPendingStorageDirectory(null)}
+                disabled={storageState === "migrating"}
+              >
+                <X size={18} />
+              </IconButton>
+            </header>
+            <h2 id="storage-migration-title">迁移本地数据</h2>
+            <p id="storage-migration-description">
+              Mine Mail 将在重启后把约{" "}
+              {formatStorageBytes(storageStatus?.totalBytes)} 数据迁移到新目录。
+              新副本校验完成前，原数据不会删除。
+            </p>
+            <div className="storage-migration-dialog__path">
+              <small>新数据目录</small>
+              <strong title={pendingStorageDirectory}>
+                {pendingStorageDirectory}
+              </strong>
+            </div>
+            <p className="storage-migration-dialog__note">
+              迁移期间请保持目标磁盘连接，不要移动或删除原数据目录。
+            </p>
+            <footer>
+              <button
+                type="button"
+                className="secondary-button"
+                autoFocus
+                onClick={() => setPendingStorageDirectory(null)}
+                disabled={storageState === "migrating"}
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                className="send-button"
+                onClick={() => void migrateStorageDirectory()}
+                disabled={storageState === "migrating"}
+              >
+                <HardDrives size={17} weight="bold" />
+                {storageState === "migrating" ? "正在准备…" : "迁移并重启"}
+              </button>
+            </footer>
+          </section>
+        </div>
+      ) : null}
 
       {availableUpdate ? (
         <div

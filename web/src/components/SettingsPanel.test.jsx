@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { SettingsPanel } from "./SettingsPanel.jsx";
 
@@ -242,5 +242,126 @@ describe("SettingsPanel account flow", () => {
     expect(onOpenExternalLink).toHaveBeenCalledWith(
       "https://minemail.tantless.online/privacy/",
     );
+  });
+
+  it("shows storage usage and confirms a cold migration before relaunching", async () => {
+    const storageClient = {
+      isSupported: true,
+      getStatus: vi.fn().mockResolvedValue({
+        dataPath: "D:\\Mine Mail\\Data",
+        locationKind: "install_directory",
+        available: true,
+        totalBytes: 1_610_612_736,
+        categories: [
+          {
+            id: "mail",
+            label: "邮件与本地资料",
+            bytes: 1_073_741_824,
+          },
+          {
+            id: "webview",
+            label: "界面与浏览器缓存",
+            bytes: 536_870_912,
+          },
+        ],
+        migrationNotice: null,
+      }),
+      chooseDirectory: vi.fn().mockResolvedValue("E:\\Mine Mail Data"),
+      prepareMigration: vi.fn().mockResolvedValue({
+        targetPath: "E:\\Mine Mail Data",
+        totalBytes: 1_610_612_736,
+      }),
+      cancelMigration: vi.fn().mockResolvedValue(undefined),
+      relaunch: vi.fn().mockResolvedValue(undefined),
+    };
+    const user = userEvent.setup();
+    render(<SettingsPanel {...panelProps({ storageClient })} />);
+
+    await user.click(screen.getByRole("button", { name: "关于 Mine Mail" }));
+    expect(await screen.findByText("1.5 GiB")).toBeTruthy();
+    expect(screen.getByText("D:\\Mine Mail\\Data")).toBeTruthy();
+    expect(screen.getByText("随应用安装位置")).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: "更改位置" }));
+    const dialog = await screen.findByRole("dialog", { name: "迁移本地数据" });
+    expect(within(dialog).getByText("E:\\Mine Mail Data")).toBeTruthy();
+    expect(storageClient.prepareMigration).not.toHaveBeenCalled();
+
+    await user.click(
+      within(dialog).getByRole("button", { name: "迁移并重启" }),
+    );
+    await waitFor(() =>
+      expect(storageClient.prepareMigration).toHaveBeenCalledWith(
+        "E:\\Mine Mail Data",
+      ),
+    );
+    expect(storageClient.relaunch).toHaveBeenCalledOnce();
+  });
+
+  it("cancels a queued storage migration when relaunch fails", async () => {
+    const storageClient = {
+      isSupported: true,
+      getStatus: vi.fn().mockResolvedValue({
+        dataPath: "D:\\Mine Mail\\Data",
+        locationKind: "install_directory",
+        available: true,
+        totalBytes: 1024,
+        categories: [],
+        migrationNotice: null,
+      }),
+      chooseDirectory: vi.fn().mockResolvedValue("E:\\Mine Mail Data"),
+      prepareMigration: vi.fn().mockResolvedValue({
+        targetPath: "E:\\Mine Mail Data",
+        totalBytes: 1024,
+      }),
+      cancelMigration: vi.fn().mockResolvedValue(undefined),
+      relaunch: vi.fn().mockRejectedValue(new Error("restart unavailable")),
+    };
+    const user = userEvent.setup();
+    render(<SettingsPanel {...panelProps({ storageClient })} />);
+
+    await user.click(screen.getByRole("button", { name: "关于 Mine Mail" }));
+    await screen.findByText("D:\\Mine Mail\\Data");
+    await user.click(screen.getByRole("button", { name: "更改位置" }));
+    await user.click(
+      within(
+        await screen.findByRole("dialog", { name: "迁移本地数据" }),
+      ).getByRole("button", { name: "迁移并重启" }),
+    );
+
+    await waitFor(() =>
+      expect(storageClient.cancelMigration).toHaveBeenCalledOnce(),
+    );
+    expect(await screen.findByText("restart unavailable")).toBeTruthy();
+  });
+
+  it("keeps a missing configured data path visible without offering an empty fallback", async () => {
+    const storageClient = {
+      isSupported: true,
+      getStatus: vi.fn().mockResolvedValue({
+        dataPath: "E:\\Mine Mail Data",
+        locationKind: "custom",
+        available: false,
+        totalBytes: 0,
+        categories: [],
+        migrationNotice: null,
+      }),
+      chooseDirectory: vi.fn(),
+      prepareMigration: vi.fn(),
+      cancelMigration: vi.fn(),
+      relaunch: vi.fn(),
+    };
+    const user = userEvent.setup();
+    render(<SettingsPanel {...panelProps({ storageClient })} />);
+
+    await user.click(screen.getByRole("button", { name: "关于 Mine Mail" }));
+
+    expect(await screen.findByText("E:\\Mine Mail Data")).toBeTruthy();
+    expect(
+      screen.getByText(
+        "当前数据目录不可用。请重新连接对应磁盘，然后重启 Mine Mail。",
+      ),
+    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: "更改位置" }).disabled).toBe(true);
   });
 });

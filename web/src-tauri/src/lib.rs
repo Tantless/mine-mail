@@ -3,8 +3,9 @@ mod contacts;
 mod desktop;
 mod diagnostics;
 mod mail_html;
+mod storage;
 
-use std::{env, time::Instant};
+use std::time::Instant;
 
 use mine_mail::{
     ComposeRequest, ConnectionReport, ContactMessage, ContactMessageDirection, Draft,
@@ -14,7 +15,7 @@ use mine_mail::{
     outbox_subject,
 };
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WindowEvent};
+use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WebviewWindowBuilder, WindowEvent};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt as AutostartManagerExt};
 use url::Url;
 
@@ -33,6 +34,7 @@ use mail_html::{
     SanitizedMailBodySegment, authored_body_preview, quote_metadata_matches_cached,
     sanitize_mail_html, segment_mail_body_with_metadata, segment_mail_body_with_metadata_chain,
 };
+use storage::{PreparedStorageMigrationDto, StorageRuntime, StorageStatusDto};
 
 const INBOX_SYNC_LIMIT: usize = 100;
 const INBOX_LIST_LIMIT: usize = 250;
@@ -1433,6 +1435,27 @@ fn get_account_mailbox_snapshot(
 }
 
 #[tauri::command]
+async fn get_storage_status(storage: State<'_, StorageRuntime>) -> CommandResult<StorageStatusDto> {
+    let storage = storage.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || storage.status())
+        .await
+        .map_err(|_| "无法完成本地存储统计。".to_owned())?
+}
+
+#[tauri::command]
+fn prepare_storage_migration(
+    storage: State<'_, StorageRuntime>,
+    target_path: String,
+) -> CommandResult<PreparedStorageMigrationDto> {
+    storage.prepare_migration(&target_path)
+}
+
+#[tauri::command]
+fn cancel_storage_migration(storage: State<'_, StorageRuntime>) -> CommandResult<()> {
+    storage.cancel_pending_migration()
+}
+
+#[tauri::command]
 fn get_desktop_settings(
     app: AppHandle,
     runtime: State<'_, DesktopRuntime>,
@@ -1703,16 +1726,9 @@ fn initialize_state(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Erro
             "foreground"
         }),
     );
-    let (app_data, path_error) = match app.path().app_local_data_dir() {
-        Ok(path) => (path, None),
-        Err(_) => (
-            env::temp_dir().join("mine-mail-degraded"),
-            Some(
-                "The application data directory is unavailable; local mail is disabled for this session."
-                    .to_owned(),
-            ),
-        ),
-    };
+    let storage = StorageRuntime::initialize(app.handle());
+    let app_data = storage.runtime_data_root.clone();
+    let path_error = storage.startup_error;
     let path_degraded = path_error.is_some();
     let (account, backend, account_degraded) = if let Some(error) = path_error.as_ref() {
         let (account, backend) = AccountRuntime::fallback(&app_data, error.clone());
@@ -1748,6 +1764,8 @@ fn initialize_state(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Erro
     app.manage(backend);
     app.manage(desktop);
     app.manage(contacts);
+    app.manage(storage.runtime);
+    build_configured_windows(app, &app_data)?;
     let tray_available = match desktop::build_tray(app) {
         Ok(()) => {
             diagnostics::info("tray_initialized", DiagnosticFields::default());
@@ -1782,6 +1800,19 @@ fn initialize_state(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Erro
     Ok(())
 }
 
+fn build_configured_windows(
+    app: &tauri::App,
+    runtime_data_root: &std::path::Path,
+) -> tauri::Result<()> {
+    for window_config in &app.config().app.windows {
+        let builder = WebviewWindowBuilder::from_config(app.handle(), window_config)?;
+        #[cfg(target_os = "windows")]
+        let builder = builder.data_directory(runtime_data_root.join("EBWebView"));
+        builder.build()?;
+    }
+    Ok(())
+}
+
 fn is_background_launch(args: impl IntoIterator<Item = String>) -> bool {
     args.into_iter().any(|argument| argument == "--background")
 }
@@ -1801,6 +1832,7 @@ pub fn run() {
             MacosLauncher::LaunchAgent,
             Some(vec!["--background"]),
         ))
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(initialize_state)
@@ -1868,6 +1900,9 @@ pub fn run() {
             list_outbox,
             fetch_outbox_message,
             get_account_mailbox_snapshot,
+            get_storage_status,
+            prepare_storage_migration,
+            cancel_storage_migration,
             get_desktop_settings,
             update_desktop_settings,
             get_new_mail_notification,

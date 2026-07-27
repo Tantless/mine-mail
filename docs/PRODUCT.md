@@ -185,6 +185,40 @@ must be updated here when an intentional product change lands.
   are not persistent main-interface status chrome. Show action-specific progress
   and failures requiring a user decision.
 
+## Local data location and migration
+
+- On a new Windows installation, Mine Mail stores local product data in the
+  writable `Data` directory beside the installed executable. A protected,
+  occupied, or unwritable install location falls back to Tauri's per-user local
+  application-data directory.
+- An existing local-data installation remains at its current location after an
+  upgrade. Mine Mail never silently switches away from existing mail, drafts, or
+  Outbox state merely because a sibling install `Data` directory becomes
+  available.
+- A small location pointer and bounded diagnostic logs remain in the operating
+  system's per-user application-data directory. Credentials and OAuth tokens
+  remain in the OS credential store. Mail databases, contacts and settings
+  databases, profile avatars, user assets, and the Windows WebView2 data folder
+  use the selected product-data directory.
+- **关于 Mine Mail** shows the exact active data directory, total disk use, and
+  separate usage for **邮件与本地资料 / 界面与浏览器缓存 / 用户资源 /
+  可清理缓存 / 诊断日志 / 其他数据**. Its action label is **更改位置**.
+- A user-selected data directory must be an empty, writable, absolute directory
+  on a local disk. Mine Mail rejects network shares, protected system locations,
+  and a directory that contains or is contained by the current data directory.
+- Changing location requires an in-app **迁移本地数据** confirmation. The final
+  action is **迁移并重启**. Migration runs before databases and WebView2 open on
+  the next launch, verifies copied file sizes and every top-level Mine Mail
+  SQLite database, then switches the location pointer. Source product data is
+  deleted only after the verified target becomes active.
+- A failed migration preserves and reopens the original data location, reports
+  the failure in About, and never presents a partial copy as active data.
+- If a configured custom disk is missing or unwritable on startup, Mine Mail
+  does not silently create empty account data elsewhere. Cached mail remains
+  untouched and local mail work stays unavailable until the storage location is
+  restored. About shows the configured path and asks the user to reconnect that
+  disk before restarting Mine Mail.
+
 ## Application updates
 
 - Update checks are user-initiated from Settings. Mine Mail never silently
