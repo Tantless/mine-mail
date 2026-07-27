@@ -98,6 +98,20 @@ screen-specific copy, timing constants, pixel values, or speculative future plan
   Keep temporary evidence in the OS temporary directory and retain durable
   conclusions only in canonical docs and tests.
 
+## Git commits
+
+- Read `GIT_COMMIT.md` before creating a commit.
+- Commit subjects must use `<type>: <中文说明>`. The description must be written
+  in Chinese; technical proper nouns, protocol names, file names, code symbols,
+  and version numbers may retain their original spelling.
+- Use only the commit types defined in `GIT_COMMIT.md`: `feat`, `fix`, `ui`,
+  `perf`, `refactor`, `docs`, `test`, `ci`, `build`, `chore`, `release`, and
+  `revert`.
+- Use a lowercase type, an ASCII colon, and one space. Keep the subject specific,
+  omit terminal punctuation, and do not add scopes such as `feat(web):`.
+- Keep each commit focused on one primary intent. Before committing, inspect the
+  staged diff and exclude unrelated user or agent changes.
+
 ## Verification
 
 Run the smallest relevant checks while iterating, then the applicable project
