@@ -27,12 +27,18 @@ describe("text selection policy", () => {
 });
 
 describe("brand avatar sizing policy", () => {
-  it("shares the reader mark proportions with compact mail-list avatars", () => {
+  it("shares the reader mark proportions with compact avatars", () => {
     expect(
       declarationsFor("\\.mail-row__avatar\\.profile-avatar--brand"),
     ).toBeUndefined();
     expect(styles).not.toMatch(
       /\.mail-row__avatar\.profile-avatar--(?:google|openrouter|figma|microsoft)/,
+    );
+    expect(declarationsFor("\\.account-card__avatar")).toMatch(
+      /^\s*--brand-letter-size:\s*12px;/m,
+    );
+    expect(declarationsFor("\\.brand-mark__letters")).toMatch(
+      /font-size:\s*var\(--brand-letter-size,\s*1\.35em\)/,
     );
   });
 });

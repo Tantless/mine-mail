@@ -1358,6 +1358,7 @@ html[data-surface="new-mail-notification"] #root {
 }
 
 .account-card__avatar {
+  --brand-letter-size: 12px;
   display: grid;
   width: 32px;
   height: 32px;
@@ -2392,7 +2393,7 @@ html[data-surface="new-mail-notification"] #root {
 }
 
 .brand-mark__letters {
-  font-size: 1.35em;
+  font-size: var(--brand-letter-size, 1.35em);
   line-height: 1;
 }
 

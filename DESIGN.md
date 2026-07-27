@@ -89,8 +89,9 @@ weight; it must not create a separate page layout or component family.
   then deterministic initials. Never query a remote avatar service.
 - Known-domain brands use current, unmodified local vector marks when available.
   The reader sender tile is the reference for internal clear space. Compact
-  mail-list tiles keep the same mark-to-tile ratio; only the tile size changes.
-  Preserve source proportions without cropping.
+  sidebar and mail-list tiles keep the same mark-to-tile ratio; only the tile
+  size changes. Preserve source proportions without cropping. Text-based legacy
+  marks use a surface-relative size instead of inheriting surrounding UI type.
 
 ## Desktop shell and geometry
 
