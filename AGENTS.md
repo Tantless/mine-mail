@@ -101,16 +101,25 @@ screen-specific copy, timing constants, pixel values, or speculative future plan
 ## Git commits
 
 - Read `GIT_COMMIT.md` before creating a commit.
-- Commit subjects must use `<type>: <中文说明>`. The description must be written
-  in Chinese; technical proper nouns, protocol names, file names, code symbols,
-  and version numbers may retain their original spelling.
+- Every agent-authored commit subject must exactly match
+  `<type>: <中文说明>`, including amended, reverted, and merge commits.
+- Everything after the colon must form a Chinese phrase. English is allowed only
+  for an indivisible technical proper noun, protocol name, file name, code
+  symbol, or version number embedded in an otherwise Chinese description.
+  English sentences, clauses, and action phrases are forbidden.
 - Use only the commit types defined in `GIT_COMMIT.md`: `feat`, `fix`, `ui`,
   `perf`, `refactor`, `docs`, `test`, `ci`, `build`, `chore`, `release`, and
   `revert`.
-- Use a lowercase type, an ASCII colon, and one space. Keep the subject specific,
-  omit terminal punctuation, and do not add scopes such as `feat(web):`.
+- Use a lowercase type, an ASCII colon, and one space. Never add a scope:
+  `ui: 调整邮件列表头像比例` is valid; `fix(ui): align mail-list avatar
+  proportions` is invalid.
+- Existing English commit history is not a template and does not override these
+  rules. Do not copy an English task title, branch name, or previous subject into
+  a new commit message.
 - Keep each commit focused on one primary intent. Before committing, inspect the
   staged diff and exclude unrelated user or agent changes.
+- After committing, inspect the actual subject with `git log -1 --format=%s`. If
+  it does not satisfy the Chinese format, amend it before handing off.
 
 ## Verification
 
