@@ -83,6 +83,9 @@ must be updated here when an intentional product change lands.
 
 - Inbox summaries contain only bounded list/preview data, never raw RFC822,
   complete HTML, or an unrestricted body payload.
+- The primary sidebar shows numeric badges only for unread Inbox messages and
+  Outbox items not yet confirmed sent. Zero counts are omitted. Starred,
+  Contacts, Sent, Drafts, Archive, and Trash never show numeric badges.
 - Selecting a message paints its cached preview immediately and hydrates the body
   silently. After synchronization, Rust may prefetch a recent bounded set of
   bounded-size bodies.

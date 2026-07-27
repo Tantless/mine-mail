@@ -27,6 +27,8 @@ const folders = [
   { id: "trash", label: "垃圾箱", icon: Trash },
 ];
 
+const foldersWithCounts = new Set(["inbox", "outbox"]);
+
 const themeOptions = [
   { id: "daylight", label: "日间", swatch: "theme-swatch--daylight" },
   { id: "night", label: "夜间", swatch: "theme-swatch--night" },
@@ -124,7 +126,7 @@ export function Sidebar({
                 >
                   <FolderIcon size={19} weight={selected ? "fill" : "regular"} />
                   <span>{folder.label}</span>
-                  {counts[folder.id] ? (
+                  {foldersWithCounts.has(folder.id) && counts[folder.id] ? (
                     <span className="folder-nav__count">{counts[folder.id]}</span>
                   ) : null}
                 </button>

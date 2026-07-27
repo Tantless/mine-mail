@@ -71,6 +71,45 @@ describe("Sidebar account switcher", () => {
     expect(onFolderChange).toHaveBeenCalledWith("contacts");
   });
 
+  it("shows counts only for the inbox and outbox", () => {
+    renderSidebar(1, {
+      counts: {
+        inbox: 5,
+        starred: 4,
+        contacts: 3,
+        sent: 104,
+        drafts: 15,
+        outbox: 2,
+        archive: 6,
+        trash: 7,
+      },
+    });
+
+    expect(
+      screen.getByText("收件箱").closest("button").querySelector(".folder-nav__count")
+        ?.textContent,
+    ).toBe("5");
+    expect(
+      screen
+        .getByText("发件队列")
+        .closest("button")
+        .querySelector(".folder-nav__count")?.textContent,
+    ).toBe("2");
+
+    for (const label of [
+      "已收藏",
+      "通讯录",
+      "已发送",
+      "草稿",
+      "归档",
+      "垃圾箱",
+    ]) {
+      expect(
+        screen.getByText(label).closest("button").querySelector(".folder-nav__count"),
+      ).toBeNull();
+    }
+  });
+
   it("keeps account and settings controls in a dedicated footer region", () => {
     renderSidebar(1);
 

@@ -2170,14 +2170,9 @@ export function App() {
   const folderCounts = useMemo(
     () => ({
       inbox: messages.filter((message) => !hasFlag(message, "\\Seen")).length,
-      starred: [...messages, ...sentMessages].filter((message) =>
-        hasFlag(message, "\\Flagged"),
-      ).length,
-      drafts: drafts.filter((draft) => draft.status !== "sent").length,
       outbox: outbox.filter((item) => item.status !== "sent").length,
-      sent: combinedSentMessages.length,
     }),
-    [combinedSentMessages.length, drafts, messages, outbox, sentMessages],
+    [messages, outbox],
   );
 
   const handleFolderChange = (folder) => {
