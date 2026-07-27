@@ -2421,13 +2421,16 @@ html[data-surface="new-mail-notification"] #root {
   --brand-mark-size: 80%;
 }
 
-.mail-row__avatar.profile-avatar--google,
+.mail-row__avatar.profile-avatar--google {
+  --brand-mark-size: 78%;
+}
+
 .mail-row__avatar.profile-avatar--openrouter {
   --brand-mark-size: 84%;
 }
 
 .mail-row__avatar.profile-avatar--figma {
-  --brand-mark-size: 88%;
+  --brand-mark-size: 96%;
 }
 
 .mail-row__avatar.profile-avatar--brand .brand-mark__letters {
