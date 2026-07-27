@@ -720,6 +720,16 @@ html[data-surface="new-mail-notification"] #root {
   min-height: 620px;
   isolation: isolate;
   overflow: hidden;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.app-shell input,
+.app-shell textarea,
+.app-shell [contenteditable="true"],
+.reader-panel--message .reader-scroll {
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 .unsupported-runtime {
@@ -2068,6 +2078,11 @@ html[data-surface="new-mail-notification"] #root {
   flex: 0 1 auto;
 }
 
+.reader-panel--message :is(button, [role="button"], summary) {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
 .reader-panel--empty {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -2352,42 +2367,33 @@ html[data-surface="new-mail-notification"] #root {
 }
 
 .profile-avatar--brand {
+  --brand-mark-size: 64%;
+  border: 1px solid
+    color-mix(
+      in srgb,
+      var(--brand-avatar-foreground) 18%,
+      var(--color-border)
+    );
+  background: var(--brand-avatar-background) !important;
+  color: var(--brand-avatar-foreground) !important;
   font-weight: 800;
   letter-spacing: -0.04em;
 }
 
-.profile-avatar--github {
-  background: #24292f !important;
-  color: #fff !important;
+.brand-mark__icon {
+  display: block;
+  width: var(--brand-mark-size);
+  height: var(--brand-mark-size);
+  flex: 0 0 auto;
 }
 
-.profile-avatar--github svg {
-  width: 62%;
-  height: 62%;
+.brand-mark__icon--original {
+  overflow: visible;
 }
 
-.profile-avatar--google {
-  border: 1px solid color-mix(in srgb, #4285f4 24%, var(--color-border));
-  background: #fff !important;
-  color: #4285f4 !important;
-}
-
-.profile-avatar--google .brand-mark__letters {
-  background: conic-gradient(from -45deg, #4285f4 0 25%, #34a853 0 45%, #fbbc05 0 65%, #ea4335 0 82%, #4285f4 0);
-  background-clip: text;
-  color: transparent;
+.brand-mark__letters {
   font-size: 1.35em;
-}
-
-.profile-avatar--netease,
-.profile-avatar--nintendo {
-  background: #d9271c !important;
-  color: #fff !important;
-}
-
-.profile-avatar--microsoft {
-  border: 1px solid color-mix(in srgb, #737373 22%, var(--color-border));
-  background: #fff !important;
+  line-height: 1;
 }
 
 .brand-mark__microsoft {
@@ -2403,14 +2409,33 @@ html[data-surface="new-mail-notification"] #root {
 .brand-mark__microsoft i:nth-child(3) { background: #00a4ef; }
 .brand-mark__microsoft i:nth-child(4) { background: #ffb900; }
 
-.profile-avatar--playstation {
-  background: #07439c !important;
-  color: #fff !important;
+.profile-avatar--google {
+  border-color: color-mix(in srgb, #4285f4 24%, var(--color-border));
 }
 
-.profile-avatar--nintendo .brand-mark__letters,
-.profile-avatar--playstation .brand-mark__letters {
-  font-size: 0.78em;
+.profile-avatar--figma {
+  --brand-mark-size: 72%;
+}
+
+.mail-row__avatar.profile-avatar--brand {
+  --brand-mark-size: 80%;
+}
+
+.mail-row__avatar.profile-avatar--google,
+.mail-row__avatar.profile-avatar--openrouter {
+  --brand-mark-size: 84%;
+}
+
+.mail-row__avatar.profile-avatar--figma {
+  --brand-mark-size: 88%;
+}
+
+.mail-row__avatar.profile-avatar--brand .brand-mark__letters {
+  font-size: 1.58em;
+}
+
+.mail-row__avatar.profile-avatar--microsoft .brand-mark__microsoft {
+  width: 60%;
 }
 
 .avatar-picker {

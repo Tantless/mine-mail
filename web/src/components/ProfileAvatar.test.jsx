@@ -6,6 +6,7 @@ import {
   avatarToneForEmail,
   trustedBrandForEmail,
 } from "./ProfileAvatar.jsx";
+import { brandRules } from "./brandAvatars.js";
 
 describe("ProfileAvatar", () => {
   afterEach(() => cleanup());
@@ -29,7 +30,66 @@ describe("ProfileAvatar", () => {
     expect(trustedBrandForEmail("notifications@github.com")?.id).toBe("github");
     expect(trustedBrandForEmail("security@accounts.google.com")?.id).toBe("google");
     expect(trustedBrandForEmail("notice@163.com")?.id).toBe("netease");
+    expect(trustedBrandForEmail("updates@email.openai.com")?.id).toBe("openai");
+    expect(trustedBrandForEmail("news@figma.com")?.id).toBe("figma");
+    expect(trustedBrandForEmail("hello@unity3d.com")?.id).toBe("unity");
+    expect(trustedBrandForEmail("updates@openrouter.ai")?.id).toBe(
+      "openrouter",
+    );
+    expect(trustedBrandForEmail("hello@getzep.com")?.id).toBe("zep");
+    expect(trustedBrandForEmail("notice@sc.mail.deepseek.com")?.id).toBe(
+      "deepseek",
+    );
     expect(trustedBrandForEmail("fake@github.com.example.org")).toBeNull();
+    expect(trustedBrandForEmail("fake@c-openai.com")).toBeNull();
+  });
+
+  it("renders bundled vector marks for recognized brands", () => {
+    const { container, rerender } = render(
+      <ProfileAvatar email="news@figma.com" label="Figma" />,
+    );
+
+    expect(
+      container.querySelectorAll(".profile-avatar--figma svg path"),
+    ).toHaveLength(5);
+    expect(screen.getByLabelText("Figma")).toBeTruthy();
+
+    rerender(<ProfileAvatar email="updates@email.openai.com" label="OpenAI" />);
+    expect(
+      container.querySelector(".profile-avatar--openai .brand-mark__icon--original"),
+    ).toBeTruthy();
+    expect(screen.getByLabelText("OpenAI")).toBeTruthy();
+
+    rerender(<ProfileAvatar email="security@accounts.google.com" label="Google" />);
+    expect(
+      Array.from(
+        container.querySelectorAll(".profile-avatar--google svg path"),
+        (path) => path.getAttribute("fill"),
+      ),
+    ).toEqual(["#4285f4", "#34a853", "#fbbc05", "#eb4335"]);
+  });
+
+  it("keeps the built-in brand registry complete and unambiguous", () => {
+    const ids = brandRules.map((brand) => brand.id);
+    const domains = brandRules.flatMap((brand) => brand.domains);
+
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(new Set(domains).size).toBe(domains.length);
+    expect(brandRules.length).toBeGreaterThan(60);
+    for (const brand of brandRules) {
+      expect(brand.domains.length).toBeGreaterThan(0);
+      expect(brand.background).toMatch(/^#[\da-f]{3,6}$/i);
+      expect(brand.foreground).toMatch(/^#[\da-f]{3,6}$/i);
+      expect(
+        Boolean(
+          brand.originalMark ||
+            brand.simpleIcon ||
+            brand.Icon ||
+            brand.mark ||
+            brand.letters,
+        ),
+      ).toBe(true);
+    }
   });
 
   it("prefers a local custom avatar over a trusted brand", () => {

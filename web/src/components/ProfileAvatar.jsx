@@ -1,23 +1,7 @@
 import { PencilSimple, X } from "@phosphor-icons/react";
 import { initials } from "../utils/formatters.js";
+import { brandRules } from "./brandAvatars.js";
 import { TooltipTarget } from "./Tooltip.jsx";
-
-const brandRules = [
-  { id: "github", label: "GitHub", domains: ["github.com"] },
-  { id: "google", label: "Google", domains: ["google.com", "gmail.com"] },
-  {
-    id: "netease",
-    label: "网易邮箱",
-    domains: ["163.com", "126.com", "yeah.net", "netease.com"],
-  },
-  {
-    id: "microsoft",
-    label: "Microsoft",
-    domains: ["microsoft.com", "outlook.com", "live.com", "windows.com"],
-  },
-  { id: "nintendo", label: "Nintendo", domains: ["nintendo.com", "nintendo.net"] },
-  { id: "playstation", label: "PlayStation", domains: ["playstation.com", "sony.com"] },
-];
 
 export function normalizeAvatarEmail(value = "") {
   return (value ?? "").trim().toLowerCase();
@@ -54,24 +38,56 @@ export function trustedBrandForEmail(email) {
 }
 
 function BrandMark({ brand }) {
-  if (brand.id === "github") {
+  if (brand.originalMark) {
     return (
-      <svg viewBox="0 0 24 24" aria-hidden="true">
-        <path
-          fill="currentColor"
-          d="M12 .8a11.4 11.4 0 0 0-3.6 22.2c.6.1.8-.2.8-.5v-2.2c-3.3.7-4-1.4-4-1.4-.5-1.4-1.3-1.8-1.3-1.8-1.1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1.1 1.8 2.8 1.3 3.5 1 .1-.8.4-1.3.8-1.6-2.7-.3-5.5-1.3-5.5-5.7 0-1.3.5-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.2 1.2a11 11 0 0 1 5.8 0c2.2-1.5 3.2-1.2 3.2-1.2.6 1.6.2 2.8.1 3.1.8.8 1.2 1.8 1.2 3.1 0 4.4-2.8 5.4-5.5 5.7.4.4.8 1.1.8 2.2v3.3c0 .3.2.6.8.5A11.4 11.4 0 0 0 12 .8Z"
-        />
+      <svg
+        className="brand-mark__icon brand-mark__icon--original"
+        viewBox={brand.originalMark.viewBox}
+        aria-hidden="true"
+      >
+        {brand.originalMark.paths.map((path, index) => (
+          <path key={`${brand.id}-${index}`} fill={path.fill} d={path.d} />
+        ))}
       </svg>
     );
   }
-  if (brand.id === "microsoft") {
+
+  if (brand.simpleIcon) {
+    return (
+      <svg
+        className="brand-mark__icon"
+        viewBox="0 0 24 24"
+        aria-hidden="true"
+      >
+        <path fill="currentColor" d={brand.simpleIcon.path} />
+      </svg>
+    );
+  }
+
+  if (brand.Icon) {
+    const Icon = brand.Icon;
+    return (
+      <Icon
+        className="brand-mark__icon"
+        weight={brand.iconWeight}
+        aria-hidden="true"
+      />
+    );
+  }
+
+  if (brand.mark === "microsoft") {
     return (
       <span className="brand-mark__microsoft" aria-hidden="true">
         <i /><i /><i /><i />
       </span>
     );
   }
-  return <span className="brand-mark__letters">{{ google: "G", netease: "易", nintendo: "N", playstation: "PS" }[brand.id]}</span>;
+
+  return (
+    <span className="brand-mark__letters" aria-hidden="true">
+      {brand.letters}
+    </span>
+  );
 }
 
 export function ProfileAvatar({ email, label, customSrc, className = "" }) {
@@ -86,9 +102,21 @@ export function ProfileAvatar({ email, label, customSrc, className = "" }) {
   ]
     .filter(Boolean)
     .join(" ");
+  const brandStyle = brand
+    ? {
+        "--brand-avatar-background": brand.background,
+        "--brand-avatar-foreground": brand.foreground,
+      }
+    : undefined;
 
   return (
-    <span className={classes} aria-label={customSrc ? `${label} 的自定义头像` : brand?.label || undefined}>
+    <span
+      className={classes}
+      style={brandStyle}
+      aria-label={
+        customSrc ? `${label} 的自定义头像` : brand?.label || undefined
+      }
+    >
       {customSrc ? (
         <img src={customSrc} alt="" />
       ) : brand ? (

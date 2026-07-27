@@ -87,6 +87,9 @@ weight; it must not create a separate page layout or component family.
   `EditableProfileAvatar` instead of recreating their states.
 - Avatar resolution is local-first: exact local override, known-domain brand map,
   then deterministic initials. Never query a remote avatar service.
+- Known-domain brands use current, unmodified local vector marks when available.
+  Size them optically for each avatar surface: compact mail-list marks may fill
+  more of the tile, but must preserve the source proportions without cropping.
 
 ## Desktop shell and geometry
 
@@ -189,6 +192,10 @@ family. Preserve the relative hierarchy when tuning optical values.
 
 - Text inputs use an inset rounded shell; the visible shell and the actual hit
   area are one focus surface.
+- App-owned chrome, navigation, list rows, settings copy, dialogs, and other
+  interface labels are not text-selectable. Text entry surfaces and the opened
+  message's reader content remain selectable; reader controls and the decorative
+  empty-reader scene do not.
 - Use `ThemedSelect` for visible choices. Do not expose an operating-system select
   popup or browser validation bubble.
 - Menus/listboxes own hover, active, selected, disabled, keyboard, and focus
