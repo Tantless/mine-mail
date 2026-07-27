@@ -25,3 +25,14 @@ describe("text selection policy", () => {
     ).toMatch(/^\s*user-select:\s*none;/m);
   });
 });
+
+describe("brand avatar sizing policy", () => {
+  it("shares the reader mark proportions with compact mail-list avatars", () => {
+    expect(
+      declarationsFor("\\.mail-row__avatar\\.profile-avatar--brand"),
+    ).toBeUndefined();
+    expect(styles).not.toMatch(
+      /\.mail-row__avatar\.profile-avatar--(?:google|openrouter|figma|microsoft)/,
+    );
+  });
+});

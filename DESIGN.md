@@ -88,8 +88,9 @@ weight; it must not create a separate page layout or component family.
 - Avatar resolution is local-first: exact local override, known-domain brand map,
   then deterministic initials. Never query a remote avatar service.
 - Known-domain brands use current, unmodified local vector marks when available.
-  Size them optically for each avatar surface: compact mail-list marks may fill
-  more of the tile, but must preserve the source proportions without cropping.
+  The reader sender tile is the reference for internal clear space. Compact
+  mail-list tiles keep the same mark-to-tile ratio; only the tile size changes.
+  Preserve source proportions without cropping.
 
 ## Desktop shell and geometry
 
