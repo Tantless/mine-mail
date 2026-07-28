@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "verify:production-bundle": "node ./scripts/verify-production-bundle.mjs",
     "preview": "vite preview",
     "test": "vitest run",
     "tauri": "tauri",
