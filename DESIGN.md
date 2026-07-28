@@ -369,17 +369,37 @@ family. Preserve the relative hierarchy when tuning optical values.
   Emphasis uses real semantic bold, italic, and underline markup. At the start of
   a paragraph, `1.` followed by Space starts a numbered list; Enter continues the
   sequence, and Enter on the next empty item returns to an ordinary paragraph.
-- The footer contains the **信纸** picker and the adjacent **仅编辑** /
-  **随信发送** choice. **无**, **横线纸**, and **方格纸** use restrained,
-  theme-aware paper lines while preserving editor focus and text contrast.
+  An empty authored editor shows only its writing surface and caret; it has no
+  instructional body placeholder.
+- The footer starts with one compact icon-only **信纸** toggle. Its neutral state
+  means no paper; enabling it reveals two 34 px pill-shaped, icon-only segmented
+  controls for **横线纸 / 方格纸** and **仅编辑 / 随信发送**. Each segmented
+  control has one animated accent thumb, a clear selected state, portal tooltips,
+  and an accessible text name. The pencil means the paper remains an editing aid;
+  the paper plane means it is sent with the message. The adjacent save-status
+  slot has a fixed width so status-copy changes never move these controls.
+  **无**, **横线纸**, and **方格纸** use restrained, theme-aware paper lines
+  while preserving editor focus and text contrast.
   Every stationery mode reuses the same rounded editor frame, spacing, and focus
   treatment; switching paper never changes the editor geometry or adds an inner
   rectangular focus frame.
   Paper rules belong to the editor's scrolling content, so text and rules move as
-  one surface. Lined paper starts its first visible rule after the first writing
-  row. Grid paper has a complete outer frame and a document-scoped cell rhythm
-  calibrated to the editor base size and available width so each Han character
-  advances by one cell. Inline size formatting does not rescale the whole sheet.
+  one surface. The paper area leaves a quiet inset from the rounded editor edge
+  and extends a few pixels beyond the shared writing origin; plain, lined, and
+  grid modes therefore keep the same first-character position. Lined paper starts
+  its first visible rule after the first writing row. Grid paper has a complete
+  outer frame and a document-scoped cell rhythm calibrated to the editor base
+  size and available width. Each Han character occupies and centers in one cell;
+  consecutive Latin letters or numbers group in runs of at most three per cell,
+  while spaces and special characters each occupy one cell. Inline size
+  formatting does not rescale the whole sheet.
+  At the beginning of an ordinary paragraph, Tab applies one semantic first-line
+  indent without moving focus out of the editor; Shift+Tab removes it. New
+  paragraphs inherit the current paragraph's indent. Plain and lined paper use a
+  2 em stop, equal to approximately two base-size Han characters; grid paper maps
+  the same semantic indent to exactly two cells. Grid character-cell decorations
+  reset inherited text indentation so long indented paragraphs remain aligned
+  when they wrap.
 - Ordinary managed attachments appear in a compact compose attachment row/list
   with safe name, type, exact size, add/remove progress, stale/conflict feedback,
   and keyboard-operable removal. Adding and removing use the same save-state

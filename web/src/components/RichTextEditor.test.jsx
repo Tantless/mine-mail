@@ -16,6 +16,7 @@ import {
   composeHtmlToEditorHtml,
   createComposeEditorExtensions,
   getComposeToolbarState,
+  groupGridTextTokens,
   normalizeComposeHtml,
   plainTextFromDocument,
 } from "./RichTextEditor.jsx";
@@ -59,6 +60,29 @@ function sendEnter(editor) {
   Object.defineProperties(event, {
     keyCode: { value: 13 },
     which: { value: 13 },
+  });
+  let handled = false;
+  editor.view.someProp("handleKeyDown", (handler) => {
+    if (handler(editor.view, event)) {
+      handled = true;
+      return true;
+    }
+    return false;
+  });
+  return handled;
+}
+
+function sendTab(editor, { shiftKey = false } = {}) {
+  const event = new KeyboardEvent("keydown", {
+    bubbles: true,
+    cancelable: true,
+    code: "Tab",
+    key: "Tab",
+    shiftKey,
+  });
+  Object.defineProperties(event, {
+    keyCode: { value: 9 },
+    which: { value: 9 },
   });
   let handled = false;
   editor.view.someProp("handleKeyDown", (handler) => {
@@ -115,6 +139,8 @@ it("keeps initialization and semantically equivalent controlled content silent",
 
   const editor = screen.getByRole("textbox", { name: "邮件正文" });
   await waitFor(() => expect(editor.textContent).toBe(""));
+  expect(editor.parentElement?.hasAttribute("data-placeholder")).toBe(false);
+  expect(editor.parentElement?.hasAttribute("data-empty")).toBe(false);
   expect(onChange).not.toHaveBeenCalled();
 
   view.rerender(
@@ -246,6 +272,19 @@ it("keeps only the editor formatting allowlist and converts safe text styles", (
   ).toContain('style="font-family: SimSun; font-size: 16px;"');
 });
 
+it("keeps only the fixed semantic first-line indent", () => {
+  const cleaned = normalizeComposeHtml(
+    '<p data-first-line-indent="tab" style="text-indent: 4em; color: red">缩进</p><p data-first-line-indent="bad" style="text-indent: 9em">普通</p>',
+  );
+
+  expect(cleaned).toContain('data-first-line-indent="tab"');
+  expect(cleaned).toContain("text-indent: 2em");
+  expect(cleaned).not.toContain("text-indent: 4em");
+  expect(cleaned).not.toContain("color:");
+  expect(cleaned).not.toContain("9em");
+  expect(cleaned).not.toContain('data-first-line-indent="bad"');
+});
+
 it("formats the active selection without the deprecated browser command API", async () => {
   const onChange = vi.fn();
   const onEditorReady = vi.fn();
@@ -265,7 +304,10 @@ it("formats the active selection without the deprecated browser command API", as
 
   await user.click(screen.getByRole("button", { name: "粗体" }));
 
-  await waitFor(() => expect(editor.innerHTML).toContain("<strong>正文</strong>"));
+  await waitFor(() => {
+    const strong = editor.querySelector("strong");
+    expect(strong?.textContent).toBe("正文");
+  });
   expect(onChange).toHaveBeenLastCalledWith(
     expect.objectContaining({
       format: expect.objectContaining({
@@ -308,6 +350,202 @@ it("changes only the selected text size without relaying out the paper", async (
   expect(firstLine.innerHTML).not.toContain("font-size");
   expect(shell.style.getPropertyValue("--compose-editor-font-size")).toBe("");
   expect(Number(shell.dataset.paperCellSize)).toBe(28);
+});
+
+it("groups Latin input by three cells while keeping Han and spaces independent", () => {
+  expect(groupGridTextTokens("asd1a暗色 的!")).toEqual([
+    { from: 0, to: 3, kind: "latin", text: "asd" },
+    { from: 3, to: 5, kind: "latin", text: "1a" },
+    { from: 5, to: 6, kind: "han", text: "暗" },
+    { from: 6, to: 7, kind: "han", text: "色" },
+    { from: 7, to: 8, kind: "space", text: " " },
+    { from: 8, to: 9, kind: "han", text: "的" },
+    { from: 9, to: 10, kind: "special", text: "!" },
+  ]);
+});
+
+it("gives every typed grid-paper space one complete independent cell", async () => {
+  const onEditorReady = vi.fn();
+  render(
+    <RichTextEditor
+      bodyText=""
+      format={{ ...emptyFormat, stationery: "grid" }}
+      stationery="grid"
+      onChange={vi.fn()}
+      onEditorReady={onEditorReady}
+    />,
+  );
+
+  const editor = screen.getByRole("textbox", { name: "邮件正文" });
+  const engine = onEditorReady.mock.calls.at(-1)[0];
+  act(() => sendTextInput(engine, "a  \u00a0暗"));
+
+  await waitFor(() => {
+    const tokens = Array.from(
+      editor.querySelectorAll(".compose-grid-cell-token"),
+    );
+    expect(tokens.map((token) => token.textContent)).toEqual([
+      "a",
+      " ",
+      " ",
+      "\u00a0",
+      "暗",
+    ]);
+    expect(tokens.map((token) => token.dataset.gridTokenKind)).toEqual([
+      "latin",
+      "space",
+      "space",
+      "space",
+      "han",
+    ]);
+  });
+  expect(editor.textContent).toBe("a  \u00a0暗");
+});
+
+it("keeps a long legacy-indented paragraph cell-aligned after switching to grid paper", async () => {
+  const text = "长段落".repeat(32);
+  const format = {
+    ...emptyFormat,
+    body_html: `<p data-first-line-indent="tab" style="text-indent: 4em">${text}</p>`,
+    stationery: "lined",
+  };
+  const view = render(
+    <RichTextEditor
+      bodyText={text}
+      format={format}
+      stationery="lined"
+      onChange={vi.fn()}
+    />,
+  );
+  const editor = screen.getByRole("textbox", { name: "邮件正文" });
+  expect(editor.querySelector("p")?.style.textIndent).toBe("2em");
+
+  view.rerender(
+    <RichTextEditor
+      bodyText={text}
+      format={{ ...format, stationery: "grid" }}
+      stationery="grid"
+      onChange={vi.fn()}
+    />,
+  );
+
+  await waitFor(() => {
+    expect(
+      editor.closest(".compose-editor-shell")?.dataset.stationery,
+    ).toBe("grid");
+    expect(editor.querySelector("p")?.dataset.firstLineIndent).toBe("tab");
+    expect(
+      editor.querySelectorAll(".compose-grid-cell-token"),
+    ).toHaveLength(Array.from(text).length);
+  });
+});
+
+it("keeps Han centered after Latin text is typed into grid paper", async () => {
+  const onEditorReady = vi.fn();
+  render(
+    <RichTextEditor
+      bodyText=""
+      format={{ ...emptyFormat, stationery: "grid" }}
+      stationery="grid"
+      onChange={vi.fn()}
+      onEditorReady={onEditorReady}
+    />,
+  );
+
+  const editor = screen.getByRole("textbox", { name: "邮件正文" });
+  const engine = onEditorReady.mock.calls.at(-1)[0];
+  act(() => sendTextInput(engine, "asd1a暗色"));
+
+  await waitFor(() => {
+    const tokens = Array.from(
+      editor.querySelectorAll(".compose-grid-cell-token"),
+    );
+    expect(tokens.map((token) => token.textContent)).toEqual([
+      "asd",
+      "1a",
+      "暗",
+      "色",
+    ]);
+    expect(tokens.map((token) => token.dataset.gridTokenKind)).toEqual([
+      "latin",
+      "latin",
+      "han",
+      "han",
+    ]);
+  });
+  expect(editor.textContent).toBe("asd1a暗色");
+});
+
+it("uses Tab for first-line indent and inherits it across new paragraphs", () => {
+  const editor = createEngine("<p>第一段</p>");
+  editor.commands.setTextSelection(1);
+
+  expect(sendTab(editor)).toBe(true);
+  expect(editor.view.dom.querySelector("p")?.dataset.firstLineIndent).toBe(
+    "tab",
+  );
+  expect(editor.getHTML()).toContain('data-first-line-indent="tab"');
+  expect(editor.getHTML()).toContain("text-indent: 2em");
+
+  editor.commands.setTextSelection(editor.state.doc.content.size - 1);
+  expect(sendEnter(editor)).toBe(true);
+  sendTextInput(editor, "第二段");
+  expect(sendEnter(editor)).toBe(true);
+
+  const paragraphs = Array.from(editor.view.dom.querySelectorAll("p"));
+  expect(paragraphs).toHaveLength(3);
+  expect(
+    paragraphs.map((paragraph) => paragraph.dataset.firstLineIndent),
+  ).toEqual(["tab", "tab", "tab"]);
+  expect(editor.state.selection.$from.parentOffset).toBe(0);
+
+  expect(sendTab(editor, { shiftKey: true })).toBe(true);
+  expect(
+    editor.view.dom.querySelectorAll("p")[2].dataset.firstLineIndent,
+  ).toBeUndefined();
+  editor.destroy();
+});
+
+it("keeps real keyboard focus in the editor when Tab indents a paragraph", async () => {
+  const onChange = vi.fn();
+  const onEditorReady = vi.fn();
+  const user = userEvent.setup();
+  render(
+    <RichTextEditor
+      bodyText="第一段"
+      format={emptyFormat}
+      stationery="none"
+      onChange={onChange}
+      onEditorReady={onEditorReady}
+    />,
+  );
+  const editorElement = screen.getByRole("textbox", { name: "邮件正文" });
+  const editor = onEditorReady.mock.calls.at(-1)[0];
+  act(() => editor.commands.setTextSelection(1));
+  editorElement.focus();
+
+  await user.keyboard("{Tab}");
+
+  expect(document.activeElement).toBe(editorElement);
+  expect(editorElement.querySelector("p")?.dataset.firstLineIndent).toBe(
+    "tab",
+  );
+  expect(onChange).toHaveBeenLastCalledWith(
+    expect.objectContaining({
+      format: expect.objectContaining({
+        body_html: expect.stringContaining('data-first-line-indent="tab"'),
+      }),
+    }),
+  );
+});
+
+it("does not turn Tab into paragraph indent away from the paragraph start", () => {
+  const editor = createEngine("<p>正文</p>");
+  editor.commands.setTextSelection(2);
+
+  expect(sendTab(editor)).toBe(false);
+  expect(editor.getHTML()).toBe("<p>正文</p>");
+  editor.destroy();
 });
 
 it("keeps the active paragraph and selection after changing alignment", async () => {

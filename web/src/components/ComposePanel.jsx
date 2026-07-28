@@ -9,14 +9,16 @@ import {
 } from "react";
 import {
   CaretDown,
-  Check,
   DotsSix,
   File,
   FloppyDisk,
+  GridFour,
   Notebook,
   Paperclip,
   PaperPlaneTilt,
+  PencilSimpleLine,
   Quotes,
+  Rows,
   Trash,
   UserPlus,
   X,
@@ -50,10 +52,13 @@ const dialogFocusableSelector = [
   "[contenteditable='true']",
   "[tabindex]:not([tabindex='-1'])",
 ].join(",");
-const stationeryOptions = [
-  { value: "none", label: "无", description: "纯净编辑区" },
-  { value: "lined", label: "横线纸", description: "适合长信与随笔" },
-  { value: "grid", label: "方格纸", description: "适合中文书写" },
+const stationeryTypeOptions = [
+  { value: "lined", label: "横线纸", icon: Rows },
+  { value: "grid", label: "方格纸", icon: GridFour },
+];
+const stationeryDeliveryOptions = [
+  { value: "edit", label: "仅编辑时显示信纸", icon: PencilSimpleLine },
+  { value: "send", label: "将信纸随邮件发送", icon: PaperPlaneTilt },
 ];
 
 function formatReplyAddress(address) {
@@ -256,120 +261,135 @@ function minimizedGeometry() {
   };
 }
 
-function StationeryControl({ format, disabled, onChange }) {
-  const rootRef = useRef(null);
-  const triggerRef = useRef(null);
-  const [open, setOpen] = useState(false);
-  const stationery = format?.stationery || "none";
-  const selected =
-    stationeryOptions.find((option) => option.value === stationery) ||
-    stationeryOptions[0];
-  const sendStationery = stationery !== "none" && format?.send_stationery === true;
-
-  useEffect(() => {
-    if (!open) return undefined;
-    const closeOnOutside = (event) => {
-      if (!rootRef.current?.contains(event.target)) setOpen(false);
-    };
-    document.addEventListener("pointerdown", closeOnOutside);
-    return () => document.removeEventListener("pointerdown", closeOnOutside);
-  }, [open]);
-
-  const chooseStationery = (next) => {
-    onChange({
-      stationery: next,
-      send_stationery: next === "none" ? false : format?.send_stationery === true,
-    });
-    setOpen(false);
-    triggerRef.current?.focus();
-  };
+function ComposeIconSegment({
+  label,
+  value,
+  options,
+  disabled,
+  onChange,
+}) {
+  const selectedIndex = Math.max(
+    0,
+    options.findIndex((option) => option.value === value),
+  );
 
   return (
     <div
-      ref={rootRef}
-      className="compose-stationery-control"
-      data-open={open}
-      onKeyDown={(event) => {
-        if (event.key !== "Escape" || !open) return;
-        event.preventDefault();
-        event.stopPropagation();
-        setOpen(false);
-        triggerRef.current?.focus();
-      }}
+      className="compose-icon-segment"
+      data-position={selectedIndex}
+      role="radiogroup"
+      aria-label={label}
     >
-      <button
-        ref={triggerRef}
-        className="compose-stationery-trigger"
-        type="button"
-        aria-label={`信纸主题：${selected.label}`}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        disabled={disabled}
-        onClick={() => setOpen((current) => !current)}
-      >
-        <Notebook size={17} />
-        <span>信纸</span>
-        <strong>{selected.label}</strong>
-        <CaretDown
-          className="compose-stationery-trigger__caret"
-          size={11}
-          weight="bold"
-        />
-      </button>
+      <span className="compose-icon-segment__thumb" aria-hidden="true" />
+      {options.map((option, optionIndex) => {
+        const OptionIcon = option.icon;
+        const selected = option.value === value;
+        return (
+          <IconButton
+            key={option.value}
+            className="compose-icon-segment__option"
+            label={option.label}
+            role="radio"
+            aria-checked={selected}
+            data-selected={selected}
+            tabIndex={selected ? 0 : -1}
+            disabled={disabled}
+            onClick={() => onChange(option.value)}
+            onKeyDown={(event) => {
+              const direction =
+                event.key === "ArrowLeft" || event.key === "ArrowUp"
+                  ? -1
+                  : event.key === "ArrowRight" || event.key === "ArrowDown"
+                    ? 1
+                    : 0;
+              const nextIndex =
+                event.key === "Home"
+                  ? 0
+                  : event.key === "End"
+                    ? options.length - 1
+                    : direction
+                      ? (optionIndex + direction + options.length) %
+                        options.length
+                      : -1;
+              if (nextIndex < 0) return;
+              event.preventDefault();
+              const group = event.currentTarget.closest(
+                ".compose-icon-segment",
+              );
+              onChange(options[nextIndex].value);
+              window.requestAnimationFrame(() =>
+                group?.querySelectorAll('[role="radio"]')[nextIndex]?.focus(),
+              );
+            }}
+          >
+            <OptionIcon
+              size={16}
+              weight={selected ? "bold" : "regular"}
+            />
+          </IconButton>
+        );
+      })}
+    </div>
+  );
+}
 
-      {open ? (
-        <div
-          className="compose-stationery-menu"
-          role="menu"
-          aria-label="选择信纸主题"
-        >
-          <div className="compose-stationery-menu__heading">
-            <strong>信纸主题</strong>
-            <span>改变写信时的纸面</span>
-          </div>
-          {stationeryOptions.map((option) => (
-            <button
-              key={option.value}
-              type="button"
-              role="menuitemradio"
-              aria-checked={option.value === stationery}
-              className="compose-stationery-option"
-              data-selected={option.value === stationery}
-              onClick={() => chooseStationery(option.value)}
-            >
-              <span
-                className="compose-stationery-option__preview"
-                data-stationery={option.value}
-                aria-hidden="true"
-              />
-              <span className="compose-stationery-option__copy">
-                <strong>{option.label}</strong>
-                <small>{option.description}</small>
-              </span>
-              <Check size={15} weight="bold" aria-hidden="true" />
-            </button>
-          ))}
+function StationeryControl({ format, disabled, onChange }) {
+  const stationery = format?.stationery || "none";
+  const enabled = stationery !== "none";
+  const sendStationery = stationery !== "none" && format?.send_stationery === true;
+  const lastStationeryRef = useRef(enabled ? stationery : "lined");
+
+  useEffect(() => {
+    if (enabled) lastStationeryRef.current = stationery;
+  }, [enabled, stationery]);
+
+  return (
+    <div
+      className="compose-stationery-control"
+      data-enabled={enabled}
+    >
+      <IconButton
+        className="compose-stationery-toggle"
+        label={enabled ? "关闭信纸" : "启用信纸"}
+        aria-pressed={enabled}
+        disabled={disabled}
+        onClick={() =>
+          onChange(
+            enabled
+              ? { stationery: "none", send_stationery: false }
+              : {
+                  stationery: lastStationeryRef.current,
+                  send_stationery: false,
+                },
+          )
+        }
+      >
+        <Notebook
+          size={17}
+          weight={enabled ? "fill" : "regular"}
+        />
+      </IconButton>
+
+      {enabled ? (
+        <div className="compose-stationery-control__options">
+          <ComposeIconSegment
+            label="信纸类型"
+            value={stationery}
+            options={stationeryTypeOptions}
+            disabled={disabled}
+            onChange={(next) => onChange({ stationery: next })}
+          />
+          <ComposeIconSegment
+            label="信纸发送方式"
+            value={sendStationery ? "send" : "edit"}
+            options={stationeryDeliveryOptions}
+            disabled={disabled}
+            onChange={(next) =>
+              onChange({ send_stationery: next === "send" })
+            }
+          />
         </div>
       ) : null}
-
-      <div className="compose-stationery-mode" aria-label="信纸发送方式">
-        <button
-          type="button"
-          data-selected={!sendStationery}
-          disabled={disabled}
-          onClick={() => onChange({ send_stationery: false })}
-        >
-          仅编辑
-        </button>
-        <button
-          type="button"
-          data-selected={sendStationery}
-          disabled={disabled || stationery === "none"}
-          onClick={() => onChange({ send_stationery: true })}
-        >
-          随信发送
-        </button>
-      </div>
     </div>
   );
 }

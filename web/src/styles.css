@@ -3746,9 +3746,16 @@ html[data-surface="new-mail-notification"] #root {
 }
 
 .compose-save-state {
-  margin-right: 6px;
+  display: inline-flex;
+  width: 74px;
+  flex: 0 0 74px;
+  align-items: center;
+  justify-content: center;
+  margin: 0 2px;
   color: var(--color-text-muted);
   font-size: 10px;
+  text-align: center;
+  white-space: nowrap;
 }
 
 .compose-save-state[data-state="saving"],
@@ -4284,8 +4291,18 @@ html[data-surface="new-mail-notification"] #root {
 .compose-editor-shell {
   --compose-editor-font-size: 14px;
   --compose-paper-cell-size: 28px;
+  --compose-paper-grid-min-height: 112px;
   --compose-paper-line-size: calc(var(--compose-editor-font-size) * 2.2);
-  --compose-paper-top-inset: calc(var(--compose-editor-font-size) * 0.75);
+  --compose-editor-text-inline-inset: 20px;
+  --compose-editor-text-block-inset: 18px;
+  --compose-paper-inline-inset: 12px;
+  --compose-paper-block-inset: 10px;
+  --compose-paper-inline-overhang: calc(
+    var(--compose-editor-text-inline-inset) - var(--compose-paper-inline-inset)
+  );
+  --compose-paper-block-overhang: calc(
+    var(--compose-editor-text-block-inset) - var(--compose-paper-block-inset)
+  );
   position: relative;
   flex: 1 1 auto;
   min-height: 150px;
@@ -4328,16 +4345,29 @@ html[data-surface="new-mail-notification"] #root {
   background: var(--compose-paper-surface);
 }
 
-.compose-editor-shell[data-stationery="lined"] .compose-rich-editor {
-  padding-top: var(--compose-paper-top-inset);
-  padding-bottom: var(--compose-paper-line-size);
+.compose-editor-shell[data-stationery="lined"]
+  .compose-rich-editor
+  > .ProseMirror {
+  width: calc(100% + var(--compose-paper-inline-overhang) * 2);
+  min-height: calc(
+    100% + var(--compose-editor-text-block-inset) +
+      var(--compose-paper-block-overhang)
+  );
+  margin:
+    calc(var(--compose-paper-block-overhang) * -1)
+    calc(var(--compose-paper-inline-overhang) * -1)
+    calc(var(--compose-editor-text-block-inset) * -1);
+  padding:
+    var(--compose-paper-block-overhang)
+    var(--compose-paper-inline-overhang) 0;
   background-color: var(--compose-paper-surface);
   background-image:
     linear-gradient(
       to bottom,
       var(--compose-paper-surface) 0,
-      var(--compose-paper-surface) calc(var(--compose-paper-top-inset) + 1px),
-      transparent calc(var(--compose-paper-top-inset) + 1px)
+      var(--compose-paper-surface)
+        calc(var(--compose-paper-block-overhang) + 1px),
+      transparent calc(var(--compose-paper-block-overhang) + 1px)
     ),
     repeating-linear-gradient(
       to bottom,
@@ -4346,18 +4376,21 @@ html[data-surface="new-mail-notification"] #root {
       var(--compose-paper-rule) calc(var(--compose-paper-line-size) - 1px),
       var(--compose-paper-rule) var(--compose-paper-line-size)
     );
-  background-position: 0 0, 0 var(--compose-paper-top-inset);
+  background-position: 0 0, 0 var(--compose-paper-block-overhang);
   background-repeat: no-repeat, repeat;
   background-attachment: local, local;
   line-height: var(--compose-paper-line-size);
 }
 
-.compose-editor-shell[data-stationery="grid"] .compose-rich-editor {
-  padding: 0
-    calc(
-      (var(--compose-paper-cell-size) - var(--compose-editor-font-size)) / 2
-    )
-    var(--compose-paper-cell-size);
+.compose-editor-shell[data-stationery="grid"]
+  .compose-rich-editor
+  > .ProseMirror {
+  width: calc(100% + var(--compose-paper-inline-overhang) * 2);
+  min-height: var(--compose-paper-grid-min-height);
+  margin:
+    calc(var(--compose-paper-block-overhang) * -1)
+    calc(var(--compose-paper-inline-overhang) * -1)
+    calc(var(--compose-editor-text-block-inset) * -1);
   background-color: var(--compose-paper-surface);
   background-image:
     linear-gradient(to right, var(--compose-paper-rule) 1px, transparent 1px),
@@ -4367,9 +4400,7 @@ html[data-surface="new-mail-notification"] #root {
     var(--compose-paper-cell-size) var(--compose-paper-cell-size),
     var(--compose-paper-cell-size) var(--compose-paper-cell-size);
   background-attachment: local, local;
-  letter-spacing: calc(
-    var(--compose-paper-cell-size) - var(--compose-editor-font-size)
-  );
+  box-shadow: inset 0 0 0 1px var(--compose-paper-rule);
   line-height: var(--compose-paper-cell-size);
 }
 
@@ -4378,7 +4409,9 @@ html[data-surface="new-mail-notification"] #root {
   width: 100%;
   height: 100%;
   overflow: auto;
-  padding: 18px 20px 28px;
+  padding:
+    var(--compose-editor-text-block-inset)
+    var(--compose-editor-text-inline-inset) 28px;
   border: 0;
   outline: 0;
   background: transparent;
@@ -4402,32 +4435,48 @@ html[data-surface="new-mail-notification"] #root {
   cursor: default;
 }
 
-.compose-rich-editor[data-empty="true"]::before {
-  position: absolute;
-  top: 18px;
-  left: 20px;
-  content: attr(data-placeholder);
-  color: var(--color-text-muted);
-  pointer-events: none;
-}
-
-.compose-editor-shell[data-stationery="lined"]
-  .compose-rich-editor[data-empty="true"]::before {
-  top: var(--compose-paper-top-inset);
-}
-
-.compose-editor-shell[data-stationery="grid"]
-  .compose-rich-editor[data-empty="true"]::before {
-  top: 0;
-  left: calc(
-    (var(--compose-paper-cell-size) - var(--compose-editor-font-size)) / 2
-  );
-}
-
 .compose-rich-editor .ProseMirror p,
 .compose-rich-editor .ProseMirror div,
 .compose-rich-editor .ProseMirror blockquote {
   margin: 0;
+}
+
+.compose-rich-editor
+  .ProseMirror
+  p[data-first-line-indent="tab"] {
+  text-indent: 2em;
+}
+
+.compose-editor-shell[data-stationery="grid"]
+  .compose-rich-editor
+  .ProseMirror
+  p {
+  min-height: var(--compose-paper-cell-size);
+  line-height: var(--compose-paper-cell-size);
+}
+
+.compose-editor-shell[data-stationery="grid"]
+  .compose-rich-editor
+  .ProseMirror
+  p[data-first-line-indent="tab"] {
+  text-indent: calc(var(--compose-paper-cell-size) * 2);
+}
+
+.compose-editor-shell[data-stationery="grid"] .compose-grid-cell-token {
+  display: inline-flex;
+  width: var(--compose-paper-cell-size);
+  min-width: var(--compose-paper-cell-size);
+  max-width: var(--compose-paper-cell-size);
+  height: var(--compose-paper-cell-size);
+  box-sizing: border-box;
+  align-items: center;
+  justify-content: center;
+  overflow: visible;
+  letter-spacing: normal;
+  line-height: 1;
+  text-indent: 0;
+  vertical-align: top;
+  white-space: pre;
 }
 
 .compose-rich-editor .ProseMirror ul,
@@ -4851,186 +4900,105 @@ html[data-surface="new-mail-notification"] #root {
 }
 
 .compose-stationery-control {
-  position: relative;
   display: flex;
   min-width: 0;
   align-items: center;
-  gap: 5px;
+  gap: 4px;
 }
 
-.compose-stationery-trigger {
-  display: inline-flex;
+.compose-stationery-toggle.icon-button {
+  width: 34px;
   height: 34px;
-  align-items: center;
-  gap: 5px;
-  padding: 0 8px;
-  border: 1px solid color-mix(in srgb, var(--compose-divider) 72%, transparent);
-  border-radius: 8px;
-  background: var(--color-control);
+  flex: 0 0 34px;
+  border-radius: 999px;
   color: var(--color-text-muted);
-  font-size: 10px;
-  white-space: nowrap;
 }
 
-.compose-stationery-trigger:hover:not(:disabled),
-.compose-stationery-control[data-open="true"] .compose-stationery-trigger {
-  border-color: color-mix(in srgb, var(--color-primary) 28%, var(--compose-divider));
-  background: var(--compose-control-hover);
+.compose-stationery-toggle.icon-button[aria-pressed="true"],
+.compose-stationery-toggle.icon-button[aria-pressed="true"]:hover:not(:disabled) {
+  border-color: var(--color-primary);
+  background: var(--color-primary);
+  color: var(--color-on-primary);
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--color-primary) 28%, transparent);
+}
+
+.compose-stationery-control__options {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+  animation: compose-paper-options-in var(--motion-normal) ease-out both;
+}
+
+@keyframes compose-paper-options-in {
+  from {
+    opacity: 0;
+    transform: translateX(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.compose-icon-segment {
+  position: relative;
+  display: grid;
+  width: 68px;
+  height: 34px;
+  flex: 0 0 68px;
+  grid-template-columns: repeat(2, 30px);
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid color-mix(in srgb, var(--compose-divider) 84%, var(--surface-edge));
+  border-radius: 999px;
+  background: var(--color-control);
+  isolation: isolate;
+}
+
+.compose-icon-segment__thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  z-index: 0;
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--color-primary);
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--color-primary) 28%, transparent);
+  transform: translateX(0);
+  transition: transform var(--motion-normal) ease;
+}
+
+.compose-icon-segment[data-position="1"] .compose-icon-segment__thumb {
+  transform: translateX(32px);
+}
+
+.compose-footer .compose-icon-segment__option.icon-button {
+  position: relative;
+  z-index: 1;
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--color-text-muted);
+  box-shadow: none;
+}
+
+.compose-footer
+  .compose-icon-segment__option.icon-button:hover:not(:disabled) {
+  border: 0;
+  background: color-mix(in srgb, var(--color-primary) 9%, transparent);
   color: var(--color-text);
 }
 
-.compose-stationery-trigger strong {
-  max-width: 44px;
-  overflow: hidden;
-  color: var(--color-text-secondary);
-  font-weight: 680;
-  text-overflow: ellipsis;
-}
-
-.compose-stationery-trigger__caret {
-  transition: transform var(--motion-fast);
-}
-
-.compose-stationery-control[data-open="true"] .compose-stationery-trigger__caret {
-  transform: rotate(180deg);
-}
-
-.compose-stationery-menu {
-  position: absolute;
-  right: 0;
-  bottom: calc(100% + 10px);
-  z-index: 22;
-  width: 280px;
-  padding: 7px;
-  border: 1px solid color-mix(in srgb, var(--compose-divider) 84%, var(--surface-edge));
-  border-radius: 12px;
-  background: var(--compose-page-surface);
-  box-shadow: 0 18px 48px rgba(8, 17, 25, 0.26),
-    inset 0 1px 0 var(--surface-highlight);
-}
-
-.compose-stationery-menu__heading {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  padding: 4px 5px 8px;
-  color: var(--color-text-secondary);
-}
-
-.compose-stationery-menu__heading strong {
-  font-size: 11px;
-}
-
-.compose-stationery-menu__heading span {
-  color: var(--color-text-muted);
-  font-size: 9px;
-}
-
-.compose-stationery-option {
-  display: grid;
-  width: 100%;
-  min-height: 54px;
-  grid-template-columns: 56px minmax(0, 1fr) 18px;
-  align-items: center;
-  gap: 9px;
-  padding: 5px;
-  border: 1px solid transparent;
-  border-radius: 9px;
+.compose-footer
+  .compose-icon-segment__option.icon-button[data-selected="true"] {
   background: transparent;
-  color: var(--color-text-secondary);
-  text-align: left;
-}
-
-.compose-stationery-option:hover,
-.compose-stationery-option[data-selected="true"] {
-  border-color: color-mix(in srgb, var(--color-primary) 20%, transparent);
-  background: color-mix(in srgb, var(--color-primary) 9%, transparent);
-}
-
-.compose-stationery-option > svg {
-  color: var(--color-primary);
-  opacity: 0;
-}
-
-.compose-stationery-option[data-selected="true"] > svg {
-  opacity: 1;
-}
-
-.compose-stationery-option__preview {
-  display: block;
-  width: 56px;
-  height: 40px;
-  border: 1px solid color-mix(in srgb, var(--compose-divider) 78%, transparent);
-  border-radius: 6px;
-  background-color: color-mix(in srgb, var(--compose-content-surface) 88%, #fff);
-}
-
-.compose-stationery-option__preview[data-stationery="lined"] {
-  background-image: repeating-linear-gradient(
-    to bottom,
-    transparent 0,
-    transparent 9px,
-    color-mix(in srgb, var(--color-primary) 18%, var(--compose-divider)) 9px,
-    color-mix(in srgb, var(--color-primary) 18%, var(--compose-divider)) 10px
-  );
-}
-
-.compose-stationery-option__preview[data-stationery="grid"] {
-  background-image:
-    linear-gradient(
-      to right,
-      color-mix(in srgb, var(--color-primary) 15%, var(--compose-divider)) 1px,
-      transparent 1px
-    ),
-    linear-gradient(
-      to bottom,
-      color-mix(in srgb, var(--color-primary) 15%, var(--compose-divider)) 1px,
-      transparent 1px
-    );
-  background-size: 10px 10px;
-}
-
-.compose-stationery-option__copy {
-  display: grid;
-  min-width: 0;
-  gap: 2px;
-}
-
-.compose-stationery-option__copy strong {
-  font-size: 11px;
-}
-
-.compose-stationery-option__copy small {
-  color: var(--color-text-muted);
-  font-size: 9px;
-}
-
-.compose-stationery-mode {
-  display: inline-flex;
-  height: 34px;
-  align-items: center;
-  padding: 2px;
-  border: 1px solid color-mix(in srgb, var(--compose-divider) 68%, transparent);
-  border-radius: 8px;
-  background: var(--color-control);
-}
-
-.compose-stationery-mode button {
-  height: 28px;
-  padding: 0 7px;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--color-text-muted);
-  font-size: 9px;
-  white-space: nowrap;
-}
-
-.compose-stationery-mode button[data-selected="true"] {
-  background: color-mix(in srgb, var(--color-primary) 12%, var(--compose-control-hover));
-  color: var(--color-primary);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-primary) 18%, transparent);
-  font-weight: 680;
+  color: var(--color-on-primary);
 }
 
 .send-button {

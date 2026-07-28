@@ -275,13 +275,28 @@ must be updated here when an intentional product change lands.
   item exits to an ordinary paragraph. The plain-text fallback emits explicit
   numeric markers so the authored structure remains understandable in clients
   that do not render HTML.
+- At the start of an ordinary paragraph, Tab applies a semantic first-line
+  indent and remains inside the editor; Shift+Tab removes it. Enter inherits the
+  current paragraph's indent for the next paragraph. Plain and lined editing use
+  a 2 em stop, approximately two Han characters at the base compose size; grid
+  editing renders the same semantic indent as exactly two cells and keeps wrapped
+  rows aligned to the grid. The restricted HTML stores only this fixed indent
+  token and its canonical `text-indent:2em` representation; legacy Mine Mail
+  `4em` values normalize to `2em`, and arbitrary inline styles remain unsupported.
 - If the rich editor fails during lazy initialization or lifecycle reconnection,
   the compose surface stays open, preserves the current draft value, and offers
   an in-place retry instead of unmounting the application.
-- A draft may select **无**, **横线纸**, or **方格纸**. **仅编辑** stores the
-  selection but sends no paper decoration. **随信发送** is available only for a
-  non-empty paper selection and asks Rust to wrap the sanitized authored HTML in
-  the selected stationery when it builds the exact MIME version.
+- A draft may select **无**, **横线纸**, or **方格纸**. The compact paper
+  control defaults to off (**无**); enabling it restores the last paper type in
+  the current compose session and exposes the **横线纸 / 方格纸** choice.
+  **仅编辑** stores the selection but sends no paper decoration.
+  **随信发送** is available only for a non-empty paper selection and asks Rust
+  to wrap the sanitized authored HTML in the selected stationery when it builds
+  the exact MIME version. Grid paper visually groups up to three consecutive
+  Latin letters or numbers in one cell, centers each Han character in one cell,
+  and gives every whitespace or special character an independent cell so an
+  authored Space advances by one complete blank cell; these editing decorations
+  never enter the authored HTML.
 - Only Mine Mail-owned restricted rich drafts are editable. Private compose
   metadata and authored-boundary markers distinguish them from arbitrary
   sender-created HTML; missing or malformed ownership markers keep the draft

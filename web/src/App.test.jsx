@@ -366,7 +366,7 @@ describe("Mine Mail MVP", () => {
     expect(screen.queryByRole("alertdialog")).toBeNull();
   });
 
-  it("keeps the stationery picker in the footer and controls send behavior", async () => {
+  it("keeps the stationery controls in the footer and controls send behavior", async () => {
     const user = userEvent.setup();
     render(<App />);
     await screen.findAllByText("欢迎来到 Mine Mail");
@@ -374,34 +374,30 @@ describe("Mine Mail MVP", () => {
     await user.click(screen.getByRole("button", { name: /写信/ }));
     expect(screen.getByRole("toolbar", { name: "正文格式" })).toBeTruthy();
     expect(screen.getByRole("combobox", { name: "字体" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "随信发送" }).disabled).toBe(
-      true,
-    );
+    expect(
+      screen.queryByRole("radiogroup", { name: "信纸发送方式" }),
+    ).toBeNull();
 
-    await user.click(screen.getByRole("button", { name: "信纸主题：无" }));
-    await user.click(
-      screen.getByRole("menuitemradio", { name: /方格纸/ }),
-    );
+    await user.click(screen.getByRole("button", { name: "启用信纸" }));
+    await user.click(screen.getByRole("radio", { name: "方格纸" }));
 
     const editor = screen.getByRole("textbox", { name: "邮件正文" });
     expect(editor.closest(".compose-editor-shell").dataset.stationery).toBe(
       "grid",
     );
-    const sendTheme = screen.getByRole("button", { name: "随信发送" });
-    expect(sendTheme.disabled).toBe(false);
+    const sendTheme = screen.getByRole("radio", {
+      name: "将信纸随邮件发送",
+    });
     await user.click(sendTheme);
-    expect(sendTheme.dataset.selected).toBe("true");
+    expect(sendTheme.getAttribute("aria-checked")).toBe("true");
 
-    await user.click(
-      screen.getByRole("button", { name: "信纸主题：方格纸" }),
-    );
-    await user.click(screen.getByRole("menuitemradio", { name: /^无/ }));
+    await user.click(screen.getByRole("button", { name: "关闭信纸" }));
     expect(editor.closest(".compose-editor-shell").dataset.stationery).toBe(
       "none",
     );
-    expect(screen.getByRole("button", { name: "随信发送" }).disabled).toBe(
-      true,
-    );
+    expect(
+      screen.queryByRole("radiogroup", { name: "信纸发送方式" }),
+    ).toBeNull();
   });
 
   it("toggles copy recipients without losing their values", async () => {

@@ -1212,8 +1212,14 @@ pub(crate) fn sanitize_compose_html(source: Option<&str>) -> Option<String> {
         .tag_attributes(HashMap::from([
             ("a", HashSet::from(["href"])),
             ("font", HashSet::from(["face", "size"])),
-            ("div", HashSet::from(["align"])),
-            ("p", HashSet::from(["align"])),
+            (
+                "div",
+                HashSet::from(["align", "data-first-line-indent", "style"]),
+            ),
+            (
+                "p",
+                HashSet::from(["align", "data-first-line-indent", "style"]),
+            ),
             ("ol", HashSet::from(["start"])),
             ("li", HashSet::from(["value"])),
         ]))
@@ -1230,6 +1236,26 @@ pub(crate) fn sanitize_compose_html(source: Option<&str>) -> Option<String> {
                 )
             {
                 return None;
+            }
+            if attribute == "data-first-line-indent" && value != "tab" {
+                return None;
+            }
+            if attribute == "style" {
+                if !matches!(element, "div" | "p") {
+                    return None;
+                }
+                let normalized = value
+                    .chars()
+                    .filter(|character| !character.is_whitespace())
+                    .collect::<String>()
+                    .to_ascii_lowercase();
+                if !matches!(
+                    normalized.as_str(),
+                    "text-indent:2em" | "text-indent:2em;" | "text-indent:4em" | "text-indent:4em;"
+                ) {
+                    return None;
+                }
+                return Some(Cow::Borrowed("text-indent:2em"));
             }
             if (element, attribute) == ("font", "face")
                 && !matches!(
@@ -2740,6 +2766,21 @@ JVBERi0xLjcK
         assert!(!cleaned.contains("onclick"));
         assert!(cleaned.contains("href=\"https://example.com\""));
         assert!(!cleaned.contains("data:text/html"));
+    }
+
+    #[test]
+    fn compose_html_sanitizer_keeps_only_the_fixed_first_line_indent() {
+        let cleaned = sanitize_compose_html(Some(
+            r#"<p data-first-line-indent="tab" style="text-indent: 4em;">缩进</p><p data-first-line-indent="bad" style="text-indent:9em;color:red">普通</p>"#,
+        ))
+        .expect("visible compose HTML");
+
+        assert!(cleaned.contains(r#"data-first-line-indent="tab""#));
+        assert!(cleaned.contains("text-indent:2em"));
+        assert!(!cleaned.contains("text-indent:4em"));
+        assert!(!cleaned.contains("color"));
+        assert!(!cleaned.contains("9em"));
+        assert!(!cleaned.contains(r#"data-first-line-indent="bad""#));
     }
 
     #[test]

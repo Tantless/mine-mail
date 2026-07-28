@@ -3,6 +3,7 @@ import {
   fireEvent,
   render,
   screen,
+  waitFor,
   within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -86,7 +87,7 @@ it("traps focus inside the open composer and restores the invoking control", () 
   opener.remove();
 });
 
-it("lets recipient, stationery, and link popups consume Escape before the composer", async () => {
+it("lets recipient and link popups consume Escape before the composer", async () => {
   const user = userEvent.setup();
   const onClose = vi.fn();
   renderCompose({
@@ -106,15 +107,6 @@ it("lets recipient, stationery, and link popups consume Escape before the compos
   expect(screen.queryByRole("listbox", { name: "收件人联系人建议" })).toBeNull();
   expect(onClose).not.toHaveBeenCalled();
 
-  const stationery = screen.getByRole("button", { name: "信纸主题：无" });
-  await user.click(stationery);
-  expect(screen.getByRole("menu", { name: "选择信纸主题" })).toBeTruthy();
-  expect(document.activeElement).toBe(stationery);
-  await user.keyboard("{Escape}");
-  expect(screen.queryByRole("menu", { name: "选择信纸主题" })).toBeNull();
-  expect(document.activeElement).toBe(stationery);
-  expect(onClose).not.toHaveBeenCalled();
-
   const linkTrigger = await screen.findByRole("button", { name: "添加链接" });
   await user.click(linkTrigger);
   const linkInput = screen.getByRole("textbox", { name: "链接地址" });
@@ -126,6 +118,60 @@ it("lets recipient, stationery, and link popups consume Escape before the compos
 
   await user.keyboard("{Escape}");
   expect(onClose).toHaveBeenCalledOnce();
+});
+
+it("uses compact icon controls for enabling, choosing, and sending stationery", async () => {
+  const onChange = vi.fn();
+  const user = userEvent.setup();
+  const view = renderCompose({ onChange });
+
+  expect(screen.queryByRole("radiogroup", { name: "信纸类型" })).toBeNull();
+  await user.click(screen.getByRole("button", { name: "启用信纸" }));
+
+  const enableUpdate = onChange.mock.calls.at(-1)[0];
+  expect(enableUpdate(baseValue).format).toEqual(
+    expect.objectContaining({
+      stationery: "lined",
+      send_stationery: false,
+    }),
+  );
+
+  const linedValue = {
+    ...baseValue,
+    format: {
+      ...baseValue.format,
+      stationery: "lined",
+    },
+  };
+  view.rerender(
+    <ComposePanel
+      {...view.props}
+      value={linedValue}
+    />,
+  );
+
+  expect(
+    screen
+      .getByRole("button", { name: "关闭信纸" })
+      .getAttribute("aria-pressed"),
+  ).toBe("true");
+  expect(
+    screen.getByRole("radio", { name: "横线纸" }).getAttribute("aria-checked"),
+  ).toBe("true");
+
+  screen.getByRole("radio", { name: "横线纸" }).focus();
+  await user.keyboard("{ArrowRight}");
+  const gridUpdate = onChange.mock.calls.at(-1)[0];
+  expect(gridUpdate(linedValue).format.stationery).toBe("grid");
+  await waitFor(() =>
+    expect(document.activeElement).toBe(
+      screen.getByRole("radio", { name: "方格纸" }),
+    ),
+  );
+
+  await user.click(screen.getByRole("radio", { name: "将信纸随邮件发送" }));
+  const sendUpdate = onChange.mock.calls.at(-1)[0];
+  expect(sendUpdate(linedValue).format.send_stationery).toBe(true);
 });
 
 it("renders only authoritative draft attachments and passes the exact local version", async () => {

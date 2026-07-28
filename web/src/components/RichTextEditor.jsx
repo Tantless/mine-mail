@@ -84,6 +84,62 @@ const legacySizeByPixels = new Map([
 const pixelsByLegacySize = new Map(
   [...legacySizeByPixels].map(([pixels, legacy]) => [legacy, pixels]),
 );
+const composePaperInlineInset = 12;
+const composePaperBlockInset = 10;
+const latinGridCharacter = /[\p{Script=Latin}\p{Number}]/u;
+const hanGridCharacter = /\p{Script=Han}/u;
+const gridWhitespaceCharacter = /\s/u;
+const paragraphIndentAttribute = "data-first-line-indent";
+const paragraphIndentValue = "tab";
+const paragraphIndentStyle = "2em";
+const legacyParagraphIndentStyle = "4em";
+
+export function groupGridTextTokens(text) {
+  const tokens = [];
+  const characters = Array.from(String(text || ""));
+  let offset = 0;
+  let index = 0;
+
+  while (index < characters.length) {
+    const character = characters[index];
+    const start = offset;
+
+    if (latinGridCharacter.test(character)) {
+      const group = [];
+      while (
+        index < characters.length &&
+        group.length < 3 &&
+        latinGridCharacter.test(characters[index])
+      ) {
+        group.push(characters[index]);
+        offset += characters[index].length;
+        index += 1;
+      }
+      tokens.push({
+        from: start,
+        to: offset,
+        kind: "latin",
+        text: group.join(""),
+      });
+      continue;
+    }
+
+    offset += character.length;
+    index += 1;
+    tokens.push({
+      from: start,
+      to: offset,
+      kind: hanGridCharacter.test(character)
+        ? "han"
+        : gridWhitespaceCharacter.test(character)
+          ? "space"
+          : "special",
+      text: character,
+    });
+  }
+
+  return tokens;
+}
 
 function editorIsUsable(editor) {
   if (!editor || editor.isDestroyed) return false;
@@ -241,6 +297,128 @@ const ComposeOrderedList = OrderedList.extend({
   },
 });
 
+function activeParagraphContext(editor) {
+  const { selection } = editor.state;
+  if (!selection.empty || selection.$from.parent.type.name !== "paragraph") {
+    return null;
+  }
+  const { $from } = selection;
+  const insideList = Array.from({ length: $from.depth }, (_, index) =>
+    $from.node(index + 1),
+  ).some((node) => node.type.name === "listItem");
+  return {
+    firstLineIndent: $from.parent.attrs.firstLineIndent,
+    insideList,
+    parentOffset: $from.parentOffset,
+  };
+}
+
+const ComposeParagraphIndent = Extension.create({
+  name: "composeParagraphIndent",
+  priority: 1050,
+  addGlobalAttributes() {
+    return [
+      {
+        types: ["paragraph"],
+        attributes: {
+          firstLineIndent: {
+            default: null,
+            parseHTML: (element) => {
+              const explicitValue = element.getAttribute(
+                paragraphIndentAttribute,
+              );
+              const textIndent = String(element.style?.textIndent || "")
+                .replace(/\s+/g, "")
+                .toLowerCase();
+              return explicitValue === paragraphIndentValue ||
+                textIndent === paragraphIndentStyle ||
+                textIndent === legacyParagraphIndentStyle
+                ? paragraphIndentValue
+                : null;
+            },
+            renderHTML: (attributes) =>
+              attributes.firstLineIndent === paragraphIndentValue
+                ? {
+                    [paragraphIndentAttribute]: paragraphIndentValue,
+                    style: `text-indent: ${paragraphIndentStyle};`,
+                  }
+                : {},
+          },
+        },
+      },
+    ];
+  },
+  addKeyboardShortcuts() {
+    const setIndent = (firstLineIndent) => {
+      const context = activeParagraphContext(this.editor);
+      if (!context || context.insideList || context.parentOffset !== 0) {
+        return false;
+      }
+      return this.editor.commands.updateAttributes("paragraph", {
+        firstLineIndent,
+      });
+    };
+    return {
+      Tab: () => setIndent(paragraphIndentValue),
+      "Shift-Tab": () => setIndent(null),
+      Enter: () => {
+        const context = activeParagraphContext(this.editor);
+        if (
+          !context ||
+          context.insideList ||
+          context.firstLineIndent !== paragraphIndentValue
+        ) {
+          return false;
+        }
+        return this.editor
+          .chain()
+          .splitBlock()
+          .updateAttributes("paragraph", {
+            firstLineIndent: paragraphIndentValue,
+          })
+          .run();
+      },
+    };
+  },
+});
+
+const ComposeGridCellTokens = Extension.create({
+  name: "composeGridCellTokens",
+  addProseMirrorPlugins() {
+    return [
+      new Plugin({
+        props: {
+          decorations: (state) => {
+            const decorations = [];
+            state.doc.descendants((node, position) => {
+              if (!node.isText || !node.text) return;
+              groupGridTextTokens(node.text).forEach((token) => {
+                decorations.push(
+                  Decoration.inline(
+                    position + token.from,
+                    position + token.to,
+                    {
+                      class: "compose-grid-cell-token",
+                      "data-grid-token-kind": token.kind,
+                    },
+                    {
+                      inclusiveStart: false,
+                      inclusiveEnd: false,
+                    },
+                  ),
+                );
+              });
+            });
+            return decorations.length
+              ? DecorationSet.create(state.doc, decorations)
+              : null;
+          },
+        },
+      }),
+    ];
+  },
+});
+
 export const composeInputRuleExtensions = ["composeListInputRules"];
 
 export function createComposeEditorExtensions() {
@@ -278,6 +456,8 @@ export function createComposeEditorExtensions() {
       keepAttributes: true,
     }),
     ComposeListInputRules,
+    ComposeParagraphIndent,
+    ComposeGridCellTokens,
   ];
 }
 
@@ -377,6 +557,18 @@ function appendSanitizedNode(source, target) {
   ).toLowerCase();
   if (blockTags.has(tagName) && alignments.has(alignment)) {
     element.setAttribute("align", alignment);
+  }
+  const textIndent = String(source.style?.textIndent || "")
+    .replace(/\s+/g, "")
+    .toLowerCase();
+  if (
+    (tagName === "P" || tagName === "DIV") &&
+    (source.getAttribute(paragraphIndentAttribute) === paragraphIndentValue ||
+      textIndent === paragraphIndentStyle ||
+      textIndent === legacyParagraphIndentStyle)
+  ) {
+    element.setAttribute(paragraphIndentAttribute, paragraphIndentValue);
+    element.style.textIndent = paragraphIndentStyle;
   }
 
   [...source.childNodes].forEach((child) => appendSanitizedNode(child, element));
@@ -610,6 +802,9 @@ function RichTextEditorCore({
   const pendingEmittedHtmlRef = useRef([]);
   const linkInputRef = useRef(null);
   const [paperCellSize, setPaperCellSize] = useState(composeBaseFontSize * 2);
+  const [paperGridMinHeight, setPaperGridMinHeight] = useState(
+    composeBaseFontSize * 8,
+  );
   const [showLinkEditor, setShowLinkEditor] = useState(false);
   const [linkValue, setLinkValue] = useState("");
   const editorShellRef = useRef(null);
@@ -726,9 +921,13 @@ function RichTextEditorCore({
     if (!editorElement) return undefined;
     const targetCellSize = composeBaseFontSize * 2;
     const updatePaperMetrics = () => {
-      const availableWidth = editorElement.clientWidth;
+      const availableWidth = Math.max(
+        0,
+        editorElement.clientWidth - composePaperInlineInset * 2,
+      );
       if (!availableWidth) {
         setPaperCellSize(targetCellSize);
+        setPaperGridMinHeight(targetCellSize * 4);
         return;
       }
       const columnCount = Math.max(
@@ -736,8 +935,22 @@ function RichTextEditorCore({
         Math.floor(availableWidth / targetCellSize),
       );
       const nextCellSize = availableWidth / columnCount;
+      const availableHeight = Math.max(
+        nextCellSize * 4,
+        editorElement.clientHeight - composePaperBlockInset * 2,
+      );
+      const rowCount = Math.max(
+        4,
+        Math.floor(availableHeight / nextCellSize),
+      );
+      const nextGridMinHeight = rowCount * nextCellSize;
       setPaperCellSize((current) =>
         Math.abs(current - nextCellSize) > 0.1 ? nextCellSize : current,
+      );
+      setPaperGridMinHeight((current) =>
+        Math.abs(current - nextGridMinHeight) > 0.1
+          ? nextGridMinHeight
+          : current,
       );
     };
 
@@ -781,8 +994,6 @@ function RichTextEditorCore({
   };
 
   const state = currentToolbarState || getComposeToolbarState(editor);
-  const editorIsEmpty = editorIsUsable(editor) ? editor.isEmpty : true;
-
   return (
     <>
       <div className="compose-format-toolbar" role="toolbar" aria-label="正文格式">
@@ -957,13 +1168,12 @@ function RichTextEditorCore({
         data-current-font-size={state.fontSize}
         style={{
           "--compose-paper-cell-size": `${paperCellSize}px`,
+          "--compose-paper-grid-min-height": `${paperGridMinHeight}px`,
         }}
       >
         <EditorContent
           editor={editor}
           className="compose-rich-editor vertical-scroll-surface"
-          data-empty={editorIsEmpty}
-          data-placeholder="开始写邮件…"
         />
       </div>
     </>

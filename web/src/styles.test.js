@@ -121,19 +121,19 @@ describe("compose page and stationery policy", () => {
 
   it("keeps paper rules on the scrolling editor and frames grid paper", () => {
     const linedEditor = declarationsFor(
-      '\\.compose-editor-shell\\[data-stationery="lined"\\] \\.compose-rich-editor',
+      '\\.compose-editor-shell\\[data-stationery="lined"\\]\\s*\\.compose-rich-editor\\s*>\\s*\\.ProseMirror',
     );
     expect(linedEditor).toMatch(/background-attachment:\s*local,\s*local/);
     expect(linedEditor).toMatch(
-      /var\(--compose-paper-surface\) calc\(var\(--compose-paper-top-inset\) \+ 1px\)/,
+      /var\(--compose-paper-surface\)\s+calc\(var\(--compose-paper-block-overhang\) \+ 1px\)/,
     );
 
     const gridEditor = declarationsFor(
-      '\\.compose-editor-shell\\[data-stationery="grid"\\] \\.compose-rich-editor',
+      '\\.compose-editor-shell\\[data-stationery="grid"\\]\\s*\\.compose-rich-editor\\s*>\\s*\\.ProseMirror',
     );
     expect(gridEditor).toMatch(/background-attachment:\s*local,\s*local/);
     expect(gridEditor).toMatch(
-      /letter-spacing:\s*calc\(\s*var\(--compose-paper-cell-size\) - var\(--compose-editor-font-size\)/,
+      /box-shadow:\s*inset 0 0 0 1px var\(--compose-paper-rule\)/,
     );
 
     const paperSurface = declarationsFor(
@@ -144,6 +144,33 @@ describe("compose page and stationery policy", () => {
     );
     expect(paperSurface).not.toMatch(/border(?:-radius)?:/);
     expect(paperSurface).not.toMatch(/margin(?:-top|-bottom)?:/);
+
+    const editor = declarationsFor("\\.compose-rich-editor");
+    expect(editor).toMatch(
+      /var\(--compose-editor-text-block-inset\)\s+var\(--compose-editor-text-inline-inset\) 28px/,
+    );
+
+    const gridToken = declarationsFor(
+      '\\.compose-editor-shell\\[data-stationery="grid"\\] \\.compose-grid-cell-token',
+    );
+    expect(gridToken).toMatch(/width:\s*var\(--compose-paper-cell-size\)/);
+    expect(gridToken).toMatch(/min-width:\s*var\(--compose-paper-cell-size\)/);
+    expect(gridToken).toMatch(/max-width:\s*var\(--compose-paper-cell-size\)/);
+    expect(gridToken).toMatch(/justify-content:\s*center/);
+    expect(gridToken).toMatch(/text-indent:\s*0/);
+    expect(gridToken).toMatch(/white-space:\s*pre/);
+
+    const ordinaryIndent = declarationsFor(
+      '\\.compose-rich-editor\\s*\\.ProseMirror\\s*p\\[data-first-line-indent="tab"\\]',
+    );
+    expect(ordinaryIndent).toMatch(/text-indent:\s*2em/);
+
+    const gridIndent = declarationsFor(
+      '\\.compose-editor-shell\\[data-stationery="grid"\\]\\s*\\.compose-rich-editor\\s*\\.ProseMirror\\s*p\\[data-first-line-indent="tab"\\]',
+    );
+    expect(gridIndent).toMatch(
+      /text-indent:\s*calc\(var\(--compose-paper-cell-size\) \* 2\)/,
+    );
   });
 
   it("keeps compact compose listboxes visible inside the formatting row", () => {
@@ -347,8 +374,14 @@ describe("release-state accessibility and reflow contracts", () => {
     expect(declarationsFor("\\.settings-help__button")).toMatch(
       /width:\s*40px[\s\S]*height:\s*40px/,
     );
-    expect(declarationsFor("\\.compose-stationery-trigger")).toMatch(
-      /height:\s*34px/,
+    expect(
+      declarationsFor("\\.compose-stationery-toggle\\.icon-button"),
+    ).toMatch(/height:\s*34px/);
+    expect(declarationsFor("\\.compose-icon-segment")).toMatch(
+      /border-radius:\s*999px/,
+    );
+    expect(declarationsFor("\\.compose-save-state")).toMatch(
+      /width:\s*74px[\s\S]*flex:\s*0 0 74px/,
     );
     expect(styles).not.toMatch(
       /\.reader-toolbar__group:first-child\s+\.icon-button:nth-of-type\(4\)/,
