@@ -1,0 +1,23 @@
+.compose-rich-editor > .ProseMirror {
+  min-height: 100%;
+  outline: 0;
+}
+
+.compose-rich-editor > .ProseMirror[contenteditable="false"] {
+  cursor: default;
+}
+
+.compose-rich-editor .ProseMirror em,
+.compose-rich-editor .ProseMirror i {
+  font-style: italic;
+}
+
+.compose-rich-editor .compose-format-caret-probe {
+  display: inline !important;
+  width: 0 !important;
+  height: 0 !important;
+  margin: 0 !important;
+  border: 0 !important;
+  padding: 0 !important;
+  pointer-events: none;
+}

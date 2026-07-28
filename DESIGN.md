@@ -290,6 +290,17 @@ family. Preserve the relative hierarchy when tuning optical values.
   bounds.
 - Address, Cc/Bcc, subject, recipient tokens/suggestions, editor, and footer share
   the inset material and focus language. Collapsing Cc/Bcc never clears values.
+- One compact formatting row sits directly between the subject and editor. It
+  exposes font, size, emphasis, lists, alignment, links, and clear-format actions
+  using the existing themed controls and icon system. Formatting preserves the
+  active range and caret position; font and size controls follow the inherited
+  format at a collapsed caret and show a neutral mixed value for mixed selections.
+  Applying a font size at a collapsed caret updates the visible caret scale and
+  the next typed character without relayout of the complete editor. Plain-editor
+  focus is communicated by its caret and must not add a full-height accent stripe.
+  Emphasis uses real semantic bold, italic, and underline markup. At the start of
+  a paragraph, `1.` followed by Space starts a numbered list; Enter continues the
+  sequence, and Enter on the next empty item returns to an ordinary paragraph.
 - Minimized compose is a 340 × 44 px subject-only bar at bottom center. The
   full-window scrim and blur disappear; the bar retains its own compact glass.
   An empty subject reads **新邮件**.
