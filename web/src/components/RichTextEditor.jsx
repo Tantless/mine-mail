@@ -20,7 +20,15 @@ import { TextStyleKit } from "@tiptap/extension-text-style";
 import { Plugin } from "@tiptap/pm/state";
 import { canJoin, findWrapping } from "@tiptap/pm/transform";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  Component,
+  Fragment,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { IconButton } from "./IconButton.jsx";
 import { ThemedSelect } from "./ThemedSelect.jsx";
 import "./RichTextEditor.css";
@@ -76,6 +84,15 @@ const legacySizeByPixels = new Map([
 const pixelsByLegacySize = new Map(
   [...legacySizeByPixels].map(([pixels, legacy]) => [legacy, pixels]),
 );
+
+function editorIsUsable(editor) {
+  if (!editor || editor.isDestroyed) return false;
+  try {
+    return Boolean(editor.state?.schema && editor.view?.dom);
+  } catch {
+    return false;
+  }
+}
 
 function markPreservingListRule({
   find,
@@ -497,7 +514,7 @@ function textStyleValue(editor, attribute, fallback) {
 }
 
 export function getComposeToolbarState(editor) {
-  if (!editor) {
+  if (!editorIsUsable(editor)) {
     return {
       font: "system",
       fontSize: String(composeBaseFontSize),
@@ -545,7 +562,43 @@ function ToolbarButton({ label, active = false, children, onActivate, disabled }
   );
 }
 
-export function RichTextEditor({
+class RichTextEditorBoundary extends Component {
+  state = {
+    failed: false,
+    retryKey: 0,
+  };
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  retry = () => {
+    this.setState((current) => ({
+      failed: false,
+      retryKey: current.retryKey + 1,
+    }));
+  };
+
+  render() {
+    if (this.state.failed) {
+      return (
+        <div className="compose-editor-recovery" role="alert">
+          <strong>编辑器暂时无法载入</strong>
+          <span>正文内容仍保留在草稿中，请重试。</span>
+          <button type="button" onClick={this.retry}>
+            重新载入编辑器
+          </button>
+        </div>
+      );
+    }
+
+    return (
+      <Fragment key={this.state.retryKey}>{this.props.children}</Fragment>
+    );
+  }
+}
+
+function RichTextEditorCore({
   bodyText,
   format,
   stationery = "none",
@@ -559,6 +612,7 @@ export function RichTextEditor({
   const [paperCellSize, setPaperCellSize] = useState(composeBaseFontSize * 2);
   const [showLinkEditor, setShowLinkEditor] = useState(false);
   const [linkValue, setLinkValue] = useState("");
+  const editorShellRef = useRef(null);
 
   const incomingHtml = useMemo(
     () => normalizeComposeHtml(format?.body_html || textToHtml(bodyText)),
@@ -583,12 +637,18 @@ export function RichTextEditor({
       attributes: {
         "aria-label": "邮件正文",
         "aria-multiline": "true",
+        "aria-readonly": String(disabled),
         role: "textbox",
       },
       transformPastedHTML: (html) => composeHtmlToEditorHtml(html),
     },
     onUpdate: ({ editor: currentEditor }) => {
-      if (!acceptEditorUpdatesRef.current) return;
+      if (
+        !acceptEditorUpdatesRef.current ||
+        !editorIsUsable(currentEditor)
+      ) {
+        return;
+      }
       const html = normalizeComposeHtml(currentEditor.getHTML());
       if (html === lastObservedHtmlRef.current) return;
       lastObservedHtmlRef.current = html;
@@ -624,19 +684,21 @@ export function RichTextEditor({
   );
 
   useEffect(() => {
-    if (!editor) return;
+    if (!editorIsUsable(editor)) return;
     editor.setEditable(!disabled);
-    editor.view.dom.setAttribute("aria-readonly", String(disabled));
+    editorShellRef.current
+      ?.querySelector('[role="textbox"]')
+      ?.setAttribute("aria-readonly", String(disabled));
   }, [disabled, editor]);
 
   useEffect(() => {
-    if (!editor || !onEditorReady) return undefined;
+    if (!editorIsUsable(editor) || !onEditorReady) return undefined;
     onEditorReady(editor);
     return () => onEditorReady(null);
   }, [editor, onEditorReady]);
 
   useEffect(() => {
-    if (!editor) return;
+    if (!editorIsUsable(editor)) return;
     const pendingIndex = pendingEmittedHtmlRef.current.indexOf(incomingHtml);
     if (pendingIndex >= 0) {
       pendingEmittedHtmlRef.current.splice(0, pendingIndex + 1);
@@ -660,8 +722,8 @@ export function RichTextEditor({
   }, [showLinkEditor]);
 
   useLayoutEffect(() => {
-    if (!editor) return undefined;
-    const editorElement = editor.view.dom;
+    const editorElement = editorShellRef.current;
+    if (!editorElement) return undefined;
     const targetCellSize = composeBaseFontSize * 2;
     const updatePaperMetrics = () => {
       const availableWidth = editorElement.clientWidth;
@@ -694,7 +756,7 @@ export function RichTextEditor({
   }, [editor]);
 
   const runEditorCommand = (command) => {
-    if (!editor || disabled) return;
+    if (!editorIsUsable(editor) || disabled) return;
     command(editor.chain().focus()).run();
   };
 
@@ -719,7 +781,7 @@ export function RichTextEditor({
   };
 
   const state = currentToolbarState || getComposeToolbarState(editor);
-  const editorIsEmpty = editor?.isEmpty ?? true;
+  const editorIsEmpty = editorIsUsable(editor) ? editor.isEmpty : true;
 
   return (
     <>
@@ -888,6 +950,7 @@ export function RichTextEditor({
       </div>
 
       <div
+        ref={editorShellRef}
         className="compose-editor-shell"
         data-stationery={stationery}
         data-paper-cell-size={paperCellSize.toFixed(2)}
@@ -904,5 +967,13 @@ export function RichTextEditor({
         />
       </div>
     </>
+  );
+}
+
+export function RichTextEditor(props) {
+  return (
+    <RichTextEditorBoundary>
+      <RichTextEditorCore {...props} />
+    </RichTextEditorBoundary>
   );
 }

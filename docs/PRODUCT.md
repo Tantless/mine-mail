@@ -133,6 +133,9 @@ must be updated here when an intentional product change lands.
   ordered list. Enter creates the next numbered item, and Enter again on an empty
   item exits to an ordinary paragraph. The plain-text fallback emits explicit
   numeric markers for clients that do not render HTML.
+- If the rich editor fails during lazy initialization or lifecycle reconnection,
+  the compose surface stays open, preserves the current draft value, and offers
+  an in-place retry instead of unmounting the application.
 - Closing the composer or pressing Escape never forces a save:
   - a new compose session removes any recovery draft created only by that session;
   - closing an existing draft leaves its previously persisted version intact;

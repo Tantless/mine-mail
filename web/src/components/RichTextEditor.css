@@ -21,3 +21,42 @@
   padding: 0 !important;
   pointer-events: none;
 }
+
+.compose-editor-recovery {
+  display: grid;
+  align-content: center;
+  justify-items: start;
+  min-height: 150px;
+  gap: 6px;
+  margin: 0 22px;
+  padding: 20px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-panel-subtle);
+  color: var(--color-text-secondary);
+}
+
+.compose-editor-recovery strong {
+  color: var(--color-text-primary);
+}
+
+.compose-editor-recovery span {
+  color: var(--color-text-muted);
+  font-size: 12px;
+}
+
+.compose-editor-recovery button {
+  min-height: 32px;
+  margin-top: 4px;
+  padding: 0 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 7px;
+  background: var(--color-control);
+  color: var(--color-text-primary);
+  cursor: pointer;
+}
+
+.compose-editor-recovery button:hover {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}

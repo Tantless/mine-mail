@@ -7,7 +7,7 @@ import {
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Editor } from "@tiptap/core";
-import { useState } from "react";
+import { lazy, StrictMode, Suspense, useState } from "react";
 import { afterEach, expect, it, vi } from "vitest";
 import { useProseMirrorTestGeometry } from "../test/proseMirrorTestGeometry.js";
 import {
@@ -77,6 +77,29 @@ afterEach(() => {
   window.getSelection()?.removeAllRanges();
   cleanup();
   vi.restoreAllMocks();
+});
+
+it("survives lazy StrictMode lifecycle reconnection when compose opens", async () => {
+  const LazyEditor = lazy(async () => ({ default: RichTextEditor }));
+  const view = render(
+    <StrictMode>
+      <Suspense fallback={<span>正在载入编辑器…</span>}>
+        <LazyEditor
+          bodyText=""
+          format={emptyFormat}
+          stationery="none"
+          onChange={vi.fn()}
+        />
+      </Suspense>
+    </StrictMode>,
+  );
+
+  expect(
+    await screen.findByRole("textbox", { name: "邮件正文" }),
+  ).toBeTruthy();
+  expect(screen.queryByRole("alert")).toBeNull();
+
+  view.unmount();
 });
 
 it("keeps initialization and semantically equivalent controlled content silent", async () => {
