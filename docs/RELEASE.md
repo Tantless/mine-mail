@@ -90,6 +90,28 @@ provider console, signing account, and a clean target device.
   validate package signing, secret storage, WebKitGTK, tray, notification,
   autostart, sleep/wake, updater, and uninstall behavior.
 
+### Attachment Save As filesystem matrix
+
+- [ ] Exercise attachment Save As on Windows NTFS, FAT32, exFAT, and the
+  supported SMB client/server combination; macOS APFS, exFAT, and SMB; and
+  Linux ext4, vfat/exFAT, and the supported CIFS/SMB mount.
+- [ ] On every supported filesystem, verify an existing destination is never
+  changed, a colliding save receives the next numeric suffix, concurrent
+  same-name saves publish only complete files, and the saved bytes match the
+  decoded attachment exactly.
+- [ ] Exercise permission loss, disk-full, removed/unmounted media, and
+  interruption before publication. Confirm no partial final name remains.
+  After no-clobber publication has committed, a hidden-temporary cleanup
+  failure must not delete the complete final file or turn the save into a
+  reported failure.
+- [ ] Review and explicitly accept or eliminate the residual path-based race in
+  `tempfile::NamedTempFile::persist_noclobber`: Mine Mail rejects a selected
+  directory whose final component is a symlink or Windows reparse point, but
+  does not yet anchor staging and publication to an opened directory handle.
+  If the release threat model requires resistance to hostile same-user
+  directory replacement, block release until a directory-handle implementation
+  and adversarial tests replace this limitation.
+
 ## Release-candidate acceptance
 
 - [ ] Run root Rust, React, and Tauri verification from `../AGENTS.md` on the exact
