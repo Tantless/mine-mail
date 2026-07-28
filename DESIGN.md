@@ -251,10 +251,13 @@ family. Preserve the relative hierarchy when tuning optical values.
 - Mail search uses the established search shell and identifies its bounded local
   scope as **搜索已同步邮件**. Search and folder tabs must not imply access to
   uncached server history.
-- Archive and Trash paint cached summaries before synchronization. If the account
-  has no configured role and the user declines or cannot create one, the
-  workspace shows a quiet capability explanation and next step instead of a
-  generic empty list.
+- Archive and Trash paint cached summaries before synchronization. Archive stays
+  visually neutral in the sidebar while discovery is pending or its optional
+  server folder has not been created; these states never use warning color,
+  urgent status copy, or an automatic dialog. Opening an available Archive shows
+  cached mail immediately. Opening a confirmed-missing Archive shows a quiet
+  workspace explanation with an optional setup action instead of a generic empty
+  list. Trash retains its distinct safety contract.
 - The reader has one outer scrollbar. Native text/semantic HTML uses Mine Mail
   typography; complex sender HTML remains sanitized and isolated. See
   `docs/MAIL_RENDERING.md`.
@@ -427,8 +430,11 @@ family. Preserve the relative hierarchy when tuning optical values.
 - Confirmation dialogs are compact, theme-owned, keyboard-operable, and reserved
   for consequential actions. Do not turn routine settings into confirmations.
 - Creating a missing Archive or Trash mailbox uses a one-time consequential
-  confirmation. Cancel returns to the unchanged message; creation progress blocks
-  duplicate submission but does not dismiss cached content.
+  confirmation. Archive setup is requested only from an explicit setup action or
+  the first message Archive action, never from initial sidebar presentation.
+  Confirming setup from a message continues that exact Archive action after the
+  server role is verified. Cancel returns to the unchanged message; creation
+  progress blocks duplicate submission but does not dismiss cached content.
 - Permanent deletion from Trash requires a confirmation every time. The dialog
   names the irreversible consequence, uses the semantic danger action, starts on
   a safe non-destructive focus target, traps focus, supports Escape before work

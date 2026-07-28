@@ -41,7 +41,7 @@ const drawerFocusableSelector = [
 const capabilityCopy = {
   archive: {
     label: "归档",
-    mailbox: "归档邮箱",
+    mailbox: "归档文件夹",
   },
   trash: {
     label: "垃圾箱",
@@ -101,6 +101,7 @@ function capabilityStateFor(role, capability) {
   if (!copy || !capability || capability.status === "available") return null;
 
   if (capability.status === "needs_creation_confirmation") {
+    if (role === "archive") return null;
     return {
       short: "需设置",
       detail: `需要创建${copy.mailbox}后才能使用`,
@@ -390,7 +391,9 @@ export function Sidebar({
                   type="button"
                   className="folder-nav__item"
                   data-selected={selected}
-                  data-capability-status={capability?.status}
+                  data-capability-status={
+                    capabilityState ? capability?.status : undefined
+                  }
                   data-pending-count={pendingCount || undefined}
                   onClick={folderAction || undefined}
                   disabled={!folderAction}

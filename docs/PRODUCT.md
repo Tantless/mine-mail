@@ -163,12 +163,20 @@ must be updated here when an intentional product change lands.
   A provider with documented archive semantics, such as Gmail, uses its dedicated
   provider adapter. Mine Mail does not silently treat a similarly named ordinary
   mailbox as Archive.
-- If no archive target exists, the first archive action uses a Mine Mail
-  confirmation to offer creation of an `Archive` mailbox. The role is persisted
-  only after CREATE followed by LIST confirms a selectable mailbox. If the user
-  cancels or creation fails, Archive is unavailable for that account; the action
-  is hidden and the Archive workspace explains why. Archive never degrades into
-  deletion.
+- Archive remains a neutral folder entry while discovery is pending or creation
+  has not been approved; absence of an optional Archive target is not a warning
+  or account-health problem. Opening Archive first paints any cached summaries
+  for a persisted available role. A role that is still being discovered shows a
+  quiet non-authoritative state, and a confirmed missing role opens the Archive
+  workspace with an optional setup action instead of opening a creation dialog
+  from the sidebar.
+- If no archive target exists, the first message Archive action uses a Mine Mail
+  confirmation to offer creation of the fixed `Archive` mailbox. Accepting that
+  confirmation creates and verifies the role, then continues the exact Archive
+  action that prompted setup. The role is persisted only after CREATE followed
+  by LIST confirms a selectable mailbox. Canceling creates no mailbox and leaves
+  the message unchanged. Creation failure keeps Archive unavailable with a
+  recoverable explanation; Archive never degrades into deletion.
 - Trash follows the same rule using selectable SPECIAL-USE `\Trash`, with a
   one-time confirmed creation of `Trash` when absent. Canceling or failing that
   setup disables move-to-Trash for the account and never converts it to permanent

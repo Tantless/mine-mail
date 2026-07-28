@@ -332,7 +332,7 @@ describe("MailList state distinctions", () => {
     expect(searchEmpty.getAttribute("aria-live")).toBe("polite");
   });
 
-  it("renders mailbox capability setup instead of a fake empty Archive folder", async () => {
+  it("offers quiet Archive setup inside the workspace", async () => {
     const user = userEvent.setup();
     const onMailboxSetup = vi.fn();
     renderMailList({
@@ -345,9 +345,14 @@ describe("MailList state distinctions", () => {
       onMailboxSetup,
     });
 
-    expect(screen.getByText("需要设置归档邮箱")).toBeTruthy();
+    expect(screen.getByText("尚未设置归档文件夹")).toBeTruthy();
+    expect(
+      screen.getByText(
+        "你可以在第一次归档邮件时完成设置，也可以现在进行设置。",
+      ),
+    ).toBeTruthy();
     expect(screen.queryByText("归档里还没有邮件")).toBeNull();
-    await user.click(screen.getByRole("button", { name: "设置归档邮箱" }));
+    await user.click(screen.getByRole("button", { name: "设置归档文件夹" }));
     expect(onMailboxSetup).toHaveBeenCalledWith("archive");
   });
 

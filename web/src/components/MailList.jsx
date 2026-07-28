@@ -103,7 +103,7 @@ const folderConfigurations = {
     eyebrow: "ARCHIVE",
     syncLabel: "同步归档",
     syncingLabel: "正在同步归档",
-    mailboxLabel: "归档邮箱",
+    mailboxLabel: "归档文件夹",
     tabs: [
       { id: "all", label: "全部" },
       { id: "unread", label: "未读" },
@@ -206,6 +206,17 @@ function capabilityEmptyState(role, config, capability) {
   }
 
   if (capability.status === "needs_creation_confirmation") {
+    if (role === "archive") {
+      return {
+        title: "尚未设置归档文件夹",
+        detail:
+          "你可以在第一次归档邮件时完成设置，也可以现在进行设置。",
+        action: "setup",
+        actionLabel: "设置归档文件夹",
+        liveRole: "status",
+        role,
+      };
+    }
     return {
       title: `需要设置${config.mailboxLabel}`,
       detail: `创建并确认${config.mailboxLabel}后才能使用此功能`,

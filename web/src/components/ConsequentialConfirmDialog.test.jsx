@@ -23,7 +23,7 @@ afterEach(() => {
 });
 
 describe("MailboxRoleSetupDialog", () => {
-  it("names the fixed Archive mailbox, starts safely, traps focus, and restores the trigger", () => {
+  it("names the fixed Archive folder, starts safely, traps focus, and restores the trigger", () => {
     const trigger = invokingControl("归档");
     trigger.button.dataset.confirmTestTrigger = "true";
     const onCancel = vi.fn();
@@ -37,18 +37,18 @@ describe("MailboxRoleSetupDialog", () => {
     );
 
     expect(
-      screen.getByRole("heading", { name: "创建 Archive 邮箱？" }),
+      screen.getByRole("heading", { name: "设置归档文件夹？" }),
     ).toBeTruthy();
     expect(
       screen.getByText(
-        "Mine Mail 将创建名为 Archive 的固定邮箱，并在服务器确认它可用后再执行归档。",
+        "Mine Mail 将在当前邮箱账户中创建名为 Archive 的服务器文件夹。不会创建新邮箱地址，也不会删除邮件。",
       ),
     ).toBeTruthy();
-    expect(screen.getByText("固定邮箱名称")).toBeTruthy();
+    expect(screen.getByText("固定文件夹名称")).toBeTruthy();
     expect(screen.getByText("Archive")).toBeTruthy();
     expect(
       screen.getByText(
-        "仅在首次创建缺失邮箱时需要此确认。取消不会创建邮箱，也不会移动或改变当前邮件。",
+        "仅在首次创建缺失文件夹时需要此确认。取消不会创建文件夹，也不会移动或改变当前邮件。",
       ),
     ).toBeTruthy();
 
@@ -57,9 +57,9 @@ describe("MailboxRoleSetupDialog", () => {
     expect(dialog.getAttribute("aria-describedby")).toBeTruthy();
     const cancel = screen.getByRole("button", { name: "取消" });
     const close = screen.getByRole("button", {
-      name: "取消创建 Archive 邮箱",
+      name: "取消创建 Archive 文件夹",
     });
-    const confirm = screen.getByRole("button", { name: "创建 Archive" });
+    const confirm = screen.getByRole("button", { name: "创建归档文件夹" });
     expect(document.activeElement).toBe(cancel);
 
     confirm.focus();
@@ -76,6 +76,27 @@ describe("MailboxRoleSetupDialog", () => {
 
     view.unmount();
     expect(document.activeElement).toBe(trigger.button);
+  });
+
+  it("describes and confirms creation that continues the triggering Archive action", async () => {
+    const user = userEvent.setup();
+    const onConfirm = vi.fn();
+    render(
+      <MailboxRoleSetupDialog
+        role="archive"
+        continueAction
+        onCancel={vi.fn()}
+        onConfirm={onConfirm}
+      />,
+    );
+
+    expect(
+      screen.getByRole("heading", {
+        name: "创建归档文件夹并归档这封邮件？",
+      }),
+    ).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "创建并归档" }));
+    expect(onConfirm).toHaveBeenCalledWith("archive");
   });
 
   it("reports the exact Trash role through a controlled callback", async () => {

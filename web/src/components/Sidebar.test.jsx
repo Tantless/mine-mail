@@ -271,7 +271,7 @@ describe("Sidebar account switcher", () => {
     renderSidebar(1, { onFolderChange });
 
     const archive = screen.getByRole("button", {
-      name: "归档，正在确认归档邮箱是否可用",
+      name: "归档，正在确认归档文件夹是否可用",
     });
     const trash = screen.getByRole("button", {
       name: "垃圾箱，正在确认垃圾箱是否可用",
@@ -324,7 +324,7 @@ describe("Sidebar account switcher", () => {
     trigger.remove();
   });
 
-  it("routes a missing Archive role to the controlled setup callback", async () => {
+  it("keeps a missing Archive role neutral and routes to its workspace", async () => {
     const user = userEvent.setup();
     const onFolderChange = vi.fn();
     const onMailboxSetup = vi.fn();
@@ -341,15 +341,15 @@ describe("Sidebar account switcher", () => {
       },
     });
 
-    const setup = screen.getByRole("button", {
-      name: "设置归档邮箱，需要创建归档邮箱后才能使用",
-    });
-    expect(setup.textContent).toContain("需设置");
+    const archive = screen.getByRole("button", { name: "归档" });
+    expect(archive.disabled).toBe(false);
+    expect(archive.textContent).not.toContain("需设置");
+    expect(archive.dataset.capabilityStatus).toBeUndefined();
 
-    await user.click(setup);
+    await user.click(archive);
 
-    expect(onMailboxSetup).toHaveBeenCalledWith("archive");
-    expect(onFolderChange).not.toHaveBeenCalled();
+    expect(onFolderChange).toHaveBeenCalledWith("archive");
+    expect(onMailboxSetup).not.toHaveBeenCalled();
   });
 
   it("shows discovery as a non-navigable state when no retry is available", () => {
@@ -365,7 +365,7 @@ describe("Sidebar account switcher", () => {
     });
 
     const archive = screen.getByRole("button", {
-      name: "归档，正在确认归档邮箱是否可用",
+      name: "归档，正在确认归档文件夹是否可用",
     });
     expect(archive.disabled).toBe(true);
     expect(archive.textContent).toContain("确认中");
