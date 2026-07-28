@@ -11,7 +11,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use mine_mail::{DraftSyncReport, InboxMessage, InboxMonitorMode, SyncBatchProgress, SyncReport};
+use mine_mail::{
+    DraftSyncReport, InboxMessage, InboxMonitorMode, MailBackend, MailboxCapability,
+    MailboxCapabilityStatus, MailboxRole, SyncBatchProgress, SyncReport,
+};
 use serde::Serialize;
 use tauri::{
     App, AppHandle, Emitter, Manager, PhysicalPosition, WebviewWindow,
@@ -58,8 +61,6 @@ pub(crate) struct NewMailNotificationDto {
     pub subject: String,
     pub recipient_email: String,
     pub recipient_remark: Option<String>,
-    pub uid: u32,
-    pub account_id: String,
     pub count: usize,
     pub web_sound: Option<settings::NotificationSound>,
 }
@@ -67,8 +68,21 @@ pub(crate) struct NewMailNotificationDto {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct OpenMessageEvent {
-    uid: u32,
+    message_id: String,
     account_id: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct NewMailNotificationTarget {
+    notification_id: u64,
+    account_id: String,
+    public_id: String,
+}
+
+#[derive(Clone, Debug)]
+struct PendingNewMailNotification {
+    display: NewMailNotificationDto,
+    target: NewMailNotificationTarget,
 }
 
 #[derive(Clone, Debug)]
@@ -111,7 +125,7 @@ pub(crate) struct DesktopRuntime {
     pending_inbox_syncs: StdMutex<HashSet<String>>,
     exit_handshake: StdMutex<ExitHandshakeState>,
     notification_sequence: AtomicU64,
-    notification_popup: StdMutex<Option<NewMailNotificationDto>>,
+    notification_popup: StdMutex<Option<PendingNewMailNotification>>,
 }
 
 impl DesktopRuntime {
@@ -314,7 +328,11 @@ impl DesktopRuntime {
     ) -> Result<Option<NewMailNotificationDto>, String> {
         self.notification_popup
             .lock()
-            .map(|notification| notification.clone())
+            .map(|notification| {
+                notification
+                    .as_ref()
+                    .map(|notification| notification.display.clone())
+            })
             .map_err(|_| "The notification surface is temporarily unavailable.".to_owned())
     }
 
@@ -327,13 +345,14 @@ impl DesktopRuntime {
         subject: String,
         recipient_email: String,
         recipient_remark: Option<String>,
-        uid: u32,
+        public_id: String,
         account_id: String,
         count: usize,
         web_sound: Option<settings::NotificationSound>,
     ) -> Result<NewMailNotificationDto, String> {
+        let notification_id = self.notification_sequence.fetch_add(1, Ordering::Relaxed) + 1;
         let notification = NewMailNotificationDto {
-            notification_id: self.notification_sequence.fetch_add(1, Ordering::Relaxed) + 1,
+            notification_id,
             sender,
             sender_email,
             sender_remark,
@@ -341,8 +360,6 @@ impl DesktopRuntime {
             subject,
             recipient_email,
             recipient_remark,
-            uid,
-            account_id,
             count,
             web_sound,
         };
@@ -350,23 +367,60 @@ impl DesktopRuntime {
             .notification_popup
             .lock()
             .map_err(|_| "The notification surface is temporarily unavailable.".to_owned())? =
-            Some(notification.clone());
+            Some(PendingNewMailNotification {
+                display: notification.clone(),
+                target: NewMailNotificationTarget {
+                    notification_id,
+                    account_id,
+                    public_id,
+                },
+            });
         Ok(notification)
     }
 
-    fn clear_new_mail_notification(&self, notification_id: u64) -> Result<bool, String> {
+    fn consume_new_mail_notification(
+        &self,
+        notification_id: u64,
+        action: impl FnOnce(&NewMailNotificationTarget) -> Result<(), String>,
+    ) -> Result<bool, String> {
         let mut current = self
             .notification_popup
             .lock()
             .map_err(|_| "The notification surface is temporarily unavailable.".to_owned())?;
         if current
             .as_ref()
-            .map(|notification| notification.notification_id)
+            .map(|notification| notification.target.notification_id)
             != Some(notification_id)
         {
             return Ok(false);
         }
+        let target = &current
+            .as_ref()
+            .expect("the notification identifier was just matched")
+            .target;
+        // The pending item remains intact if the side effect fails. Holding
+        // the lock through the action also prevents an old click from hiding
+        // or clearing a newer notification published concurrently.
+        action(target)?;
         *current = None;
+        Ok(true)
+    }
+
+    fn hide_notification_popup_if_idle(
+        &self,
+        hide_popup: impl FnOnce() -> Result<(), String>,
+    ) -> Result<bool, String> {
+        let current = self
+            .notification_popup
+            .lock()
+            .map_err(|_| "The notification surface is temporarily unavailable.".to_owned())?;
+        if current.is_some() {
+            return Ok(false);
+        }
+        // Keep publication serialized through the actual hide call. A newer
+        // pending item either makes us skip this hide, or is published only
+        // after the old popup has been hidden.
+        hide_popup()?;
         Ok(true)
     }
 
@@ -614,11 +668,74 @@ impl DesktopRuntime {
     }
 }
 
+/// Provider mailbox names in core synchronization reports are diagnostic
+/// coordinates, not desktop capabilities. This explicit boundary retains only
+/// bounded counters and semantic state.
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct SyncReportDto {
+    pub remote_total: u32,
+    pub fetched: usize,
+    pub updated_flags: usize,
+    pub removed: usize,
+    pub cached_total: usize,
+    pub uid_validity_reset: bool,
+}
+
+impl From<&SyncReport> for SyncReportDto {
+    fn from(value: &SyncReport) -> Self {
+        Self {
+            remote_total: value.remote_total,
+            fetched: value.fetched,
+            updated_flags: value.updated_flags,
+            removed: value.removed,
+            cached_total: value.cached_total,
+            uid_validity_reset: value.uid_validity_reset,
+        }
+    }
+}
+
+impl From<SyncReport> for SyncReportDto {
+    fn from(value: SyncReport) -> Self {
+        Self::from(&value)
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct DraftSyncReportDto {
+    pub pulled: usize,
+    pub pushed: usize,
+    pub deleted_local: usize,
+    pub deleted_remote: usize,
+    pub conflicts: usize,
+    pub skipped: usize,
+    pub local_total: usize,
+}
+
+impl From<&DraftSyncReport> for DraftSyncReportDto {
+    fn from(value: &DraftSyncReport) -> Self {
+        Self {
+            pulled: value.pulled,
+            pushed: value.pushed,
+            deleted_local: value.deleted_local,
+            deleted_remote: value.deleted_remote,
+            conflicts: value.conflicts,
+            skipped: value.skipped,
+            local_total: value.local_total,
+        }
+    }
+}
+
+impl From<DraftSyncReport> for DraftSyncReportDto {
+    fn from(value: DraftSyncReport) -> Self {
+        Self::from(&value)
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct SyncAllReport {
-    pub inbox: SyncReport,
-    pub sent: SyncReport,
-    pub drafts: DraftSyncReport,
+    pub inbox: SyncReportDto,
+    pub sent: SyncReportDto,
+    pub drafts: DraftSyncReportDto,
     pub accounts_synced: usize,
 }
 
@@ -628,7 +745,7 @@ struct InboxUpdatedEvent {
     completed: usize,
     total: Option<usize>,
     is_complete: bool,
-    report: Option<SyncReport>,
+    report: Option<SyncReportDto>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -637,7 +754,18 @@ struct SentUpdatedEvent {
     completed: usize,
     total: Option<usize>,
     is_complete: bool,
-    report: Option<SyncReport>,
+    report: Option<SyncReportDto>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct MailboxUpdatedEvent {
+    account_id: String,
+    role: MailboxRole,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct MailboxCapabilitiesUpdatedEvent {
+    account_id: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -661,7 +789,7 @@ pub(crate) struct DraftsUpdatedEvent {
     completed: usize,
     total: Option<usize>,
     is_complete: bool,
-    report: Option<DraftSyncReport>,
+    report: Option<DraftSyncReportDto>,
 }
 
 impl DraftsUpdatedEvent {
@@ -699,13 +827,14 @@ impl DraftsUpdatedEvent {
     }
 
     fn synced(account_id: String, report: DraftSyncReport) -> Self {
+        let report_dto = DraftSyncReportDto::from(&report);
         Self {
             account_id: Some(account_id),
             reason: "synced",
             completed: report.local_total,
             total: Some(report.local_total),
             is_complete: true,
-            report: Some(report),
+            report: Some(report_dto),
         }
     }
 }
@@ -934,9 +1063,7 @@ pub(crate) fn start_background_loop(
                     inbox_deadline = TokioInstant::now() + app.state::<DesktopRuntime>().poll_duration();
                 }
                 _ = tokio::time::sleep_until(draft_deadline) => {
-                    if app.state::<BackendState>().network().is_ok()
-                        && let Err(error) = perform_draft_sync(&app).await
-                    {
+                    if let Err(error) = perform_draft_sync_all(&app).await {
                         emit_sync_error(&app, "drafts", "schedule", error);
                     }
                     draft_deadline = TokioInstant::now() + DRAFT_SYNC_INTERVAL;
@@ -999,6 +1126,60 @@ fn emit_account_status(
     );
 }
 
+fn trigger_discovers_mailbox_roles(trigger: &str) -> bool {
+    matches!(
+        trigger,
+        "startup" | "manual" | "tray" | "account_change" | "single_instance"
+    )
+}
+
+fn available_optional_mailbox_roles(capabilities: &[MailboxCapability]) -> Vec<MailboxRole> {
+    [MailboxRole::Archive, MailboxRole::Trash]
+        .into_iter()
+        .filter(|role| {
+            capabilities.iter().any(|capability| {
+                capability.role == *role && capability.status == MailboxCapabilityStatus::Available
+            })
+        })
+        .collect()
+}
+
+fn optional_role_participates_periodically(
+    role: MailboxRole,
+    capabilities: &[MailboxCapability],
+    initialized_locally: bool,
+    mutation_activity: bool,
+) -> bool {
+    available_optional_mailbox_roles(capabilities).contains(&role)
+        && (initialized_locally || mutation_activity)
+}
+
+fn role_has_local_history(backend: &MailBackend, account_id: &str, role: MailboxRole) -> bool {
+    backend
+        .mailbox_role_initialized(account_id, role)
+        .unwrap_or(false)
+}
+
+async fn sync_optional_mailbox_for(
+    app: &AppHandle,
+    account_id: &str,
+    role: MailboxRole,
+) -> Result<(), String> {
+    let backend = app.state::<BackendState>().network_for(account_id)?;
+    backend
+        .sync_mailbox(account_id, role)
+        .await
+        .map_err(crate::safe_mail_error)?;
+    let _ = app.emit(
+        "mail:mailbox-updated",
+        MailboxUpdatedEvent {
+            account_id: account_id.to_owned(),
+            role,
+        },
+    );
+    Ok(())
+}
+
 pub(crate) async fn perform_sync_all(
     app: &AppHandle,
     force: bool,
@@ -1057,6 +1238,40 @@ pub(crate) async fn perform_sync_all(
         if !backend_state.network_ready_for(&account_id) {
             continue;
         }
+        let network = match backend_state.network_for(&account_id) {
+            Ok(network) => network,
+            Err(error) => {
+                errors.push(format!("{account_id} runtime: {error}"));
+                continue;
+            }
+        };
+        let mut account_errors = Vec::new();
+        if trigger_discovers_mailbox_roles(trigger) {
+            match network.discover_mailbox_roles(&account_id).await {
+                Ok(_) => {
+                    let _ = app.emit(
+                        "mail:mailbox-capabilities-updated",
+                        MailboxCapabilitiesUpdatedEvent {
+                            account_id: account_id.clone(),
+                        },
+                    );
+                }
+                Err(error) => account_errors.push(format!(
+                    "{account_id} mailbox discovery: {}",
+                    crate::safe_mail_error(error)
+                )),
+            }
+        }
+        if let Err(error) = network.flush_pending_message_mutations(&account_id).await {
+            account_errors.push(format!(
+                "{account_id} queued mutations: {}",
+                crate::safe_mail_error(error)
+            ));
+        }
+        let optional_roles = network
+            .get_mailbox_capabilities(&account_id)
+            .map(|capabilities| available_optional_mailbox_roles(&capabilities))
+            .unwrap_or_default();
         let (inbox, sent, drafts) = tokio::join!(
             sync_inbox_for(app, &account_id),
             sync_sent_for(app, &account_id),
@@ -1069,7 +1284,7 @@ pub(crate) async fn perform_sync_all(
                     active_inbox = Some(report);
                 }
             }
-            Err(error) => errors.push(format!("{account_id} Inbox: {error}")),
+            Err(error) => account_errors.push(format!("{account_id} Inbox: {error}")),
         }
         match drafts {
             Ok(report) => {
@@ -1077,7 +1292,7 @@ pub(crate) async fn perform_sync_all(
                     active_drafts = Some(report);
                 }
             }
-            Err(error) => errors.push(format!("{account_id} Drafts: {error}")),
+            Err(error) => account_errors.push(format!("{account_id} Drafts: {error}")),
         }
         match sent {
             Ok(report) => {
@@ -1085,10 +1300,17 @@ pub(crate) async fn perform_sync_all(
                     active_sent = Some(report);
                 }
             }
-            Err(error) => errors.push(format!("{account_id} Sent: {error}")),
+            Err(error) => account_errors.push(format!("{account_id} Sent: {error}")),
         }
-        if !errors.iter().any(|error| error.starts_with(&account_id)) {
+        for role in optional_roles {
+            if let Err(error) = sync_optional_mailbox_for(app, &account_id, role).await {
+                account_errors.push(format!("{account_id} {role:?}: {error}"));
+            }
+        }
+        if account_errors.is_empty() {
             accounts_synced += 1;
+        } else {
+            errors.extend(account_errors);
         }
     }
     if let Some(error) = refresh_error {
@@ -1144,9 +1366,9 @@ pub(crate) async fn perform_sync_all(
             .duration(started.elapsed()),
     );
     Ok(Some(SyncAllReport {
-        inbox,
-        sent,
-        drafts,
+        inbox: inbox.into(),
+        sent: sent.into(),
+        drafts: drafts.into(),
         accounts_synced,
     }))
 }
@@ -1191,6 +1413,45 @@ async fn perform_inbox_reconciliation_all(app: &AppHandle) -> Result<(), String>
         if !backend_state.network_ready_for(&account_id) {
             continue;
         }
+        let network = match backend_state.network_for(&account_id) {
+            Ok(network) => network,
+            Err(error) => {
+                errors.push(format!("{account_id} runtime: {error}"));
+                continue;
+            }
+        };
+        let mutation_activity_before_flush = network
+            .has_message_mutation_activity(&account_id)
+            .unwrap_or(false);
+        let mutation_activity = match network.flush_pending_message_mutations(&account_id).await {
+            Ok(confirmed) => confirmed > 0,
+            Err(error) => {
+                errors.push(format!(
+                    "{account_id} queued mutations: {}",
+                    crate::safe_mail_error(error)
+                ));
+                false
+            }
+        } || mutation_activity_before_flush
+            || network
+                .has_message_mutation_activity(&account_id)
+                .unwrap_or(false);
+        let optional_roles = network
+            .get_mailbox_capabilities(&account_id)
+            .map(|capabilities| {
+                [MailboxRole::Archive, MailboxRole::Trash]
+                    .into_iter()
+                    .filter(|role| {
+                        optional_role_participates_periodically(
+                            *role,
+                            &capabilities,
+                            role_has_local_history(&network, &account_id, *role),
+                            mutation_activity,
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
         let (inbox, sent) = tokio::join!(
             sync_inbox_for(app, &account_id),
             sync_sent_for(app, &account_id),
@@ -1201,6 +1462,11 @@ async fn perform_inbox_reconciliation_all(app: &AppHandle) -> Result<(), String>
         if let Err(error) = sent {
             errors.push(format!("{account_id} Sent: {error}"));
         }
+        for role in optional_roles {
+            if let Err(error) = sync_optional_mailbox_for(app, &account_id, role).await {
+                errors.push(format!("{account_id} {role:?}: {error}"));
+            }
+        }
     }
     if let Some(error) = refresh_error {
         errors.push(error);
@@ -1209,6 +1475,39 @@ async fn perform_inbox_reconciliation_all(app: &AppHandle) -> Result<(), String>
         Ok(())
     } else {
         Err("后台邮箱校准未完成，将在稍后自动重试。".to_owned())
+    }
+}
+
+async fn perform_draft_sync_all(app: &AppHandle) -> Result<(), String> {
+    let runtime = app.state::<DesktopRuntime>();
+    let _guard = runtime.sync_gate.lock().await;
+    let account_runtime = app.state::<AccountRuntime>();
+    let backend_state = app.state::<BackendState>();
+    let refresh_error = account_runtime
+        .refresh_oauth_backends(&backend_state)
+        .await
+        .err();
+    emit_account_status(app, &account_runtime, &backend_state);
+    let mut errors = Vec::new();
+    let account_ids = prioritize_active_account(
+        account_runtime.account_ids(),
+        backend_state.active_account_id().as_deref(),
+    );
+    for account_id in account_ids {
+        if !backend_state.network_ready_for(&account_id) {
+            continue;
+        }
+        if let Err(error) = sync_drafts_for(app, &account_id).await {
+            errors.push(format!("{account_id} Drafts: {error}"));
+        }
+    }
+    if let Some(error) = refresh_error {
+        errors.push(error);
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err("后台草稿同步未完成，将在稍后自动重试。".to_owned())
     }
 }
 
@@ -1442,7 +1741,7 @@ async fn sync_sent_for(app: &AppHandle, account_id: &str) -> Result<SyncReport, 
             completed: report.fetched,
             total: Some(report.fetched),
             is_complete: true,
-            report: Some(report.clone()),
+            report: Some(SyncReportDto::from(&report)),
         },
     );
     let prefetch_backend = backend.clone();
@@ -1466,7 +1765,7 @@ async fn sync_sent_for(app: &AppHandle, account_id: &str) -> Result<SyncReport, 
                     completed: prefetch_report.fetched,
                     total: Some(prefetch_report.fetched),
                     is_complete: true,
-                    report: Some(prefetch_report),
+                    report: Some(SyncReportDto::from(&prefetch_report)),
                 },
             );
         }
@@ -1505,7 +1804,7 @@ fn finish_inbox_sync(
             completed: report.fetched,
             total: Some(report.fetched),
             is_complete: true,
-            report: Some(report.clone()),
+            report: Some(SyncReportDto::from(&report)),
         },
     );
     let prefetch_backend = backend.clone();
@@ -1529,7 +1828,7 @@ fn finish_inbox_sync(
                     completed: prefetch_report.fetched,
                     total: Some(prefetch_report.fetched),
                     is_complete: true,
-                    report: Some(prefetch_report),
+                    report: Some(SyncReportDto::from(&prefetch_report)),
                 },
             );
         }
@@ -1670,6 +1969,13 @@ fn update_notification_baseline_and_notify(
         .state::<AccountRuntime>()
         .account_email_and_remark(account_id)
         .unwrap_or_else(|| (account_id.to_owned(), None));
+    let public_id = match app.state::<BackendState>().local_for(account_id) {
+        Ok(backend) => match backend.public_id_for_cached_inbox_message(newest) {
+            Ok(public_id) => public_id,
+            Err(_) => return,
+        },
+        Err(_) => return,
+    };
     show_new_mail_notification(
         app,
         sender,
@@ -1679,7 +1985,7 @@ fn update_notification_baseline_and_notify(
         notification_subject(newest),
         recipient_email,
         recipient_remark,
-        newest.uid,
+        public_id,
         account_id.to_owned(),
         count,
         settings,
@@ -1702,7 +2008,7 @@ fn show_new_mail_notification(
     subject: String,
     recipient_email: String,
     recipient_remark: Option<String>,
-    uid: u32,
+    public_id: String,
     account_id: String,
     count: usize,
     settings: StoredDesktopSettings,
@@ -1721,7 +2027,7 @@ fn show_new_mail_notification(
         sanitize_notification_text(&subject, 140),
         sanitize_notification_text(&recipient_email, 320),
         recipient_remark.map(|value| sanitize_notification_text(&value, 40)),
-        uid,
+        public_id,
         account_id,
         count,
         web_sound,
@@ -1914,13 +2220,36 @@ pub(crate) fn dismiss_new_mail_notification(
     notification_id: u64,
 ) -> Result<bool, String> {
     let runtime = app.state::<DesktopRuntime>();
-    if !runtime.clear_new_mail_notification(notification_id)? {
+    runtime.consume_new_mail_notification(notification_id, |_| {
+        if let Some(window) = app.get_webview_window(NEW_MAIL_NOTIFICATION_WINDOW) {
+            window
+                .hide()
+                .map_err(|_| "The notification window could not be hidden.".to_owned())?;
+        }
+        Ok(())
+    })
+}
+
+fn consume_open_new_mail_notification(
+    runtime: &DesktopRuntime,
+    notification_id: u64,
+    emit_open: impl FnOnce(&NewMailNotificationTarget) -> Result<(), String>,
+    hide_popup: impl FnOnce() -> Result<(), String>,
+) -> Result<bool, String> {
+    let consumed = runtime.consume_new_mail_notification(notification_id, emit_open)?;
+    if !consumed {
         return Ok(false);
     }
-    if let Some(window) = app.get_webview_window(NEW_MAIL_NOTIFICATION_WINDOW) {
-        window
-            .hide()
-            .map_err(|_| "The notification window could not be hidden.".to_owned())?;
+    if runtime.hide_notification_popup_if_idle(hide_popup).is_err() {
+        // Emitting the main-window navigation event is the commit point. A
+        // popup hide failure must not restore the consumed target and make a
+        // retry emit the same navigation event twice.
+        diagnostics::warn(
+            "notification_window_hide_failed",
+            Fields::default()
+                .operation("notification_open")
+                .outcome("target_consumed"),
+        );
     }
     Ok(true)
 }
@@ -1928,24 +2257,32 @@ pub(crate) fn dismiss_new_mail_notification(
 pub(crate) fn open_new_mail_notification(
     app: &AppHandle,
     notification_id: u64,
-    uid: u32,
-    account_id: String,
 ) -> Result<bool, String> {
     let runtime = app.state::<DesktopRuntime>();
-    if !runtime.clear_new_mail_notification(notification_id)? {
-        return Ok(false);
-    }
-    if let Some(window) = app.get_webview_window(NEW_MAIL_NOTIFICATION_WINDOW) {
-        let _ = window.hide();
-    }
-    show_main_window(app, false);
-    app.emit_to(
-        "main",
-        "mail:open-message",
-        OpenMessageEvent { uid, account_id },
+    consume_open_new_mail_notification(
+        &runtime,
+        notification_id,
+        |target| {
+            show_main_window(app, false);
+            app.emit_to(
+                "main",
+                "mail:open-message",
+                OpenMessageEvent {
+                    message_id: target.public_id.clone(),
+                    account_id: target.account_id.clone(),
+                },
+            )
+            .map_err(|_| "The selected message could not be opened.".to_owned())
+        },
+        || {
+            if let Some(window) = app.get_webview_window(NEW_MAIL_NOTIFICATION_WINDOW) {
+                window
+                    .hide()
+                    .map_err(|_| "The notification window could not be hidden.".to_owned())?;
+            }
+            Ok(())
+        },
     )
-    .map_err(|_| "The selected message could not be opened.".to_owned())?;
-    Ok(true)
 }
 
 pub(crate) fn request_sync(app: &AppHandle, force: bool, trigger: &'static str) {
@@ -2041,16 +2378,24 @@ fn complete_exit_on_timeout(app: &AppHandle, ticket: ExitHandshakeTicket) {
 
 #[cfg(test)]
 mod tests {
-    use std::time::{Duration, Instant};
+    use std::{
+        cell::Cell,
+        time::{Duration, Instant},
+    };
 
-    use mine_mail::{InboxMessage, MailAddress};
+    use mine_mail::{
+        DraftSyncReport, InboxMessage, MailAddress, MailboxCapability, MailboxCapabilityStatus,
+        MailboxRole, SyncReport,
+    };
 
     use super::settings::NotificationSound;
     use super::settings::StoredDesktopSettings;
     use super::{
-        BeforeExitEvent, DesktopRuntime, EXIT_HANDSHAKE_TIMEOUT, is_seen, notification_sender,
-        notification_sender_email, prioritize_active_account, sanitize_notification_text,
-        should_deliver_new_mail_notification,
+        BeforeExitEvent, DesktopRuntime, EXIT_HANDSHAKE_TIMEOUT, SyncAllReport,
+        available_optional_mailbox_roles, consume_open_new_mail_notification, is_seen,
+        notification_sender, notification_sender_email, optional_role_participates_periodically,
+        prioritize_active_account, sanitize_notification_text,
+        should_deliver_new_mail_notification, trigger_discovers_mailbox_roles,
     };
 
     fn message(flags: Vec<String>) -> InboxMessage {
@@ -2069,6 +2414,7 @@ mod tests {
             }),
             to: vec![],
             cc: vec![],
+            bcc: vec![],
             sent_at: None,
             internal_date: None,
             flags,
@@ -2109,6 +2455,71 @@ mod tests {
     }
 
     #[test]
+    fn startup_and_explicit_refresh_discover_roles_but_periodic_paths_do_not() {
+        for trigger in [
+            "startup",
+            "manual",
+            "tray",
+            "account_change",
+            "single_instance",
+        ] {
+            assert!(trigger_discovers_mailbox_roles(trigger), "{trigger}");
+        }
+        for trigger in ["schedule", "resume", "window_focus", "monitor"] {
+            assert!(!trigger_discovers_mailbox_roles(trigger), "{trigger}");
+        }
+    }
+
+    #[test]
+    fn optional_mailboxes_require_capability_and_periodic_participation() {
+        let capabilities = vec![
+            MailboxCapability {
+                role: MailboxRole::Archive,
+                status: MailboxCapabilityStatus::Available,
+                display_name: Some("[Gmail]/所有邮件".to_owned()),
+                unavailable_reason: None,
+                retryable: false,
+            },
+            MailboxCapability {
+                role: MailboxRole::Trash,
+                status: MailboxCapabilityStatus::NeedsCreationConfirmation,
+                display_name: None,
+                unavailable_reason: None,
+                retryable: false,
+            },
+        ];
+
+        assert_eq!(
+            available_optional_mailbox_roles(&capabilities),
+            vec![MailboxRole::Archive]
+        );
+        assert!(optional_role_participates_periodically(
+            MailboxRole::Archive,
+            &capabilities,
+            true,
+            false,
+        ));
+        assert!(optional_role_participates_periodically(
+            MailboxRole::Archive,
+            &capabilities,
+            false,
+            true,
+        ));
+        assert!(!optional_role_participates_periodically(
+            MailboxRole::Archive,
+            &capabilities,
+            false,
+            false,
+        ));
+        assert!(!optional_role_participates_periodically(
+            MailboxRole::Trash,
+            &capabilities,
+            true,
+            true,
+        ));
+    }
+
+    #[test]
     fn notification_text_removes_control_characters_and_is_bounded() {
         assert_eq!(
             sanitize_notification_text("Hello\n  world", 20),
@@ -2137,10 +2548,49 @@ mod tests {
     }
 
     #[test]
-    fn notification_surface_rejects_stale_dismissals() {
+    fn synchronization_dtos_drop_provider_mailbox_coordinates_recursively() {
+        let inbox = SyncReport {
+            mailbox: "[Gmail]/所有邮件".to_owned(),
+            remote_total: 8,
+            fetched: 3,
+            updated_flags: 2,
+            removed: 1,
+            cached_total: 7,
+            uid_validity_reset: false,
+        };
+        let sent = SyncReport {
+            mailbox: "[Gmail]/已发送邮件".to_owned(),
+            ..inbox.clone()
+        };
+        let drafts = DraftSyncReport {
+            mailbox: "[Gmail]/草稿".to_owned(),
+            pulled: 1,
+            pushed: 2,
+            deleted_local: 0,
+            deleted_remote: 0,
+            conflicts: 1,
+            skipped: 0,
+            local_total: 4,
+        };
+        let dto = SyncAllReport {
+            inbox: inbox.into(),
+            sent: sent.into(),
+            drafts: drafts.into(),
+            accounts_synced: 2,
+        };
+        let json = serde_json::to_value(dto).expect("serialize safe synchronization report");
+
+        assert_eq!(json["inbox"]["fetched"], 3);
+        assert_eq!(json["drafts"]["conflicts"], 1);
+        assert!(!json.to_string().contains("Gmail"));
+        crate::assert_no_private_mail_coordinates(&json);
+    }
+
+    #[test]
+    fn notification_surface_keeps_targets_private_and_consumes_only_current_successes() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let (runtime, _sync_rx, _shutdown_rx) = DesktopRuntime::open(directory.path());
-        let notification = runtime
+        let first = runtime
             .publish_new_mail_notification(
                 "Sender".to_owned(),
                 "sender@example.com".to_owned(),
@@ -2149,32 +2599,140 @@ mod tests {
                 "Subject".to_owned(),
                 "mine@example.com".to_owned(),
                 Some("工作邮箱".to_owned()),
-                42,
+                "opaque-message-1".to_owned(),
                 "account-test".to_owned(),
                 1,
                 Some(NotificationSound::Mail),
             )
             .expect("publish notification");
+        let display_json =
+            serde_json::to_value(&first).expect("serialize notification display boundary");
+        assert_eq!(display_json["notificationId"], first.notification_id);
+        crate::assert_no_private_mail_coordinates(&display_json);
+        for private_key in [
+            "uid",
+            "accountId",
+            "account_id",
+            "messageId",
+            "message_id",
+            "publicId",
+            "public_id",
+        ] {
+            assert!(
+                display_json.get(private_key).is_none(),
+                "private notification target field crossed the display boundary: {private_key}"
+            );
+        }
 
+        let second = runtime
+            .publish_new_mail_notification(
+                "New Sender".to_owned(),
+                "new@example.com".to_owned(),
+                None,
+                None,
+                "New Subject".to_owned(),
+                "mine@example.com".to_owned(),
+                None,
+                "opaque-message-2".to_owned(),
+                "account-new".to_owned(),
+                2,
+                None,
+            )
+            .expect("publish updated notification");
+        let stale_action_ran = Cell::new(false);
         assert!(
             !runtime
-                .clear_new_mail_notification(notification.notification_id + 1)
+                .consume_new_mail_notification(first.notification_id, |_| {
+                    stale_action_ran.set(true);
+                    Ok(())
+                })
                 .unwrap()
         );
+        assert!(!stale_action_ran.get());
+
+        let failure = runtime.consume_new_mail_notification(second.notification_id, |_| {
+            Err("simulated emit failure".to_owned())
+        });
+        assert_eq!(failure.unwrap_err(), "simulated emit failure");
         let pending = runtime
             .latest_new_mail_notification()
             .expect("notification state")
             .expect("pending notification");
-        assert_eq!(pending.uid, 42);
-        assert_eq!(pending.sender_email, "sender@example.com");
+        assert_eq!(pending.notification_id, second.notification_id);
+        assert_eq!(pending.sender_email, "new@example.com");
         assert_eq!(pending.recipient_email, "mine@example.com");
-        assert_eq!(pending.recipient_remark.as_deref(), Some("工作邮箱"));
+
+        let emit_count = Cell::new(0);
+        let hide_count = Cell::new(0);
         assert!(
-            runtime
-                .clear_new_mail_notification(notification.notification_id)
-                .unwrap()
+            consume_open_new_mail_notification(
+                &runtime,
+                second.notification_id,
+                |target| {
+                    emit_count.set(emit_count.get() + 1);
+                    assert_eq!(target.notification_id, second.notification_id);
+                    assert_eq!(target.account_id, "account-new");
+                    assert_eq!(target.public_id, "opaque-message-2");
+                    Ok(())
+                },
+                || {
+                    hide_count.set(hide_count.get() + 1);
+                    Err("simulated hide failure".to_owned())
+                },
+            )
+            .unwrap()
         );
         assert!(runtime.latest_new_mail_notification().unwrap().is_none());
+        assert!(
+            !consume_open_new_mail_notification(
+                &runtime,
+                second.notification_id,
+                |_| {
+                    emit_count.set(emit_count.get() + 1);
+                    Ok(())
+                },
+                || {
+                    hide_count.set(hide_count.get() + 1);
+                    Ok(())
+                },
+            )
+            .unwrap()
+        );
+        assert_eq!(emit_count.get(), 1);
+        assert_eq!(hide_count.get(), 1);
+
+        let third = runtime
+            .publish_new_mail_notification(
+                "Newest Sender".to_owned(),
+                "newest@example.com".to_owned(),
+                None,
+                None,
+                "Newest Subject".to_owned(),
+                "mine@example.com".to_owned(),
+                None,
+                "opaque-message-3".to_owned(),
+                "account-newest".to_owned(),
+                1,
+                None,
+            )
+            .expect("publish notification racing a stale hide");
+        assert!(
+            !runtime
+                .hide_notification_popup_if_idle(|| {
+                    hide_count.set(hide_count.get() + 1);
+                    Ok(())
+                })
+                .unwrap()
+        );
+        assert_eq!(hide_count.get(), 1);
+        assert_eq!(
+            runtime
+                .latest_new_mail_notification()
+                .unwrap()
+                .expect("new notification remains visible")
+                .notification_id,
+            third.notification_id
+        );
     }
 
     #[test]

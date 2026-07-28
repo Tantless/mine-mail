@@ -1,0 +1,1100 @@
+use mine_mail::{
+    AttachmentSaveErrorKind, ForwardPreparationErrorKind, ForwardPreparationOutcome, InboxMessage,
+    MailBackend, MailError, MailboxCapability, MailboxCapabilityStatus,
+    MailboxCapabilityUnavailableReason, MailboxRole, MessageMutationReceipt, MessagePage,
+    MessagePageCursor, MessagePageItem, PendingMessageProjection, PermanentDeletePlan,
+    RemoteHistoryState, SystemFlagMutationReceipt,
+};
+use serde::Serialize;
+use tauri::{AppHandle, Emitter, Manager, State};
+use tauri_plugin_dialog::DialogExt;
+
+use crate::{
+    AttachmentMetaDto, AttachmentSaveResultDto, BodyRenderMode, BodySegmentConfidenceDto,
+    BodySegmentDto, BodySegmentKindDto, BodySegmentMetadataDto, CommandResult,
+    ForwardPreparationOutcomeDto, InboxMessageDto, MailAddressDto, MessageNavigationTargetDto,
+    account::{AccountRuntime, BackendState},
+    desktop, full_message_dto, safe_mail_error,
+};
+
+const MAX_ACCOUNT_ID_CHARS: usize = 128;
+const MAX_ATTACHMENT_ID_BYTES: usize = 256;
+const MAX_CURSOR_BYTES: usize = 64;
+const MAX_LOCAL_SEARCH_CHARS: usize = 256;
+const MAX_MESSAGE_PAGE_SIZE: usize = 100;
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct MailboxCapabilityDto {
+    role: MailboxRole,
+    status: MailboxCapabilityStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    unavailable_reason: Option<MailboxCapabilityUnavailableReason>,
+    retryable: bool,
+}
+
+impl From<MailboxCapability> for MailboxCapabilityDto {
+    fn from(value: MailboxCapability) -> Self {
+        // `display_name` is the concrete provider mailbox name. It is used by
+        // Rust/SQLite only and must never cross into React.
+        Self {
+            role: value.role,
+            status: value.status,
+            unavailable_reason: value.unavailable_reason,
+            retryable: value.retryable,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct MessageSummaryDto {
+    id: String,
+    subject: String,
+    sender: Option<MailAddressDto>,
+    to: Vec<MailAddressDto>,
+    cc: Vec<MailAddressDto>,
+    bcc: Vec<MailAddressDto>,
+    sent_at: Option<String>,
+    internal_date: Option<String>,
+    flags: Vec<String>,
+    size_bytes: u32,
+    preview: String,
+    body_html_available: bool,
+    attachment_names: Vec<String>,
+    body_fetched: bool,
+    synced_at: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct MailboxBodySegmentDto {
+    kind: BodySegmentKindDto,
+    content: String,
+    render_mode: BodyRenderMode,
+    quote_depth: u8,
+    confidence: BodySegmentConfidenceDto,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    quote_metadata: Option<BodySegmentMetadataDto>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    navigation_target: Option<MessageNavigationTargetDto>,
+}
+
+impl From<BodySegmentDto> for MailboxBodySegmentDto {
+    fn from(value: BodySegmentDto) -> Self {
+        Self {
+            kind: value.kind,
+            content: value.content,
+            render_mode: value.render_mode,
+            quote_depth: value.quote_depth,
+            confidence: value.confidence,
+            quote_metadata: value.quote_metadata,
+            navigation_target: value.navigation_target,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct MailboxMessageDto {
+    id: String,
+    subject: String,
+    sender: Option<MailAddressDto>,
+    to: Vec<MailAddressDto>,
+    cc: Vec<MailAddressDto>,
+    bcc: Vec<MailAddressDto>,
+    sent_at: Option<String>,
+    internal_date: Option<String>,
+    flags: Vec<String>,
+    size_bytes: u32,
+    preview: String,
+    body_text: Option<String>,
+    body_html: Option<String>,
+    body_render_mode: Option<BodyRenderMode>,
+    body_segments: Vec<MailboxBodySegmentDto>,
+    body_html_available: bool,
+    body_html_loaded: bool,
+    has_remote_images: bool,
+    attachment_names: Vec<String>,
+    /// `Some`, including an empty vector, is authoritative for the completely
+    /// cached MIME. `None` keeps a readable body available when attachment
+    /// indexing alone is malformed or temporarily unavailable.
+    attachments: Option<Vec<AttachmentMetaDto>>,
+    body_fetched: bool,
+    synced_at: String,
+}
+
+impl MailboxMessageDto {
+    fn from_full_message(
+        public_id: String,
+        value: InboxMessageDto,
+        attachments: Option<Vec<AttachmentMetaDto>>,
+    ) -> Self {
+        Self {
+            id: public_id,
+            subject: value.subject,
+            sender: value.sender,
+            to: value.to,
+            cc: value.cc,
+            bcc: value.bcc,
+            sent_at: value.sent_at,
+            internal_date: value.internal_date,
+            flags: value.flags,
+            size_bytes: value.size_bytes,
+            preview: value.preview,
+            body_text: value.body_text,
+            body_html: value.body_html,
+            body_render_mode: value.body_render_mode,
+            body_segments: value.body_segments.into_iter().map(Into::into).collect(),
+            body_html_available: value.body_html_available,
+            body_html_loaded: value.body_html_loaded,
+            has_remote_images: value.has_remote_images,
+            attachment_names: value.attachment_names,
+            attachments,
+            body_fetched: value.body_fetched,
+            synced_at: value.synced_at,
+        }
+    }
+}
+
+impl MessageSummaryDto {
+    fn from_page_item(public_id: String, value: InboxMessage) -> Self {
+        Self {
+            id: public_id,
+            subject: value.subject,
+            sender: value.sender.map(Into::into),
+            to: value.to.into_iter().map(Into::into).collect(),
+            cc: value.cc.into_iter().map(Into::into).collect(),
+            bcc: value.bcc.into_iter().map(Into::into).collect(),
+            sent_at: value.sent_at,
+            internal_date: value.internal_date,
+            flags: value.flags,
+            size_bytes: value.size_bytes,
+            preview: value.preview,
+            body_html_available: value.body_html.is_some(),
+            attachment_names: value.attachment_names,
+            body_fetched: value.body_fetched,
+            synced_at: value.synced_at,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct MessagePageItemDto {
+    #[serde(flatten)]
+    message: MessageSummaryDto,
+    displayed_role: MailboxRole,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pending_mutation: Option<PendingMessageProjection>,
+}
+
+impl From<MessagePageItem> for MessagePageItemDto {
+    fn from(value: MessagePageItem) -> Self {
+        Self {
+            message: MessageSummaryDto::from_page_item(value.public_id, value.message),
+            displayed_role: value.displayed_role,
+            pending_mutation: value.pending_mutation,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct MessagePageDto {
+    items: Vec<MessagePageItemDto>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    next_cursor: Option<MessagePageCursor>,
+    has_more_local: bool,
+    remote_history_state: RemoteHistoryState,
+    end_reached: bool,
+}
+
+impl From<MessagePage> for MessagePageDto {
+    fn from(value: MessagePage) -> Self {
+        Self {
+            items: value.items.into_iter().map(Into::into).collect(),
+            next_cursor: value.next_cursor,
+            has_more_local: value.has_more_local,
+            remote_history_state: value.remote_history_state,
+            end_reached: value.end_reached,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct MailboxUpdatedEvent {
+    account_id: String,
+    role: MailboxRole,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct MailboxCapabilitiesUpdatedEvent {
+    account_id: String,
+}
+
+fn validate_account_id(account_id: &str) -> CommandResult<()> {
+    if account_id.is_empty()
+        || account_id.chars().count() > MAX_ACCOUNT_ID_CHARS
+        || account_id.chars().any(char::is_control)
+    {
+        return Err("The account identifier is invalid.".to_owned());
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_message_id(message_id: &str) -> CommandResult<()> {
+    if message_id.len() != 36 || message_id.chars().any(char::is_control) {
+        return Err("The message identifier is invalid.".to_owned());
+    }
+    let parsed = uuid::Uuid::parse_str(message_id)
+        .map_err(|_| "The message identifier is invalid.".to_owned())?;
+    if parsed.to_string() != message_id || parsed.get_version() != Some(uuid::Version::Random) {
+        return Err("The message identifier is invalid.".to_owned());
+    }
+    Ok(())
+}
+
+fn validate_attachment_id(attachment_id: &str) -> CommandResult<()> {
+    if attachment_id.is_empty()
+        || attachment_id.len() > MAX_ATTACHMENT_ID_BYTES
+        || attachment_id.chars().any(char::is_control)
+    {
+        return Err("The attachment identifier is invalid.".to_owned());
+    }
+    Ok(())
+}
+
+fn is_offline_history_error(error: &MailError) -> bool {
+    matches!(error, MailError::Imap(_) | MailError::Timeout { .. })
+}
+
+fn validate_page_role(role: MailboxRole) -> CommandResult<()> {
+    if matches!(
+        role,
+        MailboxRole::Inbox | MailboxRole::Sent | MailboxRole::Archive | MailboxRole::Trash
+    ) {
+        Ok(())
+    } else {
+        Err("This mailbox does not use message pagination.".to_owned())
+    }
+}
+
+fn validate_page_size(page_size: usize) -> CommandResult<()> {
+    if (1..=MAX_MESSAGE_PAGE_SIZE).contains(&page_size) {
+        Ok(())
+    } else {
+        Err(format!(
+            "Message page size must be between 1 and {MAX_MESSAGE_PAGE_SIZE}."
+        ))
+    }
+}
+
+fn normalize_query(query: Option<String>) -> CommandResult<Option<String>> {
+    let Some(query) = query.map(|value| value.trim().to_owned()) else {
+        return Ok(None);
+    };
+    if query.is_empty() {
+        return Ok(None);
+    }
+    if query.chars().count() > MAX_LOCAL_SEARCH_CHARS || query.chars().any(char::is_control) {
+        return Err("The local mail search query is invalid.".to_owned());
+    }
+    Ok(Some(query))
+}
+
+fn parse_cursor(value: Option<String>, required: bool) -> CommandResult<Option<MessagePageCursor>> {
+    let Some(value) = value else {
+        return if required {
+            Err("A continuation cursor is required.".to_owned())
+        } else {
+            Ok(None)
+        };
+    };
+    if value.is_empty() || value.len() > MAX_CURSOR_BYTES || value.chars().any(char::is_control) {
+        return Err("The continuation cursor is invalid or expired.".to_owned());
+    }
+    serde_json::from_value(serde_json::Value::String(value))
+        .map(Some)
+        .map_err(|_| "The continuation cursor is invalid or expired.".to_owned())
+}
+
+fn active_local_backend(
+    backend: &BackendState,
+) -> CommandResult<(String, std::sync::Arc<MailBackend>)> {
+    let account_id = backend
+        .active_account_id()
+        .ok_or_else(|| "No mail account is selected.".to_owned())?;
+    let local = backend.local_for(&account_id)?;
+    Ok((account_id, local))
+}
+
+fn complete_mailbox_message_dto(
+    backend: &MailBackend,
+    public_id: String,
+    message: InboxMessage,
+) -> CommandResult<MailboxMessageDto> {
+    let attachments = backend
+        .cached_message_attachments(&public_id)
+        .ok()
+        .map(|attachments| attachments.into_iter().map(Into::into).collect());
+    Ok(MailboxMessageDto::from_full_message(
+        public_id,
+        full_message_dto(backend, message),
+        attachments,
+    ))
+}
+
+fn emit_mailbox_updated(app: &AppHandle, account_id: &str, role: MailboxRole) {
+    let _ = app.emit(
+        "mail:mailbox-updated",
+        MailboxUpdatedEvent {
+            account_id: account_id.to_owned(),
+            role,
+        },
+    );
+}
+
+fn schedule_seen_flush(
+    app: &AppHandle,
+    backend: &BackendState,
+    account_id: String,
+    role: MailboxRole,
+) {
+    if let Ok(network) = backend.network_for(&account_id) {
+        let event_app = app.clone();
+        let event_account_id = account_id.clone();
+        tauri::async_runtime::spawn(async move {
+            let _ = network
+                .flush_pending_seen_mutations(&event_account_id, role)
+                .await;
+            emit_mailbox_updated(&event_app, &event_account_id, role);
+        });
+    }
+    desktop::request_sync(app, false, "message_mutation");
+}
+
+fn schedule_flagged_flush(
+    app: &AppHandle,
+    backend: &BackendState,
+    account_id: String,
+    role: MailboxRole,
+) {
+    if let Ok(network) = backend.network_for(&account_id) {
+        let event_app = app.clone();
+        let event_account_id = account_id.clone();
+        tauri::async_runtime::spawn(async move {
+            let _ = network
+                .flush_pending_flagged_mutations(&event_account_id, role)
+                .await;
+            emit_mailbox_updated(&event_app, &event_account_id, role);
+        });
+    }
+    desktop::request_sync(app, false, "message_mutation");
+}
+
+fn schedule_message_action_flush(
+    app: &AppHandle,
+    backend: &BackendState,
+    account_id: String,
+    source_role: MailboxRole,
+    destination_role: Option<MailboxRole>,
+) {
+    if let Ok(network) = backend.network_for(&account_id) {
+        let event_app = app.clone();
+        let event_account_id = account_id.clone();
+        tauri::async_runtime::spawn(async move {
+            let _ = network
+                .flush_pending_message_mutations(&event_account_id)
+                .await;
+            emit_mailbox_updated(&event_app, &event_account_id, source_role);
+            if let Some(role) = destination_role {
+                emit_mailbox_updated(&event_app, &event_account_id, role);
+            }
+        });
+    }
+    desktop::request_sync(app, false, "message_mutation");
+}
+
+fn offline_page(mut page: MessagePage) -> MessagePage {
+    if page.remote_history_state == RemoteHistoryState::MayHaveMore {
+        page.remote_history_state = RemoteHistoryState::Offline;
+        page.end_reached = false;
+    }
+    page
+}
+
+#[tauri::command]
+pub(crate) fn get_mailbox_capabilities(
+    backend: State<'_, BackendState>,
+    account_id: String,
+) -> CommandResult<Vec<MailboxCapabilityDto>> {
+    validate_account_id(&account_id)?;
+    backend
+        .local_for(&account_id)?
+        .get_mailbox_capabilities(&account_id)
+        .map(|capabilities| capabilities.into_iter().map(Into::into).collect())
+        .map_err(safe_mail_error)
+}
+
+#[tauri::command]
+pub(crate) async fn create_mailbox_role(
+    app: AppHandle,
+    account: State<'_, AccountRuntime>,
+    backend: State<'_, BackendState>,
+    account_id: String,
+    role: MailboxRole,
+) -> CommandResult<MailboxCapabilityDto> {
+    validate_account_id(&account_id)?;
+    if !matches!(role, MailboxRole::Archive | MailboxRole::Trash) {
+        return Err("Only Archive or Trash can be created.".to_owned());
+    }
+    let local = backend.local_for(&account_id)?;
+    // Refreshing all OAuth-backed runtimes is account-safe: the exact backend
+    // below is still selected by the caller's validated stable account ID.
+    let _ = account.refresh_oauth_backends(&backend).await;
+    let capability = match backend.network_for(&account_id) {
+        Ok(network) => network
+            .create_mailbox_role(&account_id, role)
+            .await
+            .map_err(safe_mail_error)?,
+        Err(_) => local
+            .record_mailbox_role_creation_unavailable(&account_id, role)
+            .map_err(safe_mail_error)?,
+    };
+    let capability = MailboxCapabilityDto::from(capability);
+    let _ = app.emit(
+        "mail:mailbox-capabilities-updated",
+        MailboxCapabilitiesUpdatedEvent {
+            account_id: account_id.clone(),
+        },
+    );
+    Ok(capability)
+}
+
+#[tauri::command]
+pub(crate) fn list_mailbox_page(
+    backend: State<'_, BackendState>,
+    account_id: String,
+    role: MailboxRole,
+    cursor: Option<String>,
+    page_size: usize,
+    query: Option<String>,
+) -> CommandResult<MessagePageDto> {
+    validate_account_id(&account_id)?;
+    validate_page_role(role)?;
+    validate_page_size(page_size)?;
+    let cursor = parse_cursor(cursor, false)?;
+    let query = normalize_query(query)?;
+    backend
+        .local_for(&account_id)?
+        .list_mailbox_page(
+            &account_id,
+            role,
+            cursor.as_ref(),
+            page_size,
+            query.as_deref(),
+        )
+        .map(Into::into)
+        .map_err(safe_mail_error)
+}
+
+#[tauri::command]
+pub(crate) async fn load_older_mailbox_page(
+    account: State<'_, AccountRuntime>,
+    backend: State<'_, BackendState>,
+    account_id: String,
+    role: MailboxRole,
+    cursor: String,
+    page_size: usize,
+    query: Option<String>,
+) -> CommandResult<MessagePageDto> {
+    validate_account_id(&account_id)?;
+    validate_page_role(role)?;
+    validate_page_size(page_size)?;
+    let cursor = parse_cursor(Some(cursor), true)?.expect("required cursor was validated");
+    let query = normalize_query(query)?;
+    let local = backend
+        .local_for(&account_id)?
+        .list_mailbox_page(
+            &account_id,
+            role,
+            Some(&cursor),
+            page_size,
+            query.as_deref(),
+        )
+        .map_err(safe_mail_error)?;
+    if local.has_more_local
+        || local.remote_history_state != RemoteHistoryState::MayHaveMore
+        || query.is_some()
+    {
+        return Ok(local.into());
+    }
+
+    let _ = account.refresh_oauth_backends(&backend).await;
+    let Ok(network) = backend.network_for(&account_id) else {
+        return Ok(offline_page(local).into());
+    };
+    match network
+        .load_older_mailbox_page(&account_id, role, &cursor, page_size, query.as_deref())
+        .await
+    {
+        Ok(page) => Ok(page.into()),
+        Err(error) if is_offline_history_error(&error) => Ok(offline_page(local).into()),
+        Err(error) => Err(safe_mail_error(error)),
+    }
+}
+
+#[tauri::command]
+pub(crate) async fn sync_mailbox(
+    app: AppHandle,
+    account: State<'_, AccountRuntime>,
+    backend: State<'_, BackendState>,
+    account_id: String,
+    role: MailboxRole,
+) -> CommandResult<()> {
+    validate_account_id(&account_id)?;
+    backend.local_for(&account_id)?;
+    let _ = account.refresh_oauth_backends(&backend).await;
+    let network = backend.network_for(&account_id)?;
+    let runtime = app.state::<desktop::DesktopRuntime>();
+    let _guard = runtime.acquire_sync_gate().await;
+    network
+        .sync_mailbox(&account_id, role)
+        .await
+        .map_err(safe_mail_error)?;
+    emit_mailbox_updated(&app, &account_id, role);
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) async fn fetch_mailbox_message(
+    account: State<'_, AccountRuntime>,
+    backend: State<'_, BackendState>,
+    message_id: String,
+) -> CommandResult<MailboxMessageDto> {
+    validate_message_id(&message_id)?;
+    let (account_id, local) = active_local_backend(&backend)?;
+    let _ = account.refresh_oauth_backends(&backend).await;
+    if let Ok(network) = backend.network_for(&account_id) {
+        match network.fetch_message_by_id(&message_id, false).await {
+            Ok(message) => {
+                return complete_mailbox_message_dto(&network, message_id, message);
+            }
+            Err(network_error) => {
+                if let Ok(message) = local.cached_message_by_id(&message_id) {
+                    return complete_mailbox_message_dto(&local, message_id, message);
+                }
+                return Err(safe_mail_error(network_error));
+            }
+        }
+    }
+    local
+        .cached_message_by_id(&message_id)
+        .map_err(safe_mail_error)
+        .and_then(|message| complete_mailbox_message_dto(&local, message_id, message))
+}
+
+#[tauri::command]
+pub(crate) async fn save_message_attachment(
+    app: AppHandle,
+    account: State<'_, AccountRuntime>,
+    backend: State<'_, BackendState>,
+    message_id: String,
+    attachment_id: String,
+) -> CommandResult<AttachmentSaveResultDto> {
+    validate_message_id(&message_id)?;
+    validate_attachment_id(&attachment_id)?;
+    let (account_id, local) = active_local_backend(&backend)?;
+    let _ = account.refresh_oauth_backends(&backend).await;
+
+    let mut source = local.clone();
+    let attachments = if let Ok(network) = backend.network_for(&account_id) {
+        match network.message_attachments(&message_id).await {
+            Ok(attachments) => {
+                source = network;
+                attachments
+            }
+            Err(_) => match local.cached_message_attachments(&message_id) {
+                Ok(attachments) => attachments,
+                Err(_) => {
+                    return Ok(AttachmentSaveResultDto::error(
+                        AttachmentSaveErrorKind::MessageUnavailable,
+                        true,
+                    ));
+                }
+            },
+        }
+    } else {
+        match local.cached_message_attachments(&message_id) {
+            Ok(attachments) => attachments,
+            Err(_) => {
+                return Ok(AttachmentSaveResultDto::error(
+                    AttachmentSaveErrorKind::MessageUnavailable,
+                    true,
+                ));
+            }
+        }
+    };
+    let Some(metadata) = attachments
+        .iter()
+        .find(|attachment| attachment.id == attachment_id)
+    else {
+        return Ok(AttachmentSaveResultDto::error(
+            AttachmentSaveErrorKind::AttachmentNotFound,
+            false,
+        ));
+    };
+
+    let selected = app
+        .dialog()
+        .file()
+        .set_file_name(&metadata.safe_display_name)
+        .blocking_save_file();
+    let selected_path = match selected {
+        Some(path) => match path.into_path() {
+            Ok(path) => Some(path),
+            Err(_) => {
+                return Ok(AttachmentSaveResultDto::error(
+                    AttachmentSaveErrorKind::WriteFailed,
+                    true,
+                ));
+            }
+        },
+        None => None,
+    };
+    match source
+        .save_message_attachment_to(&message_id, &attachment_id, selected_path.as_deref())
+        .await
+    {
+        Ok(result) => Ok(result.into()),
+        Err(_) => Ok(AttachmentSaveResultDto::error(
+            AttachmentSaveErrorKind::MessageUnavailable,
+            true,
+        )),
+    }
+}
+
+fn should_retry_forward_from_cache(outcome: &ForwardPreparationOutcome) -> bool {
+    matches!(
+        outcome,
+        ForwardPreparationOutcome::Error { error }
+            if matches!(
+                error.kind,
+                ForwardPreparationErrorKind::MessageUnavailable
+                    | ForwardPreparationErrorKind::BodyUnavailable
+            )
+    )
+}
+
+#[tauri::command]
+pub(crate) async fn prepare_forward(
+    account: State<'_, AccountRuntime>,
+    backend: State<'_, BackendState>,
+    message_id: String,
+    include_attachments: bool,
+) -> CommandResult<ForwardPreparationOutcomeDto> {
+    validate_message_id(&message_id)?;
+    let (account_id, local) = active_local_backend(&backend)?;
+    let _ = account.refresh_oauth_backends(&backend).await;
+    if let Ok(network) = backend.network_for(&account_id) {
+        match network
+            .prepare_forward(&message_id, include_attachments)
+            .await
+        {
+            Ok(outcome) if !should_retry_forward_from_cache(&outcome) => {
+                return Ok(outcome.into());
+            }
+            Ok(_) | Err(_) => {}
+        }
+    }
+    match local
+        .prepare_forward(&message_id, include_attachments)
+        .await
+    {
+        Ok(outcome) => Ok(outcome.into()),
+        Err(_) => Ok(ForwardPreparationOutcomeDto::error(
+            ForwardPreparationErrorKind::MessageUnavailable,
+            Vec::new(),
+            false,
+        )),
+    }
+}
+
+#[tauri::command]
+pub(crate) fn set_message_seen(
+    app: AppHandle,
+    backend: State<'_, BackendState>,
+    message_id: String,
+    seen: bool,
+) -> CommandResult<SystemFlagMutationReceipt> {
+    validate_message_id(&message_id)?;
+    let (account_id, local) = active_local_backend(&backend)?;
+    let receipt = local
+        .set_message_seen(&message_id, seen)
+        .map_err(safe_mail_error)?;
+    schedule_seen_flush(&app, &backend, account_id, receipt.source_role);
+    Ok(receipt)
+}
+
+#[tauri::command]
+pub(crate) fn set_message_starred_by_id(
+    app: AppHandle,
+    backend: State<'_, BackendState>,
+    message_id: String,
+    starred: bool,
+) -> CommandResult<SystemFlagMutationReceipt> {
+    validate_message_id(&message_id)?;
+    let (account_id, local) = active_local_backend(&backend)?;
+    let receipt = local
+        .set_message_starred_by_id(&message_id, starred)
+        .map_err(safe_mail_error)?;
+    schedule_flagged_flush(&app, &backend, account_id, receipt.source_role);
+    Ok(receipt)
+}
+
+#[tauri::command]
+pub(crate) fn archive_message(
+    app: AppHandle,
+    backend: State<'_, BackendState>,
+    message_id: String,
+) -> CommandResult<MessageMutationReceipt> {
+    validate_message_id(&message_id)?;
+    let (account_id, local) = active_local_backend(&backend)?;
+    let receipt = local
+        .archive_message(&message_id)
+        .map_err(safe_mail_error)?;
+    schedule_message_action_flush(
+        &app,
+        &backend,
+        account_id,
+        receipt.source_role,
+        receipt.destination_role,
+    );
+    Ok(receipt)
+}
+
+#[tauri::command]
+pub(crate) fn move_message_to_trash(
+    app: AppHandle,
+    backend: State<'_, BackendState>,
+    message_id: String,
+) -> CommandResult<MessageMutationReceipt> {
+    validate_message_id(&message_id)?;
+    let (account_id, local) = active_local_backend(&backend)?;
+    let receipt = local
+        .move_message_to_trash(&message_id)
+        .map_err(safe_mail_error)?;
+    schedule_message_action_flush(
+        &app,
+        &backend,
+        account_id,
+        receipt.source_role,
+        receipt.destination_role,
+    );
+    Ok(receipt)
+}
+
+#[tauri::command]
+pub(crate) async fn prepare_permanent_delete(
+    backend: State<'_, BackendState>,
+    message_id: String,
+) -> CommandResult<PermanentDeletePlan> {
+    validate_message_id(&message_id)?;
+    let (_, local) = active_local_backend(&backend)?;
+    local
+        .prepare_permanent_delete(&message_id)
+        .await
+        .map_err(safe_mail_error)
+}
+
+#[tauri::command]
+pub(crate) async fn confirm_permanent_delete(
+    app: AppHandle,
+    backend: State<'_, BackendState>,
+    plan_id: String,
+) -> CommandResult<MessageMutationReceipt> {
+    if plan_id.is_empty() || plan_id.len() > 128 || plan_id.chars().any(char::is_control) {
+        return Err("The permanent-delete plan is invalid or expired.".to_owned());
+    }
+    let (account_id, local) = active_local_backend(&backend)?;
+    let receipt = local
+        .confirm_permanent_delete(&plan_id)
+        .await
+        .map_err(safe_mail_error)?;
+    schedule_message_action_flush(
+        &app,
+        &backend,
+        account_id,
+        receipt.source_role,
+        receipt.destination_role,
+    );
+    Ok(receipt)
+}
+
+#[cfg(test)]
+mod tests {
+    use mine_mail::{
+        AttachmentDisposition, AttachmentMeta, InboxMessage, MailAddress, MailboxCapability,
+        MailboxCapabilityStatus, MailboxRole, MessageActionKind, MessageMutationErrorKind,
+        MessageMutationReceipt, MessagePage, MessagePageItem, MutationStatus,
+        PendingMessageProjection, PermanentDeletePlan, RemoteHistoryState, SystemFlagKind,
+        SystemFlagMutationReceipt,
+    };
+
+    use super::{
+        MailboxBodySegmentDto, MailboxCapabilityDto, MailboxMessageDto, MessagePageDto,
+        is_offline_history_error, normalize_query, offline_page, parse_cursor, validate_account_id,
+        validate_attachment_id, validate_message_id, validate_page_role, validate_page_size,
+    };
+    use crate::{
+        AttachmentMetaDto, BodyRenderMode, BodySegmentConfidenceDto, BodySegmentDto,
+        BodySegmentKindDto, InboxMessageDto, MessageNavigationTargetDto,
+        assert_no_private_mail_coordinates,
+    };
+
+    fn summary() -> InboxMessage {
+        InboxMessage {
+            id: 7,
+            account_id: "account-private".to_owned(),
+            mailbox: "INBOX".to_owned(),
+            uid: 42,
+            message_id: Some("<safe@example.com>".to_owned()),
+            in_reply_to: Vec::new(),
+            references: Vec::new(),
+            subject: "Bounded summary".to_owned(),
+            sender: Some(MailAddress {
+                name: Some("Sender".to_owned()),
+                email: "sender@example.com".to_owned(),
+            }),
+            to: Vec::new(),
+            cc: Vec::new(),
+            bcc: vec![MailAddress {
+                name: Some("Hidden recipient".to_owned()),
+                email: "hidden@example.com".to_owned(),
+            }],
+            sent_at: None,
+            internal_date: None,
+            flags: Vec::new(),
+            size_bytes: 123,
+            preview: "bounded preview".to_owned(),
+            body_text: Some("must not cross a list boundary".to_owned()),
+            body_html: Some("<p>must not cross</p>".to_owned()),
+            attachment_names: Vec::new(),
+            body_fetched: true,
+            raw_rfc822: b"must not cross".to_vec(),
+            synced_at: "2026-07-28T00:00:00Z".to_owned(),
+        }
+    }
+
+    #[test]
+    fn command_validation_is_strict_and_bounded() {
+        assert!(validate_account_id("account-a").is_ok());
+        assert!(validate_account_id("").is_err());
+        assert!(validate_account_id("bad\naccount").is_err());
+        assert!(validate_message_id("9f1a7b32-4b55-4d6d-8db7-0e7bf1a32c41").is_ok());
+        assert!(validate_message_id("").is_err());
+        assert!(validate_message_id("9F1A7B32-4B55-4D6D-8DB7-0E7BF1A32C41").is_err());
+        assert!(validate_attachment_id("opaque-attachment").is_ok());
+        assert!(validate_attachment_id("").is_err());
+        assert!(validate_attachment_id(&"a".repeat(257)).is_err());
+        assert!(validate_attachment_id("bad\nattachment").is_err());
+        assert!(validate_page_size(1).is_ok());
+        assert!(validate_page_size(100).is_ok());
+        assert!(validate_page_size(0).is_err());
+        assert!(validate_page_size(101).is_err());
+        assert!(validate_page_role(MailboxRole::Inbox).is_ok());
+        assert!(validate_page_role(MailboxRole::Trash).is_ok());
+        assert!(validate_page_role(MailboxRole::Drafts).is_err());
+        assert!(
+            normalize_query(Some("  needle  ".to_owned()))
+                .is_ok_and(|query| query.as_deref() == Some("needle"))
+        );
+        assert!(normalize_query(Some("x".repeat(257))).is_err());
+        assert!(normalize_query(Some("bad\nquery".to_owned())).is_err());
+        assert!(parse_cursor(None, false).is_ok_and(|cursor| cursor.is_none()));
+        assert!(parse_cursor(None, true).is_err());
+        assert!(parse_cursor(Some("x".repeat(65)), true).is_err());
+    }
+
+    #[test]
+    fn mutation_receipts_and_delete_plans_expose_only_semantic_state() {
+        let flag_receipt = serde_json::to_value(SystemFlagMutationReceipt {
+            operation_id: "operation-1".to_owned(),
+            local_revision: 4,
+            status: MutationStatus::Pending,
+            source_role: MailboxRole::Inbox,
+            flag: SystemFlagKind::Seen,
+            desired: true,
+        })
+        .expect("serialize flag receipt");
+        let move_receipt = serde_json::to_value(MessageMutationReceipt {
+            operation_id: "operation-2".to_owned(),
+            local_revision: 5,
+            status: MutationStatus::Pending,
+            source_role: MailboxRole::Inbox,
+            destination_role: Some(MailboxRole::Archive),
+        })
+        .expect("serialize move receipt");
+        let delete_plan = serde_json::to_value(PermanentDeletePlan {
+            plan_id: "opaque-delete-plan".to_owned(),
+            expires_at: "2026-07-28T00:01:00Z".to_owned(),
+        })
+        .expect("serialize delete plan");
+
+        assert_eq!(flag_receipt["source_role"], "inbox");
+        assert_eq!(move_receipt["destination_role"], "archive");
+        assert_eq!(delete_plan["plan_id"], "opaque-delete-plan");
+        assert_no_private_mail_coordinates(&flag_receipt);
+        assert_no_private_mail_coordinates(&move_receipt);
+        assert_no_private_mail_coordinates(&delete_plan);
+    }
+
+    #[test]
+    fn mailbox_page_dto_is_body_free_and_keeps_typed_mutation_state() {
+        let dto = MessagePageDto::from(MessagePage {
+            items: vec![MessagePageItem {
+                public_id: "9f1a7b32-4b55-4d6d-8db7-0e7bf1a32c41".to_owned(),
+                message: summary(),
+                displayed_role: MailboxRole::Archive,
+                pending_mutation: Some(PendingMessageProjection {
+                    operation_id: "operation-1".to_owned(),
+                    local_revision: 3,
+                    status: MutationStatus::OutcomeUnknown,
+                    kind: MessageActionKind::Archive,
+                    source_role: MailboxRole::Inbox,
+                    destination_role: MailboxRole::Archive,
+                    error_kind: Some(MessageMutationErrorKind::AmbiguousRemoteState),
+                }),
+            }],
+            next_cursor: None,
+            has_more_local: false,
+            remote_history_state: RemoteHistoryState::Offline,
+            end_reached: false,
+        });
+        let json = serde_json::to_value(dto).expect("serialize message page");
+
+        assert_eq!(
+            json["items"][0]["id"],
+            "9f1a7b32-4b55-4d6d-8db7-0e7bf1a32c41"
+        );
+        assert_ne!(json["items"][0]["id"], 7);
+        assert_eq!(json["items"][0]["displayed_role"], "archive");
+        assert_eq!(json["items"][0]["bcc"][0]["email"], "hidden@example.com");
+        assert_eq!(
+            json["items"][0]["pending_mutation"]["status"],
+            "outcome_unknown"
+        );
+        assert_eq!(json["remote_history_state"], "offline");
+        assert_eq!(json["end_reached"], false);
+        assert!(json["items"][0].get("body_text").is_none());
+        assert!(json["items"][0].get("body_html").is_none());
+        assert!(json["items"][0].get("attachments").is_none());
+        assert!(json["items"][0].get("account_id").is_none());
+        assert!(json["items"][0].get("mailbox").is_none());
+        assert!(json["items"][0].get("uid").is_none());
+        assert!(json["items"][0].get("raw_rfc822").is_none());
+        assert_no_private_mail_coordinates(&json);
+    }
+
+    #[test]
+    fn offline_history_never_claims_a_confirmed_end() {
+        let page = offline_page(MessagePage {
+            items: Vec::new(),
+            next_cursor: None,
+            has_more_local: false,
+            remote_history_state: RemoteHistoryState::MayHaveMore,
+            end_reached: false,
+        });
+
+        assert_eq!(page.remote_history_state, RemoteHistoryState::Offline);
+        assert!(!page.end_reached);
+        assert!(is_offline_history_error(&mine_mail::MailError::Timeout {
+            operation: "mailbox history"
+        }));
+        assert!(is_offline_history_error(&mine_mail::MailError::Imap(
+            "privacy-safe".to_owned()
+        )));
+        assert!(!is_offline_history_error(
+            &mine_mail::MailError::Validation("UIDVALIDITY changed".to_owned())
+        ));
+    }
+
+    #[test]
+    fn capability_dto_never_exposes_the_provider_mailbox_name() {
+        let dto = MailboxCapabilityDto::from(MailboxCapability {
+            role: MailboxRole::Archive,
+            status: MailboxCapabilityStatus::Available,
+            display_name: Some("[Gmail]/所有邮件".to_owned()),
+            unavailable_reason: None,
+            retryable: false,
+        });
+        let json = serde_json::to_value(dto).expect("serialize capability");
+
+        assert_eq!(json["role"], "archive");
+        assert_eq!(json["status"], "available");
+        assert!(json.get("display_name").is_none());
+        assert!(!json.to_string().contains("所有邮件"));
+        assert_no_private_mail_coordinates(&json);
+    }
+
+    #[test]
+    fn selected_message_dto_keeps_body_but_not_provider_identity() {
+        let dto = MailboxMessageDto::from_full_message(
+            "9f1a7b32-4b55-4d6d-8db7-0e7bf1a32c41".to_owned(),
+            InboxMessageDto::full(summary()),
+            Some(vec![AttachmentMetaDto::from(AttachmentMeta {
+                id: "opaque-attachment".to_owned(),
+                original_name: Some("invoice.pdf".to_owned()),
+                safe_display_name: "invoice.pdf".to_owned(),
+                mime_type: "application/pdf".to_owned(),
+                size_bytes: 42,
+                disposition: AttachmentDisposition::Attachment,
+            })]),
+        );
+        let json = serde_json::to_value(dto).expect("serialize selected message");
+
+        assert_eq!(json["id"], "9f1a7b32-4b55-4d6d-8db7-0e7bf1a32c41");
+        assert_eq!(json["body_text"], "must not cross a list boundary");
+        assert_eq!(json["bcc"][0]["email"], "hidden@example.com");
+        assert!(json.get("account_id").is_none());
+        assert!(json.get("mailbox").is_none());
+        assert!(json.get("uid").is_none());
+        assert!(json.get("raw_rfc822").is_none());
+        assert_eq!(json["attachments"][0]["id"], "opaque-attachment");
+        assert_eq!(json["attachments"][0]["size_bytes"], 42);
+        assert!(json["attachments"][0].get("bytes").is_none());
+        assert!(json["attachments"][0].get("path").is_none());
+        assert_no_private_mail_coordinates(&json);
+    }
+
+    #[test]
+    fn unavailable_attachment_index_does_not_hide_a_valid_cached_body() {
+        let dto = MailboxMessageDto::from_full_message(
+            "9f1a7b32-4b55-4d6d-8db7-0e7bf1a32c41".to_owned(),
+            InboxMessageDto::full(summary()),
+            None,
+        );
+        let json = serde_json::to_value(dto).expect("serialize selected message");
+
+        assert_eq!(json["body_text"], "must not cross a list boundary");
+        assert!(json["attachments"].is_null());
+        assert!(json.get("raw_rfc822").is_none());
+        assert_no_private_mail_coordinates(&json);
+    }
+
+    #[test]
+    fn selected_message_segments_keep_only_opaque_navigation_identity() {
+        let dto = MailboxBodySegmentDto::from(BodySegmentDto {
+            kind: BodySegmentKindDto::Quoted,
+            content: "Quoted".to_owned(),
+            render_mode: BodyRenderMode::Plain,
+            quote_depth: 1,
+            confidence: BodySegmentConfidenceDto::High,
+            quote_metadata: None,
+            navigation_target: Some(MessageNavigationTargetDto {
+                id: "opaque-ancestor".to_owned(),
+            }),
+        });
+        let json = serde_json::to_value(dto).expect("serialize body segment");
+
+        assert_eq!(json["navigation_target"]["id"], "opaque-ancestor");
+        assert!(!json.to_string().contains("mailbox"));
+        assert!(!json.to_string().contains("\"uid\""));
+        assert_no_private_mail_coordinates(&json);
+    }
+}

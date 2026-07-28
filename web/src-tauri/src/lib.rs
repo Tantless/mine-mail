@@ -3,20 +3,27 @@ mod contacts;
 mod desktop;
 mod diagnostics;
 mod mail_html;
+mod mailbox_api;
 mod storage;
 
 use std::time::Instant;
 
 use mine_mail::{
-    ComposeRequest, ConnectionReport, ContactMessage, ContactMessageDirection, Draft,
-    DraftDeleteKind, DraftSaveKind, DraftSaveOutcome, InboxMessage, MailAddress, MailBackend,
-    MailboxRole, OutboxItem, OutboxStatus, ReplyContext, SyncReport, outbox_body_html,
-    outbox_body_text, outbox_has_reply_headers, outbox_message_id, outbox_preview, outbox_sent_at,
-    outbox_subject,
+    AttachmentDisposition, AttachmentMeta, AttachmentSaveErrorKind, AttachmentSaveResult,
+    AttachmentSaveStatus, ComposeFormat, ComposeRequest, ConnectionReport, ContactMessage,
+    ContactMessageDirection, DeliveryUnknownDecision, Draft, DraftAttachmentMeta,
+    DraftAttachmentMutationKind, DraftAttachmentMutationOutcome, DraftDeleteKind,
+    DraftDto as CoreDraftDto, DraftSaveKind, DraftSaveOutcome, ForwardContext,
+    ForwardPreparationError, ForwardPreparationErrorKind, ForwardPreparationOutcome,
+    ForwardQuotedRenderMode, ForwardWarning, InboxMessage, MailAddress, MailBackend, MailboxRole,
+    OutboxItem, OutboxRecipientGroups, OutboxStatus, PreparedForward, ReplyContext,
+    StationeryTheme, outbox_body_html, outbox_body_text, outbox_has_reply_headers,
+    outbox_message_id, outbox_preview, outbox_sent_at, outbox_subject, sanitize_compose_html,
 };
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WebviewWindowBuilder, WindowEvent};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt as AutostartManagerExt};
+use tauri_plugin_dialog::DialogExt;
 use url::Url;
 
 use account::{
@@ -31,8 +38,14 @@ use desktop::{
 use diagnostics::{ErrorKind as DiagnosticErrorKind, Fields as DiagnosticFields};
 use mail_html::{
     MailBodySegmentConfidence, MailBodySegmentKind, MailBodySegmentMetadata, MailHtmlStructure,
-    SanitizedMailBodySegment, authored_body_preview, quote_metadata_matches_cached,
-    sanitize_mail_html, segment_mail_body_with_metadata, segment_mail_body_with_metadata_chain,
+    SanitizedMailBodySegment, quote_metadata_matches_cached, sanitize_mail_html,
+    segment_mail_body_with_metadata, segment_mail_body_with_metadata_chain,
+};
+use mailbox_api::{
+    archive_message, confirm_permanent_delete, create_mailbox_role, fetch_mailbox_message,
+    get_mailbox_capabilities, list_mailbox_page, load_older_mailbox_page, move_message_to_trash,
+    prepare_forward, prepare_permanent_delete, save_message_attachment, set_message_seen,
+    set_message_starred_by_id, sync_mailbox,
 };
 use storage::{PreparedStorageMigrationDto, StorageRuntime, StorageStatusDto};
 
@@ -42,10 +55,57 @@ const INBOX_PREFETCH_LIMIT: usize = 20;
 const INBOX_PREFETCH_TOTAL_BYTES: u64 = 8 * 1024 * 1024;
 const INBOX_PREFETCH_MESSAGE_BYTES: u32 = 2 * 1024 * 1024;
 const SENT_SYNC_LIMIT: usize = 250;
-const SENT_LIST_LIMIT: usize = 250;
 const CONTACT_MESSAGE_LIST_LIMIT: usize = 250;
+const MAX_OUTBOX_ID_BYTES: usize = 128;
 
 type CommandResult<T> = Result<T, String>;
+
+#[cfg(test)]
+fn assert_no_private_mail_coordinates(value: &serde_json::Value) {
+    match value {
+        serde_json::Value::Array(values) => {
+            for value in values {
+                assert_no_private_mail_coordinates(value);
+            }
+        }
+        serde_json::Value::Object(fields) => {
+            for (key, value) in fields {
+                assert!(
+                    !matches!(
+                        key.as_str(),
+                        "account_id"
+                            | "accountId"
+                            | "mailbox"
+                            | "uid"
+                            | "remote_mailbox"
+                            | "remoteMailbox"
+                            | "remote_uid"
+                            | "remoteUid"
+                            | "raw_rfc822"
+                            | "rawRfc822"
+                            | "internal_name"
+                            | "internalName"
+                            | "rowid"
+                            | "row_id"
+                            | "rowId"
+                            | "message_row_id"
+                            | "messageRowId"
+                            | "path"
+                            | "bytes"
+                    ),
+                    "private mail coordinate crossed the desktop boundary: {key}"
+                );
+                assert!(
+                    !matches!(key.as_str(), "id" | "message_id" | "messageId")
+                        || !value.is_number(),
+                    "numeric internal row identity crossed the desktop boundary: {key}"
+                );
+                assert_no_private_mail_coordinates(value);
+            }
+        }
+        _ => {}
+    }
+}
 
 #[derive(Clone, Debug, Serialize)]
 struct MailAddressDto {
@@ -67,14 +127,11 @@ impl From<MailAddress> for MailAddressDto {
 /// reader; list responses only advertise that such a body is available.
 #[derive(Clone, Debug, Serialize)]
 struct InboxMessageDto {
-    id: i64,
-    mailbox: String,
-    uid: u32,
-    message_id: Option<String>,
     subject: String,
     sender: Option<MailAddressDto>,
     to: Vec<MailAddressDto>,
     cc: Vec<MailAddressDto>,
+    bcc: Vec<MailAddressDto>,
     sent_at: Option<String>,
     internal_date: Option<String>,
     flags: Vec<String>,
@@ -94,18 +151,52 @@ struct InboxMessageDto {
 
 #[derive(Clone, Debug, Serialize)]
 struct ContactMessageDto {
+    id: String,
     direction: ContactMessageDirection,
     mailbox_role: Option<MailboxRole>,
-    #[serde(flatten)]
-    message: InboxMessageDto,
+    subject: String,
+    sender: Option<MailAddressDto>,
+    to: Vec<MailAddressDto>,
+    cc: Vec<MailAddressDto>,
+    bcc: Vec<MailAddressDto>,
+    sent_at: Option<String>,
+    internal_date: Option<String>,
+    flags: Vec<String>,
+    size_bytes: u32,
+    preview: String,
+    body_html_available: bool,
+    attachment_names: Vec<String>,
+    body_fetched: bool,
+    synced_at: String,
 }
 
 impl From<ContactMessage> for ContactMessageDto {
     fn from(value: ContactMessage) -> Self {
+        let ContactMessage {
+            public_id,
+            direction,
+            mailbox_role,
+            message,
+        } = value;
+        let body_html_available = message.body_html.is_some();
         Self {
-            direction: value.direction,
-            mailbox_role: value.mailbox_role,
-            message: InboxMessageDto::summary(value.message),
+            id: public_id,
+            direction,
+            mailbox_role,
+            subject: message.subject,
+            sender: message.sender.map(Into::into),
+            to: message.to.into_iter().map(Into::into).collect(),
+            cc: message.cc.into_iter().map(Into::into).collect(),
+            bcc: message.bcc.into_iter().map(Into::into).collect(),
+            sent_at: message.sent_at,
+            internal_date: message.internal_date,
+            flags: message.flags,
+            size_bytes: message.size_bytes,
+            preview: message.preview,
+            body_html_available,
+            attachment_names: message.attachment_names,
+            body_fetched: message.body_fetched,
+            synced_at: message.synced_at,
         }
     }
 }
@@ -141,17 +232,7 @@ struct BodySegmentMetadataDto {
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 struct MessageNavigationTargetDto {
-    mailbox: String,
-    uid: u32,
-}
-
-impl From<&InboxMessage> for MessageNavigationTargetDto {
-    fn from(value: &InboxMessage) -> Self {
-        Self {
-            mailbox: value.mailbox.clone(),
-            uid: value.uid,
-        }
-    }
+    id: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -175,6 +256,7 @@ struct ComposeRequestDto {
     bcc: Vec<String>,
     subject: String,
     body_text: String,
+    format: ComposeFormat,
     reply_context: Option<ReplyContextDto>,
 }
 
@@ -226,12 +308,17 @@ impl From<ComposeRequest> for ComposeRequestDto {
             bcc: value.bcc,
             subject: value.subject,
             body_text: value.body_text,
+            format: value.format,
             reply_context: value.reply_context.map(Into::into),
         }
     }
 }
 
 fn sanitize_compose_request(mut request: ComposeRequest) -> ComposeRequest {
+    request.format.body_html = sanitize_compose_html(request.format.body_html.as_deref());
+    if request.format.stationery == StationeryTheme::None {
+        request.format.send_stationery = false;
+    }
     if let Some(context) = request.reply_context.as_mut() {
         context.quoted_html = sanitize_reply_html(context.quoted_html.as_deref()).0;
     }
@@ -311,6 +398,7 @@ fn quote_navigation_target(
 }
 
 impl InboxMessageDto {
+    #[cfg(test)]
     fn summary(mut value: InboxMessage) -> Self {
         let body_html_available = value.body_html.is_some();
         // List commands expose only the bounded preview. A locally cached full
@@ -329,16 +417,6 @@ impl InboxMessageDto {
         )
     }
 
-    fn sent_summary(mut value: InboxMessage) -> Self {
-        let has_reply_headers = !value.in_reply_to.is_empty() || !value.references.is_empty();
-        value.preview = authored_body_preview(
-            value.body_text.as_deref(),
-            has_reply_headers,
-            &value.preview,
-        );
-        Self::summary(value)
-    }
-
     fn full(value: InboxMessage) -> Self {
         Self::full_with_parent(value, None)
     }
@@ -349,22 +427,27 @@ impl InboxMessageDto {
             .map(Some)
             .into_iter()
             .collect::<Vec<_>>();
-        let navigation_targets = parent
-            .map(MessageNavigationTargetDto::from)
-            .map(Some)
-            .into_iter()
-            .collect::<Vec<_>>();
+        // A provider mailbox/UID tuple is never an acceptable navigation
+        // capability. Callers without a repository-resolved public ID leave
+        // the quote informational rather than guessing a destination.
+        let navigation_targets = parent.map(|_| None).into_iter().collect::<Vec<_>>();
         Self::full_with_metadata_chain(value, &metadata_chain, &navigation_targets)
     }
 
+    #[cfg(test)]
     fn full_with_ancestors(value: InboxMessage, ancestors: &[Option<InboxMessage>]) -> Self {
+        let navigation_targets = vec![None; ancestors.len()];
+        Self::full_with_resolved_ancestors(value, ancestors, &navigation_targets)
+    }
+
+    fn full_with_resolved_ancestors(
+        value: InboxMessage,
+        ancestors: &[Option<InboxMessage>],
+        navigation_targets: &[Option<MessageNavigationTargetDto>],
+    ) -> Self {
         let has_reply_headers = !value.in_reply_to.is_empty() || !value.references.is_empty();
         let metadata_chain = reply_quote_metadata_chain(&value, ancestors, has_reply_headers);
-        let navigation_targets = ancestors
-            .iter()
-            .map(|ancestor| ancestor.as_ref().map(MessageNavigationTargetDto::from))
-            .collect::<Vec<_>>();
-        Self::full_with_metadata_chain(value, &metadata_chain, &navigation_targets)
+        Self::full_with_metadata_chain(value, &metadata_chain, navigation_targets)
     }
 
     fn full_with_metadata_chain(
@@ -437,14 +520,11 @@ impl InboxMessageDto {
         has_remote_images: bool,
     ) -> Self {
         Self {
-            id: value.id,
-            mailbox: value.mailbox,
-            uid: value.uid,
-            message_id: value.message_id,
             subject: value.subject,
             sender: value.sender.map(Into::into),
             to: value.to.into_iter().map(Into::into).collect(),
             cc: value.cc.into_iter().map(Into::into).collect(),
+            bcc: value.bcc.into_iter().map(Into::into).collect(),
             sent_at: value.sent_at,
             internal_date: value.internal_date,
             flags: value.flags,
@@ -559,7 +639,16 @@ fn joined_mail_addresses(addresses: &[MailAddress]) -> Option<String> {
 
 fn full_message_dto(backend: &MailBackend, message: InboxMessage) -> InboxMessageDto {
     let ancestors = backend.cached_reply_ancestors(&message).unwrap_or_default();
-    InboxMessageDto::full_with_ancestors(message, &ancestors)
+    let navigation_targets = ancestors
+        .iter()
+        .map(|ancestor| {
+            ancestor
+                .as_ref()
+                .and_then(|ancestor| backend.public_id_for_cached_message(ancestor).ok())
+                .map(|id| MessageNavigationTargetDto { id })
+        })
+        .collect::<Vec<_>>();
+    InboxMessageDto::full_with_resolved_ancestors(message, &ancestors, &navigation_targets)
 }
 
 impl From<InboxMessage> for InboxMessageDto {
@@ -568,6 +657,93 @@ impl From<InboxMessage> for InboxMessageDto {
     }
 }
 
+#[derive(Clone, Debug, Serialize)]
+struct AttachmentMetaDto {
+    id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    original_name: Option<String>,
+    safe_display_name: String,
+    mime_type: String,
+    size_bytes: u64,
+    disposition: AttachmentDisposition,
+}
+
+impl From<AttachmentMeta> for AttachmentMetaDto {
+    fn from(value: AttachmentMeta) -> Self {
+        Self {
+            id: value.id,
+            original_name: value.original_name,
+            safe_display_name: value.safe_display_name,
+            mime_type: value.mime_type,
+            size_bytes: value.size_bytes,
+            disposition: value.disposition,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct DraftAttachmentMetaDto {
+    id: String,
+    name: String,
+    mime_type: String,
+    size_bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_attachment_id: Option<String>,
+}
+
+impl From<DraftAttachmentMeta> for DraftAttachmentMetaDto {
+    fn from(value: DraftAttachmentMeta) -> Self {
+        Self {
+            id: value.id,
+            name: value.name,
+            mime_type: value.mime_type,
+            size_bytes: value.size_bytes,
+            source_attachment_id: value.source_attachment_id,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct ForwardContextDto {
+    source_message_id: String,
+    original_subject: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    from: Option<MailAddressDto>,
+    to: Vec<MailAddressDto>,
+    cc: Vec<MailAddressDto>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sent_at: Option<String>,
+    quoted_text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    quoted_html: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    quoted_render_mode: Option<ForwardQuotedRenderMode>,
+    source_attachments: Vec<AttachmentMetaDto>,
+}
+
+impl From<ForwardContext> for ForwardContextDto {
+    fn from(value: ForwardContext) -> Self {
+        Self {
+            source_message_id: value.source_message_id,
+            original_subject: value.original_subject,
+            from: value.from.map(Into::into),
+            to: value.to.into_iter().map(Into::into).collect(),
+            cc: value.cc.into_iter().map(Into::into).collect(),
+            sent_at: value.sent_at,
+            quoted_text: value.quoted_text,
+            quoted_html: value.quoted_html,
+            quoted_render_mode: value.quoted_render_mode,
+            source_attachments: value
+                .source_attachments
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+        }
+    }
+}
+
+/// Explicit compose boundary. Do not flatten or serialize the core `DraftDto`:
+/// it contains Rust-only account and provider positioning fields.
 #[derive(Clone, Debug, Serialize)]
 struct DraftDto {
     id: String,
@@ -578,32 +754,46 @@ struct DraftDto {
     bcc: Vec<String>,
     subject: String,
     body_text: String,
+    format: ComposeFormat,
     reply_context: Option<ReplyContextDto>,
     status: String,
-    remote_mailbox: Option<String>,
-    remote_uid: Option<u32>,
     created_at: String,
     updated_at: String,
+    attachments: Vec<DraftAttachmentMetaDto>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    forward_context: Option<ForwardContextDto>,
+}
+
+impl From<CoreDraftDto> for DraftDto {
+    fn from(value: CoreDraftDto) -> Self {
+        let CoreDraftDto {
+            draft,
+            attachments,
+            forward_context,
+        } = value;
+        Self {
+            id: draft.id,
+            local_version: draft.local_version,
+            has_unsupported_content: draft.has_unsupported_content,
+            to: draft.to,
+            cc: draft.cc,
+            bcc: draft.bcc,
+            subject: draft.subject,
+            body_text: draft.body_text,
+            format: draft.format,
+            reply_context: draft.reply_context.map(Into::into),
+            status: draft.status,
+            created_at: draft.created_at,
+            updated_at: draft.updated_at,
+            attachments: attachments.into_iter().map(Into::into).collect(),
+            forward_context: forward_context.map(Into::into),
+        }
+    }
 }
 
 impl From<Draft> for DraftDto {
     fn from(value: Draft) -> Self {
-        Self {
-            id: value.id,
-            local_version: value.local_version,
-            has_unsupported_content: value.has_unsupported_content,
-            to: value.to,
-            cc: value.cc,
-            bcc: value.bcc,
-            subject: value.subject,
-            body_text: value.body_text,
-            reply_context: value.reply_context.map(Into::into),
-            status: value.status,
-            remote_mailbox: value.remote_mailbox,
-            remote_uid: value.remote_uid,
-            created_at: value.created_at,
-            updated_at: value.updated_at,
-        }
+        CoreDraftDto::from(value).into()
     }
 }
 
@@ -615,12 +805,15 @@ struct DraftSaveOutcomeDto {
 }
 
 #[derive(Clone, Debug, Serialize)]
-struct DraftDeleteOutcomeDto {
-    kind: DraftDeleteKind,
+struct DraftAttachmentMutationOutcomeDto {
+    kind: DraftAttachmentMutationKind,
+    draft: DraftDto,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    canonical: Option<DraftDto>,
 }
 
-impl From<DraftSaveOutcome> for DraftSaveOutcomeDto {
-    fn from(value: DraftSaveOutcome) -> Self {
+impl From<DraftAttachmentMutationOutcome> for DraftAttachmentMutationOutcomeDto {
+    fn from(value: DraftAttachmentMutationOutcome) -> Self {
         Self {
             kind: value.kind,
             draft: value.draft.into(),
@@ -630,10 +823,144 @@ impl From<DraftSaveOutcome> for DraftSaveOutcomeDto {
 }
 
 #[derive(Clone, Debug, Serialize)]
+struct AttachmentSaveResultDto {
+    status: AttachmentSaveStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    file_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error_kind: Option<AttachmentSaveErrorKind>,
+    retryable: bool,
+}
+
+impl From<AttachmentSaveResult> for AttachmentSaveResultDto {
+    fn from(value: AttachmentSaveResult) -> Self {
+        Self {
+            status: value.status,
+            file_name: value.file_name.and_then(|name| {
+                let base_name = name.rsplit(['/', '\\']).next().unwrap_or_default().trim();
+                (!base_name.is_empty() && !base_name.chars().any(char::is_control))
+                    .then(|| base_name.to_owned())
+            }),
+            error_kind: value.error_kind,
+            retryable: value.retryable,
+        }
+    }
+}
+
+impl AttachmentSaveResultDto {
+    fn error(error_kind: AttachmentSaveErrorKind, retryable: bool) -> Self {
+        Self {
+            status: AttachmentSaveStatus::Error,
+            file_name: None,
+            error_kind: Some(error_kind),
+            retryable,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct PreparedForwardDto {
+    draft: DraftDto,
+    warnings: Vec<ForwardWarning>,
+}
+
+impl From<PreparedForward> for PreparedForwardDto {
+    fn from(value: PreparedForward) -> Self {
+        Self {
+            draft: value.draft.into(),
+            warnings: value.warnings,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct ForwardPreparationErrorDto {
+    kind: ForwardPreparationErrorKind,
+    failed_attachment_ids: Vec<String>,
+    retry_without_attachments_allowed: bool,
+}
+
+impl From<ForwardPreparationError> for ForwardPreparationErrorDto {
+    fn from(value: ForwardPreparationError) -> Self {
+        Self {
+            kind: value.kind,
+            failed_attachment_ids: value.failed_attachment_ids,
+            retry_without_attachments_allowed: value.retry_without_attachments_allowed,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum ForwardPreparationOutcomeDto {
+    Prepared { prepared: PreparedForwardDto },
+    Error { error: ForwardPreparationErrorDto },
+}
+
+impl From<ForwardPreparationOutcome> for ForwardPreparationOutcomeDto {
+    fn from(value: ForwardPreparationOutcome) -> Self {
+        match value {
+            ForwardPreparationOutcome::Prepared { prepared } => Self::Prepared {
+                prepared: prepared.into(),
+            },
+            ForwardPreparationOutcome::Error { error } => Self::Error {
+                error: error.into(),
+            },
+        }
+    }
+}
+
+impl ForwardPreparationOutcomeDto {
+    fn error(
+        kind: ForwardPreparationErrorKind,
+        failed_attachment_ids: Vec<String>,
+        retry_without_attachments_allowed: bool,
+    ) -> Self {
+        Self::Error {
+            error: ForwardPreparationErrorDto {
+                kind,
+                failed_attachment_ids,
+                retry_without_attachments_allowed,
+            },
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct DraftDeleteOutcomeDto {
+    kind: DraftDeleteKind,
+}
+
+fn complete_draft_dto(backend: &MailBackend, draft_id: &str) -> CommandResult<DraftDto> {
+    backend
+        .draft_dto(draft_id)
+        .map(Into::into)
+        .map_err(safe_mail_error)
+}
+
+fn complete_draft_save_outcome(
+    backend: &MailBackend,
+    value: DraftSaveOutcome,
+) -> CommandResult<DraftSaveOutcomeDto> {
+    let draft = complete_draft_dto(backend, &value.draft.id)?;
+    let canonical = value
+        .canonical
+        .as_ref()
+        .map(|draft| complete_draft_dto(backend, &draft.id))
+        .transpose()?;
+    Ok(DraftSaveOutcomeDto {
+        kind: value.kind,
+        draft,
+        canonical,
+    })
+}
+
+#[derive(Clone, Debug, Serialize)]
 struct OutboxItemDto {
     id: String,
     draft_id: Option<String>,
     recipients: Vec<String>,
+    recipient_groups: Option<OutboxRecipientGroupsDto>,
     subject: String,
     preview: String,
     status: OutboxStatus,
@@ -649,6 +976,7 @@ struct OutboxItemDto {
 struct OutboxMessageDto {
     id: String,
     subject: String,
+    recipient_groups: Option<OutboxRecipientGroupsDto>,
     body_text: String,
     body_html: Option<String>,
     body_render_mode: BodyRenderMode,
@@ -660,12 +988,40 @@ struct OutboxMessageDto {
 }
 
 #[derive(Clone, Debug, Serialize)]
-struct AccountMailboxSnapshotDto {
-    account_id: String,
-    inbox: Vec<InboxMessageDto>,
-    sent: Vec<InboxMessageDto>,
-    drafts: Vec<DraftDto>,
-    outbox: Vec<OutboxItemDto>,
+struct OutboxRecipientGroupsDto {
+    to: Vec<String>,
+    cc: Vec<String>,
+    bcc: Vec<String>,
+}
+
+impl From<OutboxRecipientGroups> for OutboxRecipientGroupsDto {
+    fn from(value: OutboxRecipientGroups) -> Self {
+        Self {
+            to: value.to,
+            cc: value.cc,
+            bcc: value.bcc,
+        }
+    }
+}
+
+fn safe_outbox_last_error(status: OutboxStatus, error: Option<&str>) -> Option<String> {
+    error.map(|_| {
+        match status {
+            OutboxStatus::Retryable => {
+                "Sending failed before delivery was confirmed. You can retry safely."
+            }
+            OutboxStatus::Rejected => {
+                "The mail server rejected this message. Review the recipients and account settings before trying again."
+            }
+            OutboxStatus::DeliveryUnknown => {
+                "Delivery could not be confirmed. Check Sent before deciding whether to retry."
+            }
+            OutboxStatus::Queued | OutboxStatus::Sending | OutboxStatus::Sent => {
+                "Mine Mail could not complete the previous send attempt."
+            }
+        }
+        .to_owned()
+    })
 }
 
 impl From<OutboxItem> for OutboxItemDto {
@@ -674,15 +1030,18 @@ impl From<OutboxItem> for OutboxItemDto {
         let preview = outbox_preview(&value).unwrap_or_default();
         let message_id = outbox_message_id(&value);
         let message_date = outbox_sent_at(&value);
+        let last_error = safe_outbox_last_error(value.status, value.last_error.as_deref());
+        let recipient_groups = value.recipient_groups.map(Into::into);
         Self {
             id: value.id,
             draft_id: value.draft_id,
             recipients: value.recipients,
+            recipient_groups,
             subject,
             preview,
             status: value.status,
             attempts: value.attempts,
-            last_error: value.last_error,
+            last_error,
             created_at: value.created_at,
             sent_at: value.sent_at,
             message_id,
@@ -731,9 +1090,11 @@ impl From<OutboxItem> for OutboxMessageDto {
                 MailHtmlStructure::Isolated => (Some(html.fragment), BodyRenderMode::IsolatedHtml),
             },
         };
+        let recipient_groups = value.recipient_groups.map(Into::into);
         Self {
             id: value.id.clone(),
             subject,
+            recipient_groups,
             body_text,
             body_html,
             body_render_mode,
@@ -757,44 +1118,13 @@ async fn check_connections(
 }
 
 #[tauri::command]
-async fn sync_inbox(app: AppHandle) -> CommandResult<SyncReport> {
-    desktop::perform_inbox_sync(&app).await
+async fn sync_inbox(app: AppHandle) -> CommandResult<desktop::SyncReportDto> {
+    desktop::perform_inbox_sync(&app).await.map(Into::into)
 }
 
 #[tauri::command]
-async fn sync_sent(app: AppHandle) -> CommandResult<SyncReport> {
-    desktop::perform_sent_sync(&app).await
-}
-
-#[tauri::command]
-fn list_inbox(
-    backend: State<'_, BackendState>,
-    limit: Option<usize>,
-) -> CommandResult<Vec<InboxMessageDto>> {
-    let backend = backend.local()?;
-    let limit = limit.unwrap_or(INBOX_LIST_LIMIT).clamp(1, INBOX_LIST_LIMIT);
-    backend
-        .list_inbox(limit)
-        .map(|messages| messages.into_iter().map(InboxMessageDto::summary).collect())
-        .map_err(safe_mail_error)
-}
-
-#[tauri::command]
-fn list_sent(
-    backend: State<'_, BackendState>,
-    limit: Option<usize>,
-) -> CommandResult<Vec<InboxMessageDto>> {
-    let backend = backend.local()?;
-    let limit = limit.unwrap_or(SENT_LIST_LIMIT).clamp(1, SENT_LIST_LIMIT);
-    backend
-        .list_sent(limit)
-        .map(|messages| {
-            messages
-                .into_iter()
-                .map(InboxMessageDto::sent_summary)
-                .collect()
-        })
-        .map_err(safe_mail_error)
+async fn sync_sent(app: AppHandle) -> CommandResult<desktop::SyncReportDto> {
+    desktop::perform_sent_sync(&app).await.map(Into::into)
 }
 
 /// Returns current-account correspondents separately from app-wide favorites.
@@ -863,135 +1193,6 @@ fn set_contact_remark(
     contacts.set_remark(&email, &remark)
 }
 
-/// Opening an unread Inbox message commits `\Seen` to SQLite immediately.
-/// The durable pending row is then pushed to IMAP; a transient network or
-/// credential failure leaves it queued for the next normal Inbox sync.
-#[tauri::command]
-async fn mark_message_read(
-    account: State<'_, AccountRuntime>,
-    backend: State<'_, BackendState>,
-    uid: u32,
-) -> CommandResult<bool> {
-    let account_id = backend
-        .active_account_id()
-        .ok_or_else(|| "No mail account is selected.".to_owned())?;
-    backend
-        .local_for(&account_id)?
-        .mark_inbox_message_read(uid)
-        .map_err(safe_mail_error)?;
-
-    if account
-        .refresh_active_oauth_backend(&backend)
-        .await
-        .is_err()
-    {
-        diagnostics::limited_failure(
-            "message_read_sync_failed",
-            "message_read_sync",
-            Some(&account_id),
-            DiagnosticErrorKind::Runtime,
-        );
-        return Ok(false);
-    }
-    let network = match backend.network_for(&account_id) {
-        Ok(network) => network,
-        Err(_) => {
-            diagnostics::limited_failure(
-                "message_read_sync_failed",
-                "message_read_sync",
-                Some(&account_id),
-                DiagnosticErrorKind::Runtime,
-            );
-            return Ok(false);
-        }
-    };
-    match network.sync_pending_inbox_read_flags().await {
-        Ok(_) => {
-            diagnostics::limited_recovery(
-                "message_read_sync_failed",
-                "message_read_sync_recovered",
-                "message_read_sync",
-                Some(&account_id),
-            );
-            Ok(true)
-        }
-        Err(error) => {
-            diagnostics::limited_failure(
-                "message_read_sync_failed",
-                "message_read_sync",
-                Some(&account_id),
-                diagnostics::mail_error_kind(&error),
-            );
-            Ok(false)
-        }
-    }
-}
-
-/// Stars or unstars one cached remote message locally first, then mirrors the
-/// exact mailbox UID through the standard IMAP `\Flagged` system flag.
-#[tauri::command]
-async fn set_message_starred(
-    account: State<'_, AccountRuntime>,
-    backend: State<'_, BackendState>,
-    mailbox: String,
-    uid: u32,
-    starred: bool,
-) -> CommandResult<bool> {
-    let account_id = backend
-        .active_account_id()
-        .ok_or_else(|| "No mail account is selected.".to_owned())?;
-    backend
-        .local_for(&account_id)?
-        .set_message_starred(&mailbox, uid, starred)
-        .map_err(safe_mail_error)?;
-
-    if account
-        .refresh_active_oauth_backend(&backend)
-        .await
-        .is_err()
-    {
-        diagnostics::limited_failure(
-            "message_star_sync_failed",
-            "message_star_sync",
-            Some(&account_id),
-            DiagnosticErrorKind::Runtime,
-        );
-        return Ok(false);
-    }
-    let network = match backend.network_for(&account_id) {
-        Ok(network) => network,
-        Err(_) => {
-            diagnostics::limited_failure(
-                "message_star_sync_failed",
-                "message_star_sync",
-                Some(&account_id),
-                DiagnosticErrorKind::Runtime,
-            );
-            return Ok(false);
-        }
-    };
-    match network.sync_pending_message_star_flags(&mailbox).await {
-        Ok(_) => {
-            diagnostics::limited_recovery(
-                "message_star_sync_failed",
-                "message_star_sync_recovered",
-                "message_star_sync",
-                Some(&account_id),
-            );
-            Ok(true)
-        }
-        Err(error) => {
-            diagnostics::limited_failure(
-                "message_star_sync_failed",
-                "message_star_sync",
-                Some(&account_id),
-                diagnostics::mail_error_kind(&error),
-            );
-            Ok(false)
-        }
-    }
-}
-
 #[tauri::command]
 fn open_external_url(url: String) -> CommandResult<()> {
     let url = validate_external_url(&url)?;
@@ -1018,87 +1219,14 @@ fn validate_external_url(value: &str) -> CommandResult<Url> {
 }
 
 #[tauri::command]
-async fn fetch_message(
-    account: State<'_, AccountRuntime>,
-    backend: State<'_, BackendState>,
-    uid: u32,
-) -> CommandResult<InboxMessageDto> {
-    let _ = account.refresh_active_oauth_backend(&backend).await;
-    match backend.network() {
-        Ok(network) => network
-            .fetch_message(uid, false)
-            .await
-            .map(|message| full_message_dto(&network, message))
-            .map_err(safe_mail_error),
-        Err(network_error) => {
-            let local = backend.local()?;
-            local
-                .cached_inbox_message(uid)
-                .map(|message| full_message_dto(&local, message))
-                .map_err(|_| network_error)
-        }
-    }
-}
-
-#[tauri::command]
-async fn fetch_sent_message(
-    account: State<'_, AccountRuntime>,
-    backend: State<'_, BackendState>,
-    uid: u32,
-) -> CommandResult<InboxMessageDto> {
-    let _ = account.refresh_active_oauth_backend(&backend).await;
-    match backend.network() {
-        Ok(network) => network
-            .fetch_sent_message(uid, false)
-            .await
-            .map(|message| full_message_dto(&network, message))
-            .map_err(safe_mail_error),
-        Err(network_error) => {
-            let local = backend.local()?;
-            local
-                .cached_sent_message(uid)
-                .map(|message| full_message_dto(&local, message))
-                .map_err(|_| network_error)
-        }
-    }
-}
-
-/// Contact history spans every cached mailbox. Hydrate by the exact
-/// account/mailbox/UID tuple because an IMAP UID is not account-global or even
-/// mailbox-global.
-#[tauri::command]
-async fn fetch_contact_message(
-    account: State<'_, AccountRuntime>,
-    backend: State<'_, BackendState>,
-    account_id: String,
-    mailbox: String,
-    uid: u32,
-) -> CommandResult<InboxMessageDto> {
-    let _ = account.refresh_active_oauth_backend(&backend).await;
-    match backend.network_for(&account_id) {
-        Ok(network) => network
-            .fetch_contact_message(&mailbox, uid)
-            .await
-            .map(|message| full_message_dto(&network, message))
-            .map_err(safe_mail_error),
-        Err(network_error) => {
-            let local = backend.local_for(&account_id)?;
-            local
-                .cached_contact_message(&mailbox, uid)
-                .map(|message| full_message_dto(&local, message))
-                .map_err(|_| network_error)
-        }
-    }
-}
-
-#[tauri::command]
 fn prepare_reply(
     backend: State<'_, BackendState>,
-    message_id: i64,
+    message_id: String,
 ) -> CommandResult<ComposeRequestDto> {
+    mailbox_api::validate_message_id(&message_id)?;
     let backend = backend.local()?;
     backend
-        .prepare_reply(message_id)
+        .prepare_reply(&message_id)
         .map(Into::into)
         .map_err(safe_mail_error)
 }
@@ -1156,7 +1284,7 @@ fn save_draft(
         }
         diagnostics::warn("draft_conflict_created", fields);
     }
-    let outcome = outcome.into();
+    let outcome = complete_draft_save_outcome(&backend, outcome)?;
     let _ = app.emit("mail:drafts-updated", desktop::DraftsUpdatedEvent::saved());
     Ok(outcome)
 }
@@ -1164,10 +1292,76 @@ fn save_draft(
 #[tauri::command]
 fn list_drafts(backend: State<'_, BackendState>) -> CommandResult<Vec<DraftDto>> {
     let backend = backend.local()?;
-    backend
-        .list_drafts()
-        .map(|drafts| drafts.into_iter().map(Into::into).collect())
-        .map_err(safe_mail_error)
+    let drafts = backend.list_drafts().map_err(safe_mail_error)?;
+    drafts
+        .into_iter()
+        .map(|draft| complete_draft_dto(&backend, &draft.id))
+        .collect()
+}
+
+#[tauri::command]
+fn create_compose_draft(
+    app: AppHandle,
+    backend: State<'_, BackendState>,
+) -> CommandResult<DraftDto> {
+    let draft = backend
+        .local()?
+        .create_compose_draft()
+        .map(Into::into)
+        .map_err(safe_mail_error)?;
+    let _ = app.emit("mail:drafts-updated", desktop::DraftsUpdatedEvent::saved());
+    Ok(draft)
+}
+
+#[tauri::command]
+async fn add_draft_attachments(
+    app: AppHandle,
+    backend: State<'_, BackendState>,
+    draft_id: String,
+    expected_local_version: u64,
+) -> CommandResult<DraftAttachmentMutationOutcomeDto> {
+    let backend = backend.local()?;
+    // Validate the opaque draft identity before opening a platform picker.
+    backend.draft_dto(&draft_id).map_err(safe_mail_error)?;
+    let selected = app.dialog().file().blocking_pick_files();
+    let selected_paths = match selected {
+        Some(files) => files
+            .into_iter()
+            .map(|file| {
+                file.into_path()
+                    .map_err(|_| "The selected attachment could not be accessed.".to_owned())
+            })
+            .collect::<CommandResult<Vec<_>>>()?,
+        None => Vec::new(),
+    };
+    let outcome = backend
+        .add_draft_attachments(&draft_id, expected_local_version, &selected_paths)
+        .map_err(safe_mail_error)?;
+    if matches!(
+        outcome.kind,
+        DraftAttachmentMutationKind::Saved | DraftAttachmentMutationKind::ConflictCopy
+    ) {
+        let _ = app.emit("mail:drafts-updated", desktop::DraftsUpdatedEvent::saved());
+    }
+    Ok(outcome.into())
+}
+
+#[tauri::command]
+fn remove_draft_attachment(
+    app: AppHandle,
+    backend: State<'_, BackendState>,
+    draft_id: String,
+    attachment_id: String,
+    expected_local_version: u64,
+) -> CommandResult<DraftAttachmentMutationOutcomeDto> {
+    let backend = backend.local()?;
+    let outcome = backend
+        .remove_draft_attachment(&draft_id, &attachment_id, expected_local_version)
+        .map_err(safe_mail_error)?;
+    if outcome.kind == DraftAttachmentMutationKind::Saved {
+        let _ = app.emit("mail:drafts-updated", desktop::DraftsUpdatedEvent::saved());
+    }
+    Ok(outcome.into())
 }
 
 #[tauri::command]
@@ -1358,6 +1552,138 @@ async fn retry_outbox(
     }
 }
 
+fn validate_outbox_id(outbox_id: &str) -> CommandResult<()> {
+    if outbox_id.is_empty()
+        || outbox_id.len() > MAX_OUTBOX_ID_BYTES
+        || outbox_id.chars().any(char::is_control)
+    {
+        return Err("The Outbox identifier is invalid.".to_owned());
+    }
+    Ok(())
+}
+
+fn validate_delivery_unknown_request(
+    decision: DeliveryUnknownDecision,
+    acknowledge_duplicate_risk: bool,
+) -> CommandResult<()> {
+    match (decision, acknowledge_duplicate_risk) {
+        (DeliveryUnknownDecision::ConfirmDelivered, false)
+        | (DeliveryUnknownDecision::RetryOnce, true) => Ok(()),
+        (DeliveryUnknownDecision::RetryOnce, false) => Err(
+            "Retrying an unknown delivery requires explicit acknowledgement of duplicate risk."
+                .to_owned(),
+        ),
+        (DeliveryUnknownDecision::ConfirmDelivered, true) => {
+            Err("Duplicate-risk acknowledgement is valid only for an explicit retry.".to_owned())
+        }
+    }
+}
+
+fn delivery_unknown_decision_name(decision: DeliveryUnknownDecision) -> &'static str {
+    match decision {
+        DeliveryUnknownDecision::ConfirmDelivered => "confirm_delivered",
+        DeliveryUnknownDecision::RetryOnce => "retry_once",
+    }
+}
+
+/// Resolves exactly one user-reviewed `delivery_unknown` attempt generation.
+///
+/// `confirm_delivered` performs only an atomic local transition after the user
+/// checked the provider. `retry_once` reuses the persisted immutable RFC822 and
+/// envelope, and requires a duplicate-risk acknowledgement at both this command
+/// boundary and the core backend.
+#[tauri::command]
+async fn resolve_delivery_unknown(
+    account: State<'_, AccountRuntime>,
+    backend: State<'_, BackendState>,
+    outbox_id: String,
+    expected_attempts: u32,
+    decision: DeliveryUnknownDecision,
+    acknowledge_duplicate_risk: bool,
+) -> CommandResult<OutboxItemDto> {
+    validate_outbox_id(&outbox_id)?;
+    validate_delivery_unknown_request(decision, acknowledge_duplicate_risk)?;
+
+    let started = Instant::now();
+    let operation_id = diagnostics::operation_id();
+    let mut fields = DiagnosticFields::default()
+        .operation_id(operation_id)
+        .operation("delivery_unknown_resolution")
+        .item("outbox", &outbox_id)
+        .outcome(delivery_unknown_decision_name(decision));
+    if let Some(account_id) = backend.active_account_id().as_deref() {
+        fields = fields.account(account_id);
+    }
+    diagnostics::info("delivery_unknown_resolution_started", fields.clone());
+
+    let result = match decision {
+        DeliveryUnknownDecision::ConfirmDelivered => backend
+            .local()
+            .and_then(|local| {
+                local
+                    .confirm_delivery_unknown(&outbox_id, expected_attempts)
+                    .map_err(safe_mail_error)
+            })
+            .map(OutboxItemDto::from),
+        DeliveryUnknownDecision::RetryOnce => {
+            if let Err(error) = account.refresh_active_oauth_backend(&backend).await {
+                diagnostics::error(
+                    "delivery_unknown_resolution_failed",
+                    fields
+                        .clone()
+                        .error(DiagnosticErrorKind::Runtime)
+                        .outcome("oauth_refresh_failed")
+                        .duration(started.elapsed()),
+                );
+                return Err(error);
+            }
+            let network = match backend.network() {
+                Ok(network) => network,
+                Err(error) => {
+                    diagnostics::error(
+                        "delivery_unknown_resolution_failed",
+                        fields
+                            .error(DiagnosticErrorKind::Runtime)
+                            .outcome("backend_unavailable")
+                            .duration(started.elapsed()),
+                    );
+                    return Err(error);
+                }
+            };
+            network
+                .retry_delivery_unknown_once(
+                    &outbox_id,
+                    expected_attempts,
+                    acknowledge_duplicate_risk,
+                )
+                .await
+                .map(OutboxItemDto::from)
+                .map_err(safe_mail_error)
+        }
+    };
+
+    match result {
+        Ok(item) => {
+            diagnostics::info(
+                "delivery_unknown_resolution_completed",
+                fields
+                    .outcome(outbox_status_name(item.status))
+                    .duration(started.elapsed()),
+            );
+            Ok(item)
+        }
+        Err(error) => {
+            diagnostics::error(
+                "delivery_unknown_resolution_failed",
+                fields
+                    .error(DiagnosticErrorKind::Runtime)
+                    .duration(started.elapsed()),
+            );
+            Err(error)
+        }
+    }
+}
+
 fn outbox_status_name(status: OutboxStatus) -> &'static str {
     match status {
         OutboxStatus::Queued => "queued",
@@ -1390,48 +1716,6 @@ fn fetch_outbox_message(
         .outbox_message(&outbox_id)
         .map(Into::into)
         .map_err(safe_mail_error)
-}
-
-/// Read one account's complete local navigation snapshot without changing the
-/// active account. React prewarms these bounded SQLite views so switching an
-/// already connected mailbox never waits for IMAP or exposes another account's
-/// messages while the target view is loading.
-#[tauri::command]
-fn get_account_mailbox_snapshot(
-    backend: State<'_, BackendState>,
-    account_id: String,
-    limit: Option<usize>,
-) -> CommandResult<AccountMailboxSnapshotDto> {
-    let local = backend.local_for(&account_id)?;
-    let limit = limit.unwrap_or(INBOX_LIST_LIMIT).clamp(1, INBOX_LIST_LIMIT);
-    let inbox = local
-        .list_inbox(limit)
-        .map(|messages| messages.into_iter().map(InboxMessageDto::summary).collect())
-        .map_err(safe_mail_error)?;
-    let sent = local
-        .list_sent(SENT_LIST_LIMIT)
-        .map(|messages| {
-            messages
-                .into_iter()
-                .map(InboxMessageDto::sent_summary)
-                .collect()
-        })
-        .map_err(safe_mail_error)?;
-    let drafts = local
-        .list_drafts()
-        .map(|drafts| drafts.into_iter().map(Into::into).collect())
-        .map_err(safe_mail_error)?;
-    let outbox = local
-        .list_outbox()
-        .map(|items| items.into_iter().map(Into::into).collect())
-        .map_err(safe_mail_error)?;
-    Ok(AccountMailboxSnapshotDto {
-        account_id,
-        inbox,
-        sent,
-        drafts,
-        outbox,
-    })
 }
 
 #[tauri::command]
@@ -1482,13 +1766,8 @@ fn dismiss_new_mail_notification(app: AppHandle, notification_id: u64) -> Comman
 }
 
 #[tauri::command]
-fn open_new_mail_notification(
-    app: AppHandle,
-    notification_id: u64,
-    uid: u32,
-    account_id: String,
-) -> CommandResult<bool> {
-    desktop::open_new_mail_notification(&app, notification_id, uid, account_id)
+fn open_new_mail_notification(app: AppHandle, notification_id: u64) -> CommandResult<bool> {
+    desktop::open_new_mail_notification(&app, notification_id)
 }
 
 #[tauri::command]
@@ -1590,8 +1869,8 @@ async fn sync_all(app: AppHandle) -> CommandResult<desktop::SyncAllReport> {
 }
 
 #[tauri::command]
-async fn sync_drafts(app: AppHandle) -> CommandResult<mine_mail::DraftSyncReport> {
-    desktop::perform_draft_sync(&app).await
+async fn sync_drafts(app: AppHandle) -> CommandResult<desktop::DraftSyncReportDto> {
+    desktop::perform_draft_sync(&app).await.map(Into::into)
 }
 
 #[tauri::command]
@@ -1796,6 +2075,9 @@ fn initialize_state(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Erro
         desktop::request_sync(app.handle(), true, "startup");
     } else {
         desktop::show_main_window(app.handle(), true);
+        if local_backend_ready && !startup_degraded {
+            desktop::request_sync(app.handle(), true, "startup");
+        }
     }
     Ok(())
 }
@@ -1878,28 +2160,38 @@ pub fn run() {
             sync_inbox,
             sync_sent,
             sync_all,
-            list_inbox,
-            list_sent,
             list_contacts,
             list_contact_messages,
             set_contact_favorite,
             set_contact_remark,
-            mark_message_read,
-            set_message_starred,
-            fetch_message,
-            fetch_sent_message,
-            fetch_contact_message,
+            set_message_seen,
+            set_message_starred_by_id,
+            get_mailbox_capabilities,
+            create_mailbox_role,
+            list_mailbox_page,
+            load_older_mailbox_page,
+            sync_mailbox,
+            archive_message,
+            move_message_to_trash,
+            prepare_permanent_delete,
+            confirm_permanent_delete,
+            fetch_mailbox_message,
+            save_message_attachment,
+            prepare_forward,
             prepare_reply,
             open_external_url,
             save_draft,
             list_drafts,
+            create_compose_draft,
+            add_draft_attachments,
+            remove_draft_attachment,
             delete_draft,
             sync_drafts,
             send_draft,
             retry_outbox,
+            resolve_delivery_unknown,
             list_outbox,
             fetch_outbox_message,
-            get_account_mailbox_snapshot,
             get_storage_status,
             prepare_storage_migration,
             cancel_storage_migration,
@@ -1949,13 +2241,21 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use mine_mail::{
-        ContactMessage, ContactMessageDirection, InboxMessage, MailAddress, MailboxRole,
-        OutboxItem, OutboxStatus, ReplyContext,
+        AttachmentDisposition, AttachmentMeta, AttachmentSaveResult, AttachmentSaveStatus,
+        ComposeFormat, ComposeRequest, ContactMessage, ContactMessageDirection,
+        DeliveryUnknownDecision, Draft, DraftAttachmentMeta, DraftAttachmentMutationKind,
+        DraftAttachmentMutationOutcome, DraftDto as CoreDraftDto, ForwardContext,
+        ForwardPreparationOutcome, ForwardQuotedRenderMode, ForwardWarning, InboxMessage,
+        MailAddress, MailboxRole, OutboxItem, OutboxRecipientGroups, OutboxStatus, PreparedForward,
+        ReplyContext, StationeryTheme,
     };
 
     use super::{
-        ContactMessageDto, InboxMessageDto, OutboxItemDto, OutboxMessageDto, ReplyContextDto,
-        requested_autostart_change, validate_external_url,
+        AttachmentSaveResultDto, ContactMessageDto, DraftAttachmentMutationOutcomeDto, DraftDto,
+        ForwardPreparationOutcomeDto, InboxMessageDto, MessageNavigationTargetDto, OutboxItemDto,
+        OutboxMessageDto, ReplyContextDto, assert_no_private_mail_coordinates,
+        delivery_unknown_decision_name, requested_autostart_change, sanitize_compose_request,
+        validate_delivery_unknown_request, validate_external_url, validate_outbox_id,
     };
 
     fn rich_message() -> InboxMessage {
@@ -1971,6 +2271,10 @@ mod tests {
             sender: None,
             to: Vec::new(),
             cc: Vec::new(),
+            bcc: vec![MailAddress {
+                name: Some("Hidden recipient".to_owned()),
+                email: "hidden@example.com".to_owned(),
+            }],
             sent_at: None,
             internal_date: None,
             flags: Vec::new(),
@@ -1996,6 +2300,11 @@ mod tests {
             draft_revision: None,
             draft_local_version: None,
             recipients: vec!["receiver@example.com".to_owned()],
+            recipient_groups: Some(OutboxRecipientGroups {
+                to: vec!["receiver@example.com".to_owned()],
+                cc: vec!["copy@example.com".to_owned()],
+                bcc: vec!["hidden@example.com".to_owned()],
+            }),
             status: OutboxStatus::Sent,
             attempts: 1,
             last_error: None,
@@ -2003,6 +2312,32 @@ mod tests {
             sent_at: Some("2026-07-18T00:00:01Z".to_owned()),
             raw_rfc822: b"From: sender@example.com\r\nTo: receiver@example.com\r\nSubject: Re: Actual subject\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nActual sent body".to_vec(),
         }
+    }
+
+    #[test]
+    fn compose_boundary_sanitizes_owned_html_and_normalizes_empty_stationery() {
+        let request = sanitize_compose_request(ComposeRequest {
+            to: vec!["receiver@example.com".to_owned()],
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: "Formatted".to_owned(),
+            body_text: "Safe fallback".to_owned(),
+            format: ComposeFormat {
+                body_html: Some(
+                    r#"<div onclick="bad()"><strong>Safe</strong><script>bad()</script></div>"#
+                        .to_owned(),
+                ),
+                stationery: StationeryTheme::None,
+                send_stationery: true,
+            },
+            reply_context: None,
+        });
+
+        let html = request.format.body_html.expect("sanitized fragment");
+        assert!(html.contains("<strong>Safe</strong>"));
+        assert!(!html.contains("onclick"));
+        assert!(!html.contains("script"));
+        assert!(!request.format.send_stationery);
     }
 
     fn reply_outbox_item() -> OutboxItem {
@@ -2017,17 +2352,94 @@ mod tests {
             .expect("serialize Outbox summary");
         assert_eq!(summary["subject"], "Re: Actual subject");
         assert_eq!(summary["preview"], "Actual sent body");
+        assert_eq!(summary["recipient_groups"]["bcc"][0], "hidden@example.com");
         assert!(summary.get("body_text").is_none());
         assert!(summary.get("raw_rfc822").is_none());
+        assert_no_private_mail_coordinates(&summary);
 
         let selected = serde_json::to_value(OutboxMessageDto::from(outbox_item()))
             .expect("serialize selected Outbox body");
         assert_eq!(selected["subject"], "Re: Actual subject");
         assert_eq!(selected["body_text"], "Actual sent body");
+        assert_eq!(selected["recipient_groups"]["bcc"][0], "hidden@example.com");
         assert_eq!(selected["body_render_mode"], "plain");
         assert_eq!(selected["body_segments"].as_array().unwrap().len(), 0);
         assert_eq!(selected["body_fetched"], true);
         assert!(selected.get("raw_rfc822").is_none());
+        assert_no_private_mail_coordinates(&selected);
+
+        let mut failed = outbox_item();
+        failed.status = OutboxStatus::Retryable;
+        failed.last_error = Some(
+            r#"provider mailbox "[Gmail]/Sent" UID 44 at C:\Users\private\mail.eml"#.to_owned(),
+        );
+        let failed_summary =
+            serde_json::to_value(OutboxItemDto::from(failed)).expect("serialize failed Outbox");
+        assert_eq!(
+            failed_summary["last_error"],
+            "Sending failed before delivery was confirmed. You can retry safely."
+        );
+        assert!(!failed_summary.to_string().contains("[Gmail]"));
+        assert!(!failed_summary.to_string().contains(r"C:\Users"));
+        assert_no_private_mail_coordinates(&failed_summary);
+
+        let mut legacy = outbox_item();
+        legacy.recipient_groups = None;
+        let legacy_summary = serde_json::to_value(OutboxItemDto::from(legacy.clone()))
+            .expect("serialize legacy Outbox summary");
+        let legacy_selected = serde_json::to_value(OutboxMessageDto::from(legacy))
+            .expect("serialize legacy selected Outbox");
+        assert!(legacy_summary["recipient_groups"].is_null());
+        assert!(legacy_selected["recipient_groups"].is_null());
+        assert_no_private_mail_coordinates(&legacy_summary);
+        assert_no_private_mail_coordinates(&legacy_selected);
+    }
+
+    #[test]
+    fn delivery_unknown_command_boundary_uses_strict_decisions_and_explicit_risk_ack() {
+        assert_eq!(
+            serde_json::from_str::<DeliveryUnknownDecision>(r#""confirm_delivered""#)
+                .expect("confirm decision"),
+            DeliveryUnknownDecision::ConfirmDelivered
+        );
+        assert_eq!(
+            serde_json::from_str::<DeliveryUnknownDecision>(r#""retry_once""#)
+                .expect("retry decision"),
+            DeliveryUnknownDecision::RetryOnce
+        );
+        assert!(
+            serde_json::from_str::<DeliveryUnknownDecision>(r#""retry""#).is_err(),
+            "unknown or abbreviated decisions must be rejected during command deserialization"
+        );
+        assert_eq!(
+            delivery_unknown_decision_name(DeliveryUnknownDecision::ConfirmDelivered),
+            "confirm_delivered"
+        );
+        assert_eq!(
+            delivery_unknown_decision_name(DeliveryUnknownDecision::RetryOnce),
+            "retry_once"
+        );
+
+        assert!(validate_outbox_id("0190f4ca-e13f-7a11-8be2-6c8c435f4da2").is_ok());
+        assert!(validate_outbox_id("legacy-opaque-outbox-id").is_ok());
+        assert!(validate_outbox_id("").is_err());
+        assert!(validate_outbox_id("bad\noutbox").is_err());
+        assert!(validate_outbox_id(&"x".repeat(129)).is_err());
+
+        assert!(
+            validate_delivery_unknown_request(DeliveryUnknownDecision::ConfirmDelivered, false)
+                .is_ok()
+        );
+        assert!(
+            validate_delivery_unknown_request(DeliveryUnknownDecision::RetryOnce, true).is_ok()
+        );
+        assert!(
+            validate_delivery_unknown_request(DeliveryUnknownDecision::RetryOnce, false).is_err()
+        );
+        assert!(
+            validate_delivery_unknown_request(DeliveryUnknownDecision::ConfirmDelivered, true)
+                .is_err()
+        );
     }
 
     #[test]
@@ -2046,6 +2458,8 @@ mod tests {
         assert_eq!(segments[1]["content"], "Original body");
         assert_eq!(segments[1]["quote_metadata"]["subject"], "Actual subject");
         assert!(!segments[0]["content"].as_str().unwrap().contains("At 2026"));
+        assert_no_private_mail_coordinates(&summary);
+        assert_no_private_mail_coordinates(&selected);
     }
 
     #[test]
@@ -2067,7 +2481,9 @@ mod tests {
         assert!(json["body_text"].is_null());
         assert!(json["body_html"].is_null());
         assert!(json["body_render_mode"].is_null());
+        assert_eq!(json["bcc"][0]["email"], "hidden@example.com");
         assert!(json.get("raw_rfc822").is_none());
+        assert_no_private_mail_coordinates(&json);
     }
 
     #[test]
@@ -2078,36 +2494,136 @@ mod tests {
         message.body_html = None;
         message.raw_rfc822 = vec![1; 32 * 1024];
         let json = serde_json::to_value(ContactMessageDto::from(ContactMessage {
+            public_id: "opaque-contact-message".to_owned(),
             direction: ContactMessageDirection::Outgoing,
             mailbox_role: Some(MailboxRole::Sent),
             message,
         }))
         .expect("serialize contact summary");
 
+        assert_eq!(json["id"], "opaque-contact-message");
         assert_eq!(json["direction"], "outgoing");
         assert_eq!(json["mailbox_role"], "sent");
-        assert_eq!(json["mailbox"], "&XfJT0ZAB-");
-        assert!(json["body_text"].is_null());
-        assert!(json["body_html"].is_null());
-        assert!(json.get("raw_rfc822").is_none());
+        assert_eq!(json["subject"], "Rich");
+        assert_eq!(json["bcc"][0]["email"], "hidden@example.com");
+        assert!(json.get("body_text").is_none());
+        assert!(json.get("body_html").is_none());
+        assert_no_private_mail_coordinates(&json);
+    }
+
+    fn core_draft_boundary_fixture() -> CoreDraftDto {
+        CoreDraftDto {
+            draft: Draft {
+                id: "draft-1".to_owned(),
+                local_version: 3,
+                has_unsupported_content: false,
+                account_id: "primary".to_owned(),
+                to: vec!["receiver@example.com".to_owned()],
+                cc: Vec::new(),
+                bcc: Vec::new(),
+                subject: "Draft".to_owned(),
+                body_text: "Body".to_owned(),
+                format: ComposeFormat {
+                    body_html: None,
+                    stationery: StationeryTheme::None,
+                    send_stationery: false,
+                },
+                reply_context: None,
+                status: "synced".to_owned(),
+                remote_mailbox: Some("Drafts".to_owned()),
+                remote_uid: Some(41),
+                created_at: "2026-07-28T00:00:00Z".to_owned(),
+                updated_at: "2026-07-28T00:01:00Z".to_owned(),
+                raw_rfc822: b"private draft source".to_vec(),
+            },
+            attachments: vec![DraftAttachmentMeta {
+                id: "opaque-managed-attachment".to_owned(),
+                name: "invoice.pdf".to_owned(),
+                mime_type: "application/pdf".to_owned(),
+                size_bytes: 42,
+                source_attachment_id: Some("opaque-source-attachment".to_owned()),
+            }],
+            forward_context: Some(ForwardContext {
+                source_message_id: "9f1a7b32-4b55-4d6d-8db7-0e7bf1a32c41".to_owned(),
+                original_subject: "Original".to_owned(),
+                from: Some(MailAddress {
+                    name: Some("Sender".to_owned()),
+                    email: "sender@example.com".to_owned(),
+                }),
+                to: Vec::new(),
+                cc: Vec::new(),
+                sent_at: Some("2026-07-27T23:59:00Z".to_owned()),
+                quoted_text: "Original body".to_owned(),
+                quoted_html: Some("<p>Original body</p>".to_owned()),
+                quoted_render_mode: Some(ForwardQuotedRenderMode::NativeHtml),
+                source_attachments: vec![AttachmentMeta {
+                    id: "opaque-source-attachment".to_owned(),
+                    original_name: Some("invoice.pdf".to_owned()),
+                    safe_display_name: "invoice.pdf".to_owned(),
+                    mime_type: "application/pdf".to_owned(),
+                    size_bytes: 42,
+                    disposition: AttachmentDisposition::Attachment,
+                }],
+            }),
+        }
     }
 
     #[test]
-    fn sent_summaries_exclude_recognized_reply_history_from_the_preview() {
-        let mut message = rich_message();
-        message.mailbox = "Sent".to_owned();
-        message.in_reply_to = vec!["parent@example.com".to_owned()];
-        message.preview = "测试222 At 2026-07-17 09:54:29 +08:00, tantless wrote: 3".to_owned();
-        message.body_text = Some(
-            "测试222\n\nAt 2026-07-17 09:54:29 +08:00, \"tantless\" <1193894851@qq.com> wrote:\n> 3"
-                .to_owned(),
+    fn compose_dtos_recursively_omit_account_provider_raw_path_and_byte_fields() {
+        let fixture = core_draft_boundary_fixture();
+        let draft_json = serde_json::to_value(DraftDto::from(fixture.clone()))
+            .expect("serialize draft boundary");
+
+        assert_eq!(draft_json["id"], "draft-1");
+        assert_eq!(draft_json["local_version"], 3);
+        assert_eq!(draft_json["status"], "synced");
+        assert_eq!(
+            draft_json["attachments"][0]["id"],
+            "opaque-managed-attachment"
         );
+        assert_eq!(
+            draft_json["forward_context"]["source_attachments"][0]["id"],
+            "opaque-source-attachment"
+        );
+        assert_no_private_mail_coordinates(&draft_json);
 
-        let json = serde_json::to_value(InboxMessageDto::sent_summary(message))
-            .expect("serialize Sent summary");
+        let mutation_json = serde_json::to_value(DraftAttachmentMutationOutcomeDto::from(
+            DraftAttachmentMutationOutcome {
+                kind: DraftAttachmentMutationKind::ConflictCopy,
+                draft: fixture.clone(),
+                canonical: Some(fixture.clone()),
+            },
+        ))
+        .expect("serialize attachment mutation");
+        assert_no_private_mail_coordinates(&mutation_json);
 
-        assert_eq!(json["preview"], "测试222");
-        assert!(json["body_text"].is_null());
+        let forward_json = serde_json::to_value(ForwardPreparationOutcomeDto::from(
+            ForwardPreparationOutcome::Prepared {
+                prepared: PreparedForward {
+                    draft: fixture,
+                    warnings: vec![ForwardWarning::AttachmentsOmittedByUser],
+                },
+            },
+        ))
+        .expect("serialize prepared forward");
+        assert_eq!(forward_json["kind"], "prepared");
+        assert_no_private_mail_coordinates(&forward_json);
+    }
+
+    #[test]
+    fn attachment_save_result_defensively_exposes_only_a_final_base_name() {
+        let json = serde_json::to_value(AttachmentSaveResultDto::from(AttachmentSaveResult {
+            status: AttachmentSaveStatus::Saved,
+            file_name: Some(r"C:\Users\private\invoice.pdf".to_owned()),
+            error_kind: None,
+            retryable: false,
+        }))
+        .expect("serialize attachment save result");
+
+        assert_eq!(json["status"], "saved");
+        assert_eq!(json["file_name"], "invoice.pdf");
+        assert!(!json.to_string().contains("Users"));
+        assert_no_private_mail_coordinates(&json);
     }
 
     #[test]
@@ -2315,7 +2831,18 @@ mod tests {
         }];
         root.sent_at = Some("2026-07-20T01:45:53Z".to_owned());
 
-        let dto = InboxMessageDto::full_with_ancestors(message, &[Some(parent), Some(root)]);
+        let dto = InboxMessageDto::full_with_resolved_ancestors(
+            message,
+            &[Some(parent), Some(root)],
+            &[
+                Some(MessageNavigationTargetDto {
+                    id: "opaque-parent".to_owned(),
+                }),
+                Some(MessageNavigationTargetDto {
+                    id: "opaque-root".to_owned(),
+                }),
+            ],
+        );
         let json = serde_json::to_value(dto).expect("serialize reply chain");
         let segments = json["body_segments"].as_array().expect("body segments");
 
@@ -2323,8 +2850,7 @@ mod tests {
         assert_eq!(segments[0]["content"], "ok1");
         assert_eq!(segments[1]["quote_metadata"]["subject"], "Re: test1");
         assert_eq!(segments[1]["quote_metadata"]["sender"], "tantless@163.com");
-        assert_eq!(segments[1]["navigation_target"]["mailbox"], "INBOX");
-        assert_eq!(segments[1]["navigation_target"]["uid"], 12);
+        assert_eq!(segments[1]["navigation_target"]["id"], "opaque-parent");
         assert_eq!(
             segments[1]["quote_metadata"]["recipient"],
             "tantless8@gmail.com"
@@ -2342,11 +2868,8 @@ mod tests {
             segments[2]["quote_metadata"]["sent_at"],
             "2026-07-20 01:45:53 +00:00"
         );
-        assert_eq!(
-            segments[2]["navigation_target"]["mailbox"],
-            "[Gmail]/Sent Mail"
-        );
-        assert_eq!(segments[2]["navigation_target"]["uid"], 34);
+        assert_eq!(segments[2]["navigation_target"]["id"], "opaque-root");
+        assert_no_private_mail_coordinates(&json);
         assert!(json.get("raw_rfc822").is_none());
     }
 

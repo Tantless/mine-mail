@@ -33,7 +33,8 @@ const KEYRING_SERVICE: &str = "com.minemail.desktop";
 const LEGACY_KEYRING_USERNAME: &str = "primary";
 const KEYRING_USERNAME_PREFIX: &str = "account-";
 const LOCAL_ONLY_PLACEHOLDER_SECRET: &str = "mine-mail-local-cache-only";
-const OUTLOOK_NOTICE: &str = "Outlook 需要 OAuth / Modern Auth；当前 MVP 尚未实现，暂不支持登录。";
+const OUTLOOK_NOTICE: &str =
+    "Outlook 现代登录尚未支持；已缓存邮件仍可阅读，但当前不能重新连接或新建 Outlook 账户。";
 const GOOGLE_CLIENT_ID: &str =
     "609932488435-4h4fffcvl0hcpe0u9svc8k610tstvia7.apps.googleusercontent.com";
 const GOOGLE_AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
@@ -405,14 +406,6 @@ pub(crate) fn account_presets() -> Vec<AccountPresetDto> {
             "使用系统默认浏览器登录 Google；Mine Mail 只在系统凭据库中保存 OAuth 令牌。",
             "Google OAuth",
             true,
-        ),
-        preset_dto(
-            AccountProvider::Outlook,
-            "Outlook",
-            false,
-            OUTLOOK_NOTICE,
-            "Modern Auth",
-            false,
         ),
         AccountPresetDto {
             id: AccountProvider::Custom,
@@ -1138,6 +1131,11 @@ impl AccountRuntime {
                 });
             }
         }
+        let managed_attachment_warning = remove_managed_attachment_data_if_requested(
+            backend_state,
+            account_id,
+            request.delete_local_data,
+        );
         if backend_state
             .remove(account_id, next_stored.active_account_id.clone())
             .is_err()
@@ -1155,11 +1153,15 @@ impl AccountRuntime {
         drop(stored);
 
         let (local_data_deleted, warning) = if request.delete_local_data {
+            let mut warnings = managed_attachment_warning.into_iter().collect::<Vec<_>>();
             let database_path = account_database_path(&self.app_data, &metadata);
-            match remove_sqlite_cache_files(&database_path) {
-                Ok(()) => (true, None),
-                Err(error) => (false, Some(error)),
+            if remove_sqlite_cache_files(&database_path).is_err() {
+                warnings.push("The account mail cache could not be deleted.".to_owned());
             }
+            (
+                warnings.is_empty(),
+                (!warnings.is_empty()).then(|| warnings.join(" ")),
+            )
         } else {
             (false, None)
         };
@@ -1305,6 +1307,30 @@ impl AccountRuntime {
             }
         }
     }
+}
+
+fn remove_managed_attachment_data_if_requested(
+    backend_state: &BackendState,
+    account_id: &str,
+    delete_local_data: bool,
+) -> Option<String> {
+    if !delete_local_data {
+        return None;
+    }
+    // Keep this Arc scoped to the managed-directory call. It must be dropped
+    // before BackendState removes its slots and the SQLite files are deleted
+    // on Windows.
+    let result = backend_state
+        .local_for(account_id)
+        .map_err(|_| ())
+        .and_then(|backend| {
+            backend
+                .delete_managed_attachment_data()
+                .map(|_| ())
+                .map_err(|_| ())
+        })
+        .map_err(|_| "The account managed attachments could not be deleted.".to_owned());
+    result.err()
 }
 
 fn log_oauth_refresh_failure(account_id: &str, started: Instant) {
@@ -1912,9 +1938,10 @@ mod tests {
 
     use super::{
         AccountAuthentication, AccountMetadata, AccountProvider, AccountStore, BackendState,
-        GoogleOAuthError, MAX_ACCOUNTS, StoredAccounts, account_database_path,
-        describe_google_token_error, google_client_id, google_refresh_failure, keyring_username,
-        normalize_account_remark, open_local_backend, remove_sqlite_cache_files,
+        ConfigureAccountRequest, GoogleOAuthError, MAX_ACCOUNTS, StoredAccounts,
+        account_database_path, account_presets, describe_google_token_error, google_client_id,
+        google_refresh_failure, keyring_username, normalize_account_remark, open_local_backend,
+        remove_managed_attachment_data_if_requested, remove_sqlite_cache_files,
         sqlite_sidecar_path,
     };
 
@@ -1965,6 +1992,35 @@ mod tests {
 
     #[test]
     fn built_in_presets_match_the_mvp_contract() {
+        let providers = account_presets()
+            .into_iter()
+            .map(|preset| preset.id)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            providers,
+            vec![
+                AccountProvider::NetEase163,
+                AccountProvider::Gmail,
+                AccountProvider::Custom,
+            ]
+        );
+        assert!(!providers.contains(&AccountProvider::Outlook));
+
+        let outlook = ConfigureAccountRequest {
+            provider: AccountProvider::Outlook,
+            email: "legacy@outlook.com".to_owned(),
+            secret: "unused".to_owned(),
+            imap_host: None,
+            imap_port: None,
+            smtp_host: None,
+            smtp_port: None,
+            smtp_security: None,
+        };
+        let outlook_error =
+            AccountMetadata::from_input(&outlook).expect_err("Outlook cannot be newly configured");
+        assert!(outlook_error.contains("已缓存邮件仍可阅读"));
+        assert!(outlook_error.contains("不能重新连接或新建"));
+
         let gmail = AccountMetadata::preset(AccountProvider::Gmail, "demo@gmail.com".to_owned())
             .expect("Gmail preset");
         assert_eq!(gmail.imap.host, "imap.gmail.com");
@@ -2077,6 +2133,72 @@ mod tests {
     }
 
     #[test]
+    fn managed_attachment_cleanup_is_opt_in_account_scoped_and_privacy_safe_on_failure() {
+        let directory = tempdir().expect("temporary directory");
+        let metadata = [
+            AccountMetadata::preset(AccountProvider::NetEase163, "first@163.com".to_owned())
+                .expect("first account"),
+            AccountMetadata::preset(AccountProvider::Gmail, "second@gmail.com".to_owned())
+                .expect("second account"),
+            AccountMetadata::preset(AccountProvider::Gmail, "third@gmail.com".to_owned())
+                .expect("third account"),
+        ];
+        let accounts = metadata
+            .iter()
+            .map(|metadata| {
+                let database_path = account_database_path(directory.path(), metadata);
+                let backend =
+                    open_local_backend(metadata, &database_path).expect("local cache backend");
+                (metadata.account_id.clone(), backend, None, false)
+            })
+            .collect();
+        let state = BackendState::new(accounts, Some(metadata[0].account_id.clone()));
+
+        assert!(
+            remove_managed_attachment_data_if_requested(&state, &metadata[0].account_id, false)
+                .is_none()
+        );
+        assert!(
+            state
+                .local_for(&metadata[0].account_id)
+                .unwrap()
+                .delete_managed_attachment_data()
+                .unwrap(),
+            "delete=false must leave the first account directory intact"
+        );
+
+        assert!(
+            remove_managed_attachment_data_if_requested(&state, &metadata[1].account_id, true)
+                .is_none()
+        );
+        assert!(
+            !state
+                .local_for(&metadata[1].account_id)
+                .unwrap()
+                .delete_managed_attachment_data()
+                .unwrap(),
+            "the requested account directory was deleted exactly once"
+        );
+        assert!(
+            state
+                .local_for(&metadata[2].account_id)
+                .unwrap()
+                .delete_managed_attachment_data()
+                .unwrap(),
+            "deleting the second account must not touch the third account"
+        );
+
+        let warning =
+            remove_managed_attachment_data_if_requested(&BackendState::empty(), "missing", true)
+                .expect("missing backend reports a bounded warning");
+        assert_eq!(
+            warning,
+            "The account managed attachments could not be deleted."
+        );
+        assert!(!warning.contains(directory.path().to_string_lossy().as_ref()));
+    }
+
+    #[test]
     fn local_cache_remains_writable_without_a_network_credential() {
         let directory = tempdir().expect("temporary directory");
         let metadata =
@@ -2106,6 +2228,7 @@ mod tests {
                     bcc: vec![],
                     subject: "Offline draft".to_owned(),
                     body_text: "Saved without a credential".to_owned(),
+                    format: Default::default(),
                     reply_context: None,
                 },
             )
