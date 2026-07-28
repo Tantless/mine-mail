@@ -5,7 +5,6 @@ import { ThemedSelect } from "./ThemedSelect.jsx";
 const fallbackPresets = [
   { id: "163", label: "163 邮箱", secret_label: "客户端授权密码" },
   { id: "gmail", label: "Gmail", oauth: true, secret_label: "Google OAuth" },
-  { id: "outlook", label: "Outlook", disabled: true },
   { id: "custom", label: "自定义 IMAP/SMTP", secret_label: "邮箱密码或授权密码" },
 ];
 
@@ -34,6 +33,13 @@ function normalizedPreset(preset) {
   };
 }
 
+function resolveProvider(options, requestedProvider) {
+  if (options.some((option) => option.id === requestedProvider)) {
+    return requestedProvider;
+  }
+  return options.find((option) => !option.disabled)?.id || options[0]?.id || "163";
+}
+
 export function AccountSetupForm({
   presets,
   status,
@@ -44,15 +50,18 @@ export function AccountSetupForm({
   initialProvider: requestedInitialProvider,
   showProviderPicker = true,
 }) {
-  const options = useMemo(
-    () => (presets?.length ? presets : fallbackPresets).map(normalizedPreset),
-    [presets],
+  const options = useMemo(() => {
+    const normalized = (presets?.length ? presets : fallbackPresets)
+      .map(normalizedPreset)
+      .filter((preset) => preset.id !== "outlook");
+    return normalized.length
+      ? normalized
+      : fallbackPresets.map(normalizedPreset);
+  }, [presets]);
+  const initialProvider = resolveProvider(
+    options,
+    requestedInitialProvider || status?.provider,
   );
-  const initialProvider =
-    requestedInitialProvider ||
-    status?.provider ||
-    options.find((item) => !item.disabled)?.id ||
-    "163";
   const [provider, setProvider] = useState(initialProvider);
   const [email, setEmail] = useState(status?.email || "");
   const [custom, setCustom] = useState({
@@ -72,13 +81,16 @@ export function AccountSetupForm({
 
   useEffect(() => {
     if (status?.email) setEmail(status.email);
-    if (requestedInitialProvider) setProvider(requestedInitialProvider);
-    else if (status?.provider) setProvider(status.provider);
-  }, [requestedInitialProvider, status?.email, status?.provider]);
+    setProvider((current) =>
+      resolveProvider(
+        options,
+        requestedInitialProvider || status?.provider || current,
+      ),
+    );
+  }, [options, requestedInitialProvider, status?.email, status?.provider]);
 
   const selected = options.find((item) => item.id === provider) || options[0];
-  const outlookBlocked = provider === "outlook";
-  const configurationBlocked = outlookBlocked || Boolean(selected?.disabled);
+  const configurationBlocked = Boolean(selected?.disabled);
   const displayedError = validationError ? validationError.message : error;
 
   const rejectInvalidField = (field, message, ref) => {
@@ -172,9 +184,9 @@ export function AccountSetupForm({
               type="button"
               role="radio"
               aria-checked={provider === option.id}
-              aria-disabled={option.disabled || option.id === "outlook"}
+              aria-disabled={option.disabled}
               data-selected={provider === option.id}
-              data-disabled={option.disabled || option.id === "outlook"}
+              data-disabled={option.disabled}
               onClick={() => {
                 setProvider(option.id);
                 setValidationError(null);
@@ -190,11 +202,8 @@ export function AccountSetupForm({
         <div className="account-auth-notice" role="status">
           <ShieldWarning size={19} weight="duotone" />
           <span>
-            <strong>{outlookBlocked ? "Outlook 暂不能配置" : `${selected?.label} 暂不能配置`}</strong>
-            {selected?.note ||
-              (outlookBlocked
-                ? "Mine Mail 暂不支持 Outlook 登录，请选择其他邮箱服务。"
-                : "Mine Mail 暂不支持此登录方式。")}
+            <strong>{selected?.label} 暂不能配置</strong>
+            {selected?.note || "Mine Mail 暂不支持此登录方式。"}
           </span>
         </div>
       ) : (

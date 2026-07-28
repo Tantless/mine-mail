@@ -1,9 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { mockDrafts, mockMessages } from "../data/mockMail.js";
 
 export const isTauriRuntime =
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+
+function demoAdapterBuildEnabled({ demoFlag, mode }) {
+  return demoFlag === "1" || mode === "test";
+}
 
 function resolveRuntime({ tauri, demoFlag, mode }) {
   if (tauri) return "tauri";
@@ -24,81 +27,41 @@ export const isTauri = runtimeKind === "tauri";
 export const isDemoRuntime = runtimeKind === "demo";
 export const isUnsupportedRuntime = runtimeKind === "unsupported";
 
-const wait = (milliseconds) =>
-  new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+// Keep this as a compile-time conditional. Vite/Rollup removes the import and
+// its full fixture graph from ordinary production builds.
+const demoAdapterModule =
+  import.meta.env.VITE_MINE_MAIL_DEMO === "1" || import.meta.env.MODE === "test"
+    ? import("./demoMailAdapter.js")
+    : null;
 
-let webMessages = structuredClone(mockMessages);
-let webDrafts = structuredClone(mockDrafts);
-let webOutbox = [];
-let webSettings = {
-  pollingIntervalMinutes: 5,
-  autostartEnabled: false,
-  notificationsEnabled: true,
-  notificationSoundEnabled: true,
-  notificationSound: "mail",
-  remoteImageMode: "automatic",
-};
-let webAccountStatus = {
-  configured: true,
-  accountId: "demo-primary",
-  activeAccountId: "demo-primary",
-  provider: "163",
-  email: "demo@163.com",
-  remark: null,
-  backendReady: true,
-  credentialAvailable: true,
-  credentialInvalid: false,
-  networkReady: true,
-  startupError: null,
-  accounts: [
-    {
-      accountId: "demo-primary",
-      provider: "163",
-      email: "demo@163.com",
-      remark: null,
-      authentication: "password",
-      backendReady: true,
-      credentialAvailable: true,
-      credentialInvalid: false,
-      networkReady: true,
-    },
-  ],
-  accountCount: 1,
-  maxAccounts: 3,
-  canAddAccount: true,
-  googleOauthConfigured: true,
-};
-let webProfileAvatars = [];
-let webFavoriteContacts = new Set();
-let webContactRemarks = new Map();
+let demoAdapterReady;
 
-const webAccountPresets = [
-  { id: "163", label: "163 邮箱", secret_label: "客户端授权密码" },
-  { id: "gmail", label: "Gmail", oauth: true, secret_label: "Google OAuth" },
-  {
-    id: "outlook",
-    label: "Outlook",
-    secret_label: "Modern Auth",
-    disabled: true,
-    note: "OAuth / Modern Auth 尚未支持",
-  },
-  {
-    id: "custom",
-    label: "自定义 IMAP/SMTP",
-    secret_label: "邮箱密码或授权密码",
-  },
-];
+function unsupportedRuntimeError() {
+  return new Error(
+    "Mine Mail 不支持直接在普通浏览器中运行。请启动 Tauri 桌面版，或设置 VITE_MINE_MAIL_DEMO=1 进行界面演示。",
+  );
+}
 
-function webOnly(action) {
-  return async (...args) => {
-    if (!isDemoRuntime) {
-      throw new Error(
-        "Mine Mail 不支持直接在普通浏览器中运行。请启动 Tauri 桌面版，或设置 VITE_MINE_MAIL_DEMO=1 进行界面演示。",
-      );
-    }
-    await wait(80);
-    return action(...args);
-  };
+async function prepareDemoAdapter() {
+  if (!demoAdapterModule) throw unsupportedRuntimeError();
+  demoAdapterReady ??= demoAdapterModule.then(({ createDemoMailAdapter }) => {
+    return createDemoMailAdapter({
+      normalizeSettings,
+      normalizeProfileAvatar,
+      normalizeContact,
+    });
+  });
+  return demoAdapterReady;
+}
+
+async function callDemo(method, ...args) {
+  if (!isDemoRuntime) throw unsupportedRuntimeError();
+  const adapter = await prepareDemoAdapter();
+  const action = adapter[method];
+  if (typeof action !== "function") {
+    throw new Error("当前运行时没有实现此操作。");
+  }
+  return action(...args);
 }
 
 function commandError(error) {
@@ -277,107 +240,6 @@ function normalizeContact(contact = {}) {
   };
 }
 
-function normalizeContactEmail(value = "") {
-  return value.trim().toLowerCase();
-}
-
-function webFavoriteKey(accountId, email) {
-  return `${accountId}\u0000${normalizeContactEmail(email)}`;
-}
-
-function webContactItems() {
-  const activeAccountId =
-    webAccountStatus.activeAccountId ||
-    webAccountStatus.accountId ||
-    "demo-primary";
-  const accountEmail = normalizeContactEmail(webAccountStatus.email || "");
-  const contacts = new Map();
-
-  for (const message of webMessages) {
-    const senderEmail = normalizeContactEmail(message.sender?.email || "");
-    const outgoing = Boolean(accountEmail) && senderEmail === accountEmail;
-    const participants = outgoing
-      ? [...(message.to || []), ...(message.cc || [])]
-      : message.sender
-        ? [message.sender]
-        : [];
-    const seenInMessage = new Set();
-    for (const participant of participants) {
-      const email = normalizeContactEmail(participant?.email || "");
-      if (!email || email === accountEmail || seenInMessage.has(email))
-        continue;
-      seenInMessage.add(email);
-      const sentAt = message.sent_at || message.internal_date || null;
-      const existing = contacts.get(email);
-      const isNewer =
-        !existing?.last_message_at ||
-        (sentAt && Date.parse(sentAt) > Date.parse(existing.last_message_at));
-      contacts.set(email, {
-        email,
-        original_name:
-          (isNewer ? participant?.name : existing?.display_name) ||
-          existing?.original_name ||
-          email,
-        display_name:
-          (isNewer ? participant?.name : existing?.display_name) ||
-          existing?.display_name ||
-          email,
-        remark: null,
-        is_favorite: false,
-        message_count: (existing?.message_count || 0) + 1,
-        last_message_at: isNewer ? sentAt : existing?.last_message_at || sentAt,
-        last_subject: isNewer
-          ? message.subject || null
-          : existing?.last_subject || message.subject || null,
-      });
-    }
-  }
-
-  for (const [email, existing] of contacts) {
-    const remark = webContactRemarks.get(email) || null;
-    contacts.set(email, {
-      ...existing,
-      account_id: activeAccountId,
-      original_name: existing.original_name || existing.display_name || email,
-      display_name:
-        remark || existing.original_name || existing.display_name || email,
-      remark,
-      is_favorite: webFavoriteContacts.has(
-        webFavoriteKey(activeAccountId, email),
-      ),
-    });
-  }
-
-  const byRecent = (left, right) => {
-    if (left.is_favorite !== right.is_favorite)
-      return left.is_favorite ? -1 : 1;
-    const rightTime = Date.parse(right.last_message_at || "") || 0;
-    const leftTime = Date.parse(left.last_message_at || "") || 0;
-    if (rightTime !== leftTime) return rightTime - leftTime;
-    return left.display_name.localeCompare(right.display_name, "zh-CN");
-  };
-  const favorites = [...webFavoriteContacts].map((key) => {
-    const [accountId, email] = key.split("\u0000");
-    const existing = accountId === activeAccountId ? contacts.get(email) : null;
-    const remark = webContactRemarks.get(email) || null;
-    return {
-      account_id: accountId,
-      email,
-      original_name: existing?.original_name || email,
-      display_name: remark || existing?.original_name || email,
-      remark,
-      is_favorite: true,
-      message_count: existing?.message_count || 0,
-      last_message_at: existing?.last_message_at || null,
-      last_subject: existing?.last_subject || null,
-    };
-  });
-  return {
-    contacts: [...contacts.values()].sort(byRecent),
-    favorites: favorites.sort(byRecent),
-  };
-}
-
 function profileAvatarRequest(request) {
   return {
     owner_type: request.ownerType,
@@ -386,154 +248,196 @@ function profileAvatarRequest(request) {
   };
 }
 
-function upsertMockDraft(request, draftId, expectedLocalVersion) {
-  const existing = draftId
-    ? webDrafts.find((draft) => draft.id === draftId)
-    : undefined;
-  const now = new Date().toISOString();
-  if (
-    draftId &&
-    (!existing || existing.local_version !== expectedLocalVersion)
-  ) {
-    const conflictCopy = {
-      ...structuredClone(request),
-      id: crypto.randomUUID(),
-      local_version: 1,
-      has_unsupported_content: false,
-      status: "conflict",
-      created_at: now,
-      updated_at: now,
-    };
-    webDrafts = [conflictCopy, ...webDrafts];
-    return {
-      kind: "conflict_copy",
-      draft: structuredClone(conflictCopy),
-      canonical: existing ? structuredClone(existing) : null,
-    };
-  }
-  const draft = {
-    ...structuredClone(request),
-    id: existing?.id || draftId || crypto.randomUUID(),
-    local_version: existing ? existing.local_version + 1 : 1,
-    has_unsupported_content: false,
-    status: "local",
-    created_at: existing?.created_at || now,
-    updated_at: now,
-  };
-  webDrafts = [draft, ...webDrafts.filter((item) => item.id !== draft.id)];
-  return { kind: "saved", draft: structuredClone(draft), canonical: null };
-}
-
 export const mailApi = {
-  async listInbox(limit = 50) {
-    if (isTauri) return desktopInvoke("list_inbox", { limit });
-    return webOnly(() => structuredClone(webMessages.slice(0, limit)))();
-  },
-
-  async fetchMessage(uid) {
-    if (isTauri) return desktopInvoke("fetch_message", { uid });
-    return webOnly(() =>
-      structuredClone(webMessages.find((mail) => mail.uid === uid)),
-    )();
-  },
-
-  async markMessageRead(uid) {
-    if (isTauri) return desktopInvoke("mark_message_read", { uid });
-    return webOnly(() => {
-      const message = webMessages.find((mail) => mail.uid === uid);
-      if (!message) throw new Error("找不到要标记为已读的邮件");
-      if (
-        !(message.flags || []).some((flag) => flag.toLowerCase() === "\\seen")
-      ) {
-        message.flags = [...(message.flags || []), "\\Seen"];
-      }
-      return true;
-    })();
-  },
-
-  async setMessageStarred(mailbox, uid, starred) {
+  async getMailboxCapabilities(accountId) {
     if (isTauri) {
-      return desktopInvoke("set_message_starred", { mailbox, uid, starred });
+      return desktopInvoke("get_mailbox_capabilities", { accountId });
     }
-    // Browser mode is only a visual test/demo surface. Persistent flag state
-    // remains owned by the Tauri Rust/SQLite backend.
-    return webOnly(() => true)();
+    return callDemo("getMailboxCapabilities", accountId);
   },
 
-  async listSent(limit = 50) {
-    if (isTauri) return desktopInvoke("list_sent", { limit });
-    return webOnly(() => [])();
-  },
-
-  async fetchSentMessage(uid) {
-    if (isTauri) return desktopInvoke("fetch_sent_message", { uid });
-    return webOnly(() => undefined)();
-  },
-
-  async fetchContactMessage(accountId, mailbox, uid) {
+  async createMailboxRole(accountId, role) {
     if (isTauri) {
-      return desktopInvoke("fetch_contact_message", {
+      return desktopInvoke("create_mailbox_role", { accountId, role });
+    }
+    return callDemo("createMailboxRole", accountId, role);
+  },
+
+  async listMailboxPage(
+    accountId,
+    role,
+    cursor = null,
+    pageSize = 50,
+    query = null,
+  ) {
+    if (isTauri) {
+      return desktopInvoke("list_mailbox_page", {
         accountId,
-        mailbox,
-        uid,
+        role,
+        cursor,
+        pageSize,
+        query,
       });
     }
-    return webOnly(() => {
-      const message = webMessages.find(
-        (mail) => mail.uid === uid && (mail.mailbox || "INBOX") === mailbox,
-      );
-      if (!message) throw new Error("找不到这封联系人往来邮件");
-      return structuredClone(message);
-    })();
+    return callDemo(
+      "listMailboxPage",
+      accountId,
+      role,
+      cursor,
+      pageSize,
+      query,
+    );
+  },
+
+  async loadOlderMailboxPage(
+    accountId,
+    role,
+    cursor,
+    pageSize = 50,
+    query = null,
+  ) {
+    if (isTauri) {
+      return desktopInvoke("load_older_mailbox_page", {
+        accountId,
+        role,
+        cursor,
+        pageSize,
+        query,
+      });
+    }
+    return callDemo(
+      "loadOlderMailboxPage",
+      accountId,
+      role,
+      cursor,
+      pageSize,
+      query,
+    );
+  },
+
+  async syncMailbox(accountId, role) {
+    if (isTauri) {
+      return desktopInvoke("sync_mailbox", { accountId, role });
+    }
+    return callDemo("syncMailbox", accountId, role);
+  },
+
+  async fetchMailboxMessage(messageId) {
+    if (isTauri) {
+      return desktopInvoke("fetch_mailbox_message", { messageId });
+    }
+    return callDemo("fetchMailboxMessage", messageId);
+  },
+
+  async saveMessageAttachment(messageId, attachmentId) {
+    if (isTauri) {
+      return desktopInvoke("save_message_attachment", {
+        messageId,
+        attachmentId,
+      });
+    }
+    return callDemo("saveMessageAttachment", messageId, attachmentId);
+  },
+
+  async setMessageSeen(messageId, seen) {
+    if (isTauri) {
+      return desktopInvoke("set_message_seen", { messageId, seen });
+    }
+    return callDemo("setMessageSeen", messageId, seen);
+  },
+
+  async setMessageStarredById(messageId, starred) {
+    if (isTauri) {
+      return desktopInvoke("set_message_starred_by_id", {
+        messageId,
+        starred,
+      });
+    }
+    return callDemo("setMessageStarredById", messageId, starred);
+  },
+
+  async archiveMessage(messageId) {
+    if (isTauri) {
+      return desktopInvoke("archive_message", { messageId });
+    }
+    return callDemo("archiveMessage", messageId);
+  },
+
+  async moveMessageToTrash(messageId) {
+    if (isTauri) {
+      return desktopInvoke("move_message_to_trash", { messageId });
+    }
+    return callDemo("moveMessageToTrash", messageId);
+  },
+
+  async preparePermanentDelete(messageId) {
+    if (isTauri) {
+      return desktopInvoke("prepare_permanent_delete", { messageId });
+    }
+    return callDemo("preparePermanentDelete", messageId);
+  },
+
+  async confirmPermanentDelete(planId) {
+    if (isTauri) {
+      return desktopInvoke("confirm_permanent_delete", { planId });
+    }
+    return callDemo("confirmPermanentDelete", planId);
   },
 
   async prepareReply(messageId) {
     if (isTauri) return desktopInvoke("prepare_reply", { messageId });
-    return webOnly(() => {
-      const message = webMessages.find((mail) => mail.id === messageId);
-      if (!message) throw new Error("找不到要回复的邮件");
-      const subject = /^re:/i.test(message.subject || "")
-        ? message.subject
-        : `Re: ${message.subject || ""}`;
-      return {
-        to: message.sender?.email ? [message.sender.email] : [],
-        cc: [],
-        bcc: [],
-        subject,
-        body_text: "",
-        reply_context: {
-          parent_message_id: message.message_id || null,
-          references: [...(message.references || [])],
-          subject: message.subject || "",
-          sender: message.sender || null,
-          recipients: [...(message.to || [])],
-          sent_at: message.sent_at || message.internal_date || null,
-          quoted_text: message.body_text || message.preview || "",
-          quoted_html: message.body_html || null,
-          quoted_render_mode: message.body_html
-            ? message.body_render_mode || "isolated_html"
-            : null,
-          has_remote_images: message.has_remote_images === true,
-        },
-      };
-    })();
+    return callDemo("prepareReply", messageId);
+  },
+
+  async prepareForward(messageId, includeAttachments = true) {
+    if (isTauri) {
+      return desktopInvoke("prepare_forward", {
+        messageId,
+        includeAttachments,
+      });
+    }
+    return callDemo("prepareForward", messageId, includeAttachments);
   },
 
   async openExternalUrl(url) {
     if (isTauri) return desktopInvoke("open_external_url", { url });
-    return webOnly(() => {
-      const parsed = new URL(url);
-      if (!["http:", "https:", "mailto:"].includes(parsed.protocol)) {
-        throw new Error("不支持打开这种链接");
-      }
-      window.open(parsed.href, "_blank", "noopener,noreferrer");
-      return true;
-    })();
+    return callDemo("openExternalUrl", url);
   },
 
   async listDrafts() {
     if (isTauri) return desktopInvoke("list_drafts");
-    return webOnly(() => structuredClone(webDrafts))();
+    return callDemo("listDrafts");
+  },
+
+  async createComposeDraft() {
+    if (isTauri) return desktopInvoke("create_compose_draft");
+    return callDemo("createComposeDraft");
+  },
+
+  async addDraftAttachments(draftId, expectedLocalVersion) {
+    if (isTauri) {
+      return desktopInvoke("add_draft_attachments", {
+        draftId,
+        expectedLocalVersion,
+      });
+    }
+    return callDemo("addDraftAttachments", draftId, expectedLocalVersion);
+  },
+
+  async removeDraftAttachment(draftId, attachmentId, expectedLocalVersion) {
+    if (isTauri) {
+      return desktopInvoke("remove_draft_attachment", {
+        draftId,
+        attachmentId,
+        expectedLocalVersion,
+      });
+    }
+    return callDemo(
+      "removeDraftAttachment",
+      draftId,
+      attachmentId,
+      expectedLocalVersion,
+    );
   },
 
   async saveDraft(request, draftId = null, expectedLocalVersion = null) {
@@ -544,57 +448,29 @@ export const mailApi = {
         expectedLocalVersion,
       });
     }
-    return webOnly(() =>
-      upsertMockDraft(request, draftId, expectedLocalVersion),
-    )();
+    return callDemo("saveDraft", request, draftId, expectedLocalVersion);
   },
 
   async deleteDraft(draftId, expectedLocalVersion) {
     if (isTauri) {
       return desktopInvoke("delete_draft", { draftId, expectedLocalVersion });
     }
-    return webOnly(() => {
-      const existing = webDrafts.find((draft) => draft.id === draftId);
-      if (!existing || existing.local_version !== expectedLocalVersion) {
-        return { kind: "stale" };
-      }
-      webDrafts = webDrafts.filter((draft) => draft.id !== draftId);
-      return { kind: "deleted" };
-    })();
+    return callDemo("deleteDraft", draftId, expectedLocalVersion);
   },
 
   async syncDrafts() {
     if (isTauri) return desktopInvoke("sync_drafts");
-    return webOnly(() => ({ synced: webDrafts.length }))();
+    return callDemo("syncDrafts");
   },
 
   async syncSent() {
     if (isTauri) return desktopInvoke("sync_sent");
-    return webOnly(() => ({
-      mailbox: "Sent",
-      remote_total: 0,
-      fetched: 0,
-      updated_flags: 0,
-      removed: 0,
-      cached_total: 0,
-      uid_validity_reset: false,
-    }))();
+    return callDemo("syncSent");
   },
 
   async syncAll() {
     if (isTauri) return desktopInvoke("sync_all");
-    return webOnly(() => ({
-      inbox: {
-        mailbox: "INBOX",
-        remote_total: webMessages.length,
-        fetched: 0,
-        updated_flags: 0,
-        removed: 0,
-        cached_total: webMessages.length,
-        uid_validity_reset: false,
-      },
-      drafts_synced: webDrafts.length,
-    }))();
+    return callDemo("syncAll");
   },
 
   async completeExit(requestId) {
@@ -605,7 +481,7 @@ export const mailApi = {
       }
       return true;
     }
-    return webOnly(() => true)();
+    return callDemo("completeExit", requestId);
   },
 
   async cancelExit(requestId) {
@@ -616,67 +492,38 @@ export const mailApi = {
       }
       return true;
     }
-    return webOnly(() => true)();
+    return callDemo("cancelExit", requestId);
   },
 
   async listOutbox() {
     if (isTauri) return desktopInvoke("list_outbox");
-    return webOnly(() => structuredClone(webOutbox))();
+    return callDemo("listOutbox");
   },
 
   async fetchOutboxMessage(outboxId) {
     if (isTauri) return desktopInvoke("fetch_outbox_message", { outboxId });
-    return webOnly(() => {
-      const item = webOutbox.find((candidate) => candidate.id === outboxId);
-      if (!item) throw new Error("发件队列中的邮件不存在。");
-      const draft = webDrafts.find(
-        (candidate) => candidate.id === item.draft_id,
-      );
-      return structuredClone({
-        id: item.id,
-        subject: item.subject || draft?.subject || "",
-        body_text: item.body_text ?? draft?.body_text ?? "",
-        body_fetched: true,
-      });
-    })();
-  },
-
-  async getAccountMailboxSnapshot(accountId, limit = 50) {
-    if (isTauri) {
-      return desktopInvoke("get_account_mailbox_snapshot", {
-        accountId,
-        limit,
-      });
-    }
-    return webOnly(() => ({
-      account_id: accountId,
-      inbox: structuredClone(webMessages.slice(0, limit)),
-      sent: [],
-      drafts: structuredClone(webDrafts),
-      outbox: structuredClone(webOutbox),
-    }))();
+    return callDemo("fetchOutboxMessage", outboxId);
   },
 
   async retryOutbox(outboxId) {
     if (isTauri) return desktopInvoke("retry_outbox", { outboxId });
-    return webOnly(() => {
-      const item = webOutbox.find((candidate) => candidate.id === outboxId);
-      if (!item || item.status !== "retryable") {
-        throw new Error("只有等待重试的邮件可以再次发送。");
-      }
-      const sent = {
-        ...item,
-        status: "sent",
-        attempts: item.attempts + 1,
-        last_error: null,
-        sent_at: new Date().toISOString(),
-      };
-      webOutbox = [
-        sent,
-        ...webOutbox.filter((candidate) => candidate.id !== outboxId),
-      ];
-      return structuredClone(sent);
-    })();
+    return callDemo("retryOutbox", outboxId);
+  },
+
+  async resolveDeliveryUnknown({
+    outboxId,
+    expectedAttempts,
+    decision,
+    acknowledgeDuplicateRisk,
+  }) {
+    const request = {
+      outboxId,
+      expectedAttempts,
+      decision,
+      acknowledgeDuplicateRisk,
+    };
+    if (isTauri) return desktopInvoke("resolve_delivery_unknown", request);
+    return callDemo("resolveDeliveryUnknown", request);
   },
 
   async sendDraft(draftId, expectedLocalVersion, confirmedRecipients) {
@@ -687,40 +534,24 @@ export const mailApi = {
         confirmedRecipients,
       });
     }
-    return webOnly(() => {
-      const draft = webDrafts.find((item) => item.id === draftId);
-      if (!draft) throw new Error("草稿不存在，无法发送。");
-      if (draft.local_version !== expectedLocalVersion) {
-        throw new Error("草稿已更新，请重新确认收件人后再发送。");
-      }
-      const result = {
-        id: crypto.randomUUID(),
-        draft_id: draftId,
-        recipients: [...confirmedRecipients],
-        status: "sent",
-        attempts: 1,
-        last_error: null,
-        created_at: new Date().toISOString(),
-        sent_at: new Date().toISOString(),
-      };
-      webOutbox = [result, ...webOutbox];
-      webDrafts = webDrafts.map((item) =>
-        item.id === draftId ? { ...item, status: "sent" } : item,
-      );
-      return structuredClone(result);
-    })();
+    return callDemo(
+      "sendDraft",
+      draftId,
+      expectedLocalVersion,
+      confirmedRecipients,
+    );
   },
 
   async checkConnections() {
     if (isTauri) return desktopInvoke("check_connections");
-    return webOnly(() => ({ imap_ok: true, smtp_ok: true }))();
+    return callDemo("checkConnections");
   },
 
   async getDesktopSettings() {
     if (isTauri) {
       return normalizeSettings(await desktopInvoke("get_desktop_settings"));
     }
-    return webOnly(() => structuredClone(webSettings))();
+    return callDemo("getDesktopSettings");
   },
 
   async updateDesktopSettings(settings) {
@@ -731,45 +562,40 @@ export const mailApi = {
       });
       return normalizeSettings(updated || normalized);
     }
-    return webOnly(() => {
-      webSettings = normalized;
-      return structuredClone(webSettings);
-    })();
+    return callDemo("updateDesktopSettings", normalized);
   },
 
   async getNewMailNotification() {
     if (isTauri) return desktopInvoke("get_new_mail_notification");
-    return webOnly(() => null)();
+    return callDemo("getNewMailNotification");
   },
 
   async dismissNewMailNotification(notificationId) {
     if (isTauri) {
       return desktopInvoke("dismiss_new_mail_notification", { notificationId });
     }
-    return webOnly(() => true)();
+    return callDemo("dismissNewMailNotification", notificationId);
   },
 
-  async openNewMailNotification(notificationId, uid, accountId) {
+  async openNewMailNotification(notificationId) {
     if (isTauri) {
       return desktopInvoke("open_new_mail_notification", {
         notificationId,
-        uid,
-        accountId,
       });
     }
-    return webOnly(() => true)();
+    return callDemo("openNewMailNotification", notificationId);
   },
 
   async listAccountPresets() {
     if (isTauri) return desktopInvoke("list_account_presets");
-    return webOnly(() => structuredClone(webAccountPresets))();
+    return callDemo("listAccountPresets");
   },
 
   async getAccountStatus() {
     if (isTauri) {
       return normalizeAccountStatus(await desktopInvoke("get_account_status"));
     }
-    return webOnly(() => structuredClone(webAccountStatus))();
+    return callDemo("getAccountStatus");
   },
 
   async configureAccount(request) {
@@ -778,19 +604,7 @@ export const mailApi = {
         await desktopInvoke("configure_account", { request }),
       );
     }
-    return webOnly(() => {
-      webAccountStatus = {
-        configured: true,
-        provider: request.provider,
-        email: request.email,
-        backendReady: true,
-        credentialAvailable: true,
-        credentialInvalid: false,
-        networkReady: true,
-        startupError: null,
-      };
-      return structuredClone(webAccountStatus);
-    })();
+    return callDemo("configureAccount", request);
   },
 
   async connectGoogleAccount() {
@@ -799,7 +613,7 @@ export const mailApi = {
         await desktopInvoke("connect_google_account"),
       );
     }
-    return webOnly(() => structuredClone(webAccountStatus))();
+    return callDemo("connectGoogleAccount");
   },
 
   async switchAccount(accountId) {
@@ -808,19 +622,7 @@ export const mailApi = {
         await desktopInvoke("switch_account", { accountId }),
       );
     }
-    return webOnly(() => {
-      const selected = webAccountStatus.accounts.find(
-        (account) => account.accountId === accountId,
-      );
-      if (selected) {
-        webAccountStatus = {
-          ...webAccountStatus,
-          ...selected,
-          activeAccountId: selected.accountId,
-        };
-      }
-      return structuredClone(webAccountStatus);
-    })();
+    return callDemo("switchAccount", accountId);
   },
 
   async setAccountRemark(accountId, remark) {
@@ -832,28 +634,7 @@ export const mailApi = {
         }),
       );
     }
-    return webOnly(() => {
-      const normalizedRemark = (remark || "").trim();
-      if ([...normalizedRemark].length > 40)
-        throw new Error("邮箱备注最多 40 个字符");
-      if (/\p{Cc}/u.test(normalizedRemark))
-        throw new Error("邮箱备注不能包含控制字符");
-      const accounts = webAccountStatus.accounts.map((account) =>
-        account.accountId === accountId
-          ? { ...account, remark: normalizedRemark || null }
-          : account,
-      );
-      const active = accounts.find(
-        (account) => account.accountId === webAccountStatus.activeAccountId,
-      );
-      webAccountStatus = {
-        ...webAccountStatus,
-        ...(active || {}),
-        accounts,
-        remark: active?.remark || null,
-      };
-      return structuredClone(webAccountStatus);
-    })();
+    return callDemo("setAccountRemark", accountId, remark);
   },
 
   async removeAccount(accountId, options = {}) {
@@ -877,26 +658,7 @@ export const mailApi = {
         warning: result.warning ?? null,
       };
     }
-    return webOnly(() => {
-      const accounts = webAccountStatus.accounts.filter(
-        (account) => account.accountId !== accountId,
-      );
-      const selected = accounts[0] ?? {};
-      webAccountStatus = {
-        ...webAccountStatus,
-        ...selected,
-        configured: accounts.length > 0,
-        accounts,
-        accountCount: accounts.length,
-        activeAccountId: selected.accountId ?? null,
-      };
-      return {
-        status: structuredClone(webAccountStatus),
-        googleAuthorizationRevoked: request.revokeGoogleAuthorization,
-        localDataDeleted: request.deleteLocalData,
-        warning: null,
-      };
-    })();
+    return callDemo("removeAccount", accountId, options);
   },
 
   async listProfileAvatars() {
@@ -904,7 +666,7 @@ export const mailApi = {
       const avatars = await desktopInvoke("list_profile_avatars");
       return avatars.map(normalizeProfileAvatar);
     }
-    return webOnly(() => structuredClone(webProfileAvatars))();
+    return callDemo("listProfileAvatars");
   },
 
   async saveProfileAvatar(request) {
@@ -915,19 +677,7 @@ export const mailApi = {
         }),
       );
     }
-    return webOnly(() => {
-      const normalized = normalizeProfileAvatar({
-        ...request,
-        imageDataUrl: request.imageDataUrl,
-      });
-      webProfileAvatars = webProfileAvatars.filter(
-        (avatar) =>
-          avatar.ownerType !== normalized.ownerType ||
-          avatar.ownerKey !== normalized.ownerKey,
-      );
-      webProfileAvatars.push(normalized);
-      return structuredClone(normalized);
-    })();
+    return callDemo("saveProfileAvatar", request);
   },
 
   async deleteProfileAvatar(request) {
@@ -937,14 +687,7 @@ export const mailApi = {
       });
       return;
     }
-    return webOnly(() => {
-      const ownerKey = request.ownerKey.trim().toLowerCase();
-      webProfileAvatars = webProfileAvatars.filter(
-        (avatar) =>
-          avatar.ownerType !== request.ownerType ||
-          avatar.ownerKey !== ownerKey,
-      );
-    })();
+    return callDemo("deleteProfileAvatar", request);
   },
 
   async listContacts(accountId) {
@@ -955,13 +698,7 @@ export const mailApi = {
         favorites: (directory.favorites || []).map(normalizeContact),
       };
     }
-    return webOnly(() => {
-      const directory = webContactItems();
-      return {
-        contacts: directory.contacts.map(normalizeContact),
-        favorites: directory.favorites.map(normalizeContact),
-      };
-    })();
+    return callDemo("listContacts", accountId);
   },
 
   async listContactMessages(accountId, email, limit = 250) {
@@ -972,41 +709,7 @@ export const mailApi = {
         limit,
       });
     }
-    return webOnly(() => {
-      const target = normalizeContactEmail(email);
-      const accountEmail = normalizeContactEmail(webAccountStatus.email || "");
-      return structuredClone(
-        webMessages
-          .filter((message) => {
-            const sender = normalizeContactEmail(message.sender?.email || "");
-            if (sender === target) return true;
-            if (sender !== accountEmail) return false;
-            return [...(message.to || []), ...(message.cc || [])].some(
-              (recipient) =>
-                normalizeContactEmail(recipient.email || "") === target,
-            );
-          })
-          .slice(0, limit)
-          .map((message) => {
-            const direction =
-              normalizeContactEmail(message.sender?.email || "") ===
-              accountEmail
-                ? "outgoing"
-                : "incoming";
-            const mailbox = (message.mailbox || "INBOX").trim();
-            return {
-              ...message,
-              direction,
-              mailbox_role:
-                mailbox.toLowerCase() === "inbox"
-                  ? "inbox"
-                  : direction === "outgoing"
-                    ? "sent"
-                    : null,
-            };
-          }),
-      );
-    })();
+    return callDemo("listContactMessages", accountId, email, limit);
   },
 
   async setContactFavorite(accountId, email, favorite) {
@@ -1017,37 +720,18 @@ export const mailApi = {
         favorite,
       });
     }
-    return webOnly(() => {
-      const normalizedEmail = normalizeContactEmail(email || "");
-      if (!normalizedEmail) throw new Error("联系人邮箱不能为空");
-      const key = webFavoriteKey(accountId, normalizedEmail);
-      if (favorite) webFavoriteContacts.add(key);
-      else webFavoriteContacts.delete(key);
-      return true;
-    })();
+    return callDemo("setContactFavorite", accountId, email, favorite);
   },
 
   async setContactRemark(email, remark) {
     if (isTauri) {
       return desktopInvoke("set_contact_remark", { email, remark });
     }
-    return webOnly(() => {
-      const normalizedEmail = normalizeContactEmail(email || "");
-      if (!normalizedEmail) throw new Error("联系人邮箱不能为空");
-      const normalizedRemark = (remark || "").trim();
-      if ([...normalizedRemark].length > 80)
-        throw new Error("联系人备注最多 80 个字符");
-      if (/\p{Cc}/u.test(normalizedRemark))
-        throw new Error("联系人备注不能包含控制字符");
-      if (normalizedRemark)
-        webContactRemarks.set(normalizedEmail, normalizedRemark);
-      else webContactRemarks.delete(normalizedEmail);
-      return true;
-    })();
+    return callDemo("setContactRemark", email, remark);
   },
 
   async onMailEvent(eventName, handler) {
-    if (!isTauri) return webOnly(() => () => {})();
+    if (!isTauri) return callDemo("onMailEvent", eventName, handler);
     try {
       return await listen(eventName, handler);
     } catch (error) {
@@ -1057,6 +741,7 @@ export const mailApi = {
 };
 
 export const __testing = {
+  demoAdapterBuildEnabled,
   resolveRuntime,
   normalizeSettings,
   normalizeAccountStatus,

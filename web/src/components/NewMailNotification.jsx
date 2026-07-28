@@ -6,6 +6,32 @@ import { ProfileAvatar } from "./ProfileAvatar.jsx";
 const visibleDurationMs = 8000;
 const validThemes = new Set(["daylight", "night", "dusk", "forest"]);
 
+function notificationSequence(value) {
+  if (typeof value === "bigint") return value >= 0n ? value : null;
+  if (typeof value === "string" && /^\d+$/.test(value.trim())) {
+    return BigInt(value.trim());
+  }
+  if (
+    typeof value === "number" &&
+    Number.isFinite(value) &&
+    Number.isInteger(value) &&
+    value >= 0
+  ) {
+    return BigInt(value);
+  }
+  return null;
+}
+
+function sameNotification(left, right) {
+  const leftSequence = notificationSequence(left?.notificationId);
+  const rightSequence = notificationSequence(right?.notificationId);
+  return (
+    leftSequence !== null &&
+    rightSequence !== null &&
+    leftSequence === rightSequence
+  );
+}
+
 function applySavedTheme() {
   const saved = window.localStorage.getItem("mine-mail-theme");
   document.documentElement.dataset.theme = validThemes.has(saved)
@@ -62,8 +88,10 @@ function playWebSound(preset) {
 
 export function NewMailNotification() {
   const [notification, setNotification] = useState(null);
+  const notificationRef = useRef(null);
+  const dismissActionRef = useRef(null);
   const dismissTimerRef = useRef(null);
-  const lastPresentedIdRef = useRef(0);
+  const lastPresentedIdRef = useRef(null);
 
   const clearDismissTimer = useCallback(() => {
     if (dismissTimerRef.current !== null) {
@@ -72,22 +100,67 @@ export function NewMailNotification() {
     }
   }, []);
 
+  const hideNotification = useCallback((item) => {
+    setNotification((current) => {
+      if (!sameNotification(current, item)) return current;
+      notificationRef.current = null;
+      return null;
+    });
+  }, []);
+
+  const restoreNewestNotification = useCallback((...items) => {
+    const candidates = [notificationRef.current, ...items].filter(Boolean);
+    if (!candidates.length) return;
+    const newest = candidates.reduce((current, candidate) => {
+      const currentSequence = notificationSequence(current.notificationId);
+      const candidateSequence = notificationSequence(candidate.notificationId);
+      return candidateSequence !== null &&
+        (currentSequence === null || candidateSequence > currentSequence)
+        ? candidate
+        : current;
+    });
+    const newestSequence = notificationSequence(newest.notificationId);
+    if (
+      newestSequence !== null &&
+      (lastPresentedIdRef.current === null ||
+        newestSequence > lastPresentedIdRef.current)
+    ) {
+      lastPresentedIdRef.current = newestSequence;
+    }
+    notificationRef.current = newest;
+    setNotification(newest);
+    clearDismissTimer();
+    dismissTimerRef.current = window.setTimeout(
+      () => void dismissActionRef.current?.(newest),
+      visibleDurationMs,
+    );
+  }, [clearDismissTimer]);
+
   const dismiss = useCallback(
     async (item) => {
       if (!item) return;
       clearDismissTimer();
-      setNotification((current) =>
-        current?.notificationId === item.notificationId ? null : current,
-      );
+      hideNotification(item);
       try {
-        await mailApi.dismissNewMailNotification(item.notificationId);
+        const dismissed = await mailApi.dismissNewMailNotification(
+          item.notificationId,
+        );
+        if (dismissed !== true) {
+          const pending = await mailApi.getNewMailNotification().catch(() => null);
+          if (pending) restoreNewestNotification(pending);
+        }
       } catch {
-        // The surface is transient. A later notification or app exit will
-        // reconcile it even if the native window is already disappearing.
+        try {
+          const pending = await mailApi.getNewMailNotification();
+          if (pending) restoreNewestNotification(pending);
+        } catch {
+          restoreNewestNotification(item);
+        }
       }
     },
-    [clearDismissTimer],
+    [clearDismissTimer, hideNotification, restoreNewestNotification],
   );
+  dismissActionRef.current = dismiss;
 
   const scheduleDismiss = useCallback(
     (item) => {
@@ -102,8 +175,17 @@ export function NewMailNotification() {
 
   const present = useCallback(
     (item) => {
-      if (!item || item.notificationId <= lastPresentedIdRef.current) return;
-      lastPresentedIdRef.current = item.notificationId;
+      const sequence = notificationSequence(item?.notificationId);
+      if (
+        !item ||
+        sequence === null ||
+        (lastPresentedIdRef.current !== null &&
+          sequence <= lastPresentedIdRef.current)
+      ) {
+        return;
+      }
+      lastPresentedIdRef.current = sequence;
+      notificationRef.current = item;
       setNotification(item);
       playWebSound(item.webSound);
       scheduleDismiss(item);
@@ -145,20 +227,20 @@ export function NewMailNotification() {
     if (!notification) return;
     clearDismissTimer();
     const current = notification;
-    setNotification(null);
+    hideNotification(current);
     try {
-      if (current.accountId) {
-        await mailApi.openNewMailNotification(
-          current.notificationId,
-          current.uid,
-          current.accountId,
-        );
-      } else {
-        await mailApi.openNewMailNotification(current.notificationId, current.uid);
+      const opened = await mailApi.openNewMailNotification(current.notificationId);
+      if (opened !== true) {
+        const pending = await mailApi.getNewMailNotification().catch(() => null);
+        if (pending) restoreNewestNotification(pending);
       }
     } catch {
-      setNotification(current);
-      scheduleDismiss(current);
+      try {
+        const pending = await mailApi.getNewMailNotification();
+        if (pending) restoreNewestNotification(pending);
+      } catch {
+        restoreNewestNotification(current);
+      }
     }
   };
 

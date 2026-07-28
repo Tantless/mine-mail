@@ -4,6 +4,7 @@ const ipc = vi.hoisted(() => ({
   invoke: vi.fn(),
   listen: vi.fn(),
 }));
+const OPAQUE_MESSAGE_ID = "9f1a7b32-4b55-4d6d-8db7-0e7bf1a32c41";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: ipc.invoke }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: ipc.listen }));
@@ -55,6 +56,53 @@ describe("mailApi desktop IPC contract", () => {
     });
   });
 
+  it("maps one reviewed delivery-unknown generation and its explicit risk decision", async () => {
+    const confirmed = {
+      id: "outbox-unknown",
+      status: "sent",
+      attempts: 2,
+      sent_at: null,
+    };
+    ipc.invoke.mockResolvedValue(confirmed);
+    const { mailApi } = await import("./mailApi.js");
+
+    await expect(
+      mailApi.resolveDeliveryUnknown({
+        outboxId: "outbox-unknown",
+        expectedAttempts: 2,
+        decision: "confirm_delivered",
+        acknowledgeDuplicateRisk: false,
+      }),
+    ).resolves.toBe(confirmed);
+    expect(ipc.invoke).toHaveBeenNthCalledWith(
+      1,
+      "resolve_delivery_unknown",
+      {
+        outboxId: "outbox-unknown",
+        expectedAttempts: 2,
+        decision: "confirm_delivered",
+        acknowledgeDuplicateRisk: false,
+      },
+    );
+
+    await mailApi.resolveDeliveryUnknown({
+      outboxId: "outbox-unknown",
+      expectedAttempts: 2,
+      decision: "retry_once",
+      acknowledgeDuplicateRisk: true,
+    });
+    expect(ipc.invoke).toHaveBeenNthCalledWith(
+      2,
+      "resolve_delivery_unknown",
+      {
+        outboxId: "outbox-unknown",
+        expectedAttempts: 2,
+        decision: "retry_once",
+        acknowledgeDuplicateRisk: true,
+      },
+    );
+  });
+
   it("prepares a structured reply by local message id", async () => {
     const reply = {
       to: ["sender@example.com"],
@@ -67,50 +115,288 @@ describe("mailApi desktop IPC contract", () => {
     ipc.invoke.mockResolvedValueOnce(reply);
     const { mailApi } = await import("./mailApi.js");
 
-    await expect(mailApi.prepareReply(42)).resolves.toEqual(reply);
-    expect(ipc.invoke).toHaveBeenCalledWith("prepare_reply", { messageId: 42 });
-  });
-
-  it("marks an Inbox UID read through a narrow desktop command", async () => {
-    ipc.invoke.mockResolvedValueOnce(true);
-    const { mailApi } = await import("./mailApi.js");
-
-    await expect(mailApi.markMessageRead(42)).resolves.toBe(true);
-    expect(ipc.invoke).toHaveBeenCalledWith("mark_message_read", { uid: 42 });
-  });
-
-  it("sets a message star through its exact remote mailbox and UID", async () => {
-    ipc.invoke.mockResolvedValueOnce(true);
-    const { mailApi } = await import("./mailApi.js");
-
-    await expect(mailApi.setMessageStarred("INBOX", 42, true)).resolves.toBe(
-      true,
-    );
-    expect(ipc.invoke).toHaveBeenCalledWith("set_message_starred", {
-      mailbox: "INBOX",
-      uid: 42,
-      starred: true,
+    await expect(mailApi.prepareReply(OPAQUE_MESSAGE_ID)).resolves.toEqual(reply);
+    expect(ipc.invoke).toHaveBeenCalledWith("prepare_reply", {
+      messageId: OPAQUE_MESSAGE_ID,
     });
   });
 
-  it("hydrates contact history by its exact account, mailbox, and UID", async () => {
+  it("maps attachment drafts and forwarding through opaque path-free commands", async () => {
+    ipc.invoke
+      .mockResolvedValueOnce({
+        status: "saved",
+        file_name: "invoice.pdf",
+        retryable: false,
+      })
+      .mockResolvedValueOnce({
+        id: "draft-1",
+        local_version: 1,
+        attachments: [],
+      })
+      .mockResolvedValueOnce({
+        kind: "canceled",
+        draft: { id: "draft-1", local_version: 1, attachments: [] },
+      })
+      .mockResolvedValueOnce({
+        kind: "saved",
+        draft: { id: "draft-1", local_version: 2, attachments: [] },
+      })
+      .mockResolvedValueOnce({
+        kind: "prepared",
+        prepared: {
+          draft: { id: "draft-2", local_version: 1, attachments: [] },
+          warnings: ["attachments_omitted_by_user"],
+        },
+      });
+    const { mailApi } = await import("./mailApi.js");
+
+    await expect(
+      mailApi.saveMessageAttachment(OPAQUE_MESSAGE_ID, "opaque-attachment"),
+    ).resolves.toEqual({
+      status: "saved",
+      file_name: "invoice.pdf",
+      retryable: false,
+    });
+    await mailApi.createComposeDraft();
+    await mailApi.addDraftAttachments("draft-1", 1);
+    await mailApi.removeDraftAttachment("draft-1", "opaque-attachment", 1);
+    await mailApi.prepareForward(OPAQUE_MESSAGE_ID, false);
+
+    expect(ipc.invoke.mock.calls).toEqual([
+      [
+        "save_message_attachment",
+        {
+          messageId: OPAQUE_MESSAGE_ID,
+          attachmentId: "opaque-attachment",
+        },
+      ],
+      ["create_compose_draft", undefined],
+      [
+        "add_draft_attachments",
+        { draftId: "draft-1", expectedLocalVersion: 1 },
+      ],
+      [
+        "remove_draft_attachment",
+        {
+          draftId: "draft-1",
+          attachmentId: "opaque-attachment",
+          expectedLocalVersion: 1,
+        },
+      ],
+      [
+        "prepare_forward",
+        { messageId: OPAQUE_MESSAGE_ID, includeAttachments: false },
+      ],
+    ]);
+    expect(JSON.stringify(ipc.invoke.mock.calls)).not.toContain("path");
+    expect(JSON.stringify(ipc.invoke.mock.calls)).not.toContain("bytes");
+    expect(JSON.stringify(ipc.invoke.mock.calls)).not.toContain("mailbox");
+    expect(JSON.stringify(ipc.invoke.mock.calls)).not.toContain("\"uid\"");
+  });
+
+  it("maps semantic mailbox pages and opaque-id actions one to one", async () => {
+    const capabilities = [
+      { role: "archive", status: "available", retryable: false },
+    ];
+    const page = {
+      items: [{ id: OPAQUE_MESSAGE_ID, displayed_role: "archive" }],
+      has_more_local: false,
+      remote_history_state: "complete",
+      end_reached: true,
+    };
+    ipc.invoke
+      .mockResolvedValueOnce(capabilities)
+      .mockResolvedValueOnce(capabilities[0])
+      .mockResolvedValueOnce(page)
+      .mockResolvedValueOnce(page)
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce({
+        id: OPAQUE_MESSAGE_ID,
+        body_text: "Full body",
+      })
+      .mockResolvedValueOnce({
+        operation_id: "seen-1",
+        status: "pending",
+      })
+      .mockResolvedValueOnce({
+        operation_id: "flagged-1",
+        status: "pending",
+      })
+      .mockResolvedValueOnce({
+        operation_id: "archive-1",
+        status: "pending",
+      })
+      .mockResolvedValueOnce({
+        operation_id: "trash-1",
+        status: "pending",
+      })
+      .mockResolvedValueOnce({
+        plan_id: "plan-1",
+        expires_at: "2026-07-28T01:00:00Z",
+      })
+      .mockResolvedValueOnce({
+        operation_id: "delete-1",
+        status: "pending",
+      });
+    const { mailApi } = await import("./mailApi.js");
+
+    await expect(
+      mailApi.getMailboxCapabilities("account-a"),
+    ).resolves.toEqual(capabilities);
+    await expect(
+      mailApi.createMailboxRole("account-a", "archive"),
+    ).resolves.toEqual(capabilities[0]);
+    await expect(
+      mailApi.listMailboxPage("account-a", "archive", null, 50, "needle"),
+    ).resolves.toEqual(page);
+    await expect(
+      mailApi.loadOlderMailboxPage(
+        "account-a",
+        "archive",
+        "cursor-1",
+        50,
+        "needle",
+      ),
+    ).resolves.toEqual(page);
+    await mailApi.syncMailbox("account-a", "archive");
+    await mailApi.fetchMailboxMessage(OPAQUE_MESSAGE_ID);
+    await mailApi.setMessageSeen(OPAQUE_MESSAGE_ID, false);
+    await mailApi.setMessageStarredById(OPAQUE_MESSAGE_ID, true);
+    await mailApi.archiveMessage(OPAQUE_MESSAGE_ID);
+    await mailApi.moveMessageToTrash(OPAQUE_MESSAGE_ID);
+    await mailApi.preparePermanentDelete(OPAQUE_MESSAGE_ID);
+    await mailApi.confirmPermanentDelete("plan-1");
+
+    expect(ipc.invoke.mock.calls).toEqual([
+      ["get_mailbox_capabilities", { accountId: "account-a" }],
+      [
+        "create_mailbox_role",
+        { accountId: "account-a", role: "archive" },
+      ],
+      [
+        "list_mailbox_page",
+        {
+          accountId: "account-a",
+          role: "archive",
+          cursor: null,
+          pageSize: 50,
+          query: "needle",
+        },
+      ],
+      [
+        "load_older_mailbox_page",
+        {
+          accountId: "account-a",
+          role: "archive",
+          cursor: "cursor-1",
+          pageSize: 50,
+          query: "needle",
+        },
+      ],
+      ["sync_mailbox", { accountId: "account-a", role: "archive" }],
+      ["fetch_mailbox_message", { messageId: OPAQUE_MESSAGE_ID }],
+      ["set_message_seen", { messageId: OPAQUE_MESSAGE_ID, seen: false }],
+      [
+        "set_message_starred_by_id",
+        { messageId: OPAQUE_MESSAGE_ID, starred: true },
+      ],
+      ["archive_message", { messageId: OPAQUE_MESSAGE_ID }],
+      ["move_message_to_trash", { messageId: OPAQUE_MESSAGE_ID }],
+      ["prepare_permanent_delete", { messageId: OPAQUE_MESSAGE_ID }],
+      ["confirm_permanent_delete", { planId: "plan-1" }],
+    ]);
+  });
+
+  it("passes mailbox bcc and explicit outbox recipient groups through unchanged", async () => {
+    const mailboxPage = {
+      items: [
+        {
+          id: OPAQUE_MESSAGE_ID,
+          displayed_role: "sent",
+          bcc: [
+            { name: "审计留档", email: "archive@example.com" },
+            { name: null, email: "second@example.com" },
+          ],
+        },
+      ],
+      has_more_local: false,
+      remote_history_state: "complete",
+      end_reached: true,
+    };
+    const mailboxMessage = {
+      ...mailboxPage.items[0],
+      body_text: "Full body",
+    };
+    const legacyOutbox = {
+      id: "outbox-legacy",
+      recipients: ["legacy@example.com"],
+      recipient_groups: null,
+    };
+    const groupedOutbox = {
+      id: "outbox-grouped",
+      recipients: [
+        "to@example.com",
+        "cc@example.com",
+        "bcc@example.com",
+      ],
+      recipient_groups: {
+        to: ["to@example.com"],
+        cc: ["cc@example.com"],
+        bcc: ["bcc@example.com"],
+      },
+    };
+    const outbox = [legacyOutbox, groupedOutbox];
+    ipc.invoke
+      .mockResolvedValueOnce(mailboxPage)
+      .mockResolvedValueOnce(mailboxMessage)
+      .mockResolvedValueOnce(outbox)
+      .mockResolvedValueOnce(groupedOutbox);
+    const { mailApi } = await import("./mailApi.js");
+
+    await expect(
+      mailApi.listMailboxPage("account-a", "sent"),
+    ).resolves.toBe(mailboxPage);
+    await expect(
+      mailApi.fetchMailboxMessage(OPAQUE_MESSAGE_ID),
+    ).resolves.toBe(mailboxMessage);
+    await expect(mailApi.listOutbox()).resolves.toBe(outbox);
+    await expect(
+      mailApi.fetchOutboxMessage("outbox-grouped"),
+    ).resolves.toBe(groupedOutbox);
+
+    expect(mailboxPage.items[0].bcc).toEqual([
+      { name: "审计留档", email: "archive@example.com" },
+      { name: null, email: "second@example.com" },
+    ]);
+    expect(legacyOutbox.recipient_groups).toBeNull();
+    expect(legacyOutbox).not.toHaveProperty("to");
+    expect(legacyOutbox).not.toHaveProperty("cc");
+    expect(legacyOutbox).not.toHaveProperty("bcc");
+    expect(groupedOutbox.recipient_groups).toEqual({
+      to: ["to@example.com"],
+      cc: ["cc@example.com"],
+      bcc: ["bcc@example.com"],
+    });
+  });
+
+  it("hydrates contact history through the shared opaque selected-message command", async () => {
     ipc.invoke.mockResolvedValueOnce({
-      uid: 42,
-      mailbox: "Archive/2026",
+      id: OPAQUE_MESSAGE_ID,
       subject: "Archived mail",
     });
     const { mailApi } = await import("./mailApi.js");
 
-    await expect(
-      mailApi.fetchContactMessage("account-a", "Archive/2026", 42),
-    ).resolves.toEqual(
-      expect.objectContaining({ uid: 42, mailbox: "Archive/2026" }),
+    expect(mailApi.fetchContactMessage).toBeUndefined();
+    await expect(mailApi.fetchMailboxMessage(OPAQUE_MESSAGE_ID)).resolves.toEqual(
+      expect.objectContaining({ id: OPAQUE_MESSAGE_ID }),
     );
-    expect(ipc.invoke).toHaveBeenCalledWith("fetch_contact_message", {
-      accountId: "account-a",
-      mailbox: "Archive/2026",
-      uid: 42,
+    expect(ipc.invoke).toHaveBeenCalledWith("fetch_mailbox_message", {
+      messageId: OPAQUE_MESSAGE_ID,
     });
+    expect(ipc.invoke).not.toHaveBeenCalledWith(
+      "fetch_contact_message",
+      expect.anything(),
+    );
   });
 
   it("maps desktop settings and account commands without persisting a secret", async () => {
@@ -200,7 +486,6 @@ describe("mailApi desktop IPC contract", () => {
     const { mailApi } = await import("./mailApi.js");
     const handler = vi.fn();
 
-    await mailApi.listInbox(37);
     await mailApi.syncAll();
     await mailApi.syncDrafts();
     await mailApi.completeExit(404);
@@ -209,36 +494,29 @@ describe("mailApi desktop IPC contract", () => {
     await mailApi.fetchOutboxMessage("outbox-4");
     await mailApi.retryOutbox("outbox-4");
     await mailApi.deleteDraft("draft-8", 3);
-    await mailApi.listSent(29);
-    await mailApi.fetchSentMessage(73);
     await mailApi.syncSent();
     const unlisten = await mailApi.onMailEvent("mail:inbox-updated", handler);
 
-    expect(ipc.invoke).toHaveBeenNthCalledWith(1, "list_inbox", { limit: 37 });
-    expect(ipc.invoke).toHaveBeenNthCalledWith(2, "sync_all", undefined);
-    expect(ipc.invoke).toHaveBeenNthCalledWith(3, "sync_drafts", undefined);
-    expect(ipc.invoke).toHaveBeenNthCalledWith(4, "complete_exit", {
+    expect(ipc.invoke).toHaveBeenNthCalledWith(1, "sync_all", undefined);
+    expect(ipc.invoke).toHaveBeenNthCalledWith(2, "sync_drafts", undefined);
+    expect(ipc.invoke).toHaveBeenNthCalledWith(3, "complete_exit", {
       requestId: 404,
     });
-    expect(ipc.invoke).toHaveBeenNthCalledWith(5, "cancel_exit", {
+    expect(ipc.invoke).toHaveBeenNthCalledWith(4, "cancel_exit", {
       requestId: 405,
     });
-    expect(ipc.invoke).toHaveBeenNthCalledWith(6, "list_outbox", undefined);
-    expect(ipc.invoke).toHaveBeenNthCalledWith(7, "fetch_outbox_message", {
+    expect(ipc.invoke).toHaveBeenNthCalledWith(5, "list_outbox", undefined);
+    expect(ipc.invoke).toHaveBeenNthCalledWith(6, "fetch_outbox_message", {
       outboxId: "outbox-4",
     });
-    expect(ipc.invoke).toHaveBeenNthCalledWith(8, "retry_outbox", {
+    expect(ipc.invoke).toHaveBeenNthCalledWith(7, "retry_outbox", {
       outboxId: "outbox-4",
     });
-    expect(ipc.invoke).toHaveBeenNthCalledWith(9, "delete_draft", {
+    expect(ipc.invoke).toHaveBeenNthCalledWith(8, "delete_draft", {
       draftId: "draft-8",
       expectedLocalVersion: 3,
     });
-    expect(ipc.invoke).toHaveBeenNthCalledWith(10, "list_sent", { limit: 29 });
-    expect(ipc.invoke).toHaveBeenNthCalledWith(11, "fetch_sent_message", {
-      uid: 73,
-    });
-    expect(ipc.invoke).toHaveBeenNthCalledWith(12, "sync_sent", undefined);
+    expect(ipc.invoke).toHaveBeenNthCalledWith(9, "sync_sent", undefined);
     expect(ipc.listen).toHaveBeenCalledWith("mail:inbox-updated", handler);
     unlisten();
     expect(dispose).toHaveBeenCalledOnce();
@@ -250,7 +528,6 @@ describe("mailApi desktop IPC contract", () => {
         notificationId: 7,
         sender: "Sender",
         subject: "Subject",
-        uid: 42,
         count: 1,
         webSound: null,
       })
@@ -258,9 +535,13 @@ describe("mailApi desktop IPC contract", () => {
       .mockResolvedValueOnce(true);
     const { mailApi } = await import("./mailApi.js");
 
-    expect(await mailApi.getNewMailNotification()).toMatchObject({ uid: 42 });
+    const notification = await mailApi.getNewMailNotification();
+    expect(notification).toMatchObject({ notificationId: 7, subject: "Subject" });
+    expect(notification).not.toHaveProperty("uid");
+    expect(notification).not.toHaveProperty("accountId");
+    expect(notification).not.toHaveProperty("messageId");
     await mailApi.dismissNewMailNotification(7);
-    await mailApi.openNewMailNotification(7, 42);
+    await mailApi.openNewMailNotification(7);
 
     expect(ipc.invoke).toHaveBeenNthCalledWith(
       1,
@@ -279,7 +560,6 @@ describe("mailApi desktop IPC contract", () => {
       "open_new_mail_notification",
       {
         notificationId: 7,
-        uid: 42,
       },
     );
   });
@@ -365,26 +645,6 @@ describe("mailApi desktop IPC contract", () => {
     });
   });
 
-  it("loads an inactive account snapshot without changing the active account", async () => {
-    ipc.invoke.mockResolvedValue({
-      account_id: "account-b",
-      inbox: [],
-      drafts: [],
-      outbox: [],
-    });
-    const { mailApi } = await import("./mailApi.js");
-
-    await expect(
-      mailApi.getAccountMailboxSnapshot("account-b", 50),
-    ).resolves.toMatchObject({
-      account_id: "account-b",
-    });
-    expect(ipc.invoke).toHaveBeenCalledWith("get_account_mailbox_snapshot", {
-      accountId: "account-b",
-      limit: 50,
-    });
-  });
-
   it("maps local avatar commands through the narrow desktop boundary", async () => {
     ipc.invoke
       .mockResolvedValueOnce([
@@ -466,8 +726,7 @@ describe("mailApi desktop IPC contract", () => {
       })
       .mockResolvedValueOnce([
         {
-          uid: 73,
-          mailbox: "Sent",
+          id: "opaque-contact-message",
           mailbox_role: "sent",
           subject: "Hello",
           direction: "outgoing",
@@ -502,7 +761,7 @@ describe("mailApi desktop IPC contract", () => {
       mailApi.listContactMessages("account-a", "friend@example.com", 80),
     ).resolves.toEqual([
       expect.objectContaining({
-        uid: 73,
+        id: "opaque-contact-message",
         direction: "outgoing",
         mailbox_role: "sent",
       }),
@@ -557,9 +816,104 @@ describe("mailApi desktop IPC contract", () => {
     await expect(mailApi.cancelExit(502)).rejects.toThrow("退出请求已失效");
   });
 
-  it("requires an explicit demo flag outside Tauri and test mode", async () => {
+  it("keeps the explicit demo mailbox API deterministic and body-free in pages", async () => {
+    delete window.__TAURI_INTERNALS__;
+    const { mailApi } = await import("./mailApi.js");
+
+    await expect(
+      mailApi.getMailboxCapabilities("demo-primary"),
+    ).resolves.toContainEqual({
+      role: "archive",
+      status: "available",
+      retryable: false,
+    });
+    const inbox = await mailApi.listMailboxPage(
+      "demo-primary",
+      "inbox",
+      null,
+      2,
+      "mine mail",
+    );
+    expect(inbox.items).toHaveLength(1);
+    expect(inbox.items[0]).toEqual(
+      expect.objectContaining({
+        id: "demo-message-01",
+        displayed_role: "inbox",
+      }),
+    );
+    expect(inbox.items[0]).not.toHaveProperty("mailbox");
+    expect(inbox.items[0]).not.toHaveProperty("uid");
+    expect(inbox.items[0]).not.toHaveProperty("body_text");
+
+    await expect(
+      mailApi.setMessageSeen("demo-message-01", true),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        operation_id: "demo-seen-1",
+        status: "pending",
+        source_role: "inbox",
+      }),
+    );
+    await expect(mailApi.archiveMessage("demo-message-01")).resolves.toEqual(
+      expect.objectContaining({
+        operation_id: "demo-archive-2",
+        source_role: "inbox",
+        destination_role: "archive",
+      }),
+    );
+    const archive = await mailApi.listMailboxPage(
+      "demo-primary",
+      "archive",
+      null,
+      50,
+      null,
+    );
+    expect(archive.items[0]).toEqual(
+      expect.objectContaining({
+        id: "demo-message-01",
+        displayed_role: "archive",
+        pending_mutation: expect.objectContaining({ status: "pending" }),
+      }),
+    );
+    const selected = await mailApi.fetchMailboxMessage("demo-message-01");
+    expect(selected.body_text).toContain("欢迎来到 Mine Mail");
+    expect(selected.attachments).toEqual([]);
+    expect(selected).not.toHaveProperty("mailbox");
+    expect(selected).not.toHaveProperty("uid");
+    await expect(
+      mailApi.listMailboxPage("demo-primary", "inbox", null, 101, null),
+    ).rejects.toThrow("分页大小");
+    await expect(
+      mailApi.resolveDeliveryUnknown({
+        outboxId: "missing-demo-outbox",
+        expectedAttempts: 1,
+        decision: "confirm_delivered",
+        acknowledgeDuplicateRisk: false,
+      }),
+    ).rejects.toThrow("投递结果已变化");
+  });
+
+  it("requires an explicit demo build outside Tauri and test mode", async () => {
     const { __testing } = await import("./mailApi.js");
 
+    expect(
+      __testing.demoAdapterBuildEnabled({
+        demoFlag: undefined,
+        mode: "production",
+      }),
+    ).toBe(false);
+    expect(
+      __testing.demoAdapterBuildEnabled({
+        demoFlag: "1",
+        mode: "production",
+      }),
+    ).toBe(true);
+    expect(
+      __testing.demoAdapterBuildEnabled({
+        demoFlag: undefined,
+        mode: "test",
+      }),
+    ).toBe(true);
     expect(
       __testing.resolveRuntime({
         tauri: false,

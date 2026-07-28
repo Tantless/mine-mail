@@ -4,6 +4,9 @@ import userEvent from "@testing-library/user-event";
 import { App } from "./App.jsx";
 import { bundledAppVersion } from "./services/appUpdate.js";
 import { mailApi } from "./services/mailApi.js";
+import { useProseMirrorTestGeometry } from "./test/proseMirrorTestGeometry.js";
+
+useProseMirrorTestGeometry();
 
 function deferred() {
   let resolve;
@@ -29,6 +32,35 @@ function savedOutcome(request, draftId, expectedLocalVersion = null) {
   };
 }
 
+function mailboxPage(items, role = "inbox") {
+  return {
+    items: items.map((item) => ({ ...item, displayed_role: role })),
+    next_cursor: null,
+    has_more_local: false,
+    remote_history_state: "complete",
+    end_reached: true,
+  };
+}
+
+async function setComposeBody(editor, value) {
+  editor.textContent = value;
+  fireEvent.input(editor, {
+    inputType: value ? "insertText" : "deleteContentBackward",
+    data: value || null,
+  });
+  await act(async () => {
+    await Promise.resolve();
+  });
+}
+
+function minimizeComposer(dialog = screen.getByRole("dialog")) {
+  fireEvent.pointerDown(dialog.closest(".compose-layer"), {
+    button: 0,
+    clientX: 2,
+    clientY: 2,
+  });
+}
+
 describe("Mine Mail MVP", () => {
   beforeEach(() => {
     window.localStorage.clear();
@@ -45,7 +77,9 @@ describe("Mine Mail MVP", () => {
     render(<App />);
 
     expect(await screen.findAllByText("欢迎来到 Mine Mail")).toHaveLength(2);
-    expect(screen.getByText(/我们希望它是一间安静的邮件工作室/)).toBeTruthy();
+    expect(
+      await screen.findByText(/我们希望它是一间安静的邮件工作室/),
+    ).toBeTruthy();
     const searchInput = screen.getByLabelText("搜索邮件");
     expect(searchInput.closest(".inset-input-shell")).toBeTruthy();
     expect(screen.queryByText("Ctrl K")).toBeNull();
@@ -74,7 +108,7 @@ describe("Mine Mail MVP", () => {
     expect(screen.getAllByText("Mine Mail")).toHaveLength(1);
   });
 
-  it("places themed reply and forward actions at opposite sides of the reader", async () => {
+  it("keeps themed reply and Rust-prepared forward actions in the reader", async () => {
     render(<App />);
 
     const reply = await screen.findByRole("button", { name: "回复" });
@@ -86,9 +120,8 @@ describe("Mine Mail MVP", () => {
     expect(reply.classList.contains("message-action-button")).toBe(true);
     expect(reply.classList.contains("message-action-button--reply")).toBe(true);
     expect(forward.classList.contains("message-forward-button")).toBe(true);
-    expect(forward.classList.contains("message-action-button")).toBe(false);
-    expect(forward.textContent).toBe("");
     expect(actions.classList.contains("message-actions--mail")).toBe(true);
+    expect(actions.firstElementChild).toBe(reply);
     expect(actions.lastElementChild).toBe(forward);
   });
 
@@ -98,9 +131,9 @@ describe("Mine Mail MVP", () => {
 
     await user.click(await screen.findByRole("button", { name: "回复" }));
     const composer = await screen.findByRole("dialog", { name: "新邮件" });
-    const body = within(composer).getByLabelText("邮件正文");
-    expect(body.value).toBe("");
-    expect(body.value).not.toContain("原邮件");
+    const body = await within(composer).findByLabelText("邮件正文");
+    expect(body.textContent).toBe("");
+    expect(body.textContent).not.toContain("原邮件");
 
     const quote = within(composer).getByRole("button", {
       name: /欢迎来到 Mine Mail/,
@@ -111,7 +144,7 @@ describe("Mine Mail MVP", () => {
     expect(within(composer).getByText(/我们希望它是一间安静的邮件工作室/)).toBeTruthy();
 
     await user.type(body, "这是回复内容");
-    expect(body.value).toBe("这是回复内容");
+    expect(body.textContent).toBe("这是回复内容");
   });
 
   it("keeps routine backend health details out of the main interface", async () => {
@@ -199,9 +232,8 @@ describe("Mine Mail MVP", () => {
       activeAccountId: accountB.accountId,
     };
     const cachedMessage = {
-      id: 202,
-      mailbox: "INBOX",
-      uid: 202,
+      id: "account-b-message-202",
+      displayed_role: "inbox",
       subject: "Gmail 本地缓存即时显示",
       sender: { name: "Google", email: "no-reply@google.com" },
       to: [{ name: null, email: "b@gmail.com" }],
@@ -224,33 +256,64 @@ describe("Mine Mail MVP", () => {
     };
 
     vi.spyOn(mailApi, "getAccountStatus").mockResolvedValue(statusA);
-    vi.spyOn(mailApi, "getAccountMailboxSnapshot").mockImplementation(
-      async (accountId) => ({
-        account_id: accountId,
-        inbox: accountId === accountB.accountId ? [cachedMessage] : [],
-        drafts: [],
-        outbox: [],
-      }),
+    vi.spyOn(mailApi, "getMailboxCapabilities").mockResolvedValue([
+      { role: "inbox", status: "available", retryable: false },
+      { role: "sent", status: "available", retryable: false },
+      { role: "archive", status: "available", retryable: false },
+      { role: "trash", status: "available", retryable: false },
+    ]);
+    const listMailboxPage = vi
+      .spyOn(mailApi, "listMailboxPage")
+      .mockImplementation(async (accountId, role) =>
+        mailboxPage(
+          accountId === accountB.accountId && role === "inbox"
+            ? [cachedMessage]
+            : [],
+          role,
+        ),
+      );
+    vi.spyOn(mailApi, "loadOlderMailboxPage").mockImplementation(
+      async (accountId, role) =>
+        mailboxPage(
+          accountId === accountB.accountId && role === "inbox"
+            ? [cachedMessage]
+            : [],
+          role,
+        ),
     );
     vi.spyOn(mailApi, "switchAccount").mockReturnValue(pendingSwitch.promise);
-    const fetchMessage = vi.spyOn(mailApi, "fetchMessage").mockResolvedValue({
-      ...cachedMessage,
-      body_text: "切换不等待网络同步",
-      body_fetched: true,
-    });
+    const fetchMailboxMessage = vi
+      .spyOn(mailApi, "fetchMailboxMessage")
+      .mockResolvedValue({
+        ...cachedMessage,
+        body_text: "切换不等待网络同步",
+        body_fetched: true,
+      });
 
     render(<App />);
     await waitFor(() => {
-      expect(mailApi.getAccountMailboxSnapshot).toHaveBeenCalledWith("account-b", 50);
+      expect(listMailboxPage).toHaveBeenCalledWith(
+        "account-b",
+        "inbox",
+        null,
+        50,
+        null,
+      );
     });
 
     await user.click(screen.getByRole("button", { name: "切换到 b@gmail.com" }));
     expect(screen.getByRole("button", { name: "当前账户 b@gmail.com" })).toBeTruthy();
     expect(screen.getAllByText("Gmail 本地缓存即时显示").length).toBeGreaterThan(0);
-    expect(fetchMessage).not.toHaveBeenCalled();
+    expect(fetchMailboxMessage).not.toHaveBeenCalledWith(
+      "account-b-message-202",
+    );
 
     pendingSwitch.resolve(statusB);
-    await waitFor(() => expect(fetchMessage).toHaveBeenCalledWith(202));
+    await waitFor(() =>
+      expect(fetchMailboxMessage).toHaveBeenCalledWith(
+        "account-b-message-202",
+      ),
+    );
     expect(screen.queryByText("已切换到 b@gmail.com")).toBeNull();
   });
 
@@ -301,6 +364,44 @@ describe("Mine Mail MVP", () => {
 
     await user.click(screen.getByRole("button", { name: "返回修改" }));
     expect(screen.queryByRole("alertdialog")).toBeNull();
+  });
+
+  it("keeps the stationery picker in the footer and controls send behavior", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findAllByText("欢迎来到 Mine Mail");
+
+    await user.click(screen.getByRole("button", { name: /写信/ }));
+    expect(screen.getByRole("toolbar", { name: "正文格式" })).toBeTruthy();
+    expect(screen.getByRole("combobox", { name: "字体" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "随信发送" }).disabled).toBe(
+      true,
+    );
+
+    await user.click(screen.getByRole("button", { name: "信纸主题：无" }));
+    await user.click(
+      screen.getByRole("menuitemradio", { name: /方格纸/ }),
+    );
+
+    const editor = screen.getByRole("textbox", { name: "邮件正文" });
+    expect(editor.closest(".compose-editor-shell").dataset.stationery).toBe(
+      "grid",
+    );
+    const sendTheme = screen.getByRole("button", { name: "随信发送" });
+    expect(sendTheme.disabled).toBe(false);
+    await user.click(sendTheme);
+    expect(sendTheme.dataset.selected).toBe("true");
+
+    await user.click(
+      screen.getByRole("button", { name: "信纸主题：方格纸" }),
+    );
+    await user.click(screen.getByRole("menuitemradio", { name: /^无/ }));
+    expect(editor.closest(".compose-editor-shell").dataset.stationery).toBe(
+      "none",
+    );
+    expect(screen.getByRole("button", { name: "随信发送" }).disabled).toBe(
+      true,
+    );
   });
 
   it("toggles copy recipients without losing their values", async () => {
@@ -399,7 +500,7 @@ describe("Mine Mail MVP", () => {
       height: dialog.style.height,
     };
 
-    await user.click(screen.getByRole("button", { name: "最小化写信窗口" }));
+    minimizeComposer(dialog);
     const minimizedDialog = screen.getByRole("dialog", { name: "季度计划" });
     const minimizedLayer = minimizedDialog.closest(".compose-layer");
     const restoreButton = screen.getByRole("button", {
@@ -411,7 +512,7 @@ describe("Mine Mail MVP", () => {
     expect(dialog.style.width).toBe("340px");
     expect(dialog.style.height).toBe("44px");
     expect(restoreButton.textContent).toBe("季度计划");
-    expect(screen.queryByRole("button", { name: "关闭写信窗口" })).toBeNull();
+    expect(screen.getByRole("button", { name: "关闭写信窗口" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "最小化写信窗口" })).toBeNull();
 
     await user.click(restoreButton);
@@ -422,6 +523,7 @@ describe("Mine Mail MVP", () => {
     expect(dialog.style.height).toBe(restoredGeometry.height);
 
     await user.clear(screen.getByLabelText("主题"));
+    minimizeComposer(dialog);
     await user.click(screen.getByRole("button", { name: "关闭写信窗口" }));
     expect(screen.queryByRole("dialog", { name: "新邮件" })).toBeNull();
     await user.click(screen.getByRole("button", { name: /写信/ }));
@@ -432,7 +534,7 @@ describe("Mine Mail MVP", () => {
     expect(reopened.style.width).toBe(`${persisted.width}px`);
     expect(reopened.style.height).toBe(`${persisted.height}px`);
 
-    await user.click(screen.getByRole("button", { name: "最小化写信窗口" }));
+    minimizeComposer(reopened);
     expect(
       screen.getByRole("button", { name: "还原写信窗口：新邮件" }).textContent,
     ).toBe("新邮件");
@@ -471,16 +573,23 @@ describe("Mine Mail MVP", () => {
   });
 
   it("debounces local draft persistence and reuses the returned draft id", async () => {
-    render(<App />);
-    await screen.findAllByText("欢迎来到 Mine Mail");
+    const staleDraftList = deferred();
+    const listDrafts = vi
+      .spyOn(mailApi, "listDrafts")
+      .mockReturnValueOnce(staleDraftList.promise)
+      .mockResolvedValue([]);
     const saveDraft = vi
       .spyOn(mailApi, "saveDraft")
       .mockImplementation(async (request, draftId, expectedLocalVersion) =>
         savedOutcome(request, draftId, expectedLocalVersion),
       );
+    render(<App />);
+    await screen.findAllByText("欢迎来到 Mine Mail");
+    await waitFor(() => expect(listDrafts).toHaveBeenCalledTimes(1));
 
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: /写信/ }));
+    await screen.findByLabelText("邮件正文");
     vi.useFakeTimers();
     fireEvent.change(screen.getByLabelText("主题"), {
       target: { value: "自动保存" },
@@ -493,9 +602,16 @@ describe("Mine Mail MVP", () => {
     expect(saveDraft.mock.calls[0][1]).toBeNull();
     expect(screen.getByText("已保存")).toBeTruthy();
 
-    fireEvent.change(screen.getByLabelText("邮件正文"), {
-      target: { value: "继续编辑" },
+    vi.useRealTimers();
+    await act(async () => {
+      staleDraftList.resolve([]);
+      await Promise.resolve();
     });
+    expect(await screen.findByRole("dialog", { name: "编辑草稿" })).toBeTruthy();
+
+    const composeBody = await screen.findByLabelText("邮件正文");
+    vi.useFakeTimers();
+    await setComposeBody(composeBody, "继续编辑");
     await act(async () => {
       await vi.advanceTimersByTimeAsync(901);
     });
@@ -561,16 +677,18 @@ describe("Mine Mail MVP", () => {
     expect(screen.getByText("最终持久化主题")).toBeTruthy();
   });
 
-  it("uses sync_all for the manual desktop refresh action", async () => {
-    const syncAll = vi.spyOn(mailApi, "syncAll").mockResolvedValue({
-      inbox: { fetched: 0 },
-    });
+  it("syncs only the active semantic mailbox on manual refresh", async () => {
+    const syncMailbox = vi
+      .spyOn(mailApi, "syncMailbox")
+      .mockResolvedValue(undefined);
     const user = userEvent.setup();
     render(<App />);
     await screen.findAllByText("欢迎来到 Mine Mail");
 
     await user.click(screen.getByRole("button", { name: "同步收件箱" }));
-    await waitFor(() => expect(syncAll).toHaveBeenCalledOnce());
+    await waitFor(() =>
+      expect(syncMailbox).toHaveBeenCalledWith("demo-primary", "inbox"),
+    );
   });
 
   it("navigates the settings menu and saves function preferences", async () => {
@@ -677,10 +795,10 @@ describe("Mine Mail MVP", () => {
       .spyOn(mailApi, "saveDraft")
       .mockImplementation(async (request, draftId, expectedLocalVersion) =>
         savedOutcome(request, draftId, expectedLocalVersion),
-      );
+    );
 
     await user.click(screen.getByRole("button", { name: /草稿/ }));
-    await user.click(screen.getByText("关于下周的主题评审"));
+    await user.click(await screen.findByText("关于下周的主题评审"));
     expect(screen.getByRole("heading", { name: "编辑草稿" })).toBeTruthy();
 
     vi.useFakeTimers();
@@ -709,19 +827,31 @@ describe("Mine Mail MVP", () => {
       );
 
     await user.click(screen.getByRole("button", { name: /草稿/ }));
-    await user.click(screen.getByText("关于下周的主题评审"));
+    await user.click(await screen.findByText("关于下周的主题评审"));
     vi.useFakeTimers();
     fireEvent.click(
       screen.getByRole("button", { name: "移除收件人 linxia@example.com" }),
     );
     fireEvent.change(screen.getByLabelText("主题"), { target: { value: "" } });
-    fireEvent.change(screen.getByLabelText("邮件正文"), { target: { value: "" } });
+    await setComposeBody(screen.getByLabelText("邮件正文"), "");
     await act(async () => {
       await vi.advanceTimersByTimeAsync(901);
     });
 
     expect(saveDraft).toHaveBeenCalledWith(
-      { to: [], cc: [], bcc: [], subject: "", body_text: "", reply_context: null },
+      {
+        to: [],
+        cc: [],
+        bcc: [],
+        subject: "",
+        body_text: "",
+        format: {
+          body_html: null,
+          stationery: "none",
+          send_stationery: false,
+        },
+        reply_context: null,
+      },
       "draft-welcome",
       1,
     );
@@ -737,7 +867,7 @@ describe("Mine Mail MVP", () => {
       credentialAvailable: false,
       startupError: null,
     });
-    const listInbox = vi.spyOn(mailApi, "listInbox");
+    const listMailboxPage = vi.spyOn(mailApi, "listMailboxPage");
     render(<App />);
 
     const emptyWorkspace = await screen.findByRole("region", {
@@ -751,7 +881,7 @@ describe("Mine Mail MVP", () => {
     expect(screen.queryByLabelText("收件箱邮件列表")).toBeNull();
     expect(document.querySelector(".reader-panel")).toBeNull();
     expect(screen.queryByText("先连接你的邮箱")).toBeNull();
-    expect(listInbox).not.toHaveBeenCalled();
+    expect(listMailboxPage).not.toHaveBeenCalled();
 
     await user.click(
       within(emptyWorkspace).getByRole("button", { name: "连接邮箱" }),
@@ -822,15 +952,47 @@ describe("Mine Mail MVP", () => {
         },
       ],
     });
-    const listInbox = vi.spyOn(mailApi, "listInbox");
+    vi.spyOn(mailApi, "getMailboxCapabilities").mockResolvedValue([
+      { role: "inbox", status: "available", retryable: false },
+      { role: "sent", status: "available", retryable: false },
+      { role: "archive", status: "available", retryable: false },
+      { role: "trash", status: "available", retryable: false },
+    ]);
+    const cachedMessage = {
+      id: "offline-message-1",
+      displayed_role: "inbox",
+      subject: "欢迎来到 Mine Mail",
+      sender: { name: "Mine Mail 团队", email: "hello@minemail.app" },
+      to: [],
+      cc: [],
+      sent_at: "2026-07-17T10:00:00Z",
+      flags: ["\\Seen"],
+      preview: "本地缓存仍可阅读",
+      body_fetched: false,
+    };
+    const listMailboxPage = vi
+      .spyOn(mailApi, "listMailboxPage")
+      .mockImplementation(async (_, role) =>
+        mailboxPage(role === "inbox" ? [cachedMessage] : [], role),
+      );
     render(<App />);
 
     expect(await screen.findAllByText("欢迎来到 Mine Mail")).toHaveLength(2);
     expect(
-      (await screen.findByRole("alert", {}, { timeout: 1600 })).textContent,
-    ).toContain("系统凭据不可用");
+      await screen.findByText(
+        "系统凭据不可用，请重新连接账户。",
+        {},
+        { timeout: 1600 },
+      ),
+    ).toBeTruthy();
     expect(screen.queryByText("尚未连接邮箱")).toBeNull();
-    expect(listInbox).toHaveBeenCalledWith(50);
+    expect(listMailboxPage).toHaveBeenCalledWith(
+      "offline-account",
+      "inbox",
+      null,
+      50,
+      null,
+    );
     expect(screen.getByRole("button", { name: "同步收件箱" }).disabled).toBe(true);
   });
 });

@@ -187,6 +187,9 @@ family. Preserve the relative hierarchy when tuning optical values.
   hover.
 - Disabled controls remain recognizable, non-interactive, and visibly distinct
   from an ordinary off state.
+- Formal product UI has no click-looking placeholder controls. An unavailable
+  capability is explanatory copy or an accurately disabled state with a reason;
+  it is never a normal button whose only result is “not implemented.”
 - Primary actions use the active theme accent. Secondary actions use a neutral
   glass/control surface. Destructive actions use the semantic danger color.
 
@@ -213,6 +216,14 @@ family. Preserve the relative hierarchy when tuning optical values.
   second competing card style.
 - Background refreshes preserve the visible rows and selection. Loading must not
   flash usable local content away.
+- Pending Archive, Trash, read/unread, or delete mutations keep the row layout
+  stable and use one compact semantic status treatment. A failed or ambiguous
+  mutation explains the next action without restoring a stale remote snapshot
+  over a newer local intent.
+- Folder lists distinguish true empty, search empty, filter empty, initial
+  synchronization, offline history exhaustion, retryable failure, loading older
+  mail, and confirmed end states. Do not reuse “no search results” for an
+  unavailable or not-yet-synchronized data source.
 
 ### Menus, tooltips, and scrolling
 
@@ -233,11 +244,58 @@ family. Preserve the relative hierarchy when tuning optical values.
 
 - The message list paints cached summaries immediately. Selecting a message keeps
   list position stable and hydrates the body silently.
+- Inbox, Sent, Archive, and Trash append 50-message keyset pages. The bottom
+  continuation affordance has distinct idle, loading, retry, offline-unavailable,
+  and confirmed-end states; appending or receiving mail preserves selection and
+  scroll position.
+- Mail search uses the established search shell and identifies its bounded local
+  scope as **搜索已同步邮件**. Search and folder tabs must not imply access to
+  uncached server history.
+- Archive and Trash paint cached summaries before synchronization. If the account
+  has no configured role and the user declines or cannot create one, the
+  workspace shows a quiet capability explanation and next step instead of a
+  generic empty list.
 - The reader has one outer scrollbar. Native text/semantic HTML uses Mine Mail
   typography; complex sender HTML remains sanitized and isolated. See
   `docs/MAIL_RENDERING.md`.
+- The reader header keeps the sender summary compact and exposes one disclosure
+  for the authoritative **发件人 / 收件人 / 抄送 / 密送** groups. Empty optional
+  groups stay absent. A local remark may lead the visible identity, but the real
+  mailbox address remains present and readable.
+- Outbox recipient details use only the persisted recipient groups. A legacy
+  Outbox item without those groups says **旧版邮件收件人分组不可用** and never
+  invents To/Cc/Bcc from a flat delivery-recipient list.
+- Opening recipient details moves focus into the details region. Escape collapses
+  it and returns focus to the disclosure control; long names and addresses wrap
+  within the reader without horizontal drift.
 - Reply history is a sequence of sibling collapsible cards, never recursively
   nested panels.
+- Reader actions are role-specific. Inbox, Sent, and Archive use Delete to move
+  to Trash; Trash replaces it with a clearly destructive permanent-delete action.
+  Archive is shown only where the account supports it, and Draft/Outbox never
+  expose remote read-state actions.
+- An Outbox item with an unknown delivery result never uses the ordinary retry
+  action. Its reader offers exactly two consequential, confirmed decisions:
+  **确认已投递** only after the user has checked the provider's Sent mailbox, or
+  **仍要重试** with explicit copy that the recipient may receive a duplicate.
+  Pending and failed decisions keep the authoritative Outbox item visible; a
+  stale attempt refreshes the item and requires a new review.
+- Archive, Trash, read/unread, and delete actions show local completion
+  immediately, keep a reasonable adjacent message selected, and expose pending,
+  confirmed, recoverable failure, or needs-attention feedback without blanking
+  the reader.
+- A forward action enters a bounded preparation state and cannot open a composer
+  from preview text. Failure leaves the current reader intact. If original
+  attachments cannot be prepared, the recovery surface offers an explicit
+  **无附件转发** action rather than silently omitting them.
+- Received attachments form a compact grid or list below the body using the
+  shared control surface. Each card shows a type-appropriate Phosphor icon,
+  safe name, exact attachment size, and its own save action; unknown types use a
+  generic file icon.
+- An attachment card exposes saving, canceled, completed, and retryable-error
+  states without changing other cards or the current reader. It never labels
+  every attachment as PDF, substitutes whole-message size, or displays a
+  disabled “not implemented” download shell.
 - The bottom action row spans the reading width: primary text-and-icon reply on
   the left, secondary icon-only forward on the right.
 
@@ -271,6 +329,9 @@ family. Preserve the relative hierarchy when tuning optical values.
 - Account avatar editing starts from the avatar. Secondary account actions use a
   compact icon/menu. Adding an account is a provider-first drill-in inside the
   detail pane.
+- The formal provider-first list contains 163, Gmail, and custom IMAP/SMTP.
+  Outlook is absent until its supported Microsoft authentication flow is a
+  complete product capability; do not show a disabled or “coming soon” card.
 - Persistent backend health is not decorative chrome. Show only explicit action
   progress and failures that require user attention.
 - About keeps the compact version card first, then presents local storage as one
@@ -284,26 +345,56 @@ family. Preserve the relative hierarchy when tuning optical values.
 
 ### Compose
 
-- Compose is a floating, draggable, edge-resizable glass work surface with only
-  minimize and close in its top-right chrome.
+- Compose is a floating, draggable, edge-resizable solid writing page over the
+  app scrim. The expanded page uses one continuous, opaque surface with quiet
+  divider rows; address fields and formatting stay integrated with the page,
+  while the editor retains the established inset 12 px rounded writing surface
+  instead of being flattened into the page or wrapped in nested frames. Its top
+  edge is an invisible drag strip without visible minimize/close chrome. Clicking
+  the app scrim outside the page minimizes it.
 - It restores the last valid normal geometry and remains within the visible app
-  bounds.
+  bounds. The default geometry is a centered, broad correspondence page rather
+  than a narrow utility dialog.
 - Address, Cc/Bcc, subject, recipient tokens/suggestions, editor, and footer share
-  the inset material and focus language. Collapsing Cc/Bcc never clears values.
+  the page's divider and focus language. Collapsing Cc/Bcc never clears values.
 - One compact formatting row sits directly between the subject and editor. It
   exposes font, size, emphasis, lists, alignment, links, and clear-format actions
-  using the existing themed controls and icon system. Formatting preserves the
-  active range and caret position; font and size controls follow the inherited
-  format at a collapsed caret and show a neutral mixed value for mixed selections.
+  using the existing themed controls and icon system; it must not read as a
+  second app toolbar. Formatting preserves the active range and caret position;
+  the font and size controls follow the format inherited at a collapsed caret,
+  and show a neutral mixed value for a selection containing more than one value.
   Applying a font size at a collapsed caret updates the visible caret scale and
   the next typed character without relayout of the complete editor. Plain-editor
   focus is communicated by its caret and must not add a full-height accent stripe.
   Emphasis uses real semantic bold, italic, and underline markup. At the start of
   a paragraph, `1.` followed by Space starts a numbered list; Enter continues the
   sequence, and Enter on the next empty item returns to an ordinary paragraph.
+- The footer contains the **信纸** picker and the adjacent **仅编辑** /
+  **随信发送** choice. **无**, **横线纸**, and **方格纸** use restrained,
+  theme-aware paper lines while preserving editor focus and text contrast.
+  Every stationery mode reuses the same rounded editor frame, spacing, and focus
+  treatment; switching paper never changes the editor geometry or adds an inner
+  rectangular focus frame.
+  Paper rules belong to the editor's scrolling content, so text and rules move as
+  one surface. Lined paper starts its first visible rule after the first writing
+  row. Grid paper has a complete outer frame and a document-scoped cell rhythm
+  calibrated to the editor base size and available width so each Han character
+  advances by one cell. Inline size formatting does not rescale the whole sheet.
+- Ordinary managed attachments appear in a compact compose attachment row/list
+  with safe name, type, exact size, add/remove progress, stale/conflict feedback,
+  and keyboard-operable removal. Adding and removing use the same save-state
+  language as the exact draft version; there is no disabled placeholder button.
+- A reply or forward context is an immutable, separately surfaced region outside
+  the authored editor. It preserves clear original identity and body hierarchy,
+  may collapse for space, and cannot be edited or accidentally selected as the
+  user's new text.
+- Forwarded ordinary attachments are visible and removable before send. If the
+  user chose **无附件转发**, the compose surface must not imply that original
+  attachments remain included.
 - Minimized compose is a 340 × 44 px subject-only bar at bottom center. The
   full-window scrim and blur disappear; the bar retains its own compact glass.
-  An empty subject reads **新邮件**.
+  An empty subject reads **新邮件**. Clicking the subject restores the composer;
+  the only visible close control is at the far right of this minimized bar.
 
 ### Notifications and confirmations
 
@@ -315,6 +406,16 @@ family. Preserve the relative hierarchy when tuning optical values.
   account. Body preview text is never shown.
 - Confirmation dialogs are compact, theme-owned, keyboard-operable, and reserved
   for consequential actions. Do not turn routine settings into confirmations.
+- Creating a missing Archive or Trash mailbox uses a one-time consequential
+  confirmation. Cancel returns to the unchanged message; creation progress blocks
+  duplicate submission but does not dismiss cached content.
+- Permanent deletion from Trash requires a confirmation every time. The dialog
+  names the irreversible consequence, uses the semantic danger action, starts on
+  a safe non-destructive focus target, traps focus, supports Escape before work
+  begins, and restores focus after cancellation or completion.
+- Native open/save pickers select attachment sources and destinations. Mine Mail
+  shows bounded file metadata and completion feedback, not a complete local path
+  in ordinary mail UI.
 
 ## Motion, accessibility, and copy
 

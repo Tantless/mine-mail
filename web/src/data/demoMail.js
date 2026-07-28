@@ -2,9 +2,9 @@ const now = Date.now();
 
 const minutesAgo = (minutes) => new Date(now - minutes * 60_000).toISOString();
 
-export const mockMessages = [
+export const demoMessages = [
   {
-    id: 1,
+    id: "demo-message-01",
     uid: 10842,
     subject: "欢迎来到 Mine Mail",
     sender: { name: "Mine Mail 团队", email: "hello@minemail.app" },
@@ -21,7 +21,7 @@ export const mockMessages = [
     mailbox: "INBOX",
   },
   {
-    id: 2,
+    id: "demo-message-02",
     uid: 10841,
     subject: "周五的产品评审",
     sender: { name: "林夏", email: "linxia@example.com" },
@@ -38,7 +38,7 @@ export const mockMessages = [
     mailbox: "INBOX",
   },
   {
-    id: 3,
+    id: "demo-message-03",
     uid: 10839,
     subject: "Your July receipt",
     sender: { name: "Figma", email: "receipts@figma.com" },
@@ -55,7 +55,7 @@ export const mockMessages = [
     mailbox: "INBOX",
   },
   {
-    id: 4,
+    id: "demo-message-04",
     uid: 10836,
     subject: "山里下过一场雨",
     sender: { name: "陈屿", email: "chenyu@example.com" },
@@ -72,7 +72,7 @@ export const mockMessages = [
     mailbox: "INBOX",
   },
   {
-    id: 5,
+    id: "demo-message-05",
     uid: 10834,
     subject: "Release notes · 0.1.0",
     sender: { name: "Tauri", email: "updates@tauri.app" },
@@ -89,7 +89,7 @@ export const mockMessages = [
     mailbox: "INBOX",
   },
   {
-    id: 6,
+    id: "demo-message-06",
     uid: 10831,
     subject: "今晚的演出提前半小时",
     sender: { name: "梧桐剧场", email: "tickets@example.com" },
@@ -106,7 +106,7 @@ export const mockMessages = [
     mailbox: "INBOX",
   },
   {
-    id: 7,
+    id: "demo-message-07",
     uid: 10828,
     subject: "A quiet place to read",
     sender: { name: "Nora", email: "nora@example.com" },
@@ -123,7 +123,7 @@ export const mockMessages = [
     mailbox: "INBOX",
   },
   {
-    id: 8,
+    id: "demo-message-08",
     uid: 10824,
     subject: "设计系统周报 · 第 28 期",
     sender: { name: "Design Weekly", email: "weekly@example.com" },
@@ -139,7 +139,7 @@ export const mockMessages = [
     mailbox: "INBOX",
   },
   {
-    id: 9,
+    id: "demo-message-09",
     uid: 10818,
     subject: "航班行程提醒",
     sender: { name: "Trip Notes", email: "trips@example.com" },
@@ -155,7 +155,7 @@ export const mockMessages = [
     mailbox: "INBOX",
   },
   {
-    id: 10,
+    id: "demo-message-10",
     uid: 10812,
     subject: "照片已经整理好",
     sender: { name: "周宁", email: "zhouning@example.com" },
@@ -171,7 +171,7 @@ export const mockMessages = [
     mailbox: "INBOX",
   },
   {
-    id: 11,
+    id: "demo-message-11",
     uid: 10805,
     subject: "账户安全提醒",
     sender: { name: "163 邮箱", email: "security@service.example" },
@@ -188,7 +188,7 @@ export const mockMessages = [
   },
 ];
 
-export const mockDrafts = [
+export const demoDrafts = [
   {
     id: "draft-welcome",
     local_version: 1,
@@ -198,16 +198,12 @@ export const mockDrafts = [
     bcc: [],
     subject: "关于下周的主题评审",
     body_text: "林夏，\n\n我整理好四套主题后发你。",
+    format: {
+      body_html: null,
+      stationery: "none",
+      send_stationery: false,
+    },
     updated_at: minutesAgo(36),
     status: "local",
   },
 ];
-
-export const emptyCompose = {
-  to: [],
-  cc: [],
-  bcc: [],
-  subject: "",
-  body_text: "",
-  reply_context: null,
-};

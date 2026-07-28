@@ -3,6 +3,11 @@ import { useState } from "react";
 import { HtmlMessageBody } from "./HtmlMessageBody.jsx";
 import { NativeHtmlMessageBody } from "./NativeHtmlMessageBody.jsx";
 import { TooltipTarget } from "./Tooltip.jsx";
+import { messageNavigationKey } from "../utils/messageNavigation.js";
+
+function messageCacheIdentity(message) {
+  return messageNavigationKey(message) || "reader-message";
+}
 
 function PlainContent({ text }) {
   return text.split(/\n{2,}/).map((paragraph, index) => {
@@ -40,7 +45,7 @@ function SegmentContent({
   if (segment.render_mode === "isolated_html") {
     return (
       <HtmlMessageBody
-        cacheKey={`${message.mailbox || "INBOX"}:${message.uid}:segment:${index}`}
+        cacheKey={`${messageCacheIdentity(message)}:segment:${index}`}
         html={segment.content}
         hasRemoteImages={message.has_remote_images}
         remoteImageMode={remoteImageMode}
@@ -66,7 +71,7 @@ function OriginalBody({ message, body, bodyRenderMode, remoteImageMode, onOpenEx
   if (bodyRenderMode === "isolated_html" && message.body_html) {
     return (
       <HtmlMessageBody
-        cacheKey={`${message.mailbox || "INBOX"}:${message.uid}:original`}
+        cacheKey={`${messageCacheIdentity(message)}:original`}
         html={message.body_html}
         hasRemoteImages={message.has_remote_images}
         remoteImageMode={remoteImageMode}
@@ -91,7 +96,11 @@ function QuotedSegment({
   const metadata = segment.quote_metadata || {};
   const subject = metadata.subject || `引用邮件 ${quoteNumber}`;
   const hasRoute = metadata.sender || metadata.recipient;
-  const navigationTarget = segment.navigation_target;
+  const navigationTargetId = segment.navigation_target?.id;
+  const navigationTarget =
+    typeof navigationTargetId === "string" && navigationTargetId.trim()
+      ? { id: navigationTargetId.trim() }
+      : null;
   const destination = navigationTarget
     ? resolveReferencedMessage?.(navigationTarget)
     : null;

@@ -9,23 +9,46 @@ import {
   within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useProseMirrorTestGeometry } from "./test/proseMirrorTestGeometry.js";
+
+useProseMirrorTestGeometry();
 
 const desktop = vi.hoisted(() => {
   const listeners = new Map();
+  const fixtures = {
+    inboxPageSource: vi.fn(),
+    sentPageSource: vi.fn(),
+    inboxMessageSource: vi.fn(),
+    sentMessageSource: vi.fn(),
+    recordInboxSeen: vi.fn(),
+    recordStarred: vi.fn(),
+  };
   return {
     listeners,
+    fixtures,
+    messageRoles: new Map(),
     mailApi: {
-      listInbox: vi.fn(),
-      fetchMessage: vi.fn(),
-      markMessageRead: vi.fn(),
-      setMessageStarred: vi.fn(),
-      listSent: vi.fn(),
-      fetchSentMessage: vi.fn(),
-      fetchContactMessage: vi.fn(),
+      getMailboxCapabilities: vi.fn(),
+      createMailboxRole: vi.fn(),
+      listMailboxPage: vi.fn(),
+      loadOlderMailboxPage: vi.fn(),
+      syncMailbox: vi.fn(),
+      fetchMailboxMessage: vi.fn(),
+      saveMessageAttachment: vi.fn(),
+      prepareForward: vi.fn(),
+      setMessageSeen: vi.fn(),
+      setMessageStarredById: vi.fn(),
+      archiveMessage: vi.fn(),
+      moveMessageToTrash: vi.fn(),
+      preparePermanentDelete: vi.fn(),
+      confirmPermanentDelete: vi.fn(),
       prepareReply: vi.fn(),
       openExternalUrl: vi.fn(),
       listDrafts: vi.fn(),
       saveDraft: vi.fn(),
+      createComposeDraft: vi.fn(),
+      addDraftAttachments: vi.fn(),
+      removeDraftAttachment: vi.fn(),
       deleteDraft: vi.fn(),
       syncDrafts: vi.fn(),
       syncSent: vi.fn(),
@@ -34,14 +57,15 @@ const desktop = vi.hoisted(() => {
       cancelExit: vi.fn(),
       listOutbox: vi.fn(),
       fetchOutboxMessage: vi.fn(),
-      getAccountMailboxSnapshot: vi.fn(),
       retryOutbox: vi.fn(),
+      resolveDeliveryUnknown: vi.fn(),
       sendDraft: vi.fn(),
       checkConnections: vi.fn(),
       getDesktopSettings: vi.fn(),
       updateDesktopSettings: vi.fn(),
       listAccountPresets: vi.fn(),
       getAccountStatus: vi.fn(),
+      switchAccount: vi.fn(),
       configureAccount: vi.fn(),
       listProfileAvatars: vi.fn(),
       saveProfileAvatar: vi.fn(),
@@ -69,10 +93,12 @@ import { App } from "./App.jsx";
 
 function deferred() {
   let resolve;
-  const promise = new Promise((resolvePromise) => {
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
     resolve = resolvePromise;
+    reject = rejectPromise;
   });
-  return { promise, resolve };
+  return { promise, reject, resolve };
 }
 
 function savedOutcome(request, draftId, expectedLocalVersion = null) {
@@ -90,9 +116,17 @@ function savedOutcome(request, draftId, expectedLocalVersion = null) {
   };
 }
 
+function minimizeComposer(dialog = screen.getByRole("dialog")) {
+  fireEvent.pointerDown(dialog.closest(".compose-layer"), {
+    button: 0,
+    clientX: 2,
+    clientY: 2,
+  });
+}
+
 function summary(uid, subject) {
   return {
-    id: uid,
+    id: String(uid),
     uid,
     subject,
     sender: { name: `Sender ${uid}`, email: `sender${uid}@example.com` },
@@ -107,6 +141,20 @@ function summary(uid, subject) {
   };
 }
 
+function mailboxPage(items, role, overrides = {}) {
+  return {
+    items: items.map((item) => ({
+      ...item,
+      displayed_role: role,
+    })),
+    next_cursor: null,
+    has_more_local: false,
+    remote_history_state: "complete",
+    end_reached: true,
+    ...overrides,
+  };
+}
+
 function draftSnapshot(localVersion, subject, bodyText = "Draft body") {
   return {
     id: "shared-draft",
@@ -118,19 +166,91 @@ function draftSnapshot(localVersion, subject, bodyText = "Draft body") {
     subject,
     body_text: bodyText,
     status: "synced",
-    remote_mailbox: "Drafts",
-    remote_uid: 17,
     created_at: "2026-07-14T08:00:00Z",
     updated_at: `2026-07-14T08:0${localVersion}:00Z`,
+  };
+}
+
+function deliveryUnknownOutbox(overrides = {}) {
+  return {
+    id: "outbox-unknown",
+    draft_id: null,
+    recipients: ["friend@example.com"],
+    recipient_groups: {
+      to: ["friend@example.com"],
+      cc: [],
+      bcc: [],
+    },
+    subject: "Unknown delivery message",
+    preview: "Ambiguous delivery body",
+    status: "delivery_unknown",
+    attempts: 2,
+    last_error: "SMTP connection closed before acknowledgement",
+    created_at: "2026-07-14T09:00:00Z",
+    sent_at: null,
+    ...overrides,
   };
 }
 
 describe("Mine Mail desktop state bridge", () => {
   beforeEach(() => {
     desktop.listeners.clear();
+    desktop.messageRoles.clear();
     Object.values(desktop.mailApi).forEach((mock) => mock.mockClear());
-    desktop.mailApi.listInbox.mockResolvedValue([summary(1, "First mail")]);
-    desktop.mailApi.listSent.mockResolvedValue([]);
+    Object.values(desktop.fixtures).forEach((mock) => mock.mockReset());
+    desktop.fixtures.inboxPageSource.mockResolvedValue([
+      summary(1, "First mail"),
+    ]);
+    desktop.fixtures.sentPageSource.mockResolvedValue([]);
+    desktop.mailApi.getMailboxCapabilities.mockResolvedValue([
+      { role: "inbox", status: "available", retryable: false },
+      { role: "sent", status: "available", retryable: false },
+      { role: "archive", status: "available", retryable: false },
+      { role: "trash", status: "available", retryable: false },
+    ]);
+    desktop.mailApi.createMailboxRole.mockImplementation(async (_, role) => ({
+      role,
+      status: "available",
+      retryable: false,
+    }));
+    desktop.mailApi.listMailboxPage.mockImplementation(
+      async (_, role, _cursor, _pageSize, query) => {
+        const source =
+          role === "inbox"
+            ? await desktop.fixtures.inboxPageSource(50)
+            : role === "sent"
+              ? await desktop.fixtures.sentPageSource(250)
+              : [];
+        const normalizedQuery = String(query || "").trim().toLowerCase();
+        const items = normalizedQuery
+          ? source.filter((item) =>
+              [
+                item.subject,
+                item.preview,
+                item.sender?.name,
+                item.sender?.email,
+              ].some((value) =>
+                String(value || "").toLowerCase().includes(normalizedQuery),
+              ),
+            )
+          : source;
+        items.forEach((item) =>
+          desktop.messageRoles.set(String(item.id), role),
+        );
+        return mailboxPage(items, role);
+      },
+    );
+    desktop.mailApi.loadOlderMailboxPage.mockImplementation(
+      async (accountId, role, cursor, pageSize, query) =>
+        desktop.mailApi.listMailboxPage(
+          accountId,
+          role,
+          cursor,
+          pageSize,
+          query,
+        ),
+    );
+    desktop.mailApi.syncMailbox.mockResolvedValue(undefined);
     desktop.mailApi.listDrafts.mockResolvedValue([]);
     desktop.mailApi.listOutbox.mockResolvedValue([
       {
@@ -174,15 +294,18 @@ describe("Mine Mail desktop state bridge", () => {
         },
       ],
     });
-    desktop.mailApi.getAccountMailboxSnapshot.mockImplementation(
-      async (accountId) => ({
-        account_id: accountId,
-        inbox: await desktop.mailApi.listInbox(50),
-        sent: await desktop.mailApi.listSent(250),
-        drafts: await desktop.mailApi.listDrafts(),
-        outbox: await desktop.mailApi.listOutbox(),
-      }),
-    );
+    desktop.mailApi.switchAccount.mockImplementation(async (accountId) => {
+      const status = await desktop.mailApi.getAccountStatus();
+      const account = status.accounts?.find(
+        (candidate) => candidate.accountId === accountId,
+      );
+      return {
+        ...status,
+        ...(account || {}),
+        accountId,
+        activeAccountId: accountId,
+      };
+    });
     desktop.mailApi.listProfileAvatars.mockResolvedValue([]);
     desktop.mailApi.saveProfileAvatar.mockImplementation(async (request) => ({
       ownerType: request.ownerType,
@@ -192,21 +315,98 @@ describe("Mine Mail desktop state bridge", () => {
     desktop.mailApi.deleteProfileAvatar.mockResolvedValue(undefined);
     desktop.mailApi.listContacts.mockResolvedValue([]);
     desktop.mailApi.listContactMessages.mockResolvedValue([]);
-    desktop.mailApi.fetchContactMessage.mockResolvedValue(undefined);
     desktop.mailApi.setContactFavorite.mockResolvedValue(true);
     desktop.mailApi.setContactRemark.mockResolvedValue(true);
     desktop.mailApi.checkConnections.mockResolvedValue({
       imap_ok: true,
       smtp_ok: true,
     });
-    desktop.mailApi.fetchMessage.mockImplementation(async (uid) => ({
+    desktop.fixtures.inboxMessageSource.mockImplementation(async (uid) => ({
       ...summary(uid, "First mail"),
       body_text: "Loaded body",
       body_fetched: true,
     }));
-    desktop.mailApi.markMessageRead.mockResolvedValue(true);
-    desktop.mailApi.setMessageStarred.mockResolvedValue(true);
-    desktop.mailApi.fetchSentMessage.mockImplementation(async (uid) => ({
+    desktop.mailApi.fetchMailboxMessage.mockImplementation(
+      async (messageId) =>
+        desktop.messageRoles.get(String(messageId)) === "sent"
+          ? desktop.fixtures.sentMessageSource(Number(messageId))
+          : desktop.fixtures.inboxMessageSource(Number(messageId)),
+    );
+    desktop.mailApi.saveMessageAttachment.mockResolvedValue({
+      status: "saved",
+      file_name: "attachment.bin",
+      retryable: false,
+    });
+    desktop.mailApi.prepareForward.mockResolvedValue({
+      kind: "error",
+      error: {
+        kind: "message_unavailable",
+        failed_attachment_ids: [],
+        retry_without_attachments_allowed: false,
+      },
+    });
+    desktop.fixtures.recordInboxSeen.mockResolvedValue(true);
+    desktop.mailApi.setMessageSeen.mockImplementation(
+      async (messageId, seen) => {
+        if (seen) await desktop.fixtures.recordInboxSeen(Number(messageId));
+        return {
+          operation_id: `seen-${messageId}`,
+          local_revision: 1,
+          status: "pending",
+          source_role: "inbox",
+          flag: "seen",
+          desired: seen,
+        };
+      },
+    );
+    desktop.fixtures.recordStarred.mockResolvedValue(true);
+    desktop.mailApi.setMessageStarredById.mockImplementation(
+      async (messageId, starred) => {
+        const role = desktop.messageRoles.get(String(messageId));
+        await desktop.fixtures.recordStarred(
+          role === "sent" ? "Sent" : "INBOX",
+          Number(messageId),
+          starred,
+        );
+        return {
+          operation_id: `star-${messageId}`,
+          local_revision: 1,
+          status: "pending",
+          source_role: "inbox",
+          flag: "flagged",
+          desired: starred,
+        };
+      },
+    );
+    desktop.mailApi.archiveMessage.mockImplementation(async (messageId) => ({
+      operation_id: `archive-${messageId}`,
+      local_revision: 1,
+      status: "pending",
+      source_role: "inbox",
+      destination_role: "archive",
+    }));
+    desktop.mailApi.moveMessageToTrash.mockImplementation(
+      async (messageId) => ({
+        operation_id: `trash-${messageId}`,
+        local_revision: 1,
+        status: "pending",
+        source_role: "inbox",
+        destination_role: "trash",
+      }),
+    );
+    desktop.mailApi.preparePermanentDelete.mockImplementation(
+      async (messageId) => ({
+        plan_id: `delete-plan-${messageId}`,
+        expires_at: "2026-07-14T09:05:00Z",
+      }),
+    );
+    desktop.mailApi.confirmPermanentDelete.mockResolvedValue({
+      operation_id: "permanent-delete-1",
+      local_revision: 1,
+      status: "pending",
+      source_role: "trash",
+    });
+    desktop.fixtures.sentMessageSource.mockImplementation(async (uid) => ({
       ...summary(uid, "Sent mail"),
       mailbox: "Sent",
       to: [{ name: "Friend", email: "friend@example.com" }],
@@ -230,9 +430,75 @@ describe("Mine Mail desktop state bridge", () => {
       status: "sent",
       attempts: 2,
     });
+    desktop.mailApi.resolveDeliveryUnknown.mockResolvedValue({
+      id: "outbox-1",
+      status: "sent",
+      attempts: 1,
+    });
     desktop.mailApi.saveDraft.mockImplementation(
       async (request, draftId, expectedLocalVersion) =>
         savedOutcome(request, draftId, expectedLocalVersion),
+    );
+    desktop.mailApi.createComposeDraft.mockResolvedValue({
+      id: "blank-compose-draft",
+      local_version: 1,
+      to: [],
+      cc: [],
+      bcc: [],
+      subject: "",
+      body_text: "",
+      format: {
+        body_html: null,
+        stationery: "none",
+        send_stationery: false,
+      },
+      attachments: [],
+      forward_context: null,
+      status: "local",
+    });
+    desktop.mailApi.addDraftAttachments.mockImplementation(
+      async (draftId, expectedLocalVersion) => ({
+        kind: "canceled",
+        draft: {
+          id: draftId,
+          local_version: expectedLocalVersion,
+          to: [],
+          cc: [],
+          bcc: [],
+          subject: "",
+          body_text: "",
+          format: {
+            body_html: null,
+            stationery: "none",
+            send_stationery: false,
+          },
+          attachments: [],
+          forward_context: null,
+          status: "local",
+        },
+      }),
+    );
+    desktop.mailApi.removeDraftAttachment.mockImplementation(
+      async (draftId, _attachmentId, expectedLocalVersion) => ({
+        kind: "saved",
+        draft: {
+          id: draftId,
+          local_version: expectedLocalVersion + 1,
+          to: [],
+          cc: [],
+          bcc: [],
+          subject: "",
+          body_text: "",
+          format: {
+            body_html: null,
+            stationery: "none",
+            send_stationery: false,
+          },
+          attachments: [],
+          forward_context: null,
+          status: "local",
+        },
+      }),
     );
     window.localStorage.clear();
   });
@@ -266,7 +532,7 @@ describe("Mine Mail desktop state bridge", () => {
       desktop.listeners.get("mail:inbox-updated")?.({ payload: {} });
     });
     await waitFor(() =>
-      expect(desktop.mailApi.listInbox).toHaveBeenCalledTimes(2),
+      expect(desktop.fixtures.inboxPageSource).toHaveBeenCalledTimes(2),
     );
 
     await act(async () => {
@@ -289,8 +555,8 @@ describe("Mine Mail desktop state bridge", () => {
       to: [{ name: "Friend", email: "friend@example.com" }],
       preview: "",
     };
-    desktop.mailApi.listInbox.mockResolvedValue([]);
-    desktop.mailApi.listSent.mockResolvedValue([sent]);
+    desktop.fixtures.inboxPageSource.mockResolvedValue([]);
+    desktop.fixtures.sentPageSource.mockResolvedValue([sent]);
     const user = userEvent.setup();
 
     render(<App />);
@@ -300,7 +566,7 @@ describe("Mine Mail desktop state bridge", () => {
       expect(desktop.listeners.has("mail:sent-updated")).toBe(true),
     );
 
-    desktop.mailApi.listSent.mockResolvedValue([
+    desktop.fixtures.sentPageSource.mockResolvedValue([
       { ...sent, preview: "同步后直接显示的有界摘要" },
     ]);
     await act(async () => {
@@ -315,20 +581,73 @@ describe("Mine Mail desktop state bridge", () => {
     });
 
     expect(await screen.findByText("同步后直接显示的有界摘要")).toBeTruthy();
-    expect(desktop.mailApi.fetchSentMessage).not.toHaveBeenCalled();
+    expect(desktop.fixtures.sentMessageSource).not.toHaveBeenCalled();
   });
 
-  it("renders persisted mailbox batches while synchronization continues", async () => {
-    desktop.mailApi.listInbox.mockResolvedValue([]);
+  it("uses recipients as the Sent list correspondent while preserving the real sender in the reader", async () => {
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: 600,
+    });
+    const sent = {
+      ...summary("sent-recipient-groups", "Sent recipient details"),
+      uid: undefined,
+      sender: { name: "Mine Mail Owner", email: "me@163.com" },
+      to: [{ name: "Primary Friend", email: "to@example.com" }],
+      cc: [{ name: "Copy Friend", email: "cc@example.com" }],
+      bcc: [{ name: "Hidden Friend", email: "bcc@example.com" }],
+      body_text: "Sent body",
+      body_fetched: true,
+      flags: ["\\Seen"],
+    };
+    desktop.fixtures.inboxPageSource.mockResolvedValue([]);
+    desktop.fixtures.sentPageSource.mockResolvedValue([sent]);
+    desktop.fixtures.sentMessageSource.mockResolvedValue(sent);
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: /已发送/ }));
+    const sentList = screen.getByLabelText("已发送邮件列表");
+    expect(
+      within(sentList).getByText(
+        "Primary Friend, Copy Friend, Hidden Friend",
+      ),
+    ).toBeTruthy();
+    expect(within(sentList).queryByText("Mine Mail Owner")).toBeNull();
+    await user.click(within(sentList).getByText("Sent recipient details"));
+
+    const reader = screen.getByLabelText("邮件阅读区");
+    expect(
+      within(reader).getByText("Mine Mail Owner", {
+        selector: ".sender-card__identity strong",
+      }),
+    ).toBeTruthy();
+    await user.click(
+      within(reader).getByRole("button", { name: "查看收件人" }),
+    );
+    const details = within(reader).getByRole("region", {
+      name: "收件人详情",
+    });
+    expect(within(details).getByText("me@163.com")).toBeTruthy();
+    expect(within(details).getByText("to@example.com")).toBeTruthy();
+    expect(within(details).getByText("cc@example.com")).toBeTruthy();
+    expect(within(details).getByText("bcc@example.com")).toBeTruthy();
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: 1024,
+    });
+  });
+
+  it("refreshes persisted mailbox batches without blanking the list", async () => {
+    desktop.fixtures.inboxPageSource.mockResolvedValue([]);
     render(<App />);
     await waitFor(() =>
       expect(desktop.listeners.has("mail:inbox-updated")).toBe(true),
     );
-    await screen.findByText("正在连接邮箱并同步…");
     expect(screen.queryByText("没有找到邮件")).toBeNull();
     const contactsCallsBeforeProgress =
       desktop.mailApi.listContacts.mock.calls.length;
-    desktop.mailApi.listInbox.mockResolvedValue(
+    desktop.fixtures.inboxPageSource.mockResolvedValue(
       Array.from({ length: 10 }, (_, index) =>
         summary(index + 1, `Progress mail ${index + 1}`),
       ),
@@ -345,9 +664,6 @@ describe("Mine Mail desktop state bridge", () => {
       });
     });
 
-    expect(
-      await screen.findByText("正在同步，已加载 10/100 封"),
-    ).toBeTruthy();
     expect(await screen.findByText("Progress mail 10")).toBeTruthy();
     await waitFor(() =>
       expect(desktop.mailApi.listContacts.mock.calls.length).toBeGreaterThan(
@@ -365,11 +681,7 @@ describe("Mine Mail desktop state bridge", () => {
         },
       });
     });
-    await waitFor(() =>
-      expect(
-        screen.queryByText("正在同步，已加载 10/100 封"),
-      ).toBeNull(),
-    );
+    expect(screen.getByText("Progress mail 10")).toBeTruthy();
 
     desktop.mailApi.listDrafts.mockResolvedValue([
       draftSnapshot(1, "Progress draft"),
@@ -393,7 +705,7 @@ describe("Mine Mail desktop state bridge", () => {
     );
     await userEvent.click(screen.getByRole("button", { name: /草稿/ }));
     expect(
-      await screen.findByText("正在同步，已加载 10/20 封"),
+      await screen.findByText("正在同步草稿，已加载 10/20 封"),
     ).toBeTruthy();
     expect(await screen.findByText("Progress draft")).toBeTruthy();
   });
@@ -494,13 +806,270 @@ describe("Mine Mail desktop state bridge", () => {
     );
 
     await act(async () => {
-      desktop.listeners.get("mail:open-message")?.({ payload: { uid: 1 } });
+      desktop.listeners.get("mail:open-message")?.({
+        payload: { message_id: "1", account_id: "desktop-account" },
+      });
     });
 
     await waitFor(() =>
-      expect(desktop.mailApi.fetchMessage).toHaveBeenCalledWith(1),
+      expect(desktop.mailApi.fetchMailboxMessage).toHaveBeenCalledWith("1"),
     );
     expect(await screen.findByText("Loaded body")).toBeTruthy();
+  });
+
+  it("ignores numeric row ids from desktop open-message events", async () => {
+    render(<App />);
+    await waitFor(() =>
+      expect(desktop.listeners.has("mail:open-message")).toBe(true),
+    );
+    desktop.mailApi.fetchMailboxMessage.mockClear();
+
+    await act(async () => {
+      desktop.listeners.get("mail:open-message")?.({
+        payload: { message_id: 1, account_id: "desktop-account" },
+      });
+      await Promise.resolve();
+    });
+
+    expect(desktop.mailApi.fetchMailboxMessage).not.toHaveBeenCalled();
+  });
+
+  it("opens a notification target directly even when it is moved outside the Inbox page", async () => {
+    const moved = {
+      ...summary("moved-public-id", "Moved notification target"),
+      uid: undefined,
+      displayed_role: "archive",
+      body_text: "Body loaded directly by public id",
+      body_fetched: true,
+      flags: ["\\Seen"],
+    };
+    desktop.mailApi.fetchMailboxMessage.mockImplementation(async (messageId) =>
+      messageId === "moved-public-id"
+        ? moved
+        : desktop.fixtures.inboxMessageSource(Number(messageId)),
+    );
+    render(<App />);
+    await waitFor(() =>
+      expect(desktop.listeners.has("mail:open-message")).toBe(true),
+    );
+
+    await act(async () => {
+      desktop.listeners.get("mail:open-message")?.({
+        payload: {
+          message_id: "moved-public-id",
+          account_id: "desktop-account",
+        },
+      });
+    });
+
+    expect(
+      await screen.findByRole("heading", {
+        name: "Moved notification target",
+      }),
+    ).toBeTruthy();
+    expect(screen.getByText("Body loaded directly by public id")).toBeTruthy();
+    expect(desktop.mailApi.fetchMailboxMessage).toHaveBeenCalledWith(
+      "moved-public-id",
+    );
+  });
+
+  it("keeps only the latest desktop open-message intent when direct fetches resolve out of order", async () => {
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: 600,
+    });
+    const firstFetch = deferred();
+    desktop.mailApi.fetchMailboxMessage.mockImplementation(async (messageId) => {
+      if (messageId === "event-first") return firstFetch.promise;
+      if (messageId === "event-second") {
+        return {
+          ...summary("event-second", "Latest notification target"),
+          uid: undefined,
+          body_text: "Latest notification body",
+          body_fetched: true,
+          flags: ["\\Seen"],
+        };
+      }
+      return desktop.fixtures.inboxMessageSource(Number(messageId));
+    });
+    render(<App />);
+    await waitFor(() =>
+      expect(desktop.listeners.has("mail:open-message")).toBe(true),
+    );
+
+    await act(async () => {
+      desktop.listeners.get("mail:open-message")?.({
+        payload: {
+          message_id: "event-first",
+          account_id: "desktop-account",
+        },
+      });
+    });
+    await waitFor(() =>
+      expect(desktop.mailApi.fetchMailboxMessage).toHaveBeenCalledWith(
+        "event-first",
+      ),
+    );
+    await act(async () => {
+      desktop.listeners.get("mail:open-message")?.({
+        payload: {
+          message_id: "event-second",
+          account_id: "desktop-account",
+        },
+      });
+    });
+    expect(await screen.findByText("Latest notification body")).toBeTruthy();
+
+    await act(async () => {
+      firstFetch.resolve({
+        ...summary("event-first", "Stale notification target"),
+        uid: undefined,
+        body_text: "Stale notification body",
+        body_fetched: true,
+        flags: ["\\Seen"],
+      });
+    });
+    expect(screen.queryByText("Stale notification body")).toBeNull();
+    expect(screen.getByText("Latest notification body")).toBeTruthy();
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: 1024,
+    });
+  });
+
+  it("does not let a delayed desktop open-message fetch replace manual navigation", async () => {
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: 600,
+    });
+    const eventFetch = deferred();
+    desktop.mailApi.fetchMailboxMessage.mockImplementation(async (messageId) =>
+      messageId === "delayed-event"
+        ? eventFetch.promise
+        : desktop.fixtures.inboxMessageSource(Number(messageId)),
+    );
+    const user = userEvent.setup();
+    render(<App />);
+    await waitFor(() =>
+      expect(desktop.listeners.has("mail:open-message")).toBe(true),
+    );
+
+    await act(async () => {
+      desktop.listeners.get("mail:open-message")?.({
+        payload: {
+          message_id: "delayed-event",
+          account_id: "desktop-account",
+        },
+      });
+    });
+    await waitFor(() =>
+      expect(desktop.mailApi.fetchMailboxMessage).toHaveBeenCalledWith(
+        "delayed-event",
+      ),
+    );
+    await user.click(
+      await screen.findByRole("button", {
+        name: /打开邮件：.*First mail/,
+      }),
+    );
+    expect(await screen.findByText("Loaded body")).toBeTruthy();
+
+    await act(async () => {
+      eventFetch.resolve({
+        ...summary("delayed-event", "Delayed event"),
+        uid: undefined,
+        body_text: "Must not replace manual selection",
+        body_fetched: true,
+        flags: ["\\Seen"],
+      });
+    });
+    expect(screen.queryByText("Must not replace manual selection")).toBeNull();
+    expect(screen.getByText("Loaded body")).toBeTruthy();
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: 1024,
+    });
+  });
+
+  it("keeps a cross-account notification retryable while a composer is open", async () => {
+    const status = {
+      configured: true,
+      accountId: "account-a",
+      activeAccountId: "account-a",
+      provider: "163",
+      email: "a@example.com",
+      backendReady: true,
+      credentialAvailable: true,
+      networkReady: true,
+      startupError: null,
+      accounts: [
+        {
+          accountId: "account-a",
+          provider: "163",
+          email: "a@example.com",
+          backendReady: true,
+          credentialAvailable: true,
+          networkReady: true,
+        },
+        {
+          accountId: "account-b",
+          provider: "gmail",
+          email: "b@example.com",
+          backendReady: true,
+          credentialAvailable: true,
+          networkReady: true,
+        },
+      ],
+    };
+    desktop.mailApi.getAccountStatus.mockResolvedValue(status);
+    desktop.mailApi.fetchMailboxMessage.mockImplementation(async (messageId) =>
+      messageId === "account-b-notification"
+        ? {
+            ...summary(
+              "account-b-notification",
+              "Retried cross-account notification",
+            ),
+            uid: undefined,
+            body_text: "Retried notification body",
+            body_fetched: true,
+            flags: ["\\Seen"],
+          }
+        : desktop.fixtures.inboxMessageSource(Number(messageId)),
+    );
+    const user = userEvent.setup();
+    render(<App />);
+    await waitFor(() =>
+      expect(desktop.listeners.has("mail:open-message")).toBe(true),
+    );
+    await user.click(screen.getByRole("button", { name: /写信/ }));
+
+    await act(async () => {
+      desktop.listeners.get("mail:open-message")?.({
+        payload: {
+          message_id: "account-b-notification",
+          account_id: "account-b",
+        },
+      });
+    });
+    expect(
+      await screen.findByText(
+        "请先关闭当前写信窗口，再打开其他账户的新邮件",
+      ),
+    ).toBeTruthy();
+    expect(desktop.mailApi.switchAccount).not.toHaveBeenCalled();
+    expect(desktop.mailApi.fetchMailboxMessage).not.toHaveBeenCalledWith(
+      "account-b-notification",
+    );
+
+    minimizeComposer();
+    await user.click(screen.getByRole("button", { name: "关闭写信窗口" }));
+    expect(await screen.findByText("Retried notification body")).toBeTruthy();
+    expect(desktop.mailApi.switchAccount).toHaveBeenCalledOnce();
+    expect(desktop.mailApi.switchAccount).toHaveBeenCalledWith("account-b");
+    expect(desktop.mailApi.fetchMailboxMessage).toHaveBeenCalledOnce();
+    expect(desktop.mailApi.fetchMailboxMessage).toHaveBeenCalledWith(
+      "account-b-notification",
+    );
   });
 
   it("marks an unread Inbox message read immediately and requests IMAP persistence", async () => {
@@ -509,8 +1078,8 @@ describe("Mine Mail desktop state bridge", () => {
       value: 600,
     });
     const unread = summary(14, "Unread mail");
-    desktop.mailApi.listInbox.mockResolvedValue([unread]);
-    desktop.mailApi.fetchMessage.mockResolvedValue({
+    desktop.fixtures.inboxPageSource.mockResolvedValue([unread]);
+    desktop.fixtures.inboxMessageSource.mockResolvedValue({
       ...unread,
       body_text: "Unread body",
       body_fetched: true,
@@ -525,7 +1094,7 @@ describe("Mine Mail desktop state bridge", () => {
 
     expect(row?.dataset.unread).toBe("false");
     await waitFor(() =>
-      expect(desktop.mailApi.markMessageRead).toHaveBeenCalledWith(14),
+      expect(desktop.fixtures.recordInboxSeen).toHaveBeenCalledWith(14),
     );
     expect(
       (await screen.findByText("Unread body")).closest(".reader-panel"),
@@ -542,7 +1111,7 @@ describe("Mine Mail desktop state bridge", () => {
       value: 600,
     });
     const message = { ...summary(15, "Star this mail"), mailbox: "INBOX" };
-    desktop.mailApi.listInbox.mockResolvedValue([message]);
+    desktop.fixtures.inboxPageSource.mockResolvedValue([message]);
     const user = userEvent.setup();
     render(<App />);
 
@@ -552,7 +1121,7 @@ describe("Mine Mail desktop state bridge", () => {
     await user.click(addStar);
 
     await waitFor(() =>
-      expect(desktop.mailApi.setMessageStarred).toHaveBeenCalledWith(
+      expect(desktop.fixtures.recordStarred).toHaveBeenCalledWith(
         "INBOX",
         15,
         true,
@@ -563,13 +1132,13 @@ describe("Mine Mail desktop state bridge", () => {
         .getByRole("button", { name: "取消收藏：Star this mail" })
         .getAttribute("aria-pressed"),
     ).toBe("true");
-    expect(desktop.mailApi.fetchMessage).not.toHaveBeenCalled();
+    expect(desktop.fixtures.inboxMessageSource).not.toHaveBeenCalled();
 
     await user.click(
       screen.getByRole("button", { name: "取消收藏：Star this mail" }),
     );
     await waitFor(() =>
-      expect(desktop.mailApi.setMessageStarred).toHaveBeenLastCalledWith(
+      expect(desktop.fixtures.recordStarred).toHaveBeenLastCalledWith(
         "INBOX",
         15,
         false,
@@ -586,21 +1155,21 @@ describe("Mine Mail desktop state bridge", () => {
     });
   });
 
-  it("combines starred Inbox and remote Sent messages without UID collisions", async () => {
+  it("combines starred Inbox and remote Sent messages by opaque local IDs", async () => {
     Object.defineProperty(window, "innerWidth", {
       configurable: true,
       value: 600,
     });
-    desktop.mailApi.listInbox.mockResolvedValue([
+    desktop.fixtures.inboxPageSource.mockResolvedValue([
       {
         ...summary(21, "Starred Inbox"),
         mailbox: "INBOX",
         flags: ["\\Flagged"],
       },
     ]);
-    desktop.mailApi.listSent.mockResolvedValue([
+    desktop.fixtures.sentPageSource.mockResolvedValue([
       {
-        ...summary(21, "Starred Sent"),
+        ...summary(22, "Starred Sent"),
         mailbox: "Sent",
         to: [{ name: "Friend", email: "friend@example.com" }],
         flags: ["\\Seen", "\\Flagged"],
@@ -617,14 +1186,567 @@ describe("Mine Mail desktop state bridge", () => {
       screen.getByRole("button", { name: "取消收藏：Starred Sent" }),
     );
     await waitFor(() =>
-      expect(desktop.mailApi.setMessageStarred).toHaveBeenCalledWith(
+      expect(desktop.fixtures.recordStarred).toHaveBeenCalledWith(
         "Sent",
-        21,
+        22,
         false,
       ),
     );
     expect(screen.getByText("Starred Inbox")).toBeTruthy();
     expect(screen.queryByText("Starred Sent")).toBeNull();
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: 1024,
+    });
+  });
+
+  it("requires confirmation before creating a missing Archive mailbox", async () => {
+    desktop.mailApi.getMailboxCapabilities.mockResolvedValue([
+      { role: "inbox", status: "available", retryable: false },
+      { role: "sent", status: "available", retryable: false },
+      {
+        role: "archive",
+        status: "needs_creation_confirmation",
+        retryable: false,
+      },
+      { role: "trash", status: "available", retryable: false },
+    ]);
+    const user = userEvent.setup();
+    render(<App />);
+
+    const setupArchive = await screen.findByRole("button", {
+      name: /设置归档邮箱/,
+    });
+    expect(
+      desktop.mailApi.listMailboxPage.mock.calls.some(
+        ([, role]) => role === "archive",
+      ),
+    ).toBe(false);
+
+    await user.click(setupArchive);
+    let dialog = await screen.findByRole("alertdialog", {
+      name: "创建 Archive 邮箱？",
+    });
+    await user.click(within(dialog).getByRole("button", { name: "取消" }));
+    expect(desktop.mailApi.createMailboxRole).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(setupArchive);
+
+    await user.click(setupArchive);
+    dialog = await screen.findByRole("alertdialog", {
+      name: "创建 Archive 邮箱？",
+    });
+    await user.click(
+      within(dialog).getByRole("button", { name: "创建 Archive" }),
+    );
+
+    await waitFor(() =>
+      expect(desktop.mailApi.createMailboxRole).toHaveBeenCalledWith(
+        "desktop-account",
+        "archive",
+      ),
+    );
+    expect(
+      await screen.findByRole("heading", { name: "归档" }),
+    ).toBeTruthy();
+    expect(
+      desktop.mailApi.listMailboxPage.mock.calls.some(
+        ([accountId, role]) =>
+          accountId === "desktop-account" && role === "archive",
+      ),
+    ).toBe(true);
+  });
+
+  it("appends an older mailbox page using the opaque backend cursor", async () => {
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: 600,
+    });
+    const newest = {
+      ...summary("message-local-newest", "Newest local page"),
+      uid: undefined,
+      flags: ["\\Seen"],
+    };
+    const older = {
+      ...summary("message-local-older", "Older local page"),
+      uid: undefined,
+      flags: ["\\Seen"],
+    };
+    desktop.mailApi.listMailboxPage.mockImplementation(
+      async (_, role, _cursor, _pageSize, query) =>
+        role === "inbox" && !query
+          ? mailboxPage([newest], role, {
+              next_cursor: "opaque-page-cursor",
+              has_more_local: true,
+              remote_history_state: "not_checked",
+              end_reached: false,
+            })
+          : mailboxPage([], role),
+    );
+    desktop.mailApi.loadOlderMailboxPage.mockResolvedValue(
+      mailboxPage([older], "inbox"),
+    );
+    const user = userEvent.setup();
+    render(<App />);
+
+    expect(await screen.findByText("Newest local page")).toBeTruthy();
+    await user.click(
+      await screen.findByRole("button", { name: "加载更早邮件" }),
+    );
+
+    await waitFor(() =>
+      expect(desktop.mailApi.loadOlderMailboxPage).toHaveBeenCalledWith(
+        "desktop-account",
+        "inbox",
+        "opaque-page-cursor",
+        50,
+        null,
+      ),
+    );
+    expect(await screen.findByText("Older local page")).toBeTruthy();
+    expect(screen.getByText("Newest local page")).toBeTruthy();
+    expect(await screen.findByText("已显示全部邮件")).toBeTruthy();
+  });
+
+  it("keeps cached rows visible while backend mailbox search is pending", async () => {
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: 600,
+    });
+    const pendingSearch = deferred();
+    const cached = {
+      ...summary("message-cached", "Cached row remains visible"),
+      uid: undefined,
+      flags: ["\\Seen"],
+    };
+    const remoteMatch = {
+      ...summary("message-search-result", "Server-side only result"),
+      uid: undefined,
+      flags: ["\\Seen"],
+    };
+    desktop.mailApi.listMailboxPage.mockImplementation(
+      async (_, role, _cursor, _pageSize, query) => {
+        if (role === "inbox" && query === "server-side") {
+          return pendingSearch.promise;
+        }
+        return role === "inbox"
+          ? mailboxPage([cached], role)
+          : mailboxPage([], role);
+      },
+    );
+    const user = userEvent.setup();
+    render(<App />);
+
+    expect(await screen.findByText("Cached row remains visible")).toBeTruthy();
+    await user.type(
+      screen.getByRole("textbox", { name: "搜索邮件" }),
+      "server-side",
+    );
+    await waitFor(() =>
+      expect(desktop.mailApi.listMailboxPage).toHaveBeenCalledWith(
+        "desktop-account",
+        "inbox",
+        null,
+        50,
+        "server-side",
+      ),
+    );
+    expect(screen.getByText("Cached row remains visible")).toBeTruthy();
+
+    await act(async () => {
+      pendingSearch.resolve(mailboxPage([remoteMatch], "inbox"));
+    });
+    expect(await screen.findByText("Server-side only result")).toBeTruthy();
+    expect(screen.queryByText("Cached row remains visible")).toBeNull();
+  });
+
+  it("uses opaque message IDs for archive and trash mutations", async () => {
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: 600,
+    });
+    const archiveTarget = {
+      ...summary("message-to-archive", "Archive opaque message"),
+      uid: undefined,
+      flags: ["\\Seen"],
+      body_text: "Archive body",
+      body_fetched: true,
+    };
+    const trashTarget = {
+      ...summary("message-to-trash", "Trash opaque message"),
+      uid: undefined,
+      flags: ["\\Seen"],
+      body_text: "Trash body",
+      body_fetched: true,
+    };
+    let inboxRows = [archiveTarget, trashTarget];
+    let archiveRows = [];
+    let trashRows = [];
+    desktop.mailApi.listMailboxPage.mockImplementation(async (_, role) =>
+      mailboxPage(
+        role === "inbox"
+          ? inboxRows
+          : role === "archive"
+            ? archiveRows
+            : role === "trash"
+              ? trashRows
+              : [],
+        role,
+      ),
+    );
+    desktop.mailApi.archiveMessage.mockImplementation(async (messageId) => {
+      inboxRows = inboxRows.filter((message) => message.id !== messageId);
+      archiveRows = [...archiveRows, archiveTarget];
+      return {
+        operation_id: `archive-${messageId}`,
+        local_revision: 1,
+        status: "pending",
+        source_role: "inbox",
+        destination_role: "archive",
+      };
+    });
+    desktop.mailApi.moveMessageToTrash.mockImplementation(
+      async (messageId) => {
+        inboxRows = inboxRows.filter((message) => message.id !== messageId);
+        trashRows = [...trashRows, trashTarget];
+        return {
+          operation_id: `trash-${messageId}`,
+          local_revision: 1,
+          status: "pending",
+          source_role: "inbox",
+          destination_role: "trash",
+        };
+      },
+    );
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(
+      await screen.findByRole("button", {
+        name: /打开邮件：.*Archive opaque message/,
+      }),
+    );
+    let reader = screen.getByLabelText("邮件阅读区");
+    await user.click(
+      within(reader).getByRole("button", { name: "归档" }),
+    );
+    await waitFor(() =>
+      expect(desktop.mailApi.archiveMessage).toHaveBeenCalledWith(
+        "message-to-archive",
+      ),
+    );
+
+    expect(
+      await screen.findByRole("heading", { name: "Trash opaque message" }),
+    ).toBeTruthy();
+    reader = screen.getByLabelText("邮件阅读区");
+    await user.click(
+      within(reader).getByRole("button", { name: "移到垃圾箱" }),
+    );
+    await waitFor(() =>
+      expect(desktop.mailApi.moveMessageToTrash).toHaveBeenCalledWith(
+        "message-to-trash",
+      ),
+    );
+    expect(screen.queryByText("Archive opaque message")).toBeNull();
+    expect(screen.queryByText("Trash opaque message")).toBeNull();
+  });
+
+  it("keeps a delayed mailbox mutation scoped to its captured account", async () => {
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: 600,
+    });
+    const accountStatus = {
+      configured: true,
+      accountId: "account-a",
+      activeAccountId: "account-a",
+      provider: "163",
+      email: "a@example.com",
+      backendReady: true,
+      credentialAvailable: true,
+      networkReady: true,
+      startupError: null,
+      accounts: [
+        {
+          accountId: "account-a",
+          provider: "163",
+          email: "a@example.com",
+          backendReady: true,
+          credentialAvailable: true,
+          networkReady: true,
+        },
+        {
+          accountId: "account-b",
+          provider: "gmail",
+          email: "b@example.com",
+          backendReady: true,
+          credentialAvailable: true,
+          networkReady: true,
+        },
+      ],
+    };
+    desktop.mailApi.getAccountStatus.mockResolvedValue(accountStatus);
+    const accountATarget = {
+      ...summary("account-a-target", "Account A target"),
+      uid: undefined,
+      body_text: "Account A target body",
+      body_fetched: true,
+      flags: ["\\Seen"],
+    };
+    const accountAAdjacent = {
+      ...summary("account-a-adjacent", "Account A adjacent"),
+      uid: undefined,
+      body_text: "Account A adjacent body",
+      body_fetched: true,
+      flags: ["\\Seen"],
+    };
+    const accountBFirst = {
+      ...summary("account-b-first", "Account B first"),
+      uid: undefined,
+      body_text: "Account B first body",
+      body_fetched: true,
+      flags: ["\\Seen"],
+    };
+    const accountBSelected = {
+      ...summary("account-b-selected", "Account B remains selected"),
+      uid: undefined,
+      body_text: "Account B body",
+      body_fetched: true,
+      flags: ["\\Seen"],
+    };
+    let accountARows = [accountATarget, accountAAdjacent];
+    desktop.mailApi.listMailboxPage.mockImplementation(
+      async (accountId, role) =>
+        mailboxPage(
+          role === "inbox"
+            ? accountId === "account-a"
+              ? accountARows
+              : [accountBFirst, accountBSelected]
+            : [],
+          role,
+        ),
+    );
+    const archiveResult = deferred();
+    desktop.mailApi.archiveMessage.mockReturnValue(archiveResult.promise);
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(
+      await screen.findByRole("button", {
+        name: /打开邮件：.*Account A target/,
+      }),
+    );
+    await user.click(
+      within(screen.getByLabelText("邮件阅读区")).getByRole("button", {
+        name: "归档",
+      }),
+    );
+    await waitFor(() =>
+      expect(desktop.mailApi.archiveMessage).toHaveBeenCalledWith(
+        "account-a-target",
+      ),
+    );
+    await user.click(
+      screen.getByRole("button", { name: "切换到 b@example.com" }),
+    );
+    await screen.findByRole("button", { name: "当前账户 b@example.com" });
+    await user.click(
+      await screen.findByRole("button", {
+        name: /打开邮件：.*Account B remains selected/,
+      }),
+    );
+    expect(
+      await screen.findByRole("heading", {
+        name: "Account B remains selected",
+      }),
+    ).toBeTruthy();
+
+    accountARows = [accountAAdjacent];
+    await act(async () => {
+      archiveResult.resolve({
+        operation_id: "archive-account-a",
+        local_revision: 1,
+        status: "pending",
+        source_role: "inbox",
+        destination_role: "archive",
+      });
+    });
+    expect(
+      screen.getByRole("heading", { name: "Account B remains selected" }),
+    ).toBeTruthy();
+    expect(screen.getByText("Account B body")).toBeTruthy();
+    expect(screen.queryByText("Account A adjacent body")).toBeNull();
+    expect(
+      screen.queryByRole("heading", { name: "Account B first" }),
+    ).toBeNull();
+
+    await user.click(
+      screen.getByRole("button", { name: "切换到 a@example.com" }),
+    );
+    await screen.findByRole("button", { name: "当前账户 a@example.com" });
+    expect(
+      await screen.findByRole("heading", { name: "Account A adjacent" }),
+    ).toBeTruthy();
+    expect(screen.getByText("Account A adjacent body")).toBeTruthy();
+    expect(screen.queryByText("Account A target")).toBeNull();
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: 1024,
+    });
+  });
+
+  it("does not replace a newer same-account selection when an earlier mutation completes", async () => {
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: 600,
+    });
+    const target = {
+      ...summary("race-target", "Mutation target"),
+      uid: undefined,
+      body_text: "Mutation target body",
+      body_fetched: true,
+      flags: ["\\Seen"],
+    };
+    const adjacent = {
+      ...summary("race-adjacent", "Automatic adjacent"),
+      uid: undefined,
+      body_text: "Automatic adjacent body",
+      body_fetched: true,
+      flags: ["\\Seen"],
+    };
+    const manual = {
+      ...summary("race-manual", "Manual newer selection"),
+      uid: undefined,
+      body_text: "Manual newer body",
+      body_fetched: true,
+      flags: ["\\Seen"],
+    };
+    let inboxRows = [target, adjacent, manual];
+    desktop.mailApi.listMailboxPage.mockImplementation(async (_, role) =>
+      mailboxPage(role === "inbox" ? inboxRows : [], role),
+    );
+    const archiveResult = deferred();
+    desktop.mailApi.archiveMessage.mockReturnValue(archiveResult.promise);
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(
+      await screen.findByRole("button", {
+        name: /打开邮件：.*Mutation target/,
+      }),
+    );
+    await user.click(
+      within(screen.getByLabelText("邮件阅读区")).getByRole("button", {
+        name: "归档",
+      }),
+    );
+    await waitFor(() =>
+      expect(desktop.mailApi.archiveMessage).toHaveBeenCalledWith("race-target"),
+    );
+    await user.click(
+      screen.getByRole("button", {
+        name: /打开邮件：.*Manual newer selection/,
+      }),
+    );
+    expect(
+      await screen.findByRole("heading", { name: "Manual newer selection" }),
+    ).toBeTruthy();
+
+    inboxRows = [adjacent, manual];
+    await act(async () => {
+      archiveResult.resolve({
+        operation_id: "archive-race-target",
+        local_revision: 1,
+        status: "pending",
+        source_role: "inbox",
+        destination_role: "archive",
+      });
+    });
+    expect(
+      screen.getByRole("heading", { name: "Manual newer selection" }),
+    ).toBeTruthy();
+    expect(screen.getByText("Manual newer body")).toBeTruthy();
+    expect(screen.queryByText("Automatic adjacent body")).toBeNull();
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: 1024,
+    });
+  });
+
+  it("requires a fresh confirmation plan before permanently deleting trash", async () => {
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: 600,
+    });
+    const trashMessage = {
+      ...summary("message-in-trash", "Delete opaque message"),
+      uid: undefined,
+      displayed_role: "trash",
+      flags: ["\\Seen"],
+      body_text: "Trash body",
+      body_fetched: true,
+    };
+    let deleted = false;
+    desktop.mailApi.listMailboxPage.mockImplementation(async (_, role) =>
+      mailboxPage(
+        role === "trash" && !deleted ? [trashMessage] : [],
+        role,
+      ),
+    );
+    desktop.mailApi.confirmPermanentDelete.mockImplementation(
+      async (planId) => {
+        deleted = true;
+        return {
+          operation_id: `delete-${planId}`,
+          local_revision: 1,
+          status: "pending",
+          source_role: "trash",
+        };
+      },
+    );
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: /^垃圾箱$/ }));
+    await user.click(
+      await screen.findByRole("button", {
+        name: /打开邮件：.*Delete opaque message/,
+      }),
+    );
+    let reader = screen.getByLabelText("邮件阅读区");
+    await user.click(
+      within(reader).getByRole("button", { name: "永久删除" }),
+    );
+    let dialog = await screen.findByRole("alertdialog", {
+      name: "永久删除这封邮件？",
+    });
+    expect(desktop.mailApi.preparePermanentDelete).toHaveBeenCalledWith(
+      "message-in-trash",
+    );
+    await user.click(within(dialog).getByRole("button", { name: "取消" }));
+    expect(desktop.mailApi.confirmPermanentDelete).not.toHaveBeenCalled();
+    expect(screen.getAllByText("Delete opaque message").length).toBeGreaterThan(
+      0,
+    );
+
+    reader = screen.getByLabelText("邮件阅读区");
+    await user.click(
+      within(reader).getByRole("button", { name: "永久删除" }),
+    );
+    dialog = await screen.findByRole("alertdialog", {
+      name: "永久删除这封邮件？",
+    });
+    await user.click(
+      within(dialog).getByRole("button", { name: "永久删除" }),
+    );
+    await waitFor(() =>
+      expect(desktop.mailApi.confirmPermanentDelete).toHaveBeenCalledWith(
+        "delete-plan-message-in-trash",
+      ),
+    );
+    await waitFor(() =>
+      expect(screen.queryByText("Delete opaque message")).toBeNull(),
+    );
     Object.defineProperty(window, "innerWidth", {
       configurable: true,
       value: 1024,
@@ -662,6 +1784,7 @@ describe("Mine Mail desktop state bridge", () => {
 
   it("separates current contacts from app-wide favorites and reuses the reader", async () => {
     const contact = {
+      accountId: "desktop-account",
       email: "friend@example.com",
       displayName: "Friend",
       isFavorite: false,
@@ -696,7 +1819,7 @@ describe("Mine Mail desktop state bridge", () => {
         favorites: [favoritedContact, pinnedContact],
       });
     desktop.mailApi.listContactMessages.mockResolvedValue([contactMessage]);
-    desktop.mailApi.fetchContactMessage.mockResolvedValue({
+    desktop.mailApi.fetchMailboxMessage.mockResolvedValue({
       ...contactMessage,
       body_text: "Contact message body",
       body_fetched: true,
@@ -756,12 +1879,7 @@ describe("Mine Mail desktop state bridge", () => {
       screen.getByRole("button", { name: "打开邮件：Contact hello" }),
     );
     expect(await screen.findByText("Contact message body")).toBeTruthy();
-    expect(desktop.mailApi.fetchContactMessage).toHaveBeenCalledWith(
-      "desktop-account",
-      "Archive/2026",
-      33,
-    );
-    expect(desktop.mailApi.fetchMessage).not.toHaveBeenCalledWith(33);
+    expect(desktop.mailApi.fetchMailboxMessage).toHaveBeenCalledWith("33");
 
     await user.click(screen.getByRole("button", { name: "返回联系人详情" }));
     expect(
@@ -823,6 +1941,27 @@ describe("Mine Mail desktop state bridge", () => {
         },
       ],
     });
+    const gmailMessage = {
+      ...summary(88, "Gmail history"),
+      mailbox_role: "inbox",
+      sender: { name: "Gmail 联系人", email: "friend@gmail.com" },
+      direction: "incoming",
+      body_fetched: true,
+    };
+    desktop.mailApi.listContactMessages.mockImplementation(
+      async (accountId) =>
+        accountId === "account-gmail" ? [gmailMessage] : [],
+    );
+    desktop.mailApi.fetchMailboxMessage.mockImplementation(async (messageId) => {
+      if (messageId === "88") {
+        return {
+          ...gmailMessage,
+          body_text: "Cross-account body",
+          body_fetched: true,
+        };
+      }
+      return desktop.fixtures.inboxMessageSource(Number(messageId));
+    });
     const user = userEvent.setup();
     render(<App />);
 
@@ -852,6 +1991,154 @@ describe("Mine Mail desktop state bridge", () => {
         250,
       ),
     );
+    await user.click(
+      await screen.findByRole("button", { name: "打开邮件：Gmail history" }),
+    );
+    expect(await screen.findByText("Cross-account body")).toBeTruthy();
+    expect(desktop.mailApi.switchAccount).toHaveBeenCalledOnce();
+    expect(desktop.mailApi.switchAccount).toHaveBeenCalledWith("account-gmail");
+    expect(desktop.mailApi.fetchMailboxMessage).toHaveBeenCalledWith("88");
+    expect(
+      desktop.mailApi.switchAccount.mock.invocationCallOrder.at(-1),
+    ).toBeLessThan(
+      desktop.mailApi.fetchMailboxMessage.mock.invocationCallOrder.at(-1),
+    );
+    await user.click(
+      screen.getByRole("button", { name: "返回联系人详情" }),
+    );
+    expect(
+      await screen.findByRole("heading", { name: "Gmail 联系人" }),
+    ).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "往来邮件" })).toBeTruthy();
+  });
+
+  it("cancels a delayed cross-account contact open after leaving the contact", async () => {
+    desktop.mailApi.getAccountStatus.mockResolvedValue({
+      configured: true,
+      accountId: "account-163",
+      activeAccountId: "account-163",
+      provider: "163",
+      email: "me@163.com",
+      backendReady: true,
+      credentialAvailable: true,
+      networkReady: true,
+      startupError: null,
+      accounts: [
+        {
+          accountId: "account-163",
+          provider: "163",
+          email: "me@163.com",
+          backendReady: true,
+          credentialAvailable: true,
+          networkReady: true,
+        },
+        {
+          accountId: "account-gmail",
+          provider: "gmail",
+          email: "me@gmail.com",
+          backendReady: true,
+          credentialAvailable: true,
+          networkReady: true,
+        },
+      ],
+    });
+    const contact = {
+      accountId: "account-gmail",
+      email: "friend@gmail.com",
+      displayName: "Delayed Gmail contact",
+      isFavorite: true,
+      messageCount: 1,
+    };
+    const history = {
+      ...summary("gmail-delayed-message", "Delayed Gmail history"),
+      uid: undefined,
+      mailbox_role: "inbox",
+      sender: { name: "Friend", email: contact.email },
+      direction: "incoming",
+      body_fetched: true,
+    };
+    desktop.mailApi.listContacts.mockResolvedValue({
+      contacts: [],
+      favorites: [contact],
+    });
+    desktop.mailApi.listContactMessages.mockResolvedValue([history]);
+    const switchResult = deferred();
+    desktop.mailApi.switchAccount.mockReturnValue(switchResult.promise);
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: "通讯录" }));
+    await user.click(screen.getByRole("tab", { name: "收藏" }));
+    await user.click(
+      await screen.findByRole("button", {
+        name: "查看联系人 Delayed Gmail contact（me@gmail.com）",
+      }),
+    );
+    await user.click(
+      await screen.findByRole("button", {
+        name: "打开邮件：Delayed Gmail history",
+      }),
+    );
+    await waitFor(() =>
+      expect(desktop.mailApi.switchAccount).toHaveBeenCalledWith(
+        "account-gmail",
+      ),
+    );
+    await user.click(
+      screen.getByRole("button", { name: "返回通讯录" }),
+    );
+
+    await act(async () => {
+      switchResult.resolve({
+        ...(await desktop.mailApi.getAccountStatus()),
+        accountId: "account-gmail",
+        activeAccountId: "account-gmail",
+        email: "me@gmail.com",
+      });
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(desktop.mailApi.fetchMailboxMessage).not.toHaveBeenCalledWith(
+      "gmail-delayed-message",
+    );
+    expect(screen.queryByText("Delayed Gmail history")).toBeNull();
+    expect(
+      screen.getByLabelText("邮件阅读区，当前未打开邮件"),
+    ).toBeTruthy();
+  });
+
+  it("filters app-wide favorites without an owning account and reports recovery guidance", async () => {
+    desktop.mailApi.listContacts.mockResolvedValue({
+      contacts: [
+        {
+          email: "valid@example.com",
+          displayName: "Valid active contact",
+          isFavorite: false,
+          messageCount: 1,
+        },
+      ],
+      favorites: [
+        {
+          email: "legacy@example.com",
+          displayName: "Legacy favorite without account",
+          isFavorite: true,
+          messageCount: 2,
+        },
+      ],
+    });
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: "通讯录" }));
+    await user.click(screen.getByRole("tab", { name: "收藏" }));
+    expect(screen.queryByText("Legacy favorite without account")).toBeNull();
+    expect(
+      screen.getByText(
+        "部分收藏联系人缺少邮箱账户归属，已暂时忽略；重新收藏后可恢复。",
+      ),
+    ).toBeTruthy();
+    expect(desktop.mailApi.setContactFavorite).not.toHaveBeenCalled();
   });
 
   it("keeps visible contact rows mounted during background mailbox refresh", async () => {
@@ -937,10 +2224,13 @@ describe("Mine Mail desktop state bridge", () => {
       screen.getByRole("button", { name: "查看联系人 林老师" }),
     ).toBeTruthy();
 
-    await user.click(screen.getByRole("button", { name: "收件箱" }));
-    const mailRow = await screen.findByRole("option");
+    await user.click(screen.getByRole("button", { name: /^收件箱/ }));
+    const openMail = await screen.findByRole("button", {
+      name: /打开邮件：林老师，/,
+    });
+    const mailRow = openMail.closest("li");
     expect(mailRow.textContent).toContain("林老师");
-    await user.click(mailRow);
+    await user.click(openMail);
     await screen.findByText("Loaded body");
     expect(
       document.querySelector(".sender-card__identity strong")?.textContent,
@@ -954,10 +2244,10 @@ describe("Mine Mail desktop state bridge", () => {
     });
     const first = summary(1, "First mail");
     const second = summary(2, "Second mail");
-    desktop.mailApi.listInbox.mockResolvedValue([first, second]);
+    desktop.fixtures.inboxPageSource.mockResolvedValue([first, second]);
     let resolveFirst;
     let resolveSecond;
-    desktop.mailApi.fetchMessage.mockImplementation(
+    desktop.fixtures.inboxMessageSource.mockImplementation(
       (uid) =>
         new Promise((resolve) => {
           if (uid === 1) resolveFirst = resolve;
@@ -990,6 +2280,100 @@ describe("Mine Mail desktop state bridge", () => {
     expect(screen.queryByText("Stale first body")).toBeNull();
   });
 
+  it("keeps authoritative attachment metadata cached across message switches and retries independently", async () => {
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: 600,
+    });
+    const first = summary(41, "Attachment mail");
+    const second = summary(42, "Other mail");
+    desktop.fixtures.inboxPageSource.mockResolvedValue([first, second]);
+    desktop.mailApi.fetchMailboxMessage.mockImplementation(async (messageId) => {
+      if (messageId === "41") {
+        return {
+          ...first,
+          body_text: "Attachment body",
+          body_fetched: true,
+          attachments: [
+            {
+              id: "part-a",
+              safe_display_name: "alpha.pdf",
+              mime_type: "application/pdf",
+              size_bytes: 2048,
+              disposition: "attachment",
+            },
+            {
+              id: "part-b",
+              safe_display_name: "beta.zip",
+              mime_type: "application/zip",
+              size_bytes: 4096,
+              disposition: "attachment",
+            },
+          ],
+        };
+      }
+      return {
+        ...second,
+        body_text: "Other body",
+        body_fetched: true,
+        attachments: [],
+      };
+    });
+    desktop.mailApi.saveMessageAttachment
+      .mockResolvedValueOnce({
+        status: "error",
+        error_kind: "disk_full",
+        retryable: true,
+      })
+      .mockResolvedValueOnce({
+        status: "saved",
+        file_name: "alpha (1).pdf",
+        retryable: false,
+      });
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(await screen.findByText("Attachment mail"));
+    await user.click(
+      await screen.findByRole("button", { name: "保存附件 alpha.pdf" }),
+    );
+    expect(await screen.findByText(/磁盘空间不足，可重试/)).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Attachment mail" })).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "保存附件 beta.zip" }),
+    ).toBeTruthy();
+
+    await user.click(screen.getByText("Other mail"));
+    expect(await screen.findByText("Other body")).toBeTruthy();
+    await user.click(screen.getByText("Attachment mail"));
+
+    expect(
+      await screen.findByRole("button", {
+        name: "重试保存附件 alpha.pdf：磁盘空间不足",
+      }),
+    ).toBeTruthy();
+    expect(
+      desktop.mailApi.fetchMailboxMessage.mock.calls.filter(
+        ([messageId]) => messageId === "41",
+      ),
+    ).toHaveLength(1);
+
+    await user.click(
+      screen.getByRole("button", {
+        name: "重试保存附件 alpha.pdf：磁盘空间不足",
+      }),
+    );
+    expect(
+      await screen.findByRole("group", {
+        name: "附件 alpha.pdf 已保存为 alpha (1).pdf",
+      }),
+    ).toBeTruthy();
+    expect(desktop.mailApi.saveMessageAttachment.mock.calls).toEqual([
+      ["41", "part-a"],
+      ["41", "part-a"],
+    ]);
+  });
+
   it("paints the local preview immediately while the full body hydrates", async () => {
     Object.defineProperty(window, "innerWidth", {
       configurable: true,
@@ -1000,8 +2384,8 @@ describe("Mine Mail desktop state bridge", () => {
       preview: "Immediately visible local copy",
     };
     const bodyResponse = deferred();
-    desktop.mailApi.listInbox.mockResolvedValue([localSummary]);
-    desktop.mailApi.fetchMessage.mockReturnValue(bodyResponse.promise);
+    desktop.fixtures.inboxPageSource.mockResolvedValue([localSummary]);
+    desktop.fixtures.inboxMessageSource.mockReturnValue(bodyResponse.promise);
     const user = userEvent.setup();
 
     render(<App />);
@@ -1035,8 +2419,8 @@ describe("Mine Mail desktop state bridge", () => {
       body_html_available: true,
       body_html_loaded: false,
     };
-    desktop.mailApi.listInbox.mockResolvedValue([richSummary]);
-    desktop.mailApi.fetchMessage.mockResolvedValue({
+    desktop.fixtures.inboxPageSource.mockResolvedValue([richSummary]);
+    desktop.fixtures.inboxMessageSource.mockResolvedValue({
       ...richSummary,
       body_html:
         '<table><tbody><tr><td class="desktop">Rich layout</td></tr></tbody></table>',
@@ -1050,7 +2434,7 @@ describe("Mine Mail desktop state bridge", () => {
     await user.click(await screen.findByText("Rich mail"));
 
     const frame = await screen.findByTitle("Rich mail HTML 正文");
-    expect(desktop.mailApi.fetchMessage).toHaveBeenCalledWith(7);
+    expect(desktop.fixtures.inboxMessageSource).toHaveBeenCalledWith(7);
     expect(frame.getAttribute("sandbox")).toBe("allow-same-origin");
     expect(frame.getAttribute("srcdoc")).toContain("Rich layout");
     expect(screen.queryByText("Flattened duplicate copy")).toBeNull();
@@ -1073,8 +2457,10 @@ describe("Mine Mail desktop state bridge", () => {
       configurable: true,
       value: 600,
     });
-    desktop.mailApi.listInbox.mockResolvedValue([summary(1, "First mail")]);
-    desktop.mailApi.fetchMessage.mockResolvedValue({
+    desktop.fixtures.inboxPageSource.mockResolvedValue([
+      summary(1, "First mail"),
+    ]);
+    desktop.fixtures.inboxMessageSource.mockResolvedValue({
       ...summary(1, "First mail"),
       body_text: "Reader content must remain visible",
       body_fetched: true,
@@ -1082,13 +2468,16 @@ describe("Mine Mail desktop state bridge", () => {
     const user = userEvent.setup();
 
     render(<App />);
-    await user.click(await screen.findByText("First mail"));
+    const inbox = await screen.findByLabelText("收件箱邮件列表");
+    await user.click(await within(inbox).findByText("First mail"));
     const reader = screen.getByLabelText("邮件阅读区");
     expect(
       await within(reader).findByText("Reader content must remain visible"),
     ).toBeTruthy();
 
-    desktop.mailApi.listInbox.mockResolvedValue([summary(2, "New arrival")]);
+    desktop.fixtures.inboxPageSource.mockResolvedValue([
+      summary(2, "New arrival"),
+    ]);
     await waitFor(() =>
       expect(desktop.listeners.has("mail:inbox-updated")).toBe(true),
     );
@@ -1097,7 +2486,7 @@ describe("Mine Mail desktop state bridge", () => {
     });
 
     await waitFor(() =>
-      expect(desktop.mailApi.listInbox).toHaveBeenCalledTimes(2),
+      expect(desktop.fixtures.inboxPageSource).toHaveBeenCalledTimes(2),
     );
     expect(
       within(reader).getByText("Reader content must remain visible"),
@@ -1115,8 +2504,8 @@ describe("Mine Mail desktop state bridge", () => {
       body_html_available: true,
       body_html_loaded: false,
     };
-    desktop.mailApi.listInbox.mockResolvedValue([replySummary]);
-    desktop.mailApi.fetchMessage.mockResolvedValue({
+    desktop.fixtures.inboxPageSource.mockResolvedValue([replySummary]);
+    desktop.fixtures.inboxMessageSource.mockResolvedValue({
       ...replySummary,
       body_text: "My reply.\n\nOriginal body.",
       body_html:
@@ -1152,7 +2541,7 @@ describe("Mine Mail desktop state bridge", () => {
     expect(container.querySelector("iframe")).toBeNull();
   });
 
-  it("opens and focuses a referenced Sent message without expanding the quote card", async () => {
+  it("opens quoted remote mail only through its opaque id", async () => {
     const replySummary = {
       ...summary(9, "Reply with local ancestor"),
       mailbox: "INBOX",
@@ -1163,9 +2552,9 @@ describe("Mine Mail desktop state bridge", () => {
       sender: { name: "Me", email: "me@163.com" },
       to: [{ name: "Friend", email: "friend@example.com" }],
     };
-    desktop.mailApi.listInbox.mockResolvedValue([replySummary]);
-    desktop.mailApi.listSent.mockResolvedValue([sentAncestor]);
-    desktop.mailApi.fetchMessage.mockResolvedValue({
+    desktop.fixtures.inboxPageSource.mockResolvedValue([replySummary]);
+    desktop.fixtures.sentPageSource.mockResolvedValue([sentAncestor]);
+    desktop.fixtures.inboxMessageSource.mockResolvedValue({
       ...replySummary,
       body_text: "Current reply.\n\nEarlier body.",
       body_fetched: true,
@@ -1184,11 +2573,15 @@ describe("Mine Mail desktop state bridge", () => {
           quote_depth: 1,
           confidence: "high",
           quote_metadata: { subject: "Original sent message" },
-          navigation_target: { mailbox: "Sent", uid: 71 },
+          navigation_target: {
+            id: "71",
+            mailbox: "Sent",
+            uid: 71,
+          },
         },
       ],
     });
-    desktop.mailApi.fetchSentMessage.mockResolvedValue({
+    desktop.fixtures.sentMessageSource.mockResolvedValue({
       ...sentAncestor,
       body_text: "Canonical sent ancestor body",
       body_fetched: true,
@@ -1201,29 +2594,70 @@ describe("Mine Mail desktop state bridge", () => {
     expect(details.open).toBe(false);
 
     await user.click(
-      await screen.findByRole("button", {
+      screen.getByRole("button", {
         name: "在已发送中打开原邮件：Original sent message",
       }),
     );
-
-    await waitFor(() =>
-      expect(desktop.mailApi.fetchSentMessage).toHaveBeenCalledWith(71),
-    );
-    expect(screen.getByLabelText("已发送邮件列表")).toBeTruthy();
-    expect(
-      await screen.findByRole("heading", { name: "Original sent message" }),
-    ).toBeTruthy();
-    expect(
-      await screen.findByText("Canonical sent ancestor body"),
-    ).toBeTruthy();
-    const selectedRow = screen
-      .getByText("Original sent message", {
-        selector: ".mail-row__subject",
-      })
-      .closest(".mail-row");
-    expect(selectedRow?.dataset.selected).toBe("true");
-    expect(document.activeElement).toBe(selectedRow);
+    expect(await screen.findByText("Canonical sent ancestor body")).toBeTruthy();
+    expect(desktop.mailApi.fetchMailboxMessage).toHaveBeenLastCalledWith("71");
     expect(details.open).toBe(false);
+  });
+
+  it("does not expose quoted-message navigation into Archive or Trash", async () => {
+    const reply = {
+      ...summary("reply-with-archived-ancestor", "Reply with archived ancestor"),
+      uid: undefined,
+    };
+    const archivedAncestor = {
+      ...summary("archived-ancestor", "Archived ancestor"),
+      uid: undefined,
+      displayed_role: "archive",
+    };
+    desktop.mailApi.listMailboxPage.mockImplementation(async (_, role) =>
+      mailboxPage(
+        role === "inbox"
+          ? [reply]
+          : role === "archive"
+            ? [archivedAncestor]
+            : [],
+        role,
+      ),
+    );
+    desktop.mailApi.fetchMailboxMessage.mockImplementation(async (messageId) =>
+      messageId === "reply-with-archived-ancestor"
+        ? {
+            ...reply,
+            body_text: "Reply body\n\nArchived body",
+            body_fetched: true,
+            body_segments: [
+              {
+                kind: "authored",
+                content: "Reply body",
+                render_mode: "plain",
+                quote_depth: 0,
+                confidence: "high",
+              },
+              {
+                kind: "quoted",
+                content: "Archived body",
+                render_mode: "plain",
+                quote_depth: 1,
+                confidence: "high",
+                quote_metadata: { subject: "Archived ancestor" },
+                navigation_target: { id: "archived-ancestor" },
+              },
+            ],
+          }
+        : archivedAncestor,
+    );
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(await screen.findByText("Reply with archived ancestor"));
+    expect(await screen.findByText("Archived body")).toBeTruthy();
+    expect(
+      screen.queryByRole("button", { name: /打开原邮件：Archived ancestor/ }),
+    ).toBeNull();
   });
 
   it("shows the immutable reply subject and recipient for sent mail", async () => {
@@ -1317,7 +2751,10 @@ describe("Mine Mail desktop state bridge", () => {
       to: [{ name: null, email: "friend@example.com" }],
       sent_at: "2026-07-14T09:21:00Z",
     };
-    desktop.mailApi.listSent.mockResolvedValue([remoteLegacy, remoteExact]);
+    desktop.fixtures.sentPageSource.mockResolvedValue([
+      remoteLegacy,
+      remoteExact,
+    ]);
     desktop.mailApi.listOutbox.mockResolvedValue([
       {
         id: "local-exact",
@@ -1344,7 +2781,7 @@ describe("Mine Mail desktop state bridge", () => {
         message_date: "2026-07-14T09:21:00Z",
       },
     ]);
-    desktop.mailApi.fetchSentMessage.mockResolvedValue({
+    desktop.fixtures.sentMessageSource.mockResolvedValue({
       ...remoteExact,
       body_text: "Remote sent body",
       body_fetched: true,
@@ -1360,7 +2797,7 @@ describe("Mine Mail desktop state bridge", () => {
 
     await user.click(within(sentList).getByText("Exact remote copy"));
     expect(await screen.findByText("Remote sent body")).toBeTruthy();
-    expect(desktop.mailApi.fetchSentMessage).toHaveBeenCalledWith(71);
+    expect(desktop.fixtures.sentMessageSource).toHaveBeenCalledWith(71);
     expect(desktop.mailApi.fetchOutboxMessage).not.toHaveBeenCalledWith(
       "local-exact",
     );
@@ -1378,8 +2815,8 @@ describe("Mine Mail desktop state bridge", () => {
       body_html_available: true,
       body_html_loaded: false,
     };
-    desktop.mailApi.listInbox.mockResolvedValue([nativeSummary]);
-    desktop.mailApi.fetchMessage.mockResolvedValue({
+    desktop.fixtures.inboxPageSource.mockResolvedValue([nativeSummary]);
+    desktop.fixtures.inboxMessageSource.mockResolvedValue({
       ...nativeSummary,
       body_html:
         '<p>Hello <strong>Myo</strong></p><a href="https://paa.moe">Profile</a>',
@@ -1400,14 +2837,287 @@ describe("Mine Mail desktop state bridge", () => {
     expect(within(reader).queryByText("Myo myo@paa.moe")).toBeNull();
   });
 
+  it("uses only Rust-prepared forward drafts and requires an explicit attachment-free retry", async () => {
+    const source = {
+      ...summary(8, "Forward source"),
+      body_text: "Complete source body",
+      body_fetched: true,
+      preview: "Unsafe list preview",
+    };
+    const preparedDraft = {
+      id: "prepared-forward",
+      local_version: 1,
+      to: [],
+      cc: [],
+      bcc: [],
+      subject: "Fwd: Forward source",
+      body_text: "",
+      format: {
+        body_html: null,
+        stationery: "none",
+        send_stationery: false,
+      },
+      attachments: [],
+      forward_context: {
+        source_message_id: "8",
+        original_subject: "Forward source",
+        from: source.sender,
+        to: [{ name: "Me", email: "me@163.com" }],
+        cc: [],
+        sent_at: source.sent_at,
+        quoted_text: "Complete source body",
+        quoted_html: null,
+        quoted_render_mode: "plain_text",
+        source_attachments: [
+          {
+            id: "source-part",
+            safe_display_name: "source.pdf",
+            mime_type: "application/pdf",
+            size_bytes: 2048,
+            disposition: "attachment",
+          },
+        ],
+      },
+      status: "local",
+    };
+    desktop.fixtures.inboxPageSource.mockResolvedValue([source]);
+    desktop.fixtures.inboxMessageSource.mockResolvedValue(source);
+    desktop.mailApi.prepareForward
+      .mockResolvedValueOnce({
+        kind: "error",
+        error: {
+          kind: "attachment_stage_failed",
+          failed_attachment_ids: ["source-part"],
+          retry_without_attachments_allowed: true,
+        },
+      })
+      .mockResolvedValueOnce({
+        kind: "prepared",
+        prepared: {
+          draft: preparedDraft,
+          warnings: ["attachments_omitted_by_user"],
+        },
+      });
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(await screen.findByText("Forward source"));
+    await user.click(screen.getByRole("button", { name: "转发" }));
+    expect(
+      await screen.findByText("一个或多个原邮件附件无法安全加入草稿。"),
+    ).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "无附件转发" }));
+
+    const composer = await screen.findByRole("dialog", { name: "编辑草稿" });
+    expect(within(composer).getByLabelText("主题").value).toBe(
+      "Fwd: Forward source",
+    );
+    expect(
+      (await within(composer).findByLabelText("邮件正文")).textContent,
+    ).toBe("");
+    expect(within(composer).queryByText("Unsafe list preview")).toBeNull();
+    expect(
+      within(composer).getByLabelText("不可编辑的转发原文"),
+    ).toBeTruthy();
+    expect(
+      within(composer).getByText("无附件转发：原邮件附件未加入当前草稿。"),
+    ).toBeTruthy();
+    expect(desktop.mailApi.prepareForward.mock.calls).toEqual([
+      ["8", true],
+      ["8", false],
+    ]);
+  });
+
+  it("prepares a forward immediately while body hydration is still pending", async () => {
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: 600,
+    });
+    const source = {
+      ...summary("fast-forward-source", "Fast forward source"),
+      uid: undefined,
+      preview: "不可转发摘要",
+      body_text: null,
+      body_fetched: false,
+    };
+    const pendingBody = deferred();
+    desktop.fixtures.inboxPageSource.mockResolvedValue([source]);
+    desktop.mailApi.fetchMailboxMessage.mockImplementation(async (messageId) =>
+      messageId === "fast-forward-source"
+        ? pendingBody.promise
+        : desktop.fixtures.inboxMessageSource(Number(messageId)),
+    );
+    desktop.mailApi.prepareForward.mockResolvedValue({
+      kind: "prepared",
+      prepared: {
+        draft: {
+          id: "fast-forward-draft",
+          local_version: 1,
+          to: [],
+          cc: [],
+          bcc: [],
+          subject: "Fwd: Rust authoritative subject",
+          body_text: "Rust prepared authored body",
+          format: {
+            body_html: null,
+            stationery: "none",
+            send_stationery: false,
+          },
+          attachments: [],
+          forward_context: {
+            source_message_id: "fast-forward-source",
+            original_subject: "Fast forward source",
+            from: source.sender,
+            to: [],
+            cc: [],
+            sent_at: source.sent_at,
+            quoted_text: "Rust authoritative quoted body",
+            quoted_html: null,
+            quoted_render_mode: "plain_text",
+            source_attachments: [],
+          },
+          status: "local",
+        },
+        warnings: [],
+      },
+    });
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(await screen.findByText("Fast forward source"));
+    await user.click(screen.getByRole("button", { name: "转发" }));
+    await waitFor(() =>
+      expect(desktop.mailApi.prepareForward).toHaveBeenCalledWith(
+        "fast-forward-source",
+        true,
+      ),
+    );
+    const composer = await screen.findByRole("dialog", { name: "编辑草稿" });
+    expect(within(composer).getByLabelText("主题").value).toBe(
+      "Fwd: Rust authoritative subject",
+    );
+    expect(
+      (await within(composer).findByLabelText("邮件正文")).textContent,
+    ).toContain("Rust prepared authored body");
+    expect(within(composer).queryByText("不可转发摘要")).toBeNull();
+
+    await act(async () => {
+      pendingBody.reject(new Error("body hydration failed"));
+    });
+    expect(within(composer).queryByText("不可转发摘要")).toBeNull();
+    expect(within(composer).getByLabelText("主题").value).toBe(
+      "Fwd: Rust authoritative subject",
+    );
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: 1024,
+    });
+  });
+
+  it("drops a pending forward result on account switch and allows a fresh retry after returning", async () => {
+    desktop.mailApi.getAccountStatus.mockResolvedValue({
+      configured: true,
+      accountId: "account-163",
+      activeAccountId: "account-163",
+      provider: "163",
+      email: "me@163.com",
+      backendReady: true,
+      credentialAvailable: true,
+      networkReady: true,
+      startupError: null,
+      accounts: [
+        {
+          accountId: "account-163",
+          provider: "163",
+          email: "me@163.com",
+          backendReady: true,
+          credentialAvailable: true,
+          networkReady: true,
+        },
+        {
+          accountId: "account-gmail",
+          provider: "gmail",
+          email: "me@gmail.com",
+          backendReady: true,
+          credentialAvailable: true,
+          networkReady: true,
+        },
+      ],
+    });
+    const pendingForward = deferred();
+    desktop.mailApi.prepareForward
+      .mockReturnValueOnce(pendingForward.promise)
+      .mockResolvedValueOnce({
+        kind: "error",
+        error: {
+          kind: "message_unavailable",
+          failed_attachment_ids: [],
+          retry_without_attachments_allowed: false,
+        },
+      });
+    const user = userEvent.setup();
+    render(<App />);
+
+    const inbox = await screen.findByLabelText("收件箱邮件列表");
+    await user.click(await within(inbox).findByText("First mail"));
+    await user.click(screen.getByRole("button", { name: "转发" }));
+    expect(
+      screen.getByRole("button", { name: "正在准备转发…" }).disabled,
+    ).toBe(true);
+    await user.click(
+      screen.getByRole("button", { name: "切换到 me@gmail.com" }),
+    );
+    await screen.findByRole("button", { name: "当前账户 me@gmail.com" });
+
+    await act(async () => {
+      pendingForward.resolve({
+        kind: "prepared",
+        prepared: {
+          draft: {
+            id: "late-forward",
+            local_version: 1,
+            to: [],
+            cc: [],
+            bcc: [],
+            subject: "Late forward must stay in source account",
+            body_text: "",
+            format: {
+              body_html: null,
+              stationery: "none",
+              send_stationery: false,
+            },
+            attachments: [],
+            forward_context: null,
+            status: "local",
+          },
+          warnings: [],
+        },
+      });
+    });
+    expect(screen.queryByRole("dialog")).toBeNull();
+
+    await user.click(
+      screen.getByRole("button", { name: "切换到 me@163.com" }),
+    );
+    await screen.findByRole("button", { name: "当前账户 me@163.com" });
+    expect(
+      await screen.findByRole("button", { name: "转发" }),
+    ).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "转发" }));
+    expect(
+      await screen.findByText("完整邮件暂时不可用，请重新同步后重试。"),
+    ).toBeTruthy();
+    expect(desktop.mailApi.prepareForward).toHaveBeenCalledTimes(2);
+  });
+
   it("keeps links and inline images in the read-only reply context", async () => {
     const richSummary = {
       ...summary(8, "Hey tantless"),
       body_text: "Hey tantless A mail from paa.moe!",
       body_fetched: true,
     };
-    desktop.mailApi.listInbox.mockResolvedValue([richSummary]);
-    desktop.mailApi.fetchMessage.mockResolvedValue(richSummary);
+    desktop.fixtures.inboxPageSource.mockResolvedValue([richSummary]);
+    desktop.fixtures.inboxMessageSource.mockResolvedValue(richSummary);
     desktop.mailApi.prepareReply.mockResolvedValue({
       to: ["sender8@example.com"],
       cc: [],
@@ -1431,7 +3141,8 @@ describe("Mine Mail desktop state bridge", () => {
     const user = userEvent.setup();
 
     render(<App />);
-    await user.click(await screen.findByText("Hey tantless"));
+    const inbox = await screen.findByLabelText("收件箱邮件列表");
+    await user.click(await within(inbox).findByText("Hey tantless"));
     await user.click(await screen.findByRole("button", { name: "回复" }));
     const composer = await screen.findByRole("dialog", { name: "新邮件" });
     await user.click(
@@ -1444,6 +3155,100 @@ describe("Mine Mail desktop state bridge", () => {
     expect(desktop.mailApi.openExternalUrl).toHaveBeenCalledWith(
       "https://paa.moe",
     );
+  });
+
+  it("drops a delayed reply preparation after the user selects another message", async () => {
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: 600,
+    });
+    const replySource = {
+      ...summary("reply-race-source", "Reply race source"),
+      uid: undefined,
+      body_text: "Reply source body",
+      body_fetched: true,
+      flags: ["\\Seen"],
+    };
+    const newerSelection = {
+      ...summary("reply-race-newer", "Newer manual selection"),
+      uid: undefined,
+      body_text: "Newer selected body",
+      body_fetched: true,
+      flags: ["\\Seen"],
+    };
+    desktop.fixtures.inboxPageSource.mockResolvedValue([
+      replySource,
+      newerSelection,
+    ]);
+    const pendingReply = deferred();
+    desktop.mailApi.prepareReply.mockReturnValue(pendingReply.promise);
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(
+      await screen.findByRole("button", {
+        name: /打开邮件：.*Reply race source/,
+      }),
+    );
+    await user.click(screen.getByRole("button", { name: "回复" }));
+    await waitFor(() =>
+      expect(desktop.mailApi.prepareReply).toHaveBeenCalledWith(
+        "reply-race-source",
+      ),
+    );
+    await user.click(
+      screen.getByRole("button", {
+        name: /打开邮件：.*Newer manual selection/,
+      }),
+    );
+
+    await act(async () => {
+      pendingReply.resolve({
+        to: ["sender@example.com"],
+        cc: [],
+        bcc: [],
+        subject: "Re: must stay stale",
+        body_text: "",
+        reply_context: null,
+      });
+    });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(
+      screen.getByRole("heading", { name: "Newer manual selection" }),
+    ).toBeTruthy();
+    expect(screen.getByText("Newer selected body")).toBeTruthy();
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: 1024,
+    });
+  });
+
+  it("never prepares a reply for a mailbox row without a string public id", async () => {
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: 600,
+    });
+    desktop.fixtures.inboxPageSource.mockResolvedValue([
+      {
+        ...summary(99, "Malformed numeric message"),
+        id: 99,
+        body_text: "Malformed body",
+        body_fetched: true,
+      },
+    ]);
+    render(<App />);
+
+    expect(await screen.findByText("Malformed numeric message")).toBeTruthy();
+    expect(
+      screen.queryByRole("button", {
+        name: /打开邮件：.*Malformed numeric message/,
+      }),
+    ).toBeNull();
+    expect(desktop.mailApi.prepareReply).not.toHaveBeenCalled();
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: 1024,
+    });
   });
 
   it("flushes the final composer revision before completing desktop exit", async () => {
@@ -1520,9 +3325,7 @@ describe("Mine Mail desktop state bridge", () => {
     );
     expect(desktop.mailApi.completeExit).not.toHaveBeenCalled();
     expect(screen.getByLabelText("主题").disabled).toBe(false);
-    expect(screen.getByRole("alert").textContent).toContain(
-      "退出前保存草稿失败",
-    );
+    expect(screen.getByText(/退出前保存草稿失败/)).toBeTruthy();
 
     act(() => {
       desktop.listeners.get("mail:before-exit")?.({
@@ -1557,9 +3360,7 @@ describe("Mine Mail desktop state bridge", () => {
     });
 
     await waitFor(() =>
-      expect(screen.getByRole("alert").textContent).toContain(
-        "无法完成安全退出",
-      ),
+      expect(screen.getByText(/无法完成安全退出/)).toBeTruthy(),
     );
     expect(screen.getByLabelText("主题").disabled).toBe(false);
 
@@ -1592,6 +3393,9 @@ describe("Mine Mail desktop state bridge", () => {
     await user.click(screen.getByRole("button", { name: /草稿/ }));
     await user.click(screen.getByText("Original subject"));
     expect(screen.getByLabelText("主题").value).toBe("Original subject");
+    expect(document.querySelector(".compose-save-state")?.dataset.state).toBe(
+      "saved",
+    );
 
     desktop.mailApi.listDrafts.mockResolvedValue([refreshed]);
     act(() => {
@@ -1605,7 +3409,7 @@ describe("Mine Mail desktop state bridge", () => {
         "Edited on another client",
       ),
     );
-    expect(screen.getByLabelText("邮件正文").value).toBe("Remote body");
+    expect(screen.getByLabelText("邮件正文").textContent).toBe("Remote body");
     expect(desktop.mailApi.saveDraft).not.toHaveBeenCalled();
   });
 
@@ -1624,11 +3428,13 @@ describe("Mine Mail desktop state bridge", () => {
 
     expect(screen.getByRole("heading", { name: "查看草稿" })).toBeTruthy();
     expect(
-      screen.getByText("含当前不支持的HTML/附件，未作修改"),
+      screen.getByText("含无法安全编辑的 HTML 或附件，已保持只读"),
     ).toBeTruthy();
     expect(screen.getByLabelText("收件人").disabled).toBe(true);
     expect(screen.getByLabelText("主题").disabled).toBe(true);
-    expect(screen.getByLabelText("邮件正文").disabled).toBe(true);
+    expect(screen.getByLabelText("邮件正文").getAttribute("aria-readonly")).toBe(
+      "true",
+    );
     expect(screen.getByRole("button", { name: "发送邮件" }).disabled).toBe(
       true,
     );
@@ -1639,11 +3445,336 @@ describe("Mine Mail desktop state bridge", () => {
       true,
     );
 
+    minimizeComposer();
     await user.click(screen.getByRole("button", { name: "关闭写信窗口" }));
     expect(screen.queryByRole("heading", { name: "查看草稿" })).toBeNull();
     expect(desktop.mailApi.saveDraft).not.toHaveBeenCalled();
     expect(desktop.mailApi.deleteDraft).not.toHaveBeenCalled();
     expect(desktop.mailApi.sendDraft).not.toHaveBeenCalled();
+  });
+
+  it("creates a stable blank draft before the first attachment picker and keeps it on cancel", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findAllByText("First mail");
+
+    await user.click(screen.getByRole("button", { name: /写信/ }));
+    await user.click(screen.getByRole("button", { name: "添加附件" }));
+
+    expect(await screen.findByText("已取消添加附件")).toBeTruthy();
+    expect(desktop.mailApi.saveDraft).not.toHaveBeenCalled();
+    expect(desktop.mailApi.createComposeDraft).toHaveBeenCalledOnce();
+    expect(desktop.mailApi.addDraftAttachments).toHaveBeenCalledWith(
+      "blank-compose-draft",
+      1,
+    );
+    expect(
+      desktop.mailApi.createComposeDraft.mock.invocationCallOrder[0],
+    ).toBeLessThan(
+      desktop.mailApi.addDraftAttachments.mock.invocationCallOrder[0],
+    );
+    expect(document.querySelector(".compose-save-state")?.dataset.state).toBe(
+      "saved",
+    );
+  });
+
+  it("force-saves quickly entered content before opening the first attachment picker", async () => {
+    const saveBarrier = deferred();
+    let stableDraft = null;
+    desktop.mailApi.saveDraft.mockImplementation(
+      async (request, draftId, expectedLocalVersion) => {
+        await saveBarrier.promise;
+        const outcome = savedOutcome(request, draftId, expectedLocalVersion);
+        stableDraft = {
+          ...outcome.draft,
+          attachments: [],
+          forward_context: null,
+        };
+        return { ...outcome, draft: stableDraft };
+      },
+    );
+    desktop.mailApi.addDraftAttachments.mockImplementation(
+      async (draftId, expectedLocalVersion) => ({
+        kind: "saved",
+        draft: {
+          ...stableDraft,
+          id: draftId,
+          local_version: expectedLocalVersion + 1,
+          attachments: [
+            {
+              id: "managed-fast",
+              name: "fast.txt",
+              mime_type: "text/plain",
+              size_bytes: 9,
+            },
+          ],
+        },
+      }),
+    );
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findAllByText("First mail");
+
+    await user.click(screen.getByRole("button", { name: /写信/ }));
+    fireEvent.change(screen.getByLabelText("主题"), {
+      target: { value: "刚刚输入的主题" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "添加附件" }));
+
+    await waitFor(() => expect(desktop.mailApi.saveDraft).toHaveBeenCalledOnce());
+    expect(screen.getByLabelText("主题").disabled).toBe(true);
+    expect(desktop.mailApi.createComposeDraft).not.toHaveBeenCalled();
+    expect(desktop.mailApi.addDraftAttachments).not.toHaveBeenCalled();
+
+    await act(async () => {
+      saveBarrier.resolve();
+    });
+    await waitFor(() =>
+      expect(desktop.mailApi.addDraftAttachments).toHaveBeenCalledWith(
+        "exit-draft",
+        1,
+      ),
+    );
+    expect(desktop.mailApi.saveDraft).toHaveBeenCalledWith(
+      expect.objectContaining({ subject: "刚刚输入的主题" }),
+      null,
+      null,
+    );
+    expect(
+      desktop.mailApi.saveDraft.mock.invocationCallOrder[0],
+    ).toBeLessThan(
+      desktop.mailApi.addDraftAttachments.mock.invocationCallOrder[0],
+    );
+    expect(screen.getByLabelText("主题").value).toBe("刚刚输入的主题");
+    expect(await screen.findByText("fast.txt")).toBeTruthy();
+  });
+
+  it("keeps a dirty stable draft in error state when attachment stabilization fails", async () => {
+    desktop.mailApi.listDrafts.mockResolvedValue([
+      {
+        ...draftSnapshot(1, "Stable draft"),
+        attachments: [],
+        forward_context: null,
+      },
+    ]);
+    desktop.mailApi.saveDraft.mockRejectedValueOnce(
+      new Error("local write failed"),
+    );
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findAllByText("First mail");
+
+    await user.click(screen.getByRole("button", { name: /草稿/ }));
+    await user.click(screen.getByText("Stable draft"));
+    fireEvent.change(screen.getByLabelText("主题"), {
+      target: { value: "尚未稳定的新主题" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "添加附件" }));
+
+    expect(await screen.findByText("添加附件失败，请重试")).toBeTruthy();
+    expect(screen.getByLabelText("主题").value).toBe("尚未稳定的新主题");
+    expect(screen.getByLabelText("主题").disabled).toBe(false);
+    expect(document.querySelector(".compose-save-state")?.dataset.state).toBe(
+      "error",
+    );
+    expect(desktop.mailApi.addDraftAttachments).not.toHaveBeenCalled();
+    expect(desktop.mailApi.createComposeDraft).not.toHaveBeenCalled();
+    expect(desktop.mailApi.saveDraft).toHaveBeenCalledWith(
+      expect.objectContaining({ subject: "尚未稳定的新主题" }),
+      "shared-draft",
+      1,
+    );
+  });
+
+  it("uses the force-saved version for removal and switches exactly to a stale returned draft", async () => {
+    const attachment = {
+      id: "managed-remove",
+      name: "keep-me.pdf",
+      mime_type: "application/pdf",
+      size_bytes: 2048,
+    };
+    const original = {
+      ...draftSnapshot(1, "Attachment draft"),
+      attachments: [attachment],
+      forward_context: null,
+    };
+    desktop.mailApi.listDrafts.mockResolvedValue([original]);
+    desktop.mailApi.saveDraft.mockImplementation(async (request) => ({
+      kind: "saved",
+      draft: {
+        ...original,
+        ...request,
+        local_version: 2,
+      },
+      canonical: null,
+    }));
+    desktop.mailApi.removeDraftAttachment.mockResolvedValue({
+      kind: "stale",
+      draft: {
+        ...original,
+        local_version: 4,
+        subject: "其他客户端的最新主题",
+      },
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findAllByText("First mail");
+
+    await user.click(screen.getByRole("button", { name: /草稿/ }));
+    await user.click(screen.getByText("Attachment draft"));
+    fireEvent.change(screen.getByLabelText("主题"), {
+      target: { value: "准备移除附件" },
+    });
+    await user.click(
+      screen.getByRole("button", { name: "移除附件 keep-me.pdf" }),
+    );
+
+    await waitFor(() =>
+      expect(desktop.mailApi.removeDraftAttachment).toHaveBeenCalledWith(
+        "shared-draft",
+        "managed-remove",
+        2,
+      ),
+    );
+    expect(screen.getByLabelText("主题").value).toBe(
+      "其他客户端的最新主题",
+    );
+    expect(screen.getByText("keep-me.pdf")).toBeTruthy();
+    expect(
+      screen.getByText("草稿已更新，本次操作未生效。请在最新版本重试"),
+    ).toBeTruthy();
+    expect(document.querySelector(".compose-save-state")?.dataset.state).toBe(
+      "saved",
+    );
+  });
+
+  it("adopts an attachment conflict copy exactly and binds later operations to that copy", async () => {
+    const conflictAttachment = {
+      id: "managed-conflict",
+      name: "conflict.pdf",
+      mime_type: "application/pdf",
+      size_bytes: 4096,
+    };
+    const original = {
+      ...draftSnapshot(1, "Original attachment draft"),
+      attachments: [],
+      forward_context: null,
+    };
+    const canonical = {
+      ...original,
+      local_version: 6,
+      subject: "Canonical server draft",
+      body_text: "Canonical body",
+    };
+    const conflictCopy = {
+      ...original,
+      id: "attachment-conflict-copy",
+      local_version: 7,
+      subject: "Exact conflict copy",
+      body_text: "Exact conflict body",
+      attachments: [conflictAttachment],
+      status: "conflict",
+    };
+    desktop.mailApi.listDrafts.mockResolvedValue([original]);
+    desktop.mailApi.saveDraft.mockImplementation(
+      async (request, draftId, expectedLocalVersion) => {
+        if (draftId === "attachment-conflict-copy") {
+          return {
+            kind: "saved",
+            draft: {
+              ...conflictCopy,
+              ...request,
+              id: draftId,
+              local_version: expectedLocalVersion + 1,
+              attachments: [conflictAttachment],
+            },
+            canonical: null,
+          };
+        }
+        return {
+          kind: "saved",
+          draft: {
+            ...original,
+            ...request,
+            id: draftId,
+            local_version: expectedLocalVersion + 1,
+          },
+          canonical: null,
+        };
+      },
+    );
+    desktop.mailApi.addDraftAttachments.mockResolvedValue({
+      kind: "conflict_copy",
+      draft: conflictCopy,
+      canonical,
+    });
+    desktop.mailApi.removeDraftAttachment.mockImplementation(
+      async (draftId, attachmentId, expectedLocalVersion) => ({
+        kind: "saved",
+        draft: {
+          ...conflictCopy,
+          id: draftId,
+          local_version: expectedLocalVersion + 1,
+          subject: "Conflict copy after removal",
+          body_text: "Exact post-removal body",
+          attachments: [],
+        },
+      }),
+    );
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findAllByText("First mail");
+
+    await user.click(screen.getByRole("button", { name: /草稿/ }));
+    await user.click(screen.getByText("Original attachment draft"));
+    await user.click(screen.getByRole("button", { name: "添加附件" }));
+
+    await waitFor(() =>
+      expect(desktop.mailApi.addDraftAttachments).toHaveBeenCalledWith(
+        "shared-draft",
+        2,
+      ),
+    );
+    expect(screen.getByLabelText("主题").value).toBe("Exact conflict copy");
+    expect(
+      (await screen.findByLabelText("邮件正文")).textContent,
+    ).toContain("Exact conflict body");
+    expect(await screen.findByText("conflict.pdf")).toBeTruthy();
+    expect(
+      screen.getByText(
+        "附件已保存在新的冲突副本中，未覆盖其他客户端的最新草稿。",
+      ),
+    ).toBeTruthy();
+
+    await user.click(
+      screen.getByRole("button", { name: "移除附件 conflict.pdf" }),
+    );
+    await waitFor(() =>
+      expect(desktop.mailApi.saveDraft).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          subject: "Exact conflict copy",
+          body_text: "Exact conflict body",
+        }),
+        "attachment-conflict-copy",
+        7,
+      ),
+    );
+    await waitFor(() =>
+      expect(desktop.mailApi.removeDraftAttachment).toHaveBeenCalledWith(
+        "attachment-conflict-copy",
+        "managed-conflict",
+        8,
+      ),
+    );
+    expect(screen.getByLabelText("主题").value).toBe(
+      "Conflict copy after removal",
+    );
+    expect(screen.queryByText("conflict.pdf")).toBeNull();
+
+    minimizeComposer();
+    await user.click(screen.getByRole("button", { name: "关闭写信窗口" }));
+    expect(await screen.findByText("Canonical server draft")).toBeTruthy();
+    expect(screen.getByText("Conflict copy after removal")).toBeTruthy();
   });
 
   it("closes a new dirty composer without creating a draft", async () => {
@@ -1655,6 +3786,7 @@ describe("Mine Mail desktop state bridge", () => {
     fireEvent.change(screen.getByLabelText("主题"), {
       target: { value: "不应保存的临时内容" },
     });
+    minimizeComposer();
     fireEvent.click(screen.getByRole("button", { name: "关闭写信窗口" }));
 
     expect(
@@ -1684,6 +3816,7 @@ describe("Mine Mail desktop state bridge", () => {
     expect(desktop.mailApi.saveDraft).toHaveBeenCalledTimes(1);
     vi.useRealTimers();
 
+    minimizeComposer();
     fireEvent.click(screen.getByRole("button", { name: "关闭写信窗口" }));
 
     await waitFor(() =>
@@ -1707,6 +3840,7 @@ describe("Mine Mail desktop state bridge", () => {
     fireEvent.change(screen.getByLabelText("主题"), {
       target: { value: "尚未自动保存的修改" },
     });
+    minimizeComposer();
     fireEvent.click(screen.getByRole("button", { name: "关闭写信窗口" }));
 
     expect(screen.queryByRole("heading", { name: "编辑草稿" })).toBeNull();
@@ -1721,8 +3855,6 @@ describe("Mine Mail desktop state bridge", () => {
       ...draftSnapshot(1, "My offline edit", "Draft body"),
       id: "conflict-copy",
       status: "conflict",
-      remote_mailbox: null,
-      remote_uid: null,
     };
     desktop.mailApi.listDrafts.mockResolvedValue([original]);
     desktop.mailApi.saveDraft.mockResolvedValue({
@@ -1774,8 +3906,6 @@ describe("Mine Mail desktop state bridge", () => {
       ...draftSnapshot(1, "Edit after delete"),
       id: "deleted-base-copy",
       status: "conflict",
-      remote_mailbox: null,
-      remote_uid: null,
     };
     desktop.mailApi.listDrafts.mockResolvedValue([original]);
     desktop.mailApi.saveDraft.mockResolvedValue({
@@ -1847,6 +3977,324 @@ describe("Mine Mail desktop state bridge", () => {
       "没有删除最新版本",
     );
     expect(await screen.findByText("New canonical")).toBeTruthy();
+  });
+
+  it("renders Outbox recipient groups exactly without inferring from flat recipients", async () => {
+    desktop.mailApi.listOutbox.mockResolvedValue([
+      {
+        id: "grouped-outbox",
+        draft_id: null,
+        recipients: ["legacy-flat@example.com"],
+        recipient_groups: {
+          to: ["to@example.com"],
+          cc: ["cc@example.com"],
+          bcc: ["bcc@example.com"],
+        },
+        subject: "Grouped Outbox message",
+        status: "retryable",
+        attempts: 1,
+        last_error: "Temporary failure",
+        created_at: "2026-07-14T09:00:00Z",
+        sent_at: null,
+      },
+    ]);
+    desktop.mailApi.fetchOutboxMessage.mockResolvedValue({
+      id: "grouped-outbox",
+      subject: "Grouped Outbox message",
+      body_text: "Grouped Outbox body",
+      body_fetched: true,
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findAllByText("First mail");
+
+    await user.click(screen.getByText("发件队列"));
+    await user.click(screen.getByText("Grouped Outbox message"));
+    const reader = screen.getByLabelText("邮件阅读区");
+    await user.click(
+      within(reader).getByRole("button", { name: "查看收件人" }),
+    );
+    const details = within(reader).getByRole("region", {
+      name: "收件人详情",
+    });
+    expect(within(details).getByText("me@163.com")).toBeTruthy();
+    expect(within(details).getByText("to@example.com")).toBeTruthy();
+    expect(within(details).getByText("cc@example.com")).toBeTruthy();
+    expect(within(details).getByText("bcc@example.com")).toBeTruthy();
+    expect(within(details).queryByText("legacy-flat@example.com")).toBeNull();
+    expect(
+      within(reader).queryByText("旧版邮件收件人分组不可用"),
+    ).toBeNull();
+  });
+
+  it("cancels a delivery-unknown decision without changing Outbox state", async () => {
+    const unknown = deliveryUnknownOutbox();
+    desktop.mailApi.listOutbox.mockResolvedValue([unknown]);
+    desktop.mailApi.fetchOutboxMessage.mockResolvedValue({
+      id: unknown.id,
+      subject: unknown.subject,
+      body_text: "Unknown delivery body",
+      body_fetched: true,
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findAllByText("First mail");
+
+    await user.click(screen.getByText("发件队列"));
+    const list = await screen.findByLabelText("发件队列邮件列表");
+    await user.click(await within(list).findByText(unknown.subject));
+    await user.click(screen.getByRole("button", { name: "确认已投递" }));
+    const dialog = screen.getByRole("alertdialog", {
+      name: "确认这封邮件已投递？",
+    });
+    await user.click(within(dialog).getByRole("button", { name: "取消" }));
+
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(desktop.mailApi.resolveDeliveryUnknown).not.toHaveBeenCalled();
+    expect(desktop.mailApi.retryOutbox).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "确认已投递" })).toBeTruthy();
+  });
+
+  it("confirms an externally verified delivery with the reviewed attempt generation", async () => {
+    const unknown = deliveryUnknownOutbox();
+    const delivered = {
+      ...unknown,
+      status: "sent",
+      last_error: null,
+      sent_at: "2026-07-14T09:01:00Z",
+    };
+    desktop.mailApi.listOutbox.mockResolvedValue([unknown]);
+    desktop.mailApi.fetchOutboxMessage.mockResolvedValue({
+      id: unknown.id,
+      subject: unknown.subject,
+      body_text: "Unknown delivery body",
+      body_fetched: true,
+    });
+    desktop.mailApi.resolveDeliveryUnknown.mockResolvedValue(delivered);
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findAllByText("First mail");
+
+    await user.click(screen.getByText("发件队列"));
+    const list = await screen.findByLabelText("发件队列邮件列表");
+    await user.click(await within(list).findByText(unknown.subject));
+    await user.click(screen.getByRole("button", { name: "确认已投递" }));
+    const dialog = screen.getByRole("alertdialog", {
+      name: "确认这封邮件已投递？",
+    });
+    await user.click(
+      within(dialog).getByRole("button", { name: "确认已投递" }),
+    );
+
+    await waitFor(() =>
+      expect(desktop.mailApi.resolveDeliveryUnknown).toHaveBeenCalledWith({
+        outboxId: "outbox-unknown",
+        expectedAttempts: 2,
+        decision: "confirm_delivered",
+        acknowledgeDuplicateRisk: false,
+      }),
+    );
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    const reader = screen.getByLabelText("邮件阅读区");
+    expect(within(reader).getByText("SENT")).toBeTruthy();
+    expect(within(reader).getByText("Unknown delivery body")).toBeTruthy();
+    expect(
+      within(reader).queryByRole("button", { name: "仍要重试" }),
+    ).toBeNull();
+    expect(desktop.mailApi.retryOutbox).not.toHaveBeenCalled();
+  });
+
+  it("requires explicit duplicate-risk acknowledgement for one delivery-unknown retry", async () => {
+    const unknown = deliveryUnknownOutbox();
+    const retryResult = deferred();
+    desktop.mailApi.listOutbox.mockResolvedValue([unknown]);
+    desktop.mailApi.fetchOutboxMessage.mockResolvedValue({
+      id: unknown.id,
+      subject: unknown.subject,
+      body_text: "Unknown delivery body",
+      body_fetched: true,
+    });
+    desktop.mailApi.resolveDeliveryUnknown.mockReturnValue(retryResult.promise);
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findAllByText("First mail");
+
+    await user.click(screen.getByText("发件队列"));
+    const list = await screen.findByLabelText("发件队列邮件列表");
+    await user.click(await within(list).findByText(unknown.subject));
+    await user.click(screen.getByRole("button", { name: "仍要重试" }));
+    const dialog = screen.getByRole("alertdialog", {
+      name: "仍要重试这封邮件？",
+    });
+    expect(within(dialog).getByText(/可能收到重复邮件/)).toBeTruthy();
+    await user.click(
+      within(dialog).getByRole("button", { name: "承担风险并重试" }),
+    );
+
+    await waitFor(() =>
+      expect(desktop.mailApi.resolveDeliveryUnknown).toHaveBeenCalledWith({
+        outboxId: "outbox-unknown",
+        expectedAttempts: 2,
+        decision: "retry_once",
+        acknowledgeDuplicateRisk: true,
+      }),
+    );
+    expect(
+      within(dialog).getByRole("button", { name: "正在明确重试…" }).disabled,
+    ).toBe(true);
+    expect(desktop.mailApi.retryOutbox).not.toHaveBeenCalled();
+
+    await act(async () => {
+      retryResult.resolve({
+        ...unknown,
+        status: "sent",
+        attempts: 3,
+        last_error: null,
+        sent_at: "2026-07-14T09:02:00Z",
+      });
+    });
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(
+      within(screen.getByLabelText("邮件阅读区")).getByText("SENT"),
+    ).toBeTruthy();
+  });
+
+  it("refreshes a stale delivery-unknown generation and requires a new review", async () => {
+    const unknown = deliveryUnknownOutbox();
+    const refreshed = deliveryUnknownOutbox({
+      attempts: 3,
+      last_error: "A newer ambiguous attempt exists",
+    });
+    desktop.mailApi.listOutbox.mockResolvedValue([unknown]);
+    desktop.mailApi.fetchOutboxMessage.mockResolvedValue({
+      id: unknown.id,
+      subject: unknown.subject,
+      body_text: "Unknown delivery body",
+      body_fetched: true,
+    });
+    desktop.mailApi.resolveDeliveryUnknown.mockRejectedValue(
+      new Error("refresh before deciding again"),
+    );
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findAllByText("First mail");
+
+    await user.click(screen.getByText("发件队列"));
+    const list = await screen.findByLabelText("发件队列邮件列表");
+    await user.click(await within(list).findByText(unknown.subject));
+    desktop.mailApi.listOutbox.mockResolvedValue([refreshed]);
+    await user.click(screen.getByRole("button", { name: "确认已投递" }));
+    const dialog = screen.getByRole("alertdialog", {
+      name: "确认这封邮件已投递？",
+    });
+    await user.click(
+      within(dialog).getByRole("button", { name: "确认已投递" }),
+    );
+
+    expect(
+      await within(dialog).findByText(
+        "发件队列状态已刷新。请取消后查看最新状态，再重新选择操作。",
+      ),
+    ).toBeTruthy();
+    expect(
+      within(dialog).getByRole("button", { name: "确认已投递" }).disabled,
+    ).toBe(true);
+    expect(
+      within(screen.getByLabelText("邮件阅读区")).getByText(
+        "说明：A newer ambiguous attempt exists",
+      ),
+    ).toBeTruthy();
+    expect(desktop.mailApi.resolveDeliveryUnknown).toHaveBeenCalledOnce();
+    expect(desktop.mailApi.retryOutbox).not.toHaveBeenCalled();
+  });
+
+  it("keeps the unknown Outbox item and confirmation available after a command failure", async () => {
+    const unknown = deliveryUnknownOutbox();
+    desktop.mailApi.listOutbox.mockResolvedValue([unknown]);
+    desktop.mailApi.fetchOutboxMessage.mockResolvedValue({
+      id: unknown.id,
+      subject: unknown.subject,
+      body_text: "Unknown delivery body",
+      body_fetched: true,
+    });
+    desktop.mailApi.resolveDeliveryUnknown.mockRejectedValue(
+      new Error("Desktop bridge unavailable"),
+    );
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findAllByText("First mail");
+
+    await user.click(screen.getByText("发件队列"));
+    const list = await screen.findByLabelText("发件队列邮件列表");
+    await user.click(await within(list).findByText(unknown.subject));
+    await user.click(screen.getByRole("button", { name: "确认已投递" }));
+    const dialog = screen.getByRole("alertdialog", {
+      name: "确认这封邮件已投递？",
+    });
+    await user.click(
+      within(dialog).getByRole("button", { name: "确认已投递" }),
+    );
+
+    expect(
+      await within(dialog).findByText(
+        "Desktop bridge unavailable。邮件仍保留在发件队列。",
+      ),
+    ).toBeTruthy();
+    expect(
+      within(dialog).getByRole("button", { name: "确认已投递" }).disabled,
+    ).toBe(false);
+    expect(
+      within(screen.getByLabelText("邮件阅读区")).getByText(
+        "Unknown delivery body",
+      ),
+    ).toBeTruthy();
+    expect(desktop.mailApi.resolveDeliveryUnknown).toHaveBeenCalledOnce();
+    expect(desktop.mailApi.retryOutbox).not.toHaveBeenCalled();
+  });
+
+  it("never resolves delivery-unknown state from a malformed attempts value", async () => {
+    const malformed = deliveryUnknownOutbox({ attempts: "2" });
+    desktop.mailApi.listOutbox.mockResolvedValue([malformed]);
+    desktop.mailApi.fetchOutboxMessage.mockResolvedValue({
+      id: malformed.id,
+      subject: malformed.subject,
+      body_text: "Malformed unknown body",
+      body_fetched: true,
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findAllByText("First mail");
+
+    await user.click(screen.getByText("发件队列"));
+    const list = await screen.findByLabelText("发件队列邮件列表");
+    await user.click(await within(list).findByText(malformed.subject));
+
+    expect(screen.queryByRole("button", { name: "确认已投递" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "仍要重试" })).toBeNull();
+    expect(screen.getByText("发件队列记录不完整，请刷新后再处理。")).toBeTruthy();
+    expect(desktop.mailApi.resolveDeliveryUnknown).not.toHaveBeenCalled();
+    expect(desktop.mailApi.retryOutbox).not.toHaveBeenCalled();
+  });
+
+  it("never opens or resolves a delivery-unknown item with a malformed id", async () => {
+    const malformed = deliveryUnknownOutbox({ id: "  " });
+    desktop.mailApi.listOutbox.mockResolvedValue([malformed]);
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findAllByText("First mail");
+
+    await user.click(screen.getByText("发件队列"));
+    const list = await screen.findByLabelText("发件队列邮件列表");
+    expect(await within(list).findByText(malformed.subject)).toBeTruthy();
+    expect(
+      within(list).queryByRole("button", {
+        name: /打开邮件：.*Unknown delivery message/,
+      }),
+    ).toBeNull();
+    expect(screen.queryByRole("button", { name: "确认已投递" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "仍要重试" })).toBeNull();
+    expect(desktop.mailApi.resolveDeliveryUnknown).not.toHaveBeenCalled();
+    expect(desktop.mailApi.retryOutbox).not.toHaveBeenCalled();
   });
 
   it("manually retries only the selected retryable Outbox item", async () => {

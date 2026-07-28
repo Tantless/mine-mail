@@ -48,8 +48,6 @@ describe("Mine Mail new mail notification surface", () => {
           subject: "A new message",
           recipientEmail: "me@163.com",
           recipientRemark: "工作邮箱",
-          uid: 88,
-          accountId: "account-163",
           count: 1,
           webSound: null,
         },
@@ -62,11 +60,7 @@ describe("Mine Mail new mail notification surface", () => {
     expect(screen.getByText("收信至 工作邮箱 · me@163.com")).toBeTruthy();
     expect(screen.getByLabelText("产品团队 的自定义头像")).toBeTruthy();
     await user.click(screen.getByRole("button", { name: "打开新邮件" }));
-    expect(notificationBridge.openNewMailNotification).toHaveBeenCalledWith(
-      12,
-      88,
-      "account-163",
-    );
+    expect(notificationBridge.openNewMailNotification).toHaveBeenCalledWith(12);
   });
 
   it("dismisses only the notification id currently on screen", async () => {
@@ -75,7 +69,6 @@ describe("Mine Mail new mail notification surface", () => {
       notificationId: 14,
       sender: "Mine Mail",
       subject: "收到 2 封新邮件",
-      uid: 90,
       count: 2,
       webSound: null,
     });
@@ -86,5 +79,180 @@ describe("Mine Mail new mail notification surface", () => {
       screen.getByRole("button", { name: "关闭新邮件通知" }),
     );
     expect(notificationBridge.dismissNewMailNotification).toHaveBeenCalledWith(14);
+  });
+
+  it("restores the notification when opening fails so the user can retry", async () => {
+    const user = userEvent.setup();
+    notificationBridge.openNewMailNotification.mockRejectedValueOnce(
+      new Error("main window unavailable"),
+    );
+    notificationBridge.getNewMailNotification
+      .mockResolvedValueOnce(null)
+      .mockRejectedValueOnce(new Error("pending state unavailable"));
+    render(<NewMailNotification />);
+    await waitFor(() => expect(notificationBridge.handler).toBeTypeOf("function"));
+
+    await act(async () => {
+      notificationBridge.handler({
+        payload: {
+          notificationId: 18,
+          sender: "发件人",
+          subject: "仍可重试",
+          count: 1,
+          webSound: null,
+        },
+      });
+    });
+
+    await user.click(screen.getByRole("button", { name: "打开新邮件" }));
+
+    expect(notificationBridge.openNewMailNotification).toHaveBeenCalledWith(18);
+    expect(
+      await screen.findByRole("button", { name: "打开新邮件" }),
+    ).toBeTruthy();
+    expect(screen.getByText("仍可重试")).toBeTruthy();
+    expect(notificationBridge.dismissNewMailNotification).not.toHaveBeenCalled();
+  });
+
+  it("does not revive an obsolete notification when native open returns false and none is pending", async () => {
+    notificationBridge.openNewMailNotification.mockResolvedValueOnce(false);
+    const user = userEvent.setup();
+    render(<NewMailNotification />);
+    await waitFor(() => expect(notificationBridge.handler).toBeTypeOf("function"));
+
+    await act(async () => {
+      notificationBridge.handler({
+        payload: {
+          notificationId: 19,
+          sender: "旧发件人",
+          subject: "已由其他窗口处理",
+          count: 1,
+          webSound: null,
+        },
+      });
+    });
+    await user.click(screen.getByRole("button", { name: "打开新邮件" }));
+    await waitFor(() =>
+      expect(notificationBridge.getNewMailNotification).toHaveBeenCalledTimes(2),
+    );
+
+    expect(screen.queryByText("已由其他窗口处理")).toBeNull();
+  });
+
+  it("does not let a stale open result hide a newer notification", async () => {
+    let resolveOpen;
+    notificationBridge.openNewMailNotification.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveOpen = resolve;
+      }),
+    );
+    const user = userEvent.setup();
+    render(<NewMailNotification />);
+    await waitFor(() => expect(notificationBridge.handler).toBeTypeOf("function"));
+
+    await act(async () => {
+      notificationBridge.handler({
+        payload: {
+          notificationId: 21,
+          sender: "旧发件人",
+          subject: "旧通知",
+          count: 1,
+          webSound: null,
+        },
+      });
+    });
+    await user.click(screen.getByRole("button", { name: "打开新邮件" }));
+
+    await act(async () => {
+      notificationBridge.handler({
+        payload: {
+          notificationId: 22,
+          sender: "新发件人",
+          subject: "新通知",
+          count: 1,
+          webSound: null,
+        },
+      });
+      resolveOpen(false);
+    });
+
+    expect(await screen.findByText("新通知")).toBeTruthy();
+    expect(screen.queryByText("旧通知")).toBeNull();
+  });
+
+  it("orders, deduplicates, and invokes decimal string ids without losing precision", async () => {
+    const lowerId = "90071992547409930";
+    const higherId = "90071992547409931";
+    const user = userEvent.setup();
+    render(<NewMailNotification />);
+    await waitFor(() => expect(notificationBridge.handler).toBeTypeOf("function"));
+
+    await act(async () => {
+      notificationBridge.handler({
+        payload: {
+          notificationId: lowerId,
+          sender: "旧发件人",
+          subject: "大整数旧通知",
+          count: 1,
+          webSound: null,
+        },
+      });
+      notificationBridge.handler({
+        payload: {
+          notificationId: higherId,
+          sender: "新发件人",
+          subject: "大整数新通知",
+          count: 1,
+          webSound: null,
+        },
+      });
+      notificationBridge.handler({
+        payload: {
+          notificationId: `0${higherId}`,
+          sender: "重复发件人",
+          subject: "数值相同的重复通知",
+          count: 1,
+          webSound: null,
+        },
+      });
+    });
+
+    expect(await screen.findByText("大整数新通知")).toBeTruthy();
+    expect(screen.queryByText("大整数旧通知")).toBeNull();
+    expect(screen.queryByText("数值相同的重复通知")).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "打开新邮件" }));
+    expect(notificationBridge.openNewMailNotification).toHaveBeenCalledWith(
+      higherId,
+    );
+  });
+
+  it("restores a notification when native dismissal reports a stale id", async () => {
+    notificationBridge.dismissNewMailNotification.mockResolvedValueOnce(false);
+    notificationBridge.getNewMailNotification
+      .mockResolvedValueOnce({
+        notificationId: 24,
+        sender: "待处理发件人",
+        subject: "仍待处理",
+        count: 1,
+        webSound: null,
+      })
+      .mockResolvedValueOnce({
+        notificationId: 24,
+        sender: "待处理发件人",
+        subject: "仍待处理",
+        count: 1,
+        webSound: null,
+      });
+    const user = userEvent.setup();
+    render(<NewMailNotification />);
+
+    expect(await screen.findByText("仍待处理")).toBeTruthy();
+    await user.click(
+      screen.getByRole("button", { name: "关闭新邮件通知" }),
+    );
+
+    expect(await screen.findByText("仍待处理")).toBeTruthy();
+    expect(notificationBridge.dismissNewMailNotification).toHaveBeenCalledWith(24);
   });
 });

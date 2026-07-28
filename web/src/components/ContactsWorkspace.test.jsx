@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ContactsWorkspace } from "./ContactsWorkspace.jsx";
 
 const contact = {
+  accountId: "account-a",
   email: "friend@example.com",
   displayName: "小林",
   isFavorite: false,
@@ -15,6 +16,7 @@ const contact = {
 
 const messages = [
   {
+    id: "contact-message-42",
     uid: 42,
     mailbox: "INBOX",
     mailbox_role: "inbox",
@@ -24,6 +26,7 @@ const messages = [
     sent_at: "2026-07-20T08:30:00Z",
   },
   {
+    id: "contact-message-41",
     uid: 41,
     mailbox: "&XfJT0ZAB-",
     mailbox_role: "sent",
@@ -104,6 +107,57 @@ describe("ContactsWorkspace", () => {
 
     await user.click(screen.getByRole("button", { name: "打开邮件：周末见" }));
     expect(callbacks.onOpenMessage).toHaveBeenCalledWith(messages[0]);
+  });
+
+  it.each([
+    ["numeric", 9007199254740993],
+    ["empty", "   "],
+  ])(
+    "does not open correspondence with a %s message id",
+    async (_label, id) => {
+      const user = userEvent.setup();
+      const invalidMessage = {
+        ...messages[0],
+        id,
+      };
+      const callbacks = renderWorkspace({ messages: [invalidMessage] });
+
+      const open = screen.getByRole("button", {
+        name: "打开邮件：周末见",
+      });
+      expect(open.disabled).toBe(true);
+      await user.click(open);
+      expect(callbacks.onOpenMessage).not.toHaveBeenCalled();
+    },
+  );
+
+  it("keeps a contact without an owning account unselectable and unfavoritable", async () => {
+    const user = userEvent.setup();
+    const unownedContact = {
+      ...contact,
+      accountId: null,
+    };
+    const callbacks = renderWorkspace({
+      contacts: [unownedContact],
+      selectedContact: unownedContact,
+    });
+
+    const select = screen.getByRole("button", {
+      name: "查看联系人 小林",
+    });
+    const favoriteButtons = screen.getAllByRole("button", {
+      name: "收藏 小林",
+    });
+    expect(select.disabled).toBe(true);
+    expect(favoriteButtons).toHaveLength(2);
+    expect(favoriteButtons.every((button) => button.disabled)).toBe(true);
+
+    await user.click(select);
+    for (const favorite of favoriteButtons) {
+      await user.click(favorite);
+    }
+    expect(callbacks.onSelectContact).not.toHaveBeenCalled();
+    expect(callbacks.onToggleFavorite).not.toHaveBeenCalled();
   });
 
   it("renders semantic mailbox roles without exposing provider mailbox encoding", () => {

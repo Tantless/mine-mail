@@ -43,7 +43,9 @@ function errorMessage(error, fallback) {
 }
 
 function messageKey(message, index) {
-  return `${message.mailbox || message.kind || "mail"}:${message.uid ?? index}`;
+  const id =
+    typeof message?.id === "string" ? message.id.trim() || null : null;
+  return id || `contact-message-${index}`;
 }
 
 function isOutgoingMessage(message) {
@@ -148,6 +150,11 @@ function ContactList({
         const label = contactLabel(contact);
         const messageCount = Number(contact.messageCount) || 0;
         const accountLabel = contact.accountLabel || contact.accountId || "";
+        const canInteract =
+          typeof contact?.email === "string" &&
+          Boolean(contact.email.trim()) &&
+          typeof contact?.accountId === "string" &&
+          Boolean(contact.accountId.trim());
         const scopedLabel =
           showAccountScope && accountLabel
             ? `${label}（${accountLabel}）`
@@ -167,7 +174,10 @@ function ContactList({
               className="contacts-row__select"
               aria-label={`查看联系人 ${scopedLabel}`}
               aria-current={selected ? "true" : undefined}
-              onClick={() => onSelectContact(contact)}
+              disabled={!canInteract}
+              onClick={() => {
+                if (canInteract) onSelectContact(contact);
+              }}
             >
               <ProfileAvatar
                 className="contacts-row__avatar"
@@ -214,7 +224,10 @@ function ContactList({
                     : `收藏 ${scopedLabel}`
                 }
                 aria-pressed={Boolean(contact.isFavorite)}
-                onClick={() => onToggleFavorite(contact)}
+                disabled={!canInteract}
+                onClick={() => {
+                  if (canInteract) onToggleFavorite(contact);
+                }}
               >
                 <Star
                   size={18}
@@ -265,6 +278,11 @@ function ContactDetails({
   const originalName = contactOriginalName(contact);
   const sortedMessages = newestFirst(messages);
   const accountLabel = contact.accountLabel || contact.accountId || "";
+  const canManageFavorite =
+    typeof contact?.email === "string" &&
+    Boolean(contact.email.trim()) &&
+    typeof contact?.accountId === "string" &&
+    Boolean(contact.accountId.trim());
 
   return (
     <section
@@ -319,7 +337,10 @@ function ContactDetails({
               contact.isFavorite ? `取消收藏 ${label}` : `收藏 ${label}`
             }
             aria-pressed={Boolean(contact.isFavorite)}
-            onClick={() => onToggleFavorite(contact)}
+            disabled={!canManageFavorite}
+            onClick={() => {
+              if (canManageFavorite) onToggleFavorite(contact);
+            }}
           >
             <Star size={21} weight={contact.isFavorite ? "fill" : "regular"} />
           </button>
@@ -389,13 +410,19 @@ function ContactDetails({
                 const subject = message.subject || "（无主题）";
                 const timestamp = messageTime(message);
                 const mailboxLabel = mailboxRoleLabel(message);
+                const canOpen =
+                  typeof message?.id === "string" &&
+                  Boolean(message.id.trim());
                 return (
                   <article role="listitem" key={messageKey(message, index)}>
                     <button
                       type="button"
                       className="contacts-message-row"
                       aria-label={`打开邮件：${subject}`}
-                      onClick={() => onOpenMessage(message)}
+                      disabled={!canOpen}
+                      onClick={() => {
+                        if (canOpen) onOpenMessage(message);
+                      }}
                     >
                       <span
                         className="contacts-message-row__direction"

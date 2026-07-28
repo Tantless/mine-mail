@@ -23,6 +23,10 @@ import { appUpdateApi } from "../services/appUpdate.js";
 import { AccountRemovalDialog } from "./AccountRemovalDialog.jsx";
 import { AccountSetupForm } from "./AccountSetup.jsx";
 import { BrandLogo } from "./BrandLogo.jsx";
+import {
+  ConfirmDialogStatus,
+  useConfirmDialogFocus,
+} from "./ConfirmDialogPrimitives.jsx";
 import { CredentialWarning } from "./CredentialWarning.jsx";
 import { IconButton } from "./IconButton.jsx";
 import { EditableProfileAvatar, ProfileAvatar } from "./ProfileAvatar.jsx";
@@ -68,7 +72,6 @@ const menuItems = [
 const fallbackProviders = [
   { id: "163", label: "163 邮箱", description: "使用 163 邮箱客户端授权码连接" },
   { id: "gmail", label: "Gmail", description: "通过 Google 安全登录" },
-  { id: "outlook", label: "Outlook", description: "通过 Microsoft 账户连接", disabled: true },
   { id: "custom", label: "其他邮箱", description: "手动配置 IMAP / SMTP" },
 ];
 
@@ -82,9 +85,11 @@ const providerNames = {
 const providerDescriptions = {
   "163": "输入 163 邮箱地址，并使用客户端授权码完成连接。",
   gmail: "在系统浏览器中完成 Google OAuth 安全登录。",
-  outlook: "通过 Microsoft 账户完成连接。",
   custom: "输入邮箱地址、授权信息以及 IMAP / SMTP 服务器配置。",
 };
+
+const legacyOutlookNotice =
+  "当前版本尚未支持 Outlook 的 Microsoft OAuth / Modern Auth。已缓存邮件仍可阅读，但此账户不能重新连接，也不能新建 Outlook 账户。";
 
 const remoteImageRisk =
   "自动加载会连接发件人的图片服务器，可能暴露邮件打开时间、IP 地址和设备信息，并让追踪像素确认邮箱处于活跃状态。";
@@ -269,8 +274,15 @@ export function SettingsPanel({
   const [storageState, setStorageState] = useState("idle");
   const [storageMessage, setStorageMessage] = useState(null);
   const [pendingStorageDirectory, setPendingStorageDirectory] = useState(null);
+  const [isRemoteImageHelpOpen, setIsRemoteImageHelpOpen] = useState(false);
   const scrollRef = useRef(null);
   const previousAccountSubmitStatusRef = useRef(accountSubmitStatus);
+  const accountDialogReturnFocusRef = useRef(null);
+  const storageDialogReturnFocusRef = useRef(null);
+  const updateDialogReturnFocusRef = useRef(null);
+  const storageCancelRef = useRef(null);
+  const updateCancelRef = useRef(null);
+  const accountRemarkCancelRef = useRef(null);
 
   const accounts = connectedAccounts(accountStatus);
   const maxAccounts = accountStatus?.maxAccounts || 3;
@@ -279,11 +291,14 @@ export function SettingsPanel({
       (account) =>
         account.accountId === (accountStatus?.activeAccountId || accountStatus?.accountId),
     ) || accounts[0];
-  const providerOptions = useMemo(
-    () =>
-      (accountPresets?.length ? accountPresets.map(normalizeProvider) : fallbackProviders),
-    [accountPresets],
-  );
+  const providerOptions = useMemo(() => {
+    const providers = accountPresets?.length
+      ? accountPresets.map(normalizeProvider)
+      : fallbackProviders;
+    return providers.filter(
+      (provider) => provider.id !== "outlook" && !provider.disabled,
+    );
+  }, [accountPresets]);
 
   useEffect(() => {
     setValue(settings);
@@ -374,50 +389,6 @@ export function SettingsPanel({
     setEditingAccountRemark(null);
     setAccountRemarkError(null);
   }, [accountFlow, activeSection, selectedProvider]);
-
-  useEffect(() => {
-    if (
-      !pendingAccountRemoval &&
-      !editingAccountRemark &&
-      !availableUpdate &&
-      !pendingStorageDirectory
-    ) {
-      return undefined;
-    }
-
-    const closeOnEscape = (event) => {
-      if (
-        event.key === "Escape" &&
-        accountSubmitStatus !== "saving" &&
-        !isAccountRemarkSaving &&
-        updateStatus !== "installing" &&
-        storageState !== "migrating"
-      ) {
-        setPendingAccountRemoval(null);
-        setEditingAccountRemark(null);
-        setPendingStorageDirectory(null);
-        if (availableUpdate) {
-          setAvailableUpdate(null);
-          setUpdateStatus("idle");
-          setUpdateMessage(
-            `已暂缓 ${displayVersion(availableUpdate.version)} 更新。`,
-          );
-        }
-      }
-    };
-
-    document.addEventListener("keydown", closeOnEscape);
-    return () => document.removeEventListener("keydown", closeOnEscape);
-  }, [
-    accountSubmitStatus,
-    editingAccountRemark,
-    isAccountRemarkSaving,
-    pendingAccountRemoval,
-    pendingStorageDirectory,
-    storageState,
-    availableUpdate,
-    updateStatus,
-  ]);
 
   const updateSettings = (updater) => {
     const next = typeof updater === "function" ? updater(value) : updater;
@@ -596,6 +567,45 @@ export function SettingsPanel({
     }
   };
 
+  const closeStorageDialog = () => {
+    if (storageState !== "migrating") setPendingStorageDirectory(null);
+  };
+
+  const closeUpdateDialog = () => {
+    if (!availableUpdate || updateStatus === "installing") return;
+    setAvailableUpdate(null);
+    setUpdateStatus("idle");
+    setUpdateMessage(
+      `已暂缓 ${displayVersion(availableUpdate.version)} 更新。`,
+    );
+  };
+
+  const closeAccountRemarkDialog = () => {
+    if (!isAccountRemarkSaving) setEditingAccountRemark(null);
+  };
+
+  const storageDialogFocus = useConfirmDialogFocus({
+    open: Boolean(pendingStorageDirectory),
+    isPending: storageState === "migrating",
+    initialFocusRef: storageCancelRef,
+    returnFocusRef: storageDialogReturnFocusRef,
+    onCancel: closeStorageDialog,
+  });
+  const updateDialogFocus = useConfirmDialogFocus({
+    open: Boolean(availableUpdate),
+    isPending: updateStatus === "installing",
+    initialFocusRef: updateCancelRef,
+    returnFocusRef: updateDialogReturnFocusRef,
+    onCancel: closeUpdateDialog,
+  });
+  const accountRemarkDialogFocus = useConfirmDialogFocus({
+    open: Boolean(editingAccountRemark),
+    isPending: isAccountRemarkSaving,
+    initialFocusRef: accountRemarkCancelRef,
+    returnFocusRef: accountDialogReturnFocusRef,
+    onCancel: closeAccountRemarkDialog,
+  });
+
   const saveStateLabel =
     saveStatus === "saving"
       ? "正在保存…"
@@ -647,7 +657,10 @@ export function SettingsPanel({
           <span
             className="settings-save-state"
             data-tone={saveStatus === "error" ? "danger" : undefined}
-            aria-live="polite"
+            role={saveStatus === "error" ? undefined : "status"}
+            aria-live={saveStatus === "error" ? undefined : "polite"}
+            aria-atomic="true"
+            aria-hidden={saveStatus === "error" || undefined}
           >
             {saveStateLabel}
           </span>
@@ -705,6 +718,8 @@ export function SettingsPanel({
                       const credentialIssue =
                         connectedAccount.credentialInvalid ||
                         connectedAccount.credentialAvailable === false;
+                      const legacyOutlook =
+                        connectedAccount.provider === "outlook";
                       return (
                         <div
                           className="settings-account-card"
@@ -731,7 +746,11 @@ export function SettingsPanel({
                                 ? `${connectedAccount.email} · ${providerLabel}`
                                 : providerLabel}
                             </small>
-                            {credentialIssue ? <CredentialWarning /> : null}
+                            {legacyOutlook ? (
+                              <small>已缓存邮件可读 · 当前不支持重新连接</small>
+                            ) : credentialIssue ? (
+                              <CredentialWarning />
+                            ) : null}
                           </span>
                           {active ? (
                             <span className="settings-current-chip">当前</span>
@@ -752,13 +771,15 @@ export function SettingsPanel({
                               label={`管理 ${connectedAccount.email}`}
                               title="更多账户操作"
                               aria-expanded={accountMenu === connectedAccount.accountId}
-                              onClick={() =>
+                              onClick={(event) => {
+                                accountDialogReturnFocusRef.current =
+                                  event.currentTarget;
                                 setAccountMenu((current) =>
                                   current === connectedAccount.accountId
                                     ? null
                                     : connectedAccount.accountId,
-                                )
-                              }
+                                );
+                              }}
                             >
                               <DotsThree size={20} weight="bold" />
                             </IconButton>
@@ -875,7 +896,6 @@ export function SettingsPanel({
                   <button
                     key={provider.id}
                     type="button"
-                    disabled={provider.disabled}
                     onClick={() => setSelectedProvider(provider.id)}
                   >
                     <ProviderMark provider={provider.id} />
@@ -883,11 +903,7 @@ export function SettingsPanel({
                       <strong>{provider.label}</strong>
                       <small>{provider.description}</small>
                     </span>
-                    {provider.disabled ? (
-                      <small className="settings-provider-status">即将支持</small>
-                    ) : (
-                      <CaretRight size={17} aria-hidden="true" />
-                    )}
+                    <CaretRight size={17} aria-hidden="true" />
                   </button>
                 ))}
               </div>
@@ -909,25 +925,49 @@ export function SettingsPanel({
                 </IconButton>
                 <span>
                   <p className="eyebrow">
-                    {repairingAccount ? "修复账户" : "添加账户"}
+                    {selectedProvider === "outlook"
+                      ? "历史账户"
+                      : repairingAccount
+                        ? "修复账户"
+                        : "添加账户"}
                   </p>
-                  <h3 id="connect-title">连接 {providerNames[selectedProvider] || "邮箱"}</h3>
-                  <p>{providerDescriptions[selectedProvider]}</p>
+                  <h3 id="connect-title">
+                    {selectedProvider === "outlook"
+                      ? "Outlook 账户仅可读取缓存"
+                      : `连接 ${providerNames[selectedProvider] || "邮箱"}`}
+                  </h3>
+                  <p>
+                    {selectedProvider === "outlook"
+                      ? legacyOutlookNotice
+                      : providerDescriptions[selectedProvider]}
+                  </p>
                 </span>
               </header>
 
               <div className="settings-account-setup">
-                <AccountSetupForm
-                  key={selectedProvider}
-                  presets={accountPresets}
-                  status={repairingAccount ? accountStatus : null}
-                  submitStatus={accountSubmitStatus}
-                  error={accountError}
-                  initialProvider={selectedProvider}
-                  showProviderPicker={false}
-                  onSubmit={onConfigureAccount}
-                  onGoogle={onConnectGoogle}
-                />
+                {selectedProvider === "outlook" ? (
+                  <div className="settings-account-empty" role="status">
+                    <ProviderMark provider="outlook" />
+                    <span>
+                      <strong>此账户暂时无法重新连接</strong>
+                      <small>
+                        保留账户即可继续阅读本地缓存；移除账户前，请确认是否还需要这些本地邮件。
+                      </small>
+                    </span>
+                  </div>
+                ) : (
+                  <AccountSetupForm
+                    key={selectedProvider}
+                    presets={accountPresets}
+                    status={repairingAccount ? accountStatus : null}
+                    submitStatus={accountSubmitStatus}
+                    error={accountError}
+                    initialProvider={selectedProvider}
+                    showProviderPicker={false}
+                    onSubmit={onConfigureAccount}
+                    onGoogle={onConnectGoogle}
+                  />
+                )}
               </div>
             </section>
           ) : null}
@@ -1002,10 +1042,26 @@ export function SettingsPanel({
                           className="settings-help__button"
                           aria-label="了解自动加载远程图片的隐私风险"
                           aria-describedby="remote-image-risk"
+                          aria-expanded={isRemoteImageHelpOpen}
+                          aria-controls="remote-image-risk"
+                          onClick={() => setIsRemoteImageHelpOpen(true)}
+                          onFocus={() => setIsRemoteImageHelpOpen(true)}
+                          onBlur={() => setIsRemoteImageHelpOpen(false)}
+                          onKeyDown={(event) => {
+                            if (event.key !== "Escape") return;
+                            event.preventDefault();
+                            setIsRemoteImageHelpOpen(false);
+                            event.currentTarget.blur();
+                          }}
                         >
                           <Question size={13} weight="bold" />
                         </button>
-                        <span id="remote-image-risk" className="settings-help__tooltip" role="tooltip">
+                        <span
+                          id="remote-image-risk"
+                          className="settings-help__tooltip"
+                          data-open={isRemoteImageHelpOpen || undefined}
+                          role="tooltip"
+                        >
                           {remoteImageRisk}
                         </span>
                       </span>
@@ -1083,6 +1139,7 @@ export function SettingsPanel({
                   ))}
                 </nav>
                 <button
+                  ref={updateDialogReturnFocusRef}
                   type="button"
                   className="secondary-button"
                   onClick={() => void checkForUpdate()}
@@ -1102,7 +1159,8 @@ export function SettingsPanel({
                 className="settings-version-note"
                 data-tone={updateStatus === "error" ? "danger" : undefined}
                 role={updateStatus === "error" ? "alert" : undefined}
-                aria-live="polite"
+                aria-live={updateStatus === "error" ? "assertive" : "polite"}
+                aria-atomic="true"
               >
                 {updateMessage ||
                   (updateClient.isSupported
@@ -1140,6 +1198,7 @@ export function SettingsPanel({
                     </strong>
                   </span>
                   <button
+                    ref={storageDialogReturnFocusRef}
                     type="button"
                     className="secondary-button settings-storage-change"
                     onClick={() => void chooseStorageDirectory()}
@@ -1182,7 +1241,10 @@ export function SettingsPanel({
                   className="settings-storage-message"
                   data-tone={storageMessage?.tone}
                   role={storageMessage?.tone === "danger" ? "alert" : undefined}
-                  aria-live="polite"
+                  aria-live={
+                    storageMessage?.tone === "danger" ? "assertive" : "polite"
+                  }
+                  aria-atomic="true"
                 >
                   {storageMessage?.text ||
                     (storageClient.isSupported
@@ -1194,7 +1256,14 @@ export function SettingsPanel({
           ) : null}
 
           {saveStatus === "error" ? (
-            <p className="settings-error" role="alert">设置没有保存，请重试。</p>
+            <p
+              className="settings-error"
+              role="alert"
+              aria-live="assertive"
+              aria-atomic="true"
+            >
+              设置没有保存，请重试。
+            </p>
           ) : null}
         </div>
       </div>
@@ -1202,29 +1271,27 @@ export function SettingsPanel({
       {pendingStorageDirectory ? (
         <div
           className="confirm-layer"
-          onMouseDown={(event) => {
-            if (
-              event.target === event.currentTarget &&
-              storageState !== "migrating"
-            ) {
-              setPendingStorageDirectory(null);
-            }
-          }}
+          data-pending={storageState === "migrating" || undefined}
+          onPointerDown={storageDialogFocus.onBackdropPointerDown}
         >
           <section
+            ref={storageDialogFocus.dialogRef}
             className="confirm-dialog storage-migration-dialog"
             role="dialog"
+            tabIndex={-1}
             aria-modal="true"
+            aria-busy={storageState === "migrating" || undefined}
             aria-labelledby="storage-migration-title"
             aria-describedby="storage-migration-description"
+            onKeyDown={storageDialogFocus.onDialogKeyDown}
           >
             <header>
-              <span className="confirm-dialog__icon">
+              <span className="confirm-dialog__icon" aria-hidden="true">
                 <HardDrives size={22} weight="duotone" />
               </span>
               <IconButton
                 label="取消数据迁移"
-                onClick={() => setPendingStorageDirectory(null)}
+                onClick={closeStorageDialog}
                 disabled={storageState === "migrating"}
               >
                 <X size={18} />
@@ -1247,10 +1314,10 @@ export function SettingsPanel({
             </p>
             <footer>
               <button
+                ref={storageCancelRef}
                 type="button"
                 className="secondary-button"
-                autoFocus
-                onClick={() => setPendingStorageDirectory(null)}
+                onClick={closeStorageDialog}
                 disabled={storageState === "migrating"}
               >
                 取消
@@ -1265,6 +1332,11 @@ export function SettingsPanel({
                 {storageState === "migrating" ? "正在准备…" : "迁移并重启"}
               </button>
             </footer>
+            <ConfirmDialogStatus>
+              {storageState === "migrating"
+                ? "正在准备数据迁移并重启…"
+                : null}
+            </ConfirmDialogStatus>
           </section>
         </div>
       ) : null}
@@ -1272,39 +1344,27 @@ export function SettingsPanel({
       {availableUpdate ? (
         <div
           className="confirm-layer"
-          onMouseDown={(event) => {
-            if (
-              event.target === event.currentTarget &&
-              updateStatus !== "installing"
-            ) {
-              setAvailableUpdate(null);
-              setUpdateStatus("idle");
-              setUpdateMessage(
-                `已暂缓 ${displayVersion(availableUpdate.version)} 更新。`,
-              );
-            }
-          }}
+          data-pending={updateStatus === "installing" || undefined}
+          onPointerDown={updateDialogFocus.onBackdropPointerDown}
         >
           <section
+            ref={updateDialogFocus.dialogRef}
             className="confirm-dialog update-confirm-dialog"
             role="dialog"
+            tabIndex={-1}
             aria-modal="true"
+            aria-busy={updateStatus === "installing" || undefined}
             aria-labelledby="update-confirm-title"
             aria-describedby="update-confirm-description"
+            onKeyDown={updateDialogFocus.onDialogKeyDown}
           >
             <header>
-              <span className="confirm-dialog__icon">
+              <span className="confirm-dialog__icon" aria-hidden="true">
                 <DownloadSimple size={22} weight="duotone" />
               </span>
               <IconButton
                 label="暂不更新"
-                onClick={() => {
-                  setAvailableUpdate(null);
-                  setUpdateStatus("idle");
-                  setUpdateMessage(
-                    `已暂缓 ${displayVersion(availableUpdate.version)} 更新。`,
-                  );
-                }}
+                onClick={closeUpdateDialog}
                 disabled={updateStatus === "installing"}
               >
                 <X size={18} />
@@ -1324,7 +1384,12 @@ export function SettingsPanel({
               </div>
             ) : null}
             {updateStatus === "installing" ? (
-              <div className="update-confirm-dialog__progress" aria-live="polite">
+              <div
+                className="update-confirm-dialog__progress"
+                role="status"
+                aria-live="polite"
+                aria-atomic="true"
+              >
                 <span>
                   {updateProgress?.stage === "installing"
                     ? "正在启动安装程序…"
@@ -1341,22 +1406,21 @@ export function SettingsPanel({
               </div>
             ) : null}
             {updateStatus === "error" && updateMessage ? (
-              <p className="settings-error" role="alert">
+              <p
+                className="settings-error"
+                role="alert"
+                aria-live="assertive"
+                aria-atomic="true"
+              >
                 {updateMessage}
               </p>
             ) : null}
             <footer>
               <button
+                ref={updateCancelRef}
                 type="button"
                 className="secondary-button"
-                autoFocus
-                onClick={() => {
-                  setAvailableUpdate(null);
-                  setUpdateStatus("idle");
-                  setUpdateMessage(
-                    `已暂缓 ${displayVersion(availableUpdate.version)} 更新。`,
-                  );
-                }}
+                onClick={closeUpdateDialog}
                 disabled={updateStatus === "installing"}
               >
                 暂不更新
@@ -1371,6 +1435,9 @@ export function SettingsPanel({
                 {updateStatus === "installing" ? "正在更新…" : "下载并安装"}
               </button>
             </footer>
+            <ConfirmDialogStatus>
+              {updateStatus === "installing" ? "正在下载并安装更新…" : null}
+            </ConfirmDialogStatus>
           </section>
         </div>
       ) : null}
@@ -1378,40 +1445,39 @@ export function SettingsPanel({
       {editingAccountRemark ? (
         <div
           className="confirm-layer"
-          onMouseDown={(event) => {
-            if (
-              event.target === event.currentTarget &&
-              !isAccountRemarkSaving
-            ) {
-              setEditingAccountRemark(null);
-            }
-          }}
+          data-pending={isAccountRemarkSaving || undefined}
+          onPointerDown={accountRemarkDialogFocus.onBackdropPointerDown}
         >
           <form
+            ref={accountRemarkDialogFocus.dialogRef}
             className="confirm-dialog account-remark-dialog"
             role="dialog"
+            tabIndex={-1}
             aria-modal="true"
+            aria-busy={isAccountRemarkSaving || undefined}
             aria-labelledby="account-remark-title"
+            aria-describedby="account-remark-description"
             noValidate
+            onKeyDown={accountRemarkDialogFocus.onDialogKeyDown}
             onSubmit={(event) => {
               event.preventDefault();
               void saveAccountRemark();
             }}
           >
             <header>
-              <span className="confirm-dialog__icon">
+              <span className="confirm-dialog__icon" aria-hidden="true">
                 <NotePencil size={22} weight="duotone" />
               </span>
               <IconButton
                 label="关闭邮箱备注编辑"
-                onClick={() => setEditingAccountRemark(null)}
+                onClick={closeAccountRemarkDialog}
                 disabled={isAccountRemarkSaving}
               >
                 <X size={18} />
               </IconButton>
             </header>
             <h2 id="account-remark-title">设置邮箱备注</h2>
-            <p>
+            <p id="account-remark-description">
               备注会用于账户来源、收藏夹和新邮件通知；邮箱地址仍会同时显示。
             </p>
             <label className="settings-field account-remark-dialog__field">
@@ -1423,7 +1489,6 @@ export function SettingsPanel({
                   value={accountRemarkValue}
                   maxLength={40}
                   autoComplete="off"
-                  autoFocus
                   disabled={isAccountRemarkSaving}
                   placeholder="例如：工作邮箱"
                   onChange={(event) => {
@@ -1435,15 +1500,21 @@ export function SettingsPanel({
               <small>留空并保存可删除备注，最多 40 个字符。</small>
             </label>
             {accountRemarkError ? (
-              <p className="settings-error" role="alert">
+              <p
+                className="settings-error"
+                role="alert"
+                aria-live="assertive"
+                aria-atomic="true"
+              >
                 {accountRemarkError}
               </p>
             ) : null}
             <footer>
               <button
+                ref={accountRemarkCancelRef}
                 type="button"
                 className="secondary-button"
-                onClick={() => setEditingAccountRemark(null)}
+                onClick={closeAccountRemarkDialog}
                 disabled={isAccountRemarkSaving}
               >
                 取消
@@ -1456,6 +1527,9 @@ export function SettingsPanel({
                 {isAccountRemarkSaving ? "正在保存…" : "保存备注"}
               </button>
             </footer>
+            <ConfirmDialogStatus>
+              {isAccountRemarkSaving ? "正在保存邮箱备注…" : null}
+            </ConfirmDialogStatus>
           </form>
         </div>
       ) : null}
@@ -1463,6 +1537,7 @@ export function SettingsPanel({
       <AccountRemovalDialog
         account={pendingAccountRemoval}
         isRemoving={accountSubmitStatus === "saving"}
+        returnFocusRef={accountDialogReturnFocusRef}
         onCancel={() => setPendingAccountRemoval(null)}
         onConfirm={(options) => {
           const accountToRemove = pendingAccountRemoval;

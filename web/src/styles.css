@@ -7,6 +7,18 @@
     format("woff2");
 }
 
+.sr-only {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+  clip: rect(0, 0, 0, 0) !important;
+  clip-path: inset(50%) !important;
+  border: 0 !important;
+  white-space: nowrap !important;
+}
+
 :root {
   color-scheme: light;
   font-family: "Inter Variable", Inter, system-ui, -apple-system, BlinkMacSystemFont,
@@ -54,6 +66,7 @@
   --color-success: #31b56c;
   --color-warning: #aa6a13;
   --color-danger: #d34747;
+  --color-on-danger: #fff;
   --color-favorite: #e4a82c;
   --sidebar-text: #18313f;
   --sidebar-muted: rgba(18, 45, 59, 0.7);
@@ -131,6 +144,9 @@
   --compose-control-surface: color-mix(in srgb, var(--color-control) 48%, transparent);
   --compose-control-hover: color-mix(in srgb, var(--color-hover) 64%, transparent);
   --compose-divider: color-mix(in srgb, var(--color-divider) 72%, transparent);
+  --compose-page-surface: #f8fafc;
+  --compose-paper-surface: #fbfcfd;
+  --compose-paper-rule: color-mix(in srgb, var(--color-primary) 18%, var(--color-divider));
   --surface-echo-blur: 18px;
   --control-surface: color-mix(in srgb, var(--color-control) 78%, transparent);
   --quote-surface: color-mix(in srgb, var(--reader-surface) 95%, var(--color-primary) 5%);
@@ -165,6 +181,46 @@
   --scrollbar-thumb: color-mix(in srgb, var(--color-text-muted) 34%, transparent);
   --scrollbar-thumb-hover: color-mix(in srgb, var(--color-text-muted) 54%, transparent);
   --scrollbar-thumb-active: color-mix(in srgb, var(--color-primary) 58%, transparent);
+  --state-info-surface: color-mix(
+    in srgb,
+    var(--color-primary) 10%,
+    var(--control-surface)
+  );
+  --state-info-edge: color-mix(
+    in srgb,
+    var(--color-primary) 32%,
+    var(--color-border)
+  );
+  --state-success-surface: color-mix(
+    in srgb,
+    var(--color-success) 10%,
+    var(--control-surface)
+  );
+  --state-success-edge: color-mix(
+    in srgb,
+    var(--color-success) 34%,
+    var(--color-border)
+  );
+  --state-warning-surface: color-mix(
+    in srgb,
+    var(--color-warning) 10%,
+    var(--control-surface)
+  );
+  --state-warning-edge: color-mix(
+    in srgb,
+    var(--color-warning) 34%,
+    var(--color-border)
+  );
+  --state-danger-surface: color-mix(
+    in srgb,
+    var(--color-danger) 9%,
+    var(--control-surface)
+  );
+  --state-danger-edge: color-mix(
+    in srgb,
+    var(--color-danger) 34%,
+    var(--color-border)
+  );
   --focus-ring: 0 0 0 2px var(--color-panel), 0 0 0 4px var(--color-primary);
 }
 
@@ -199,6 +255,9 @@
   --compose-control-surface: rgba(239, 246, 250, 0.46);
   --compose-control-hover: rgba(248, 252, 254, 0.62);
   --compose-divider: rgba(114, 136, 151, 0.2);
+  --compose-page-surface: #f6fafc;
+  --compose-paper-surface: #fbfdfe;
+  --compose-paper-rule: #b9d8ee;
 }
 
 :root[data-theme="night"] {
@@ -256,6 +315,9 @@
   --compose-control-surface: rgba(39, 48, 61, 0.5);
   --compose-control-hover: rgba(49, 61, 77, 0.64);
   --compose-divider: rgba(194, 211, 229, 0.14);
+  --compose-page-surface: #1b222c;
+  --compose-paper-surface: #1e2631;
+  --compose-paper-rule: #40566f;
   --control-surface: rgba(34, 41, 52, 0.7);
   --row-hover-surface: rgba(35, 43, 55, 0.66);
   --row-selection-surface: rgba(41, 65, 94, 0.72);
@@ -338,6 +400,9 @@
   --compose-control-surface: rgba(248, 237, 229, 0.48);
   --compose-control-hover: rgba(255, 247, 241, 0.62);
   --compose-divider: rgba(118, 77, 73, 0.18);
+  --compose-page-surface: #fffaf6;
+  --compose-paper-surface: #fffdf9;
+  --compose-paper-rule: #dfc9c1;
   --theme-menu-surface: rgba(244, 224, 214, 0.8);
   --theme-menu-tint: rgba(185, 88, 72, 0.15);
   --reader-idle-ink: #4c2931;
@@ -403,6 +468,9 @@
   --compose-control-surface: rgba(231, 240, 231, 0.48);
   --compose-control-hover: rgba(244, 250, 245, 0.62);
   --compose-divider: rgba(51, 88, 65, 0.18);
+  --compose-page-surface: #f4f8f3;
+  --compose-paper-surface: #f9fbf8;
+  --compose-paper-rule: #bfd3c4;
   --theme-menu-surface: rgba(220, 235, 222, 0.8);
   --theme-menu-tint: rgba(53, 122, 85, 0.14);
   --reader-idle-ink: #183c2b;
@@ -1200,7 +1268,7 @@ html[data-surface="new-mail-notification"] #root {
   align-items: center;
   gap: 12px;
   width: 100%;
-  min-height: 42px;
+  min-height: 44px;
   padding: 0 12px;
   border: 1px solid transparent;
   border-radius: 9px;
@@ -1222,6 +1290,58 @@ html[data-surface="new-mail-notification"] #root {
   background: var(--sidebar-selected);
   font-weight: 650;
   box-shadow: 0 5px 14px rgba(21, 41, 48, 0.07);
+}
+
+.folder-nav__item[data-capability-status="discovery_pending"],
+.folder-nav__item[data-capability-status="needs_creation_confirmation"],
+.folder-nav__item[data-capability-status="unavailable"],
+.folder-nav__item[data-pending-count] {
+  border-color: color-mix(in srgb, var(--sidebar-text) 14%, transparent);
+}
+
+.folder-nav__item[data-capability-status="discovery_pending"],
+.folder-nav__item[data-pending-count] {
+  background: color-mix(in srgb, var(--sidebar-selected) 54%, transparent);
+}
+
+.folder-nav__item[data-capability-status="needs_creation_confirmation"] {
+  background: color-mix(in srgb, var(--color-warning) 12%, var(--sidebar-hover));
+}
+
+.folder-nav__item[data-capability-status="unavailable"] {
+  background: color-mix(in srgb, var(--color-danger) 8%, var(--sidebar-hover));
+}
+
+.folder-nav__item[data-capability-status="discovery_pending"]:disabled,
+.folder-nav__item[data-capability-status="unavailable"]:disabled {
+  opacity: 0.72;
+}
+
+.folder-nav__capability {
+  min-width: 0;
+  margin-left: auto;
+  overflow: hidden;
+  color: var(--sidebar-muted);
+  font-size: 11px;
+  font-weight: 620;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.78;
+}
+
+.folder-nav__item[data-capability-status="needs_creation_confirmation"]
+  .folder-nav__capability {
+  color: color-mix(in srgb, var(--sidebar-text) 76%, var(--color-warning));
+}
+
+.folder-nav__item[data-capability-status="unavailable"] .folder-nav__capability {
+  color: color-mix(in srgb, var(--sidebar-text) 76%, var(--color-danger));
+}
+
+.folder-nav__item[data-capability-status="discovery_pending"]
+  .folder-nav__capability {
+  animation: capability-breathe 1.8s ease-in-out infinite;
 }
 
 .folder-nav__count {
@@ -1750,6 +1870,8 @@ html[data-surface="new-mail-notification"] #root {
 
 .mail-tab {
   align-self: stretch;
+  min-width: 40px;
+  min-height: 40px;
   padding: 0 11px;
   border: 0;
   border-bottom: 2px solid transparent;
@@ -1780,6 +1902,10 @@ html[data-surface="new-mail-notification"] #root {
   padding: 6px 8px 12px;
 }
 
+.message-list > ul {
+  min-width: 0;
+}
+
 .mail-load-progress {
   position: sticky;
   top: 0;
@@ -1797,6 +1923,53 @@ html[data-surface="new-mail-notification"] #root {
   box-shadow: inset 0 1px 0 var(--surface-highlight);
   font-size: 10px;
   backdrop-filter: blur(12px);
+}
+
+.mail-load-progress[data-pagination-state] {
+  position: static;
+  justify-content: center;
+  min-height: 52px;
+  margin: 8px 2px 2px;
+  padding: 6px 10px;
+  border-color: var(--color-border);
+  background: color-mix(in srgb, var(--control-surface) 58%, transparent);
+  box-shadow: none;
+  text-align: center;
+  backdrop-filter: none;
+}
+
+.mail-load-progress[data-pagination-state] .secondary-button {
+  min-height: 44px;
+  background: var(--control-surface);
+}
+
+.mail-load-progress[data-pagination-state="loading"] {
+  border-color: var(--state-info-edge);
+  background: var(--state-info-surface);
+  color: var(--color-primary);
+}
+
+.mail-load-progress[data-pagination-state="retry"] {
+  border-color: var(--state-danger-edge);
+  background: var(--state-danger-surface);
+}
+
+.mail-load-progress[data-pagination-state="offline"] {
+  border-color: var(--state-warning-edge);
+  background: var(--state-warning-surface);
+  color: var(--color-warning);
+}
+
+.mail-load-progress[data-pagination-state="unavailable"] {
+  border-color: var(--state-warning-edge);
+  background: var(--state-warning-surface);
+  color: var(--color-text-secondary);
+}
+
+.mail-load-progress[data-pagination-state="complete"] {
+  border-color: var(--state-success-edge);
+  background: var(--state-success-surface);
+  color: color-mix(in srgb, var(--color-success) 76%, var(--color-text));
 }
 
 .mail-load-progress svg,
@@ -1865,10 +2038,16 @@ html[data-surface="new-mail-notification"] #root {
   animation: pulse 1.25s 120ms ease-in-out infinite;
 }
 
+.mail-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
 .mail-row {
   position: relative;
   display: grid;
-  grid-template-columns: 34px minmax(0, 1fr) 26px;
+  grid-template-columns: 34px minmax(0, 1fr) 40px;
   gap: 9px;
   min-height: 76px;
   padding: 10px 6px 9px 9px;
@@ -1879,6 +2058,40 @@ html[data-surface="new-mail-notification"] #root {
   transition: background var(--motion-fast), border-color var(--motion-fast), border-radius var(--motion-fast);
   animation: row-in 240ms ease-out both;
   animation-delay: calc(var(--row-index) * 22ms);
+}
+
+.mail-row__visual {
+  display: contents;
+}
+
+.mail-row__open {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  width: 100%;
+  min-height: 44px;
+  padding: 0;
+  border: 0;
+  border-radius: inherit;
+  background: transparent;
+}
+
+.mail-row__open:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+
+.mail-row:has(.mail-row__open:focus-visible) {
+  border-color: var(--color-primary);
+  border-radius: var(--row-radius);
+  background: var(--row-hover-surface);
+  box-shadow: var(--focus-ring);
+}
+
+.mail-row:focus-visible {
+  border-color: var(--color-primary);
+  border-radius: var(--row-radius);
+  box-shadow: var(--focus-ring);
 }
 
 .mail-row:hover {
@@ -1996,9 +2209,11 @@ html[data-surface="new-mail-notification"] #root {
 }
 
 .star-button {
+  position: relative;
+  z-index: 1;
   display: grid;
-  width: 26px;
-  height: 26px;
+  width: 40px;
+  height: 40px;
   align-self: center;
   place-items: center;
   padding: 0;
@@ -2039,6 +2254,51 @@ html[data-surface="new-mail-notification"] #root {
   padding: 70px 20px;
   color: var(--color-text-muted);
   text-align: center;
+}
+
+.empty-list[data-empty-state] {
+  width: min(100%, 340px);
+  min-height: 230px;
+  margin-inline: auto;
+  align-content: center;
+}
+
+.empty-list[data-empty-state] > svg {
+  color: var(--color-primary);
+}
+
+.empty-list[data-empty-state="capability"] {
+  margin-top: 10px;
+  padding: 30px 20px;
+  border: 1px solid var(--state-warning-edge);
+  border-radius: var(--panel-radius);
+  background: var(--state-warning-surface);
+}
+
+.empty-list[data-empty-state="capability"] > svg {
+  color: var(--color-warning);
+}
+
+.empty-list[data-empty-state="capability"] .secondary-button {
+  min-height: 44px;
+  margin-top: 10px;
+}
+
+.empty-list[data-empty-state="retryable_failure"] {
+  color: var(--color-danger);
+}
+
+.empty-list[data-empty-state="retryable_failure"] > svg {
+  color: var(--color-danger);
+}
+
+.empty-list[data-empty-state="offline_history_exhausted"] > svg {
+  color: var(--color-warning);
+}
+
+.empty-list[data-empty-state="search_empty"] > svg,
+.empty-list[data-empty-state="filter_empty"] > svg {
+  color: var(--color-text-muted);
 }
 
 .empty-list strong {
@@ -2296,6 +2556,31 @@ html[data-surface="new-mail-notification"] #root {
   gap: 2px;
 }
 
+.reader-toolbar .icon-button {
+  width: 44px;
+  height: 44px;
+}
+
+.reader-toolbar .icon-button[aria-busy="true"] {
+  border-color: var(--state-info-edge);
+  background: var(--state-info-surface);
+  color: var(--color-primary);
+}
+
+.reader-toolbar .icon-button--danger {
+  border-color: color-mix(in srgb, var(--color-danger) 22%, transparent);
+  color: var(--color-danger);
+}
+
+.reader-toolbar .icon-button--danger:hover:not(:disabled) {
+  border-color: var(--state-danger-edge);
+  background: var(--state-danger-surface);
+}
+
+.reader-toolbar .icon-button--danger:disabled {
+  color: color-mix(in srgb, var(--color-danger) 62%, var(--color-text-muted));
+}
+
 .toolbar-divider {
   width: 1px;
   height: 22px;
@@ -2515,14 +2800,100 @@ html[data-surface="new-mail-notification"] #root {
 
 .recipient-toggle {
   display: flex;
+  min-height: 40px;
   align-items: center;
   gap: 4px;
   margin-top: 3px;
-  padding: 0;
+  margin-left: -6px;
+  padding: 0 6px;
   border: 0;
+  border-radius: 7px;
   background: transparent;
   color: var(--color-text-muted);
   font-size: 10px;
+  transition: background var(--motion-fast), color var(--motion-fast);
+}
+
+.recipient-toggle:hover,
+.recipient-toggle[aria-expanded="true"] {
+  background: var(--color-hover);
+  color: var(--color-primary);
+}
+
+.message-header > [role="region"][aria-label="收件人详情"] {
+  max-width: 760px;
+  margin: 12px 0 2px 54px;
+  padding: 12px 14px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--control-radius);
+  background: color-mix(in srgb, var(--control-surface) 72%, transparent);
+  color: var(--color-text-secondary);
+}
+
+.message-header > [role="region"][aria-label="收件人详情"]:focus {
+  outline: none;
+  box-shadow: inset 3px 0 0 var(--color-primary);
+}
+
+.message-header > [role="region"][aria-label="收件人详情"] dl {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+}
+
+.message-header > [role="region"][aria-label="收件人详情"] dl > div {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr);
+  gap: 10px;
+}
+
+.message-header > [role="region"][aria-label="收件人详情"] dt {
+  color: var(--color-text-muted);
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.message-header > [role="region"][aria-label="收件人详情"] dd,
+.message-header > [role="region"][aria-label="收件人详情"] ul {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+}
+
+.message-header > [role="region"][aria-label="收件人详情"] ul {
+  display: grid;
+  gap: 7px;
+  list-style: none;
+}
+
+.message-header > [role="region"][aria-label="收件人详情"] li {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 3px 8px;
+  overflow-wrap: anywhere;
+  font-size: 11px;
+}
+
+.message-header > [role="region"][aria-label="收件人详情"] li strong {
+  color: var(--color-text);
+}
+
+.message-header > [role="region"][aria-label="收件人详情"] li span {
+  color: var(--color-text-muted);
+}
+
+.recipient-groups-unavailable {
+  color: var(--color-warning) !important;
+  overflow-wrap: anywhere;
+}
+
+.message-header > [role="region"][aria-label="收件人详情"]
+  .recipient-groups-unavailable {
+  margin: 10px 0 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--state-warning-edge);
+  font-size: 11px;
 }
 
 .message-body {
@@ -2971,8 +3342,51 @@ html[data-surface="new-mail-notification"] #root {
 }
 
 .delivery-status {
+  display: grid;
+  gap: 5px;
   max-width: 760px;
   margin-bottom: 18px;
+  padding: 10px 12px;
+  border: 1px solid var(--state-info-edge);
+  border-radius: var(--control-radius);
+  background: var(--state-info-surface);
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.message-error.delivery-status {
+  border-color: var(--state-danger-edge);
+  background: var(--state-danger-surface);
+}
+
+.message-error.delivery-status[role="status"] {
+  border-color: var(--state-warning-edge);
+  background: var(--state-warning-surface);
+}
+
+.delivery-status .secondary-button {
+  min-height: 44px;
+  justify-self: start;
+}
+
+.delivery-status__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding-top: 6px;
+}
+
+.delivery-status__actions .secondary-button,
+.delivery-status__actions .danger-button {
+  min-height: 40px;
+}
+
+.delivery-status__actions small {
+  flex-basis: 100%;
+  color: var(--color-text-muted);
 }
 
 .attachments {
@@ -3009,10 +3423,51 @@ html[data-surface="new-mail-notification"] #root {
   background: var(--color-panel-subtle);
   color: var(--color-text-secondary);
   text-align: left;
+  transition: border-color var(--motion-fast), background var(--motion-fast),
+    color var(--motion-fast);
 }
 
-.attachment-card:hover {
+.attachment-card:is(button):hover {
   border-color: var(--color-primary);
+  background: color-mix(in srgb, var(--color-primary) 7%, var(--color-panel-subtle));
+}
+
+.attachment-card[aria-busy="true"],
+.attachment-card[data-state="saving"] {
+  border-color: var(--state-info-edge);
+  background: var(--state-info-surface);
+}
+
+.attachment-card[data-state="saved"] {
+  border-color: var(--state-success-edge);
+  background: var(--state-success-surface);
+}
+
+.attachment-card[data-state="error"] {
+  border-color: var(--state-danger-edge);
+  background: var(--state-danger-surface);
+}
+
+.attachment-card[data-state="canceled"],
+.attachment-card[data-state="disabled"],
+.attachment-card:not(button):not([aria-busy="true"]):not([data-state]) {
+  border-color: color-mix(in srgb, var(--color-border) 72%, transparent);
+  background: color-mix(in srgb, var(--control-surface) 48%, transparent);
+  color: var(--color-text-muted);
+}
+
+.attachment-card[aria-busy="true"] > svg:last-child,
+.attachment-card[data-state="saving"] > svg:last-child {
+  color: var(--color-primary);
+  animation: spin 900ms linear infinite;
+}
+
+.attachment-card[data-state="saved"] > svg:last-child {
+  color: var(--color-success);
+}
+
+.attachment-card[data-state="error"] > svg:last-child {
+  color: var(--color-danger);
 }
 
 .attachment-card__icon {
@@ -3042,6 +3497,8 @@ html[data-surface="new-mail-notification"] #root {
 .attachment-card__copy small {
   color: var(--color-text-muted);
   font-size: 10px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
 }
 
 .message-actions {
@@ -3151,40 +3608,22 @@ html[data-surface="new-mail-notification"] #root {
 .compose-panel {
   position: absolute;
   isolation: isolate;
-  right: 26px;
-  bottom: 22px;
   display: flex;
   flex-direction: column;
-  width: min(660px, calc(100vw - 42px));
-  height: min(680px, calc(100vh - 54px));
+  width: min(980px, calc(100vw - 64px));
+  height: min(800px, calc(100vh - 88px));
   overflow: hidden;
-  border: 1px solid color-mix(in srgb, var(--panel-border) 70%, var(--surface-edge));
-  border-radius: 16px;
-  background: var(--compose-panel-surface);
+  border: 1px solid color-mix(in srgb, var(--panel-border) 82%, var(--color-border));
+  border-radius: 14px;
+  background: var(--compose-page-surface);
   color: var(--color-text);
-  box-shadow: inset 0 1px 0 var(--surface-highlight),
-    0 30px 80px rgba(8, 17, 25, 0.3), var(--panel-shadow);
-  backdrop-filter: blur(30px) saturate(var(--surface-saturation))
-    brightness(var(--surface-brightness));
-  -webkit-backdrop-filter: blur(30px) saturate(var(--surface-saturation))
-    brightness(var(--surface-brightness));
+  box-shadow: 0 28px 76px rgba(8, 17, 25, 0.28), var(--panel-shadow);
   animation: compose-in 220ms cubic-bezier(0.2, 0.72, 0.28, 1);
   will-change: left, top, width, height;
 }
 
 .compose-panel::before {
-  position: absolute;
-  inset: -22px;
-  z-index: 0;
-  background-attachment: fixed;
-  background-image: var(--wallpaper);
-  background-position: center;
-  background-repeat: no-repeat;
-  background-size: cover;
-  content: "";
-  filter: blur(20px) saturate(0.96);
-  opacity: var(--compose-panel-wallpaper-echo);
-  pointer-events: none;
+  content: none;
 }
 
 .compose-panel > :not(.compose-resize-handle) {
@@ -3197,20 +3636,31 @@ html[data-surface="new-mail-notification"] #root {
   min-width: 0;
   min-height: 44px;
   border-radius: 12px;
+  background: var(--compose-panel-surface);
   box-shadow: inset 0 1px 0 var(--surface-highlight),
     0 12px 34px rgba(8, 17, 25, 0.2), var(--panel-shadow);
   backdrop-filter: blur(18px) saturate(var(--surface-saturation));
   -webkit-backdrop-filter: blur(18px) saturate(var(--surface-saturation));
 }
 
-.compose-minimized-bar {
-  position: relative;
-  z-index: 2;
+.compose-minimized-shell {
   display: grid;
   width: 100%;
   height: 100%;
-  place-items: center;
-  padding: 0 20px;
+  grid-template-columns: minmax(0, 1fr) 40px;
+  align-items: center;
+}
+
+.compose-minimized-bar {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  min-width: 0;
+  width: 100%;
+  height: 100%;
+  align-items: center;
+  justify-content: center;
+  padding: 0 10px 0 18px;
   border: 0;
   background: transparent;
   color: var(--color-text);
@@ -3231,6 +3681,19 @@ html[data-surface="new-mail-notification"] #root {
   background: color-mix(in srgb, var(--compose-control-hover) 52%, transparent);
 }
 
+.compose-minimized-close.icon-button {
+  width: 32px;
+  height: 32px;
+  border-color: transparent;
+  background: transparent;
+}
+
+.compose-minimized-close.icon-button:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--color-danger) 24%, transparent);
+  background: color-mix(in srgb, var(--color-danger) 12%, transparent);
+  color: var(--color-danger);
+}
+
 .compose-dialog-title {
   position: absolute !important;
   width: 1px;
@@ -3244,10 +3707,10 @@ html[data-surface="new-mail-notification"] #root {
 .compose-drag-surface {
   position: absolute !important;
   top: 0;
-  right: 94px;
+  right: 0;
   left: 0;
   z-index: 4 !important;
-  height: 52px;
+  height: 18px;
   cursor: grab;
   touch-action: none;
   user-select: none;
@@ -3258,19 +3721,9 @@ html[data-surface="new-mail-notification"] #root {
   cursor: grabbing;
 }
 
-.compose-window-actions {
-  position: absolute !important;
-  top: 9px;
-  right: 11px;
-  z-index: 5 !important;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-
 .compose-unsupported-notice {
   flex: 0 0 auto;
-  margin: 56px 14px 0;
+  margin: 20px 22px 0;
   padding: 10px 12px;
   border: 1px solid color-mix(in srgb, var(--color-primary) 22%, transparent);
   border-radius: 10px;
@@ -3280,17 +3733,13 @@ html[data-surface="new-mail-notification"] #root {
   line-height: 1.5;
 }
 
-.compose-window-actions .icon-button,
 .compose-footer .icon-button {
   width: 34px;
   height: 34px;
-  border-color: color-mix(in srgb, var(--compose-divider) 58%, transparent);
-  background: color-mix(in srgb, var(--compose-control-surface) 52%, transparent);
-  backdrop-filter: blur(10px) saturate(1.08);
-  -webkit-backdrop-filter: blur(10px) saturate(1.08);
+  border-color: color-mix(in srgb, var(--color-border) 74%, transparent);
+  background: var(--color-control);
 }
 
-.compose-window-actions .icon-button:hover:not(:disabled),
 .compose-footer .icon-button:hover:not(:disabled) {
   border-color: color-mix(in srgb, var(--color-primary) 28%, var(--compose-divider));
   background: var(--compose-control-hover);
@@ -3317,14 +3766,10 @@ html[data-surface="new-mail-notification"] #root {
 
 .compose-fields {
   flex: 0 0 auto;
-  margin: 54px 14px 0;
-  padding: 0 10px;
-  overflow: hidden;
-  border: 1px solid var(--compose-divider);
-  border-radius: 12px;
-  background: var(--compose-control-surface);
-  backdrop-filter: blur(12px) saturate(1.06);
-  -webkit-backdrop-filter: blur(12px) saturate(1.06);
+  margin: 20px 22px 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
 }
 
 .compose-unsupported-notice + .compose-fields {
@@ -3333,16 +3778,16 @@ html[data-surface="new-mail-notification"] #root {
 
 .compose-field {
   display: grid;
-  grid-template-columns: 58px minmax(0, 1fr) 40px;
-  min-height: 48px;
+  grid-template-columns: 78px minmax(0, 1fr) 72px;
+  min-height: 58px;
   align-items: center;
-  column-gap: 5px;
-  padding: 0 4px;
+  column-gap: 8px;
+  padding: 0 2px;
   border-bottom: 1px solid var(--compose-divider);
 }
 
 .compose-fields > .compose-field:last-child {
-  border-bottom: 0;
+  border-bottom: 1px solid var(--compose-divider);
 }
 
 .compose-copy-fields {
@@ -3351,8 +3796,8 @@ html[data-surface="new-mail-notification"] #root {
 
 .compose-field > label {
   color: var(--color-text-muted);
-  font-size: 11px;
-  font-weight: 620;
+  font-size: 13px;
+  font-weight: 650;
 }
 
 .compose-input-shell {
@@ -3361,7 +3806,20 @@ html[data-surface="new-mail-notification"] #root {
   min-height: 34px;
   align-items: center;
   margin: 5px 0;
-  padding: 0 9px;
+  padding: 0;
+}
+
+.compose-fields .compose-input-shell.inset-input-shell {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+}
+
+.compose-fields .compose-input-shell.inset-input-shell:hover,
+.compose-fields .compose-input-shell.inset-input-shell:focus-within {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
 }
 
 .compose-input-shell input {
@@ -3371,23 +3829,23 @@ html[data-surface="new-mail-notification"] #root {
   outline: 0;
   background: transparent;
   color: var(--color-text);
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .recipient-input {
   flex-wrap: wrap;
   gap: 4px;
   min-height: 36px;
-  padding: 4px 7px;
+  padding: 4px 0;
   cursor: text;
   transition: border-color var(--motion-fast), background var(--motion-fast),
     box-shadow var(--motion-fast);
 }
 
 .recipient-input[data-open="true"] {
-  border-color: color-mix(in srgb, var(--color-primary) 50%, var(--compose-divider));
-  background: color-mix(in srgb, var(--compose-control-hover) 84%, transparent);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 11%, transparent);
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
 }
 
 .compose-input-shell.recipient-input input {
@@ -3644,10 +4102,8 @@ html[data-surface="new-mail-notification"] #root {
   gap: 1px;
   border-color: color-mix(in srgb, var(--compose-divider) 72%, transparent);
   border-radius: 9px;
-  background: color-mix(in srgb, var(--compose-control-surface) 58%, transparent);
+  background: var(--color-control);
   color: var(--color-text-muted);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
 }
 
 .compose-field .compose-copy-toggle:hover:not(:disabled),
@@ -3666,42 +4122,522 @@ html[data-surface="new-mail-notification"] #root {
 }
 
 .compose-field--subject {
-  grid-template-columns: 58px minmax(0, 1fr);
+  grid-template-columns: 78px minmax(0, 1fr);
 }
 
-.compose-body {
-  flex: 1 1 auto;
-  min-height: 180px;
-  width: auto;
-  height: auto;
-  resize: none;
-  margin: 12px 14px;
-  padding: 18px 20px;
+.compose-format-toolbar {
+  position: relative;
+  z-index: 7 !important;
+  display: flex;
+  flex: 0 0 58px;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+  margin: 0 22px;
+  padding: 8px 0;
+  border: 0;
+  border-bottom: 1px solid var(--compose-divider);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  overflow: visible;
+}
+
+.compose-format-select {
+  flex: 0 0 auto;
+}
+
+.compose-format-select .themed-select__trigger {
+  height: 30px;
+  min-height: 30px;
+  padding: 0 26px 0 9px;
+  border-color: color-mix(in srgb, var(--color-border) 70%, transparent);
+  border-radius: 7px;
+  background: var(--color-control);
+  box-shadow: none;
+  font-size: 11px;
+}
+
+.compose-format-select .themed-select__caret {
+  right: 8px;
+}
+
+.compose-format-select--font .themed-select__trigger {
+  width: 104px;
+}
+
+.compose-format-select--size .themed-select__trigger {
+  width: 56px;
+}
+
+.compose-format-select .themed-select__menu {
+  top: calc(100% + 5px);
+  right: auto;
+  left: 0;
+  width: 104px;
+  min-width: 104px;
+  max-height: 202px;
+  gap: 2px;
+  padding: 4px;
+  border-radius: 9px;
+}
+
+.compose-format-select--size .themed-select__menu {
+  width: 60px;
+  min-width: 60px;
+}
+
+.compose-format-select .themed-select__option {
+  min-height: 30px;
+  grid-template-columns: minmax(0, 1fr) 14px;
+  gap: 5px;
+  padding: 0 6px 0 7px;
+  border-radius: 6px;
+}
+
+.compose-format-button.icon-button {
+  width: 34px;
+  height: 34px;
+  border-color: transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-text-muted);
+}
+
+.compose-format-button.icon-button:hover:not(:disabled),
+.compose-format-button.icon-button[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--color-primary) 20%, transparent);
+  background: color-mix(in srgb, var(--color-primary) 11%, transparent);
+  color: var(--color-primary);
+}
+
+.message-actions--mail .message-forward-button[aria-busy="true"] {
+  border-color: var(--state-info-edge);
+  background: var(--state-info-surface);
+  color: var(--color-primary);
+}
+
+.compose-format-divider {
+  width: 1px;
+  height: 22px;
+  flex: 0 0 auto;
+  margin: 0 4px;
+  background: color-mix(in srgb, var(--compose-divider) 82%, transparent);
+}
+
+.compose-link-control {
+  position: relative;
+  display: inline-flex;
+}
+
+.compose-link-popover {
+  position: absolute;
+  top: calc(100% + 9px);
+  right: -44px;
+  z-index: 20;
+  display: grid;
+  width: 300px;
+  grid-template-columns: minmax(0, 1fr) auto 34px;
+  align-items: center;
+  gap: 5px;
+  padding: 7px;
+  border: 1px solid color-mix(in srgb, var(--compose-divider) 84%, var(--surface-edge));
+  border-radius: 10px;
+  background: var(--compose-page-surface);
+  box-shadow: 0 16px 42px rgba(8, 17, 25, 0.24),
+    inset 0 1px 0 var(--surface-highlight);
+}
+
+.compose-link-popover input {
+  min-width: 0;
+  height: 34px;
+  padding: 0 9px;
   border: 1px solid var(--compose-divider);
-  border-radius: 12px;
+  border-radius: 7px;
   outline: 0;
   background: var(--compose-content-surface);
-  color: var(--color-text-secondary);
-  font-size: 14px;
-  line-height: 1.7;
+  color: var(--color-text);
+  font-size: 11px;
+}
+
+.compose-link-popover input:focus {
+  border-color: color-mix(in srgb, var(--color-primary) 48%, var(--compose-divider));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 10%, transparent);
+}
+
+.compose-link-popover > button:not(.icon-button) {
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid color-mix(in srgb, var(--color-primary) 28%, transparent);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--color-primary) 12%, transparent);
+  color: var(--color-primary);
+  font-size: 10px;
+  font-weight: 680;
+}
+
+.compose-link-popover .icon-button {
+  width: 34px;
+  height: 34px;
+}
+
+.compose-editor-shell {
+  --compose-editor-font-size: 14px;
+  --compose-paper-cell-size: 28px;
+  --compose-paper-line-size: calc(var(--compose-editor-font-size) * 2.2);
+  --compose-paper-top-inset: calc(var(--compose-editor-font-size) * 0.75);
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 150px;
+  margin: 12px 22px;
+  overflow: hidden;
+  border: 1px solid var(--compose-divider);
+  border-radius: 12px;
+  background: var(--compose-content-surface);
   backdrop-filter: blur(12px) saturate(1.04);
   -webkit-backdrop-filter: blur(12px) saturate(1.04);
   transition: border-color var(--motion-fast), background var(--motion-fast),
     box-shadow var(--motion-fast);
 }
 
-.compose-body:focus {
+.compose-editor-shell:focus-within {
   border-color: color-mix(in srgb, var(--color-primary) 46%, var(--compose-divider));
-  background: color-mix(in srgb, var(--compose-content-surface) 82%, var(--compose-control-hover));
+  background: color-mix(
+    in srgb,
+    var(--compose-content-surface) 82%,
+    var(--compose-control-hover)
+  );
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 10%, transparent);
 }
 
-.compose-body::placeholder {
+.compose-editor-loading {
+  display: grid;
+  flex: 1 1 auto;
+  min-height: 150px;
+  margin: 12px 22px;
+  place-items: center;
+  border: 1px solid var(--compose-divider);
+  border-radius: 12px;
+  background: var(--compose-content-surface);
+  color: var(--color-text-muted);
+  font-size: 11px;
+}
+
+.compose-editor-shell[data-stationery="lined"],
+.compose-editor-shell[data-stationery="grid"] {
+  background: var(--compose-paper-surface);
+}
+
+.compose-editor-shell[data-stationery="lined"] .compose-rich-editor {
+  padding-top: var(--compose-paper-top-inset);
+  padding-bottom: var(--compose-paper-line-size);
+  background-color: var(--compose-paper-surface);
+  background-image:
+    linear-gradient(
+      to bottom,
+      var(--compose-paper-surface) 0,
+      var(--compose-paper-surface) calc(var(--compose-paper-top-inset) + 1px),
+      transparent calc(var(--compose-paper-top-inset) + 1px)
+    ),
+    repeating-linear-gradient(
+      to bottom,
+      transparent 0,
+      transparent calc(var(--compose-paper-line-size) - 1px),
+      var(--compose-paper-rule) calc(var(--compose-paper-line-size) - 1px),
+      var(--compose-paper-rule) var(--compose-paper-line-size)
+    );
+  background-position: 0 0, 0 var(--compose-paper-top-inset);
+  background-repeat: no-repeat, repeat;
+  background-attachment: local, local;
+  line-height: var(--compose-paper-line-size);
+}
+
+.compose-editor-shell[data-stationery="grid"] .compose-rich-editor {
+  padding: 0
+    calc(
+      (var(--compose-paper-cell-size) - var(--compose-editor-font-size)) / 2
+    )
+    var(--compose-paper-cell-size);
+  background-color: var(--compose-paper-surface);
+  background-image:
+    linear-gradient(to right, var(--compose-paper-rule) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--compose-paper-rule) 1px, transparent 1px);
+  background-position: 0 0;
+  background-size:
+    var(--compose-paper-cell-size) var(--compose-paper-cell-size),
+    var(--compose-paper-cell-size) var(--compose-paper-cell-size);
+  background-attachment: local, local;
+  letter-spacing: calc(
+    var(--compose-paper-cell-size) - var(--compose-editor-font-size)
+  );
+  line-height: var(--compose-paper-cell-size);
+}
+
+.compose-rich-editor {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: auto;
+  padding: 18px 20px 28px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: var(--compose-editor-font-size);
+  line-height: 1.75;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.compose-rich-editor > .ProseMirror {
+  min-height: 100%;
+  outline: 0;
+}
+
+.compose-rich-editor > .ProseMirror:focus-visible {
+  box-shadow: none;
+}
+
+.compose-rich-editor > .ProseMirror[contenteditable="false"] {
+  cursor: default;
+}
+
+.compose-rich-editor[data-empty="true"]::before {
+  position: absolute;
+  top: 18px;
+  left: 20px;
+  content: attr(data-placeholder);
+  color: var(--color-text-muted);
+  pointer-events: none;
+}
+
+.compose-editor-shell[data-stationery="lined"]
+  .compose-rich-editor[data-empty="true"]::before {
+  top: var(--compose-paper-top-inset);
+}
+
+.compose-editor-shell[data-stationery="grid"]
+  .compose-rich-editor[data-empty="true"]::before {
+  top: 0;
+  left: calc(
+    (var(--compose-paper-cell-size) - var(--compose-editor-font-size)) / 2
+  );
+}
+
+.compose-rich-editor .ProseMirror p,
+.compose-rich-editor .ProseMirror div,
+.compose-rich-editor .ProseMirror blockquote {
+  margin: 0;
+}
+
+.compose-rich-editor .ProseMirror ul,
+.compose-rich-editor .ProseMirror ol {
+  margin: 0;
+  padding-left: 24px;
+}
+
+.compose-rich-editor .ProseMirror em,
+.compose-rich-editor .ProseMirror i {
+  font-style: italic;
+}
+
+.compose-rich-editor .compose-format-caret-probe {
+  display: inline !important;
+  width: 0 !important;
+  height: 0 !important;
+  margin: 0 !important;
+  border: 0 !important;
+  padding: 0 !important;
+  pointer-events: none;
+}
+
+.compose-rich-editor .ProseMirror a {
+  color: var(--color-primary);
+  text-decoration: underline;
+}
+
+.compose-attachments {
+  display: grid;
+  flex: 0 1 auto;
+  min-height: 0;
+  max-height: min(26vh, 210px);
+  gap: 8px;
+  margin: 0 22px 10px;
+  padding: 10px 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  border-top: 1px solid var(--compose-divider);
+  border-bottom: 1px solid var(--compose-divider);
+  color: var(--color-text-secondary);
+}
+
+.compose-attachments__heading {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 0 2px;
+}
+
+.compose-attachments__heading strong {
+  font-size: 11px;
+  font-weight: 680;
+}
+
+.compose-attachments__heading span {
+  color: var(--color-text-muted);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.compose-attachments__list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(270px, 100%), 1fr));
+  gap: 6px;
+  margin: 0;
+  padding: 0 2px 1px;
+  list-style: none;
+}
+
+.compose-attachment {
+  display: grid;
+  min-width: 0;
+  min-height: 56px;
+  grid-template-columns: 34px minmax(0, 1fr) 44px;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 5px 5px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--control-radius);
+  background: color-mix(in srgb, var(--control-surface) 68%, transparent);
+  transition: border-color var(--motion-fast), background var(--motion-fast);
+}
+
+.compose-attachment[data-state="adding"],
+.compose-attachment[data-state="removing"],
+.compose-attachment[data-state="saving"],
+.compose-attachment[data-state="in_flight"],
+.compose-attachment[data-state="pending"] {
+  border-color: var(--state-info-edge);
+  background: var(--state-info-surface);
+}
+
+.compose-attachment[data-state="saved"],
+.compose-attachment[data-state="confirmed"] {
+  border-color: var(--state-success-edge);
+}
+
+.compose-attachment[data-state="error"],
+.compose-attachment[data-state="conflict"],
+.compose-attachment[data-state="conflict_copy"],
+.compose-attachment[data-state="stale"] {
+  border-color: var(--state-danger-edge);
+  background: var(--state-danger-surface);
+}
+
+.compose-attachment__icon {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--color-primary) 10%, var(--color-control));
+  color: var(--color-primary);
+}
+
+.compose-attachment__copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.compose-attachment__copy strong {
+  overflow: hidden;
+  color: var(--color-text);
+  font-size: 11px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.compose-attachment__copy small,
+.compose-attachment__status {
+  overflow-wrap: anywhere;
+  color: var(--color-text-muted);
+  font-size: 9px;
+  line-height: 1.35;
+}
+
+.compose-attachment__status {
+  color: var(--color-primary);
+}
+
+.compose-attachment[data-state="error"] .compose-attachment__status,
+.compose-attachment[data-state="conflict"] .compose-attachment__status,
+.compose-attachment[data-state="conflict_copy"] .compose-attachment__status,
+.compose-attachment[data-state="stale"] .compose-attachment__status {
+  color: var(--color-danger);
+}
+
+.compose-attachment__remove.icon-button {
+  width: 44px;
+  height: 44px;
+  border-color: transparent;
+  background: transparent;
+}
+
+.compose-attachment__remove.icon-button:hover:not(:disabled) {
+  border-color: var(--state-danger-edge);
+  background: var(--state-danger-surface);
+  color: var(--color-danger);
+}
+
+.compose-attachment-operation,
+.compose-attachment-requirement,
+.compose-forward-attachment-warning {
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--state-info-edge);
+  border-radius: 8px;
+  background: var(--state-info-surface);
+  color: var(--color-text-secondary);
+  font-size: 10px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.compose-attachment-operation[data-state="error"],
+.compose-attachment-operation[data-state="conflict"],
+.compose-attachment-operation[data-state="conflict_copy"],
+.compose-attachment-operation[data-state="stale"] {
+  border-color: var(--state-danger-edge);
+  background: var(--state-danger-surface);
+  color: var(--color-danger);
+}
+
+.compose-attachment-requirement,
+.compose-forward-attachment-warning {
+  border-color: var(--state-warning-edge);
+  background: var(--state-warning-surface);
+  color: color-mix(in srgb, var(--color-warning) 78%, var(--color-text));
+}
+
+.compose-attachment-operation[data-state="saved"] {
+  border-color: var(--state-success-edge);
+  background: var(--state-success-surface);
+  color: color-mix(in srgb, var(--color-success) 76%, var(--color-text));
+}
+
+.compose-attachment-operation[data-state="canceled"] {
+  border-color: var(--color-border);
+  background: color-mix(in srgb, var(--control-surface) 52%, transparent);
   color: var(--color-text-muted);
 }
 
 .compose-reply-context {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  min-height: 58px;
   max-height: 38%;
   margin: 0 14px 12px;
   overflow: hidden;
@@ -3798,23 +4734,303 @@ html[data-surface="new-mail-notification"] #root {
   min-height: 0;
 }
 
+.compose-forward-context[data-immutable="true"] {
+  border-color: color-mix(in srgb, var(--color-primary) 26%, var(--compose-divider));
+  background: color-mix(in srgb, var(--compose-content-surface) 74%, var(--color-control));
+  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--color-primary) 48%, transparent);
+}
+
+.compose-forward-context__identity {
+  display: grid;
+  gap: 6px;
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--compose-divider);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--control-surface) 56%, transparent);
+}
+
+.compose-forward-context__identity > div {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: 54px minmax(0, 1fr);
+  gap: 9px;
+}
+
+.compose-forward-context__identity dt {
+  color: var(--color-text-muted);
+  font-size: 9px;
+  font-weight: 650;
+}
+
+.compose-forward-context__identity dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--color-text-secondary);
+}
+
+.compose-forward-context__mode {
+  margin: 0 0 12px;
+  padding: 7px 9px;
+  border-left: 3px solid var(--color-primary);
+  background: var(--state-info-surface);
+  color: var(--color-text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.compose-forward-context__attachments {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--compose-divider);
+}
+
+.compose-forward-context__attachments > strong {
+  color: var(--color-text-secondary);
+  font-size: 10px;
+}
+
+.compose-forward-context__attachments ul {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(210px, 100%), 1fr));
+  gap: 5px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.compose-forward-context__attachments li {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+  padding: 7px 9px;
+  border: 1px solid var(--compose-divider);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--control-surface) 48%, transparent);
+}
+
+.compose-forward-context__attachments li > span {
+  overflow: hidden;
+  color: var(--color-text-secondary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.compose-forward-context__attachments li > small {
+  color: var(--color-text-muted);
+  font-size: 9px;
+  overflow-wrap: anywhere;
+}
+
 .compose-footer {
   display: flex;
-  flex: 0 0 62px;
+  flex: 0 0 72px;
   align-items: center;
   justify-content: space-between;
-  padding: 0 14px 0 18px;
+  gap: 8px;
+  padding: 0 22px;
   border-top: 1px solid var(--compose-divider);
-  background: var(--compose-header-surface);
-  backdrop-filter: blur(14px) saturate(1.06);
-  -webkit-backdrop-filter: blur(14px) saturate(1.06);
+  background: var(--compose-page-surface);
 }
 
 .compose-footer__left,
 .compose-footer__right {
   display: flex;
+  min-width: 0;
   align-items: center;
   gap: 4px;
+}
+
+.compose-footer__left {
+  flex: 0 0 auto;
+}
+
+.compose-footer__right {
+  flex: 1 1 auto;
+  justify-content: flex-end;
+}
+
+.compose-stationery-control {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 5px;
+}
+
+.compose-stationery-trigger {
+  display: inline-flex;
+  height: 34px;
+  align-items: center;
+  gap: 5px;
+  padding: 0 8px;
+  border: 1px solid color-mix(in srgb, var(--compose-divider) 72%, transparent);
+  border-radius: 8px;
+  background: var(--color-control);
+  color: var(--color-text-muted);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.compose-stationery-trigger:hover:not(:disabled),
+.compose-stationery-control[data-open="true"] .compose-stationery-trigger {
+  border-color: color-mix(in srgb, var(--color-primary) 28%, var(--compose-divider));
+  background: var(--compose-control-hover);
+  color: var(--color-text);
+}
+
+.compose-stationery-trigger strong {
+  max-width: 44px;
+  overflow: hidden;
+  color: var(--color-text-secondary);
+  font-weight: 680;
+  text-overflow: ellipsis;
+}
+
+.compose-stationery-trigger__caret {
+  transition: transform var(--motion-fast);
+}
+
+.compose-stationery-control[data-open="true"] .compose-stationery-trigger__caret {
+  transform: rotate(180deg);
+}
+
+.compose-stationery-menu {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 10px);
+  z-index: 22;
+  width: 280px;
+  padding: 7px;
+  border: 1px solid color-mix(in srgb, var(--compose-divider) 84%, var(--surface-edge));
+  border-radius: 12px;
+  background: var(--compose-page-surface);
+  box-shadow: 0 18px 48px rgba(8, 17, 25, 0.26),
+    inset 0 1px 0 var(--surface-highlight);
+}
+
+.compose-stationery-menu__heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 4px 5px 8px;
+  color: var(--color-text-secondary);
+}
+
+.compose-stationery-menu__heading strong {
+  font-size: 11px;
+}
+
+.compose-stationery-menu__heading span {
+  color: var(--color-text-muted);
+  font-size: 9px;
+}
+
+.compose-stationery-option {
+  display: grid;
+  width: 100%;
+  min-height: 54px;
+  grid-template-columns: 56px minmax(0, 1fr) 18px;
+  align-items: center;
+  gap: 9px;
+  padding: 5px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  text-align: left;
+}
+
+.compose-stationery-option:hover,
+.compose-stationery-option[data-selected="true"] {
+  border-color: color-mix(in srgb, var(--color-primary) 20%, transparent);
+  background: color-mix(in srgb, var(--color-primary) 9%, transparent);
+}
+
+.compose-stationery-option > svg {
+  color: var(--color-primary);
+  opacity: 0;
+}
+
+.compose-stationery-option[data-selected="true"] > svg {
+  opacity: 1;
+}
+
+.compose-stationery-option__preview {
+  display: block;
+  width: 56px;
+  height: 40px;
+  border: 1px solid color-mix(in srgb, var(--compose-divider) 78%, transparent);
+  border-radius: 6px;
+  background-color: color-mix(in srgb, var(--compose-content-surface) 88%, #fff);
+}
+
+.compose-stationery-option__preview[data-stationery="lined"] {
+  background-image: repeating-linear-gradient(
+    to bottom,
+    transparent 0,
+    transparent 9px,
+    color-mix(in srgb, var(--color-primary) 18%, var(--compose-divider)) 9px,
+    color-mix(in srgb, var(--color-primary) 18%, var(--compose-divider)) 10px
+  );
+}
+
+.compose-stationery-option__preview[data-stationery="grid"] {
+  background-image:
+    linear-gradient(
+      to right,
+      color-mix(in srgb, var(--color-primary) 15%, var(--compose-divider)) 1px,
+      transparent 1px
+    ),
+    linear-gradient(
+      to bottom,
+      color-mix(in srgb, var(--color-primary) 15%, var(--compose-divider)) 1px,
+      transparent 1px
+    );
+  background-size: 10px 10px;
+}
+
+.compose-stationery-option__copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.compose-stationery-option__copy strong {
+  font-size: 11px;
+}
+
+.compose-stationery-option__copy small {
+  color: var(--color-text-muted);
+  font-size: 9px;
+}
+
+.compose-stationery-mode {
+  display: inline-flex;
+  height: 34px;
+  align-items: center;
+  padding: 2px;
+  border: 1px solid color-mix(in srgb, var(--compose-divider) 68%, transparent);
+  border-radius: 8px;
+  background: var(--color-control);
+}
+
+.compose-stationery-mode button {
+  height: 28px;
+  padding: 0 7px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text-muted);
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.compose-stationery-mode button[data-selected="true"] {
+  background: color-mix(in srgb, var(--color-primary) 12%, var(--compose-control-hover));
+  color: var(--color-primary);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-primary) 18%, transparent);
+  font-weight: 680;
 }
 
 .send-button {
@@ -3827,12 +5043,10 @@ html[data-surface="new-mail-notification"] #root {
   border: 1px solid var(--compose-edge);
   border-radius: var(--control-radius);
   background: var(--compose-surface);
-  color: #fff;
+  color: var(--color-on-primary);
   box-shadow: 0 5px 14px color-mix(in srgb, var(--color-primary) 28%, transparent);
   font-size: 12px;
   font-weight: 680;
-  backdrop-filter: blur(14px) saturate(1.12);
-  -webkit-backdrop-filter: blur(14px) saturate(1.12);
 }
 
 .send-button:hover:not(:disabled) {
@@ -3910,6 +5124,12 @@ html[data-surface="new-mail-notification"] #root {
   animation: dialog-in var(--motion-normal) ease-out;
 }
 
+.confirm-dialog:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring), 0 28px 80px rgba(8, 17, 25, 0.36),
+    var(--panel-shadow);
+}
+
 .confirm-dialog > header {
   display: flex;
   align-items: center;
@@ -3942,6 +5162,55 @@ html[data-surface="new-mail-notification"] #root {
   color: var(--color-text-muted);
   font-size: 12px;
   line-height: 1.6;
+}
+
+.consequential-confirm-dialog {
+  width: min(450px, calc(100vw - 34px));
+}
+
+.consequential-confirm-dialog__fact {
+  display: flex;
+  min-height: 52px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 16px;
+  padding: 10px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--control-radius);
+  background: var(--color-panel-subtle);
+}
+
+.consequential-confirm-dialog__fact small {
+  color: var(--color-text-muted);
+  font-size: 10px;
+}
+
+.consequential-confirm-dialog__fact strong {
+  color: var(--color-text);
+  font-size: 13px;
+}
+
+.consequential-confirm-dialog .confirm-dialog__subject {
+  margin-top: 16px;
+}
+
+.confirm-dialog > .consequential-confirm-dialog__note {
+  margin-top: 12px;
+  padding: 9px 11px;
+  border-left: 3px solid var(--state-warning-edge);
+  border-radius: 0 var(--control-radius) var(--control-radius) 0;
+  background: var(--state-warning-surface);
+  color: var(--color-text-secondary);
+}
+
+.confirm-dialog > .consequential-confirm-dialog__error {
+  margin-top: 12px;
+  padding: 9px 11px;
+  border: 1px solid var(--state-danger-edge);
+  border-radius: var(--control-radius);
+  background: var(--state-danger-surface);
+  color: var(--color-danger);
 }
 
 .recipient-review {
@@ -4063,6 +5332,7 @@ html[data-surface="new-mail-notification"] #root {
 .confirm-dialog__danger-action {
   border-color: color-mix(in srgb, var(--color-danger) 46%, var(--surface-edge));
   background: color-mix(in srgb, var(--color-danger) 88%, #801f2d);
+  color: var(--color-on-danger);
   box-shadow: 0 5px 14px color-mix(in srgb, var(--color-danger) 24%, transparent);
 }
 
@@ -4076,7 +5346,7 @@ html[data-surface="new-mail-notification"] #root {
 
 .danger-button {
   display: inline-flex;
-  min-height: 36px;
+  min-height: 40px;
   align-items: center;
   justify-content: center;
   gap: 7px;
@@ -4084,7 +5354,7 @@ html[data-surface="new-mail-notification"] #root {
   border: 1px solid color-mix(in srgb, var(--color-danger) 42%, transparent);
   border-radius: 9px;
   background: color-mix(in srgb, var(--color-danger) 88%, black 5%);
-  color: white;
+  color: var(--color-on-danger);
   font: inherit;
   font-size: 11px;
   font-weight: 700;
@@ -4171,395 +5441,6 @@ html[data-surface="new-mail-notification"] #root {
   color: var(--color-text-muted);
   font-size: 10px;
   line-height: 1.5;
-}
-
-.settings-layer {
-  position: fixed;
-  inset: 0;
-  z-index: 45;
-  display: grid;
-  place-items: center;
-  padding: 20px;
-  background: var(--overlay);
-  backdrop-filter: blur(5px);
-}
-
-.settings-panel {
-  position: relative;
-  isolation: isolate;
-  display: grid;
-  grid-template-columns: 220px minmax(0, 1fr);
-  width: min(1080px, calc(100vw - 48px));
-  height: min(620px, calc(100vh - 48px));
-  overflow: hidden;
-  border: 1px solid color-mix(in srgb, var(--panel-border) 70%, var(--surface-edge));
-  border-radius: 18px;
-  background: var(--compose-panel-surface);
-  color: var(--color-text);
-  box-shadow: inset 0 1px 0 var(--surface-highlight),
-    0 30px 90px rgba(8, 17, 25, 0.38), var(--panel-shadow);
-  backdrop-filter: blur(32px) saturate(var(--surface-saturation))
-    brightness(var(--surface-brightness));
-  -webkit-backdrop-filter: blur(32px) saturate(var(--surface-saturation))
-    brightness(var(--surface-brightness));
-  animation: dialog-in var(--motion-normal) ease-out;
-}
-
-.settings-panel::before {
-  position: absolute;
-  inset: -24px;
-  z-index: -2;
-  background-attachment: fixed;
-  background-image: var(--wallpaper);
-  background-position: center;
-  background-repeat: no-repeat;
-  background-size: cover;
-  content: "";
-  filter: blur(22px) saturate(0.98);
-  opacity: calc(var(--compose-panel-wallpaper-echo) + 0.08);
-  pointer-events: none;
-}
-
-.settings-panel::after {
-  position: absolute;
-  inset: 0;
-  z-index: -1;
-  background: color-mix(in srgb, var(--reader-surface) 72%, transparent);
-  content: "";
-  pointer-events: none;
-}
-
-.settings-close {
-  position: absolute;
-  top: 18px;
-  right: 18px;
-  z-index: 4;
-  border-color: color-mix(in srgb, var(--panel-border) 64%, transparent);
-  background: color-mix(in srgb, var(--compose-control-surface) 70%, transparent);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-}
-
-.settings-sidebar {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  padding: 28px 18px 22px;
-  border-right: 1px solid color-mix(in srgb, var(--compose-divider) 76%, transparent);
-  background: color-mix(in srgb, var(--compose-header-surface) 76%, transparent);
-  backdrop-filter: blur(18px) saturate(1.04);
-  -webkit-backdrop-filter: blur(18px) saturate(1.04);
-}
-
-.settings-brand {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 0 8px 26px;
-}
-
-.settings-brand__icon {
-  display: grid;
-  width: 46px;
-  height: 46px;
-  flex: 0 0 auto;
-  place-items: center;
-  border: 1px solid color-mix(in srgb, var(--color-primary) 18%, var(--surface-edge));
-  border-radius: 14px;
-  background: color-mix(in srgb, var(--compose-control-surface) 76%, var(--color-primary) 10%);
-  color: var(--color-primary);
-  box-shadow: inset 0 1px 0 var(--surface-highlight);
-}
-
-.settings-brand > span:last-child {
-  display: grid;
-  gap: 2px;
-}
-
-.settings-brand small {
-  color: var(--color-primary);
-  font-size: 9px;
-  font-weight: 760;
-  letter-spacing: 0.14em;
-}
-
-.settings-brand h2 {
-  margin: 0;
-  font-size: 20px;
-  letter-spacing: -0.04em;
-}
-
-.settings-nav {
-  display: grid;
-  gap: 7px;
-}
-
-.settings-nav button {
-  display: grid;
-  grid-template-columns: 38px minmax(0, 1fr);
-  gap: 10px;
-  align-items: center;
-  min-height: 58px;
-  padding: 8px 10px;
-  border: 1px solid transparent;
-  border-radius: 12px;
-  background: transparent;
-  color: var(--color-text-secondary);
-  text-align: left;
-  transition: border-color var(--motion-fast), background var(--motion-fast),
-    color var(--motion-fast);
-}
-
-.settings-nav button:hover {
-  background: color-mix(in srgb, var(--compose-control-hover) 68%, transparent);
-  color: var(--color-text);
-}
-
-.settings-nav button[data-selected="true"] {
-  border-color: color-mix(in srgb, var(--color-primary) 26%, var(--surface-edge));
-  background: color-mix(in srgb, var(--color-primary) 13%, var(--compose-control-surface));
-  color: var(--color-primary);
-  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--surface-highlight) 80%, transparent);
-}
-
-.settings-nav__icon {
-  display: grid;
-  width: 38px;
-  height: 38px;
-  place-items: center;
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--compose-control-surface) 72%, transparent);
-}
-
-.settings-nav button[data-selected="true"] .settings-nav__icon {
-  background: color-mix(in srgb, var(--color-primary) 16%, transparent);
-}
-
-.settings-nav__copy {
-  display: grid;
-  gap: 3px;
-}
-
-.settings-nav__copy strong {
-  font-size: 12px;
-  font-weight: 680;
-}
-
-.settings-nav__copy small,
-.settings-sidebar__note {
-  color: var(--color-text-muted);
-  font-size: 9px;
-  line-height: 1.45;
-}
-
-.settings-sidebar__note {
-  margin: auto 8px 0;
-}
-
-.settings-content {
-  display: grid;
-  min-width: 0;
-  min-height: 0;
-  grid-template-rows: minmax(0, 1fr) auto;
-}
-
-.settings-scroll {
-  min-height: 0;
-  padding: 36px 42px 26px;
-  scrollbar-gutter: stable;
-}
-
-.settings-page {
-  width: min(960px, 100%);
-  margin: 0 auto;
-}
-
-.settings-page__heading {
-  margin: 0 0 26px;
-  padding-right: 44px;
-}
-
-.settings-page__heading h3 {
-  margin: 4px 0 7px;
-  font-size: 27px;
-  letter-spacing: -0.045em;
-}
-
-.settings-page__heading > p:last-child {
-  margin: 0;
-  color: var(--color-text-muted);
-  font-size: 11px;
-  line-height: 1.55;
-}
-
-.settings-subsection {
-  margin-bottom: 18px;
-  padding: 20px;
-  border: 1px solid color-mix(in srgb, var(--compose-divider) 80%, var(--surface-edge));
-  border-radius: 14px;
-  background: color-mix(in srgb, var(--compose-content-surface) 82%, transparent);
-  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--surface-highlight) 68%, transparent);
-  backdrop-filter: blur(14px) saturate(1.04);
-  -webkit-backdrop-filter: blur(14px) saturate(1.04);
-}
-
-.settings-subsection__heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 18px;
-  margin-bottom: 14px;
-}
-
-.settings-subsection__heading > span:first-child {
-  display: grid;
-  gap: 4px;
-}
-
-.settings-subsection__heading strong {
-  color: var(--color-text);
-  font-size: 12px;
-  font-weight: 690;
-}
-
-.settings-subsection__heading small {
-  color: var(--color-text-muted);
-  font-size: 10px;
-  line-height: 1.5;
-}
-
-.settings-heading-with-icon {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-}
-
-.settings-status-chip {
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  gap: 5px;
-  padding: 5px 9px;
-  border: 1px solid color-mix(in srgb, var(--color-success) 28%, transparent);
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--color-success) 10%, transparent);
-  color: var(--color-success);
-  font-size: 9px;
-  font-weight: 680;
-}
-
-.settings-account-card {
-  display: grid;
-  grid-template-columns: 52px minmax(0, 1fr) auto;
-  gap: 11px;
-  align-items: center;
-  padding: 12px;
-  border: 1px solid color-mix(in srgb, var(--compose-divider) 72%, transparent);
-  border-radius: 12px;
-  background: color-mix(in srgb, var(--compose-control-surface) 70%, transparent);
-}
-
-.settings-account-list {
-  display: grid;
-  gap: 9px;
-}
-
-.settings-account-card[data-active="true"] {
-  border-color: color-mix(in srgb, var(--color-primary) 38%, var(--compose-divider));
-}
-
-.settings-account-card__actions {
-  display: flex;
-  max-width: 230px;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 7px;
-}
-
-.settings-account-card__avatar {
-  display: grid;
-  width: 52px;
-  height: 52px;
-  place-items: center;
-  border-radius: 14px;
-  background: var(--color-control);
-  color: var(--color-text-secondary);
-  font-size: 12px;
-  font-weight: 720;
-}
-
-.settings-account-card__copy,
-.settings-account-empty > span {
-  display: grid;
-  gap: 4px;
-  min-width: 0;
-}
-
-.settings-account-card__copy strong,
-.settings-account-empty strong {
-  overflow: hidden;
-  color: var(--color-text);
-  font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.settings-account-card__copy small,
-.settings-account-empty small {
-  color: var(--color-text-muted);
-  font-size: 10px;
-}
-
-.settings-account-card__avatar-action {
-  position: relative;
-  cursor: pointer;
-}
-
-.settings-account-card__avatar-action input {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  opacity: 0;
-  pointer-events: none;
-}
-
-.settings-account-empty {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 16px;
-  border: 1px dashed var(--color-border);
-  border-radius: 12px;
-  color: var(--color-text-muted);
-}
-
-.settings-subsection--account-form .account-setup-form {
-  padding-top: 2px;
-}
-
-.settings-subsection--account-form .settings-input-shell {
-  background: color-mix(in srgb, var(--compose-control-surface) 72%, transparent);
-}
-
-.settings-preference-card {
-  overflow: visible;
-  border: 1px solid color-mix(in srgb, var(--compose-divider) 80%, var(--surface-edge));
-  border-radius: 15px;
-  background: color-mix(in srgb, var(--compose-content-surface) 82%, transparent);
-  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--surface-highlight) 68%, transparent);
-  backdrop-filter: blur(14px) saturate(1.04);
-  -webkit-backdrop-filter: blur(14px) saturate(1.04);
-}
-
-.settings-preference-row {
-  display: flex;
-  min-height: 86px;
-  align-items: center;
-  justify-content: space-between;
-  gap: 28px;
-  padding: 18px 20px;
-  border-bottom: 1px solid color-mix(in srgb, var(--compose-divider) 72%, transparent);
 }
 
 .settings-preference-row:last-child {
@@ -4753,30 +5634,11 @@ html[data-surface="new-mail-notification"] #root {
   opacity: 1;
 }
 
-.settings-preference-row--toggle input {
-  width: 19px;
-  height: 19px;
-  flex: 0 0 auto;
-  accent-color: var(--color-primary);
-}
-
 .settings-notification-sound-control {
   display: inline-flex;
   flex: 0 0 auto;
   align-items: center;
   gap: 12px;
-}
-
-.settings-notification-sound-control > input {
-  width: 19px;
-  height: 19px;
-  flex: 0 0 auto;
-  accent-color: var(--color-primary);
-}
-
-.settings-notification-sound-control > input:disabled {
-  cursor: not-allowed;
-  opacity: 0.52;
 }
 
 .settings-help {
@@ -4787,8 +5649,9 @@ html[data-surface="new-mail-notification"] #root {
 
 .settings-help__button {
   display: grid;
-  width: 19px;
-  height: 19px;
+  width: 40px;
+  height: 40px;
+  margin: -10px;
   place-items: center;
   padding: 0;
   border: 1px solid var(--color-border);
@@ -4825,7 +5688,7 @@ html[data-surface="new-mail-notification"] #root {
 }
 
 .settings-help:hover .settings-help__tooltip,
-.settings-help:focus-within .settings-help__tooltip {
+.settings-help__tooltip[data-open="true"] {
   opacity: 1;
   transform: translateY(0);
 }
@@ -5109,22 +5972,6 @@ html[data-surface="new-mail-notification"] #root {
   box-shadow: var(--focus-ring);
 }
 
-.settings-text-button {
-  padding: 5px;
-  border: 0;
-  background: transparent;
-  color: var(--color-text-muted);
-  font-size: 11px;
-}
-
-.settings-text-button:hover {
-  color: var(--color-danger);
-}
-
-.settings-text-button--danger {
-  color: color-mix(in srgb, var(--color-danger) 78%, var(--color-text-muted));
-}
-
 .account-provider-grid {
   display: grid;
   gap: 8px;
@@ -5156,17 +6003,6 @@ html[data-surface="new-mail-notification"] #root {
   color: var(--color-text-muted);
 }
 
-.settings-footer {
-  display: flex;
-  justify-content: flex-end;
-  gap: 9px;
-  padding: 14px 22px;
-  border-top: 1px solid color-mix(in srgb, var(--compose-divider) 78%, transparent);
-  background: color-mix(in srgb, var(--compose-header-surface) 78%, transparent);
-  backdrop-filter: blur(18px) saturate(1.04);
-  -webkit-backdrop-filter: blur(18px) saturate(1.04);
-}
-
 .settings-error {
   margin: 12px 0 0;
   color: var(--color-danger);
@@ -5191,6 +6027,20 @@ html[data-surface="new-mail-notification"] #root {
 
 /* Embedded settings workspace: the mail shell remains the frame and the
  * settings categories/detail replace only the two content columns. */
+.secondary-workspace-loading {
+  display: grid;
+  grid-column: 2 / -1;
+  min-width: 0;
+  min-height: 0;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--panel-border) 72%, var(--surface-edge));
+  border-radius: var(--panel-radius);
+  background: var(--settings-shell-surface);
+  color: var(--color-text-muted);
+  font-size: 11px;
+  box-shadow: inset 0 1px 0 var(--surface-highlight), var(--panel-shadow);
+}
+
 .settings-workspace {
   position: relative;
   isolation: isolate;
@@ -5841,9 +6691,13 @@ html[data-surface="new-mail-notification"] #root {
 }
 
 .settings-preference-row {
+  display: flex;
   min-height: 80px;
+  align-items: center;
+  justify-content: space-between;
   gap: 28px;
   padding: 16px 19px;
+  border-bottom: 1px solid color-mix(in srgb, var(--compose-divider) 72%, transparent);
 }
 
 .settings-preference-row--toggle input,
@@ -6293,6 +7147,17 @@ html[data-surface="new-mail-notification"] #root {
   }
 }
 
+@keyframes capability-breathe {
+  0%,
+  100% {
+    opacity: 0.62;
+  }
+
+  50% {
+    opacity: 1;
+  }
+}
+
 @media (max-width: 1250px) {
   :root {
     --sidebar-width: 78px;
@@ -6370,14 +7235,6 @@ html[data-surface="new-mail-notification"] #root {
     width: 224px;
   }
 
-  .settings-panel {
-    grid-template-columns: 210px minmax(0, 1fr);
-  }
-
-  .settings-scroll {
-    padding-right: 32px;
-    padding-left: 32px;
-  }
 }
 
 @media (max-width: 940px) {
@@ -6516,36 +7373,14 @@ html[data-surface="new-mail-notification"] #root {
     text-align: left;
   }
 
-  .settings-panel {
-    grid-template-columns: 190px minmax(0, 1fr);
-    width: calc(100vw - 24px);
-    height: calc(100vh - 24px);
+  .attachment-grid {
+    grid-template-columns: repeat(auto-fit, minmax(min(210px, 100%), 1fr));
   }
 
-  .settings-sidebar {
-    padding-right: 12px;
-    padding-left: 12px;
+  .compose-attachments__list {
+    grid-template-columns: minmax(0, 1fr);
   }
 
-  .settings-scroll {
-    padding: 38px 28px 26px;
-  }
-
-  .settings-account-card {
-    grid-template-columns: 48px minmax(0, 1fr);
-  }
-
-  .settings-account-card__avatar {
-    width: 48px;
-    height: 48px;
-  }
-
-  .settings-account-card__actions {
-    grid-column: 2;
-    max-width: none;
-    justify-content: flex-start;
-    flex-wrap: wrap;
-  }
 }
 
 @media (max-width: 720px) {
@@ -6609,15 +7444,33 @@ html[data-surface="new-mail-notification"] #root {
 
   .reader-toolbar {
     padding: 0 10px;
+    gap: 4px;
+    overflow-x: auto;
+    scrollbar-width: none;
   }
 
-  .reader-toolbar__group:first-child .icon-button:nth-of-type(4),
+  .reader-toolbar::-webkit-scrollbar {
+    display: none;
+  }
+
+  .reader-toolbar__group {
+    flex: 0 0 auto;
+  }
+
   .toolbar-divider {
     display: none;
   }
 
   .reader-scroll {
     padding: 26px 22px 38px;
+  }
+
+  .message-header > [role="region"][aria-label="收件人详情"] {
+    margin-left: 0;
+  }
+
+  .attachment-grid {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .reader-panel--message {
@@ -6640,124 +7493,58 @@ html[data-surface="new-mail-notification"] #root {
     height: auto;
   }
 
+  .compose-fields {
+    margin-inline: 12px;
+  }
+
+  .compose-field {
+    grid-template-columns: 62px minmax(0, 1fr) 48px;
+  }
+
+  .compose-field--subject {
+    grid-template-columns: 62px minmax(0, 1fr);
+  }
+
+  .compose-format-toolbar,
+  .compose-editor-shell,
+  .compose-editor-loading {
+    margin-inline: 12px;
+  }
+
+  .compose-attachments {
+    max-height: min(25vh, 170px);
+    margin-inline: 12px;
+  }
+
+  .compose-reply-context {
+    max-height: 34%;
+    margin-inline: 12px;
+  }
+
+  .compose-forward-context__identity > div {
+    grid-template-columns: 46px minmax(0, 1fr);
+  }
+
   .compose-footer {
-    padding: 0 10px;
+    min-height: 92px;
+    flex: 0 0 auto;
+    align-content: center;
+    flex-wrap: wrap;
+    padding: 7px 10px;
   }
 
-  .settings-layer {
-    padding: 8px;
+  .compose-footer__left,
+  .compose-footer__right {
+    flex: 1 1 100%;
+    justify-content: space-between;
   }
 
-  .settings-panel {
-    width: 100%;
-    max-height: calc(100vh - 16px);
-  }
-
-  .settings-panel {
-    grid-template-columns: 1fr;
-    grid-template-rows: auto minmax(0, 1fr);
-    height: calc(100vh - 16px);
-    border-radius: 14px;
-  }
-
-  .settings-close {
-    top: 11px;
-    right: 11px;
-  }
-
-  .settings-sidebar {
-    display: block;
-    padding: 12px 48px 10px 12px;
-    border-right: 0;
-    border-bottom: 1px solid color-mix(in srgb, var(--compose-divider) 76%, transparent);
-  }
-
-  .settings-brand {
-    padding: 0 2px 10px;
-  }
-
-  .settings-brand__icon {
-    width: 38px;
-    height: 38px;
-    border-radius: 11px;
-  }
-
-  .settings-brand h2 {
-    font-size: 17px;
-  }
-
-  .settings-nav {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 5px;
-  }
-
-  .settings-nav button {
-    grid-template-columns: 30px minmax(0, 1fr);
-    min-height: 44px;
-    gap: 6px;
-    padding: 5px 7px;
-  }
-
-  .settings-nav__icon {
-    width: 30px;
-    height: 30px;
-  }
-
-  .settings-nav__copy small,
-  .settings-sidebar__note {
-    display: none;
-  }
-
-  .settings-scroll {
-    padding: 24px 16px 20px;
-  }
-
-  .settings-page__heading {
-    margin-bottom: 18px;
-    padding-right: 38px;
+  .compose-footer__right {
+    flex-wrap: wrap;
   }
 
   .settings-page__heading h3 {
     font-size: 23px;
-  }
-
-  .settings-subsection {
-    padding: 15px;
-  }
-
-  .settings-account-card {
-    grid-template-columns: 44px minmax(0, 1fr);
-  }
-
-  .settings-account-card__avatar {
-    width: 44px;
-    height: 44px;
-    border-radius: 12px;
-  }
-
-  .settings-account-card__actions {
-    grid-column: 2;
-    justify-self: start;
-    flex-wrap: wrap;
-  }
-
-  .settings-preference-row {
-    align-items: flex-start;
-    flex-direction: column;
-    gap: 12px;
-  }
-
-  .settings-select-wrap {
-    width: 100%;
-  }
-
-  .settings-notification-sound-control {
-    width: 100%;
-  }
-
-  .settings-preference-row--toggle {
-    align-items: center;
-    flex-direction: row;
   }
 
   .settings-version-card {
@@ -6820,6 +7607,10 @@ html[data-surface="new-mail-notification"] #root {
   .settings-workspace {
     grid-column: 1 / -1;
     grid-template-columns: 190px minmax(0, 1fr);
+  }
+
+  .secondary-workspace-loading {
+    grid-column: 1 / -1;
   }
 
   .settings-sidebar {
@@ -6994,6 +7785,15 @@ html[data-surface="new-mail-notification"] #root {
     transform: none;
   }
 
+  .folder-nav__item[data-capability-status="discovery_pending"]
+    .folder-nav__capability,
+  .mail-load-progress svg,
+  .mail-loading-state > svg,
+  .attachment-card[aria-busy="true"] > svg:last-child,
+  .attachment-card[data-state="saving"] > svg:last-child {
+    animation: none !important;
+  }
+
   .account-card,
   .account-card:hover,
   .account-card:active,
@@ -7025,5 +7825,38 @@ html[data-surface="new-mail-notification"] #root {
 
   .reader-idle__figure[data-effect] .reader-idle__source {
     opacity: 1;
+  }
+}
+
+@media (forced-colors: active) {
+  .folder-nav__item[data-capability-status],
+  .folder-nav__item[data-pending-count],
+  .mail-load-progress[data-pagination-state],
+  .empty-list[data-empty-state="capability"],
+  .delivery-status,
+  .attachment-card,
+  .compose-attachment,
+  .compose-attachment-operation,
+  .compose-attachment-requirement,
+  .compose-forward-attachment-warning,
+  .compose-forward-context[data-immutable="true"] {
+    border: 1px solid CanvasText;
+    background: Canvas;
+    color: CanvasText;
+    forced-color-adjust: auto;
+  }
+
+  .mail-row:has(.mail-row__open:focus-visible),
+  .mail-row:focus-visible,
+  .recipient-toggle:focus-visible,
+  .compose-attachment__remove:focus-visible {
+    outline: 2px solid Highlight;
+    outline-offset: 2px;
+    box-shadow: none;
+  }
+
+  .mail-row[data-selected="true"],
+  .mail-tab[data-selected="true"] {
+    border-color: Highlight;
   }
 }

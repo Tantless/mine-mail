@@ -117,8 +117,7 @@ describe("AccountSetupForm", () => {
     );
   });
 
-  it("explains and blocks Outlook until Modern Auth is implemented", async () => {
-    const user = userEvent.setup();
+  it("omits Outlook when an old preset response still includes it", () => {
     render(
       <AccountSetupForm
         presets={presets}
@@ -129,9 +128,31 @@ describe("AccountSetupForm", () => {
       />,
     );
 
-    await user.click(screen.getByRole("radio", { name: "Outlook" }));
-    expect(screen.getByText(/OAuth \/ Modern Auth 尚未支持/)).toBeTruthy();
-    expect(screen.getByRole("button", { name: "连接邮箱" }).disabled).toBe(true);
+    expect(
+      screen.getAllByRole("radio").map((option) => option.textContent),
+    ).toEqual(["163 邮箱", "Gmail", "自定义 IMAP/SMTP"]);
+    expect(screen.queryByRole("radio", { name: "Outlook" })).toBeNull();
+    expect(screen.queryByText(/OAuth \/ Modern Auth 尚未支持/)).toBeNull();
+  });
+
+  it.each([
+    ["missing", undefined],
+    ["empty", []],
+  ])("uses only formal fallback providers when presets are %s", (_label, emptyPresets) => {
+    render(
+      <AccountSetupForm
+        presets={emptyPresets}
+        status={{ configured: false }}
+        submitStatus="idle"
+        error={null}
+        onSubmit={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.getAllByRole("radio").map((option) => option.textContent),
+    ).toEqual(["163 邮箱", "Gmail", "自定义 IMAP/SMTP"]);
+    expect(screen.queryByText("Outlook")).toBeNull();
   });
 
   it("starts Google OAuth without asking React for a password", async () => {

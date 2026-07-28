@@ -1,14 +1,31 @@
 import { ShieldWarning, Trash, X } from "@phosphor-icons/react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import {
+  ConfirmDialogStatus,
+  useConfirmDialogFocus,
+} from "./ConfirmDialogPrimitives.jsx";
 import { IconButton } from "./IconButton.jsx";
 
 export function AccountRemovalDialog({
   account,
   isRemoving = false,
+  returnFocusRef = null,
   onCancel,
   onConfirm,
 }) {
   const [deleteLocalData, setDeleteLocalData] = useState(false);
+  const cancelRef = useRef(null);
+  const {
+    dialogRef,
+    onBackdropPointerDown,
+    onDialogKeyDown,
+  } = useConfirmDialogFocus({
+    open: Boolean(account),
+    isPending: isRemoving,
+    initialFocusRef: cancelRef,
+    returnFocusRef,
+    onCancel,
+  });
 
   useEffect(() => {
     setDeleteLocalData(false);
@@ -27,15 +44,27 @@ export function AccountRemovalDialog({
   };
 
   return (
-    <div className="confirm-layer">
+    <div
+      className="confirm-layer"
+      data-pending={isRemoving || undefined}
+      onPointerDown={onBackdropPointerDown}
+    >
       <section
+        ref={dialogRef}
         className="confirm-dialog account-removal-dialog"
         role="alertdialog"
+        tabIndex={-1}
         aria-modal="true"
+        aria-busy={isRemoving || undefined}
         aria-labelledby="account-removal-title"
+        aria-describedby="account-removal-address account-removal-description"
+        onKeyDown={onDialogKeyDown}
       >
         <header>
-          <span className="confirm-dialog__icon account-removal-dialog__icon">
+          <span
+            className="confirm-dialog__icon account-removal-dialog__icon"
+            aria-hidden="true"
+          >
             <ShieldWarning size={23} weight="duotone" />
           </span>
           <IconButton
@@ -50,10 +79,18 @@ export function AccountRemovalDialog({
         <h2 id="account-removal-title">
           {isGoogle ? "移除 Gmail 账户？" : "移除邮箱账户？"}
         </h2>
-        <p className="account-removal-dialog__address">{account.email}</p>
+        <p
+          id="account-removal-address"
+          className="account-removal-dialog__address"
+        >
+          {account.email}
+        </p>
 
         {isGoogle ? (
-          <div className="account-removal-dialog__explanation">
+          <div
+            id="account-removal-description"
+            className="account-removal-dialog__explanation"
+          >
             <strong>“撤销授权并移除”会完成：</strong>
             <ul>
               <li>先请求 Google 撤销 Mine Mail 的 OAuth 授权；</li>
@@ -65,7 +102,10 @@ export function AccountRemovalDialog({
             </p>
           </div>
         ) : (
-          <div className="account-removal-dialog__explanation">
+          <div
+            id="account-removal-description"
+            className="account-removal-dialog__explanation"
+          >
             <p>移除后，Mine Mail 会删除系统凭据和应用内账户记录。</p>
           </div>
         )}
@@ -84,9 +124,13 @@ export function AccountRemovalDialog({
             </small>
           </span>
         </label>
+        <ConfirmDialogStatus>
+          {isRemoving ? "正在移除账户…" : null}
+        </ConfirmDialogStatus>
 
         <footer>
           <button
+            ref={cancelRef}
             type="button"
             className="secondary-button"
             onClick={onCancel}

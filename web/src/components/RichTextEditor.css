@@ -3,6 +3,10 @@
   outline: 0;
 }
 
+.compose-rich-editor > .ProseMirror:focus-visible {
+  box-shadow: none;
+}
+
 .compose-rich-editor > .ProseMirror[contenteditable="false"] {
   cursor: default;
 }
@@ -28,11 +32,11 @@
   justify-items: start;
   min-height: 150px;
   gap: 6px;
-  margin: 0 22px;
+  margin: 12px 22px;
   padding: 20px;
   border: 1px solid var(--color-border);
-  border-radius: 8px;
-  background: var(--color-panel-subtle);
+  border-radius: 12px;
+  background: var(--compose-content-surface);
   color: var(--color-text-secondary);
 }
 

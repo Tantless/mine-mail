@@ -169,7 +169,11 @@ describe("segmented message body", () => {
   });
 
   it("shows a separate jump control only for a reference resolved in the current lists", () => {
-    const navigationTarget = { mailbox: "Sent", uid: 17 };
+    const navigationTarget = {
+      id: "opaque-ancestor-17",
+      mailbox: "Sent",
+      uid: 17,
+    };
     const navigableMessage = {
       ...message,
       body_segments: [
@@ -198,7 +202,9 @@ describe("segmented message body", () => {
       }),
     );
 
-    expect(onOpenReferencedMessage).toHaveBeenCalledWith(navigationTarget);
+    expect(onOpenReferencedMessage).toHaveBeenCalledWith({
+      id: "opaque-ancestor-17",
+    });
     expect(details.open).toBe(false);
 
     rerender(
