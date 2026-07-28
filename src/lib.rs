@@ -4,23 +4,35 @@
 //! should call [`MailBackend`] directly and must never talk to IMAP/SMTP from
 //! the React UI.
 
+mod atomic_publish;
 mod backend;
 mod config;
 mod database;
 mod error;
 mod imap_client;
+mod mailbox_mutation;
+mod managed_attachments;
 mod mime;
 mod models;
 mod smtp_client;
 
-pub use backend::{InboxMonitor, InboxMonitorMode, MailBackend};
+pub use backend::{InboxMonitor, InboxMonitorMode, MailBackend, PermanentDeletePlan};
 pub use config::{AccountConfig, AuthenticationKind, ServerConfig, SmtpSecurity};
 pub use error::{MailError, Result};
 pub use models::{
-    ComposeRequest, ConnectionReport, ContactActivity, ContactMessage, ContactMessageDirection,
-    Draft, DraftDeleteKind, DraftSaveKind, DraftSaveOutcome, DraftSyncReport, InboxMessage,
-    MailAddress, MailboxRole, OutboxItem, OutboxStatus, ReplyContext, SyncBatchProgress,
-    SyncReport, normalize_contact_email,
+    AttachmentDisposition, AttachmentMeta, AttachmentSaveErrorKind, AttachmentSaveResult,
+    AttachmentSaveStatus, ComposeFormat, ComposeRequest, ConnectionReport, ContactActivity,
+    ContactMessage, ContactMessageDirection, DeliveryUnknownDecision, Draft, DraftAttachmentMeta,
+    DraftAttachmentMutationKind, DraftAttachmentMutationOutcome, DraftDeleteKind, DraftDto,
+    DraftSaveKind, DraftSaveOutcome, DraftSyncReport, ForwardContext, ForwardPreparationError,
+    ForwardPreparationErrorKind, ForwardPreparationOutcome, ForwardPreparationOutcomeKind,
+    ForwardQuotedRenderMode, ForwardWarning, InboxMessage, MailAddress, MailboxCapability,
+    MailboxCapabilityStatus, MailboxCapabilityUnavailableReason, MailboxRole, MessageActionKind,
+    MessageMutationErrorKind, MessageMutationReceipt, MessagePage, MessagePageCursor,
+    MessagePageItem, MutationStatus, OutboxItem, OutboxRecipientGroups, OutboxStatus,
+    PendingMessageProjection, PreparedForward, RemoteHistoryState, RemoteMutationPhase,
+    ReplyContext, StationeryTheme, SyncBatchProgress, SyncReport, SystemFlagKind,
+    SystemFlagMutationReceipt, normalize_contact_email,
 };
 
 /// Rebuilds the preferred HTML body from the locally cached RFC822 message and
@@ -29,6 +41,15 @@ pub use models::{
 /// boundary.
 pub fn render_message_html(message: &InboxMessage) -> Option<String> {
     mime::render_message_html(message)
+}
+
+/// Sanitizes the narrow HTML subset produced by Mine Mail's composer.
+///
+/// The result never contains scripts, images, remote resources, arbitrary
+/// styles, or unsupported elements. Desktop commands must call this before
+/// persisting any fragment received from React.
+pub fn sanitize_compose_html(source: Option<&str>) -> Option<String> {
+    mime::sanitize_compose_html(source)
 }
 
 /// Reads only the decoded subject from an immutable Outbox message. This lets

@@ -3,7 +3,7 @@ use std::{collections::BTreeSet, time::Duration};
 use async_imap::{
     Session,
     extensions::idle::IdleResponse,
-    types::{Flag, NameAttribute},
+    types::{Capabilities, Capability, Flag, NameAttribute},
 };
 use async_native_tls::TlsStream;
 use futures::TryStreamExt;
@@ -17,6 +17,8 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(45);
 const DRAFT_FETCH_BATCH_SIZE: usize = 10;
 const SUMMARY_PREVIEW_BYTES: usize = 32 * 1024;
+const MAX_HISTORY_PAGE_SIZE: usize = 100;
+const HISTORY_UID_SEARCH_WINDOW: u32 = 1_000;
 
 #[derive(Clone, Debug)]
 pub(crate) struct MailboxSnapshot {
@@ -46,9 +48,100 @@ pub(crate) struct RemoteMessage {
 #[derive(Clone, Debug)]
 pub(crate) struct RemoteMailbox {
     pub name: String,
+    pub is_all: bool,
     pub is_drafts: bool,
     pub is_sent: bool,
+    pub is_archive: bool,
+    pub is_trash: bool,
     pub is_selectable: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CreatableMailboxRole {
+    Archive,
+    Trash,
+}
+
+impl CreatableMailboxRole {
+    pub fn canonical_name(self) -> &'static str {
+        match self {
+            Self::Archive => "Archive",
+            Self::Trash => "Trash",
+        }
+    }
+}
+
+/// `async-imap` 0.11.2 consumes COPYUID response codes and exposes only
+/// `Result<()>` for UID COPY and UID MOVE. Callers must therefore reconcile the
+/// destination mailbox instead of inventing a source-to-destination UID map.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum UidTransferOutcome {
+    CompletedWithoutUidMapping,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MessageMoveMethod {
+    UidMove,
+    UidCopyThenDelete,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DeleteFinalization {
+    UidExpunge,
+    DeferredServerCleanup,
+}
+
+/// One bounded numeric UID search window below an opaque history cursor.
+///
+/// UIDs are sorted ascending for efficient summary fetching. `next_before_uid`
+/// is an exclusive upper bound for a later request and may advance even when a
+/// sparse numeric window contains no messages.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct OlderUidSearchPage {
+    pub uids: Vec<u32>,
+    pub next_before_uid: Option<u32>,
+    pub reached_uid_floor: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct UidSearchWindow {
+    lower: u32,
+    upper: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FixedFlagMutation {
+    Seen(bool),
+    Flagged(bool),
+    Deleted,
+}
+
+impl FixedFlagMutation {
+    fn query(self) -> &'static str {
+        match self {
+            Self::Seen(true) => "+FLAGS.SILENT (\\Seen)",
+            Self::Seen(false) => "-FLAGS.SILENT (\\Seen)",
+            Self::Flagged(true) => "+FLAGS.SILENT (\\Flagged)",
+            Self::Flagged(false) => "-FLAGS.SILENT (\\Flagged)",
+            Self::Deleted => "+FLAGS.SILENT (\\Deleted)",
+        }
+    }
+
+    fn operation(self) -> &'static str {
+        match self {
+            Self::Seen(_) => "IMAP update message read state",
+            Self::Flagged(_) => "IMAP update message star",
+            Self::Deleted => "IMAP mark message deleted",
+        }
+    }
+
+    fn response_operation(self) -> &'static str {
+        match self {
+            Self::Seen(_) => "IMAP update message read state response",
+            Self::Flagged(_) => "IMAP update message star response",
+            Self::Deleted => "IMAP mark message deleted response",
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -60,7 +153,9 @@ pub(crate) struct RemoteDraftSnapshot {
 
 pub(crate) struct ImapConnection {
     session: ImapSession,
+    supports_move: bool,
     supports_uidplus: bool,
+    supports_special_use: bool,
     supports_idle: bool,
 }
 
@@ -133,7 +228,7 @@ impl ImapConnection {
         // NetEase documents/uses RFC 2971 client identification. Sending it
         // after LOGIN and before SELECT avoids the provider's “Unsafe Login”
         // path while containing no user data.
-        let supports_id = capabilities.has_str("ID");
+        let supports_id = has_capability(&capabilities, "ID");
         if supports_id {
             timeout(
                 COMMAND_TIMEOUT,
@@ -163,17 +258,41 @@ impl ImapConnection {
         } else {
             capabilities
         };
-        let supports_uidplus = capabilities.has_str("UIDPLUS");
-        let supports_idle = capabilities.has_str("IDLE");
+        let supports_move = has_capability(&capabilities, "MOVE");
+        let supports_uidplus = has_capability(&capabilities, "UIDPLUS");
+        let supports_special_use = has_capability(&capabilities, "SPECIAL-USE");
+        let supports_idle = has_capability(&capabilities, "IDLE");
         Ok(Self {
             session,
+            supports_move,
             supports_uidplus,
+            supports_special_use,
             supports_idle,
         })
     }
 
     pub fn supports_idle(&self) -> bool {
         self.supports_idle
+    }
+
+    pub fn supports_move(&self) -> bool {
+        self.supports_move
+    }
+
+    pub fn supports_uidplus(&self) -> bool {
+        self.supports_uidplus
+    }
+
+    pub fn supports_special_use(&self) -> bool {
+        self.supports_special_use
+    }
+
+    pub fn message_move_method(&self) -> MessageMoveMethod {
+        choose_message_move_method(self.supports_move)
+    }
+
+    pub fn delete_finalization(&self) -> DeleteFinalization {
+        choose_delete_finalization(self.supports_uidplus)
     }
 
     pub async fn probe(mut self) -> Result<()> {
@@ -206,22 +325,20 @@ impl ImapConnection {
 
         Ok(names
             .into_iter()
-            .map(|name| RemoteMailbox {
-                name: name.name().to_owned(),
-                is_drafts: name
-                    .attributes()
-                    .iter()
-                    .any(|attribute| matches!(attribute, NameAttribute::Drafts)),
-                is_sent: name
-                    .attributes()
-                    .iter()
-                    .any(|attribute| matches!(attribute, NameAttribute::Sent)),
-                is_selectable: !name
-                    .attributes()
-                    .iter()
-                    .any(|attribute| matches!(attribute, NameAttribute::NoSelect)),
-            })
+            .map(|name| classify_remote_mailbox(name.name(), name.attributes()))
             .collect())
+    }
+
+    /// Creates only the two fixed product-managed fallback mailboxes. The
+    /// caller must issue LIST afterward and confirm the requested SPECIAL-USE
+    /// role is advertised and selectable before treating creation as success.
+    pub async fn create_mailbox_role(&mut self, role: CreatableMailboxRole) -> Result<()> {
+        timeout(COMMAND_TIMEOUT, self.session.create(role.canonical_name()))
+            .await
+            .map_err(|_| MailError::Timeout {
+                operation: "IMAP CREATE product mailbox",
+            })?
+            .map_err(|error| MailError::Imap(error.to_string()))
     }
 
     pub async fn select_mailbox(&mut self, mailbox: &str) -> Result<MailboxSnapshot> {
@@ -258,6 +375,23 @@ impl ImapConnection {
         })
     }
 
+    /// Selects a mailbox for bounded keyset history loading without performing
+    /// the unbounded ALL search used by full reconciliation.
+    pub async fn select_mailbox_for_history(&mut self, mailbox: &str) -> Result<MailboxHint> {
+        let mailbox = validated_mailbox_name(mailbox)?;
+        let selected = timeout(COMMAND_TIMEOUT, self.session.select(mailbox))
+            .await
+            .map_err(|_| MailError::Timeout {
+                operation: "IMAP SELECT history mailbox",
+            })?
+            .map_err(|error| MailError::Imap(error.to_string()))?;
+        Ok(MailboxHint {
+            exists: selected.exists,
+            uid_validity: selected.uid_validity,
+            uid_next: selected.uid_next,
+        })
+    }
+
     pub async fn search_uids_after(&mut self, highest_uid: u32) -> Result<Vec<u32>> {
         let first = highest_uid.saturating_add(1);
         if first == 0 {
@@ -280,10 +414,88 @@ impl ImapConnection {
         Ok(uids)
     }
 
+    /// Searches one bounded numeric UID window below an exclusive cursor.
+    ///
+    /// Sparse mailboxes may return an empty page with another cursor. This is
+    /// intentional: the bounded query prevents a single history request from
+    /// turning into an unbounded server scan.
+    pub async fn search_uids_before(
+        &mut self,
+        before_uid: u32,
+        page_size: usize,
+    ) -> Result<OlderUidSearchPage> {
+        validate_history_page_size(page_size)?;
+        let Some(window) = older_uid_search_window(before_uid) else {
+            return Ok(OlderUidSearchPage {
+                uids: Vec::new(),
+                next_before_uid: None,
+                reached_uid_floor: true,
+            });
+        };
+        let uids = timeout(COMMAND_TIMEOUT, self.session.uid_search(window.query()))
+            .await
+            .map_err(|_| MailError::Timeout {
+                operation: "IMAP older history UID SEARCH",
+            })?
+            .map_err(|error| MailError::Imap(error.to_string()))?;
+        Ok(finish_older_uid_search(uids, window, page_size))
+    }
+
+    /// Moves the selected mailbox's requested UIDs when the server advertises
+    /// RFC 6851 MOVE. No COPYUID mapping is returned by async-imap, so callers
+    /// must reconcile the destination after an acknowledged command.
+    pub async fn move_uids(
+        &mut self,
+        uids: &[u32],
+        destination: &str,
+    ) -> Result<UidTransferOutcome> {
+        if !self.supports_move {
+            return Err(MailError::Validation(
+                "the IMAP server does not advertise MOVE".to_owned(),
+            ));
+        }
+        let sequence_set = required_uid_set(uids)?;
+        let destination = validated_mailbox_name(destination)?;
+        timeout(
+            COMMAND_TIMEOUT,
+            self.session.uid_mv(&sequence_set, destination),
+        )
+        .await
+        .map_err(|_| MailError::Timeout {
+            operation: "IMAP UID MOVE",
+        })?
+        .map_err(|error| MailError::Imap(error.to_string()))?;
+        Ok(UidTransferOutcome::CompletedWithoutUidMapping)
+    }
+
+    /// Copies the selected mailbox's requested UIDs. This deliberately does
+    /// not claim a source-to-destination UID mapping because async-imap does
+    /// not expose COPYUID response data.
+    pub async fn copy_uids(
+        &mut self,
+        uids: &[u32],
+        destination: &str,
+    ) -> Result<UidTransferOutcome> {
+        let sequence_set = required_uid_set(uids)?;
+        let destination = validated_mailbox_name(destination)?;
+        timeout(
+            COMMAND_TIMEOUT,
+            self.session.uid_copy(&sequence_set, destination),
+        )
+        .await
+        .map_err(|_| MailError::Timeout {
+            operation: "IMAP UID COPY",
+        })?
+        .map_err(|error| MailError::Imap(error.to_string()))?;
+        Ok(UidTransferOutcome::CompletedWithoutUidMapping)
+    }
+
     /// Enter one bounded IDLE cycle and restore the session with DONE before
     /// returning. The caller reconnects on any error or maintenance timeout.
     pub async fn wait_for_idle_change(self, duration: Duration) -> Result<(Self, bool)> {
+        let supports_move = self.supports_move;
         let supports_uidplus = self.supports_uidplus;
+        let supports_special_use = self.supports_special_use;
         let supports_idle = self.supports_idle;
         if !supports_idle {
             return Err(MailError::Validation(
@@ -312,7 +524,9 @@ impl ImapConnection {
         Ok((
             Self {
                 session,
+                supports_move,
                 supports_uidplus,
+                supports_special_use,
                 supports_idle,
             },
             matches!(response, IdleResponse::NewData(_)),
@@ -370,6 +584,26 @@ impl ImapConnection {
         Ok(selected.uid_validity)
     }
 
+    /// Selects a mailbox read-write and rejects a server that explicitly
+    /// omits `\Deleted` from PERMANENTFLAGS.
+    pub async fn select_mailbox_for_deleted_update(
+        &mut self,
+        mailbox: &str,
+    ) -> Result<Option<u32>> {
+        let selected = timeout(COMMAND_TIMEOUT, self.session.select(mailbox))
+            .await
+            .map_err(|_| MailError::Timeout {
+                operation: "IMAP SELECT mailbox",
+            })?
+            .map_err(|error| MailError::Imap(error.to_string()))?;
+        if !mailbox_allows_deleted_updates(&selected.permanent_flags) {
+            return Err(MailError::Validation(
+                "the IMAP mailbox does not allow persistent \\Deleted updates".to_owned(),
+            ));
+        }
+        Ok(selected.uid_validity)
+    }
+
     async fn search_all_uids(&mut self) -> Result<Vec<u32>> {
         let uids = timeout(COMMAND_TIMEOUT, self.session.uid_search("ALL"))
             .await
@@ -406,7 +640,7 @@ impl ImapConnection {
         if uids.is_empty() {
             return Ok(Vec::new());
         }
-        let sequence_set = compress_uid_set(uids);
+        let sequence_set = required_uid_set(uids)?;
         let stream = timeout(
             COMMAND_TIMEOUT,
             self.session.uid_fetch(sequence_set, "(UID FLAGS)"),
@@ -433,48 +667,58 @@ impl ImapConnection {
             .collect())
     }
 
-    /// Adds `\Seen` without replacing unrelated flags and returns the
-    /// server-confirmed flag set for every requested UID.
-    pub async fn add_seen_flags(&mut self, uids: &[u32]) -> Result<Vec<(u32, Vec<String>)>> {
+    async fn store_fixed_flag_mutation(
+        &mut self,
+        uids: &[u32],
+        mutation: FixedFlagMutation,
+    ) -> Result<()> {
+        let sequence_set = required_uid_set(uids)?;
+        let stream = timeout(
+            COMMAND_TIMEOUT,
+            self.session.uid_store(&sequence_set, mutation.query()),
+        )
+        .await
+        .map_err(|_| MailError::Timeout {
+            operation: mutation.operation(),
+        })?
+        .map_err(|error| MailError::Imap(error.to_string()))?;
+        timeout(COMMAND_TIMEOUT, stream.try_collect::<Vec<_>>())
+            .await
+            .map_err(|_| MailError::Timeout {
+                operation: mutation.response_operation(),
+            })?
+            .map_err(|error| MailError::Imap(error.to_string()))?;
+        Ok(())
+    }
+
+    /// Adds or removes `\Seen` without replacing unrelated flags, then returns
+    /// the server-confirmed final flag set for every requested UID.
+    pub async fn set_seen(
+        &mut self,
+        uids: &[u32],
+        desired: bool,
+    ) -> Result<Vec<(u32, Vec<String>)>> {
         if uids.is_empty() {
             return Ok(Vec::new());
         }
-        let sequence_set = compress_uid_set(uids);
-        {
-            let stream = timeout(
-                COMMAND_TIMEOUT,
-                self.session
-                    .uid_store(&sequence_set, "+FLAGS.SILENT (\\Seen)"),
-            )
-            .await
-            .map_err(|_| MailError::Timeout {
-                operation: "IMAP mark message read",
-            })?
-            .map_err(|error| MailError::Imap(error.to_string()))?;
-            timeout(COMMAND_TIMEOUT, stream.try_collect::<Vec<_>>())
-                .await
-                .map_err(|_| MailError::Timeout {
-                    operation: "IMAP mark message read response",
-                })?
-                .map_err(|error| MailError::Imap(error.to_string()))?;
-        }
-
+        self.store_fixed_flag_mutation(uids, FixedFlagMutation::Seen(desired))
+            .await?;
         let confirmed = self.fetch_flags(uids).await?;
-        for uid in uids.iter().copied().collect::<BTreeSet<_>>() {
-            let flags = confirmed
-                .iter()
-                .find_map(|(candidate, flags)| (*candidate == uid).then_some(flags))
-                .ok_or_else(|| MailError::NotFound {
-                    entity: "remote message UID",
-                    id: uid.to_string(),
-                })?;
-            if !flags.iter().any(|flag| flag.eq_ignore_ascii_case("\\Seen")) {
-                return Err(MailError::Validation(format!(
-                    "the IMAP server did not persist the read flag for UID {uid}"
-                )));
-            }
-        }
+        ensure_flag_state(&confirmed, uids, "\\Seen", desired, "read")?;
         Ok(confirmed)
+    }
+
+    pub async fn set_seen_flags(
+        &mut self,
+        uids: &[u32],
+        desired: bool,
+    ) -> Result<Vec<(u32, Vec<String>)>> {
+        self.set_seen(uids, desired).await
+    }
+
+    /// Compatibility wrapper for the existing incremental Inbox synchronizer.
+    pub async fn add_seen_flags(&mut self, uids: &[u32]) -> Result<Vec<(u32, Vec<String>)>> {
+        self.set_seen(uids, true).await
     }
 
     /// Adds or removes the standard `\Flagged` system flag without replacing
@@ -487,49 +731,45 @@ impl ImapConnection {
         if uids.is_empty() {
             return Ok(Vec::new());
         }
-        let sequence_set = compress_uid_set(uids);
-        let query = if desired {
-            "+FLAGS.SILENT (\\Flagged)"
-        } else {
-            "-FLAGS.SILENT (\\Flagged)"
-        };
-        {
-            let stream = timeout(
-                COMMAND_TIMEOUT,
-                self.session.uid_store(&sequence_set, query),
-            )
+        self.store_fixed_flag_mutation(uids, FixedFlagMutation::Flagged(desired))
+            .await?;
+        let confirmed = self.fetch_flags(uids).await?;
+        ensure_flag_state(&confirmed, uids, "\\Flagged", desired, "star")?;
+        Ok(confirmed)
+    }
+
+    /// Marks only the selected mailbox's requested UIDs as `\Deleted` and
+    /// verifies the flags. This never performs EXPUNGE.
+    pub async fn mark_deleted_flags(&mut self, uids: &[u32]) -> Result<Vec<(u32, Vec<String>)>> {
+        self.store_fixed_flag_mutation(uids, FixedFlagMutation::Deleted)
+            .await?;
+        let confirmed = self.fetch_flags(uids).await?;
+        ensure_flag_state(&confirmed, uids, "\\Deleted", true, "deleted")?;
+        Ok(confirmed)
+    }
+
+    /// Permanently removes only the requested deleted UIDs. Global EXPUNGE is
+    /// intentionally unavailable; servers without UIDPLUS must defer cleanup.
+    pub async fn expunge_deleted_uids(&mut self, uids: &[u32]) -> Result<usize> {
+        if !self.supports_uidplus {
+            return Err(MailError::Validation(
+                "the IMAP server does not advertise UIDPLUS".to_owned(),
+            ));
+        }
+        let sequence_set = required_uid_set(uids)?;
+        let stream = timeout(COMMAND_TIMEOUT, self.session.uid_expunge(&sequence_set))
             .await
             .map_err(|_| MailError::Timeout {
-                operation: "IMAP update message star",
+                operation: "IMAP UID EXPUNGE",
             })?
             .map_err(|error| MailError::Imap(error.to_string()))?;
-            timeout(COMMAND_TIMEOUT, stream.try_collect::<Vec<_>>())
-                .await
-                .map_err(|_| MailError::Timeout {
-                    operation: "IMAP update message star response",
-                })?
-                .map_err(|error| MailError::Imap(error.to_string()))?;
-        }
-
-        let confirmed = self.fetch_flags(uids).await?;
-        for uid in uids.iter().copied().collect::<BTreeSet<_>>() {
-            let flags = confirmed
-                .iter()
-                .find_map(|(candidate, flags)| (*candidate == uid).then_some(flags))
-                .ok_or_else(|| MailError::NotFound {
-                    entity: "remote message UID",
-                    id: uid.to_string(),
-                })?;
-            let persisted = flags
-                .iter()
-                .any(|flag| flag.eq_ignore_ascii_case("\\Flagged"));
-            if persisted != desired {
-                return Err(MailError::Validation(format!(
-                    "the IMAP server did not persist the requested star state for UID {uid}"
-                )));
-            }
-        }
-        Ok(confirmed)
+        let expunged = timeout(COMMAND_TIMEOUT, stream.try_collect::<Vec<_>>())
+            .await
+            .map_err(|_| MailError::Timeout {
+                operation: "IMAP UID EXPUNGE response",
+            })?
+            .map_err(|error| MailError::Imap(error.to_string()))?;
+        Ok(expunged.len())
     }
 
     async fn fetch_messages(
@@ -541,7 +781,7 @@ impl ImapConnection {
         if uids.is_empty() {
             return Ok(Vec::new());
         }
-        let sequence_set = compress_uid_set(uids);
+        let sequence_set = required_uid_set(uids)?;
         let stream = timeout(COMMAND_TIMEOUT, self.session.uid_fetch(sequence_set, query))
             .await
             .map_err(|_| MailError::Timeout {
@@ -670,37 +910,9 @@ impl ImapConnection {
         if uids.is_empty() {
             return Ok(0);
         }
-        let sequence_set = compress_uid_set(uids);
-        let stream = timeout(
-            COMMAND_TIMEOUT,
-            self.session
-                .uid_store(&sequence_set, "+FLAGS.SILENT (\\Deleted)"),
-        )
-        .await
-        .map_err(|_| MailError::Timeout {
-            operation: "IMAP mark draft deleted",
-        })?
-        .map_err(|error| MailError::Imap(error.to_string()))?;
-        timeout(COMMAND_TIMEOUT, stream.try_collect::<Vec<_>>())
-            .await
-            .map_err(|_| MailError::Timeout {
-                operation: "IMAP draft delete response",
-            })?
-            .map_err(|error| MailError::Imap(error.to_string()))?;
-
+        self.mark_deleted_flags(uids).await?;
         if self.supports_uidplus {
-            let stream = timeout(COMMAND_TIMEOUT, self.session.uid_expunge(&sequence_set))
-                .await
-                .map_err(|_| MailError::Timeout {
-                    operation: "IMAP UID EXPUNGE draft",
-                })?
-                .map_err(|error| MailError::Imap(error.to_string()))?;
-            timeout(COMMAND_TIMEOUT, stream.try_collect::<Vec<_>>())
-                .await
-                .map_err(|_| MailError::Timeout {
-                    operation: "IMAP UID EXPUNGE response",
-                })?
-                .map_err(|error| MailError::Imap(error.to_string()))?;
+            self.expunge_deleted_uids(uids).await?;
         }
         Ok(uids.iter().copied().collect::<BTreeSet<_>>().len())
     }
@@ -791,6 +1003,170 @@ fn summary_fetch_query() -> String {
     format!("(UID FLAGS INTERNALDATE RFC822.SIZE BODY.PEEK[]<0.{SUMMARY_PREVIEW_BYTES}>)")
 }
 
+fn has_capability(capabilities: &Capabilities, expected: &str) -> bool {
+    capabilities
+        .iter()
+        .any(|capability| capability_atom_matches(capability, expected))
+}
+
+fn capability_atom_matches(capability: &Capability, expected: &str) -> bool {
+    matches!(
+        capability,
+        Capability::Atom(value) if value.eq_ignore_ascii_case(expected)
+    )
+}
+
+fn classify_remote_mailbox(name: &str, attributes: &[NameAttribute<'_>]) -> RemoteMailbox {
+    RemoteMailbox {
+        name: name.to_owned(),
+        is_all: attributes
+            .iter()
+            .any(|attribute| matches!(attribute, NameAttribute::All)),
+        is_drafts: attributes
+            .iter()
+            .any(|attribute| matches!(attribute, NameAttribute::Drafts)),
+        is_sent: attributes
+            .iter()
+            .any(|attribute| matches!(attribute, NameAttribute::Sent)),
+        is_archive: attributes
+            .iter()
+            .any(|attribute| matches!(attribute, NameAttribute::Archive)),
+        is_trash: attributes
+            .iter()
+            .any(|attribute| matches!(attribute, NameAttribute::Trash)),
+        is_selectable: !attributes
+            .iter()
+            .any(|attribute| matches!(attribute, NameAttribute::NoSelect)),
+    }
+}
+
+fn choose_message_move_method(supports_move: bool) -> MessageMoveMethod {
+    if supports_move {
+        MessageMoveMethod::UidMove
+    } else {
+        MessageMoveMethod::UidCopyThenDelete
+    }
+}
+
+fn choose_delete_finalization(supports_uidplus: bool) -> DeleteFinalization {
+    if supports_uidplus {
+        DeleteFinalization::UidExpunge
+    } else {
+        DeleteFinalization::DeferredServerCleanup
+    }
+}
+
+fn required_uid_set(uids: &[u32]) -> Result<String> {
+    if uids.is_empty() {
+        return Err(MailError::Validation(
+            "at least one message UID is required".to_owned(),
+        ));
+    }
+    if uids.contains(&0) {
+        return Err(MailError::Validation(
+            "message UID zero is invalid".to_owned(),
+        ));
+    }
+    Ok(compress_uid_set(uids))
+}
+
+fn validated_mailbox_name(mailbox: &str) -> Result<&str> {
+    if mailbox.trim().is_empty() {
+        return Err(MailError::Validation(
+            "mailbox name cannot be empty".to_owned(),
+        ));
+    }
+    if mailbox.len() > 1_024 || mailbox.chars().any(char::is_control) {
+        return Err(MailError::Validation("invalid mailbox name".to_owned()));
+    }
+    Ok(mailbox)
+}
+
+fn validate_history_page_size(page_size: usize) -> Result<()> {
+    if page_size == 0 || page_size > MAX_HISTORY_PAGE_SIZE {
+        return Err(MailError::Validation(format!(
+            "history page size must be between 1 and {MAX_HISTORY_PAGE_SIZE}"
+        )));
+    }
+    Ok(())
+}
+
+fn older_uid_search_window(before_uid: u32) -> Option<UidSearchWindow> {
+    let upper = before_uid.checked_sub(1)?;
+    if upper == 0 {
+        return None;
+    }
+    Some(UidSearchWindow {
+        lower: upper
+            .saturating_sub(HISTORY_UID_SEARCH_WINDOW.saturating_sub(1))
+            .max(1),
+        upper,
+    })
+}
+
+impl UidSearchWindow {
+    fn query(self) -> String {
+        format!("UID {}:{}", self.lower, self.upper)
+    }
+}
+
+fn finish_older_uid_search(
+    uids: impl IntoIterator<Item = u32>,
+    window: UidSearchWindow,
+    page_size: usize,
+) -> OlderUidSearchPage {
+    let mut uids: Vec<u32> = uids
+        .into_iter()
+        .filter(|uid| *uid >= window.lower && *uid <= window.upper)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let had_more_matches = uids.len() > page_size;
+    if had_more_matches {
+        uids.drain(..uids.len() - page_size);
+    }
+
+    let next_before_uid = if had_more_matches {
+        uids.first().copied()
+    } else if window.lower > 1 {
+        Some(window.lower)
+    } else {
+        None
+    };
+    OlderUidSearchPage {
+        uids,
+        next_before_uid,
+        reached_uid_floor: next_before_uid.is_none(),
+    }
+}
+
+fn ensure_flag_state(
+    confirmed: &[(u32, Vec<String>)],
+    uids: &[u32],
+    flag_name: &str,
+    desired: bool,
+    state_name: &str,
+) -> Result<()> {
+    for uid in uids.iter().copied().collect::<BTreeSet<_>>() {
+        let flags = confirmed
+            .iter()
+            .find_map(|(candidate, flags)| (*candidate == uid).then_some(flags))
+            .ok_or_else(|| MailError::NotFound {
+                entity: "remote message UID",
+                id: uid.to_string(),
+            })?;
+        let persisted = flags
+            .iter()
+            .any(|flag| flag.eq_ignore_ascii_case(flag_name));
+        if persisted != desired {
+            return Err(MailError::Validation(format!(
+                "the IMAP server did not persist the requested {state_name} state for UID {uid}"
+            )));
+        }
+    }
+    Ok(())
+}
+
 struct OAuth2Authenticator<'a> {
     email: &'a str,
     access_token: &'a str,
@@ -868,13 +1244,25 @@ fn mailbox_allows_flagged_updates(permanent_flags: &[Flag<'_>]) -> bool {
             .any(|flag| matches!(flag, Flag::Flagged))
 }
 
+fn mailbox_allows_deleted_updates(permanent_flags: &[Flag<'_>]) -> bool {
+    permanent_flags.is_empty()
+        || permanent_flags
+            .iter()
+            .any(|flag| matches!(flag, Flag::Deleted))
+}
+
 #[cfg(test)]
 mod tests {
-    use async_imap::types::Flag;
+    use async_imap::types::{Capability, Flag, NameAttribute};
 
     use super::{
-        SUMMARY_PREVIEW_BYTES, compress_uid_set, mailbox_allows_flagged_updates,
-        mailbox_allows_seen_updates, summary_fetch_query,
+        CreatableMailboxRole, DeleteFinalization, FixedFlagMutation, HISTORY_UID_SEARCH_WINDOW,
+        MAX_HISTORY_PAGE_SIZE, MessageMoveMethod, SUMMARY_PREVIEW_BYTES, UidSearchWindow,
+        capability_atom_matches, choose_delete_finalization, choose_message_move_method,
+        classify_remote_mailbox, compress_uid_set, ensure_flag_state, finish_older_uid_search,
+        mailbox_allows_deleted_updates, mailbox_allows_flagged_updates,
+        mailbox_allows_seen_updates, older_uid_search_window, required_uid_set,
+        summary_fetch_query, validate_history_page_size, validated_mailbox_name,
     };
 
     #[test]
@@ -894,6 +1282,179 @@ mod tests {
     }
 
     #[test]
+    fn dangerous_uid_sets_are_non_empty_and_never_contain_zero() {
+        assert!(required_uid_set(&[]).is_err());
+        assert!(required_uid_set(&[0]).is_err());
+        assert!(required_uid_set(&[1, 2, 2, 4]).is_ok_and(|set| set == "1:2,4"));
+    }
+
+    #[test]
+    fn mailbox_names_reject_empty_oversized_and_control_char_inputs() {
+        assert!(validated_mailbox_name("Archive").is_ok());
+        assert!(validated_mailbox_name(" ").is_err());
+        assert!(validated_mailbox_name("Bad\r\nMailbox").is_err());
+        assert!(validated_mailbox_name(&"x".repeat(1_025)).is_err());
+    }
+
+    #[test]
+    fn capability_atoms_are_matched_case_insensitively_without_auth_confusion() {
+        assert!(capability_atom_matches(
+            &Capability::Atom("move".to_owned()),
+            "MOVE"
+        ));
+        assert!(capability_atom_matches(
+            &Capability::Atom("Special-Use".to_owned()),
+            "SPECIAL-USE"
+        ));
+        assert!(!capability_atom_matches(
+            &Capability::Auth("MOVE".to_owned()),
+            "MOVE"
+        ));
+        assert!(!capability_atom_matches(&Capability::Imap4rev1, "MOVE"));
+    }
+
+    #[test]
+    fn classifies_selectable_special_use_mailboxes() {
+        let archive = classify_remote_mailbox(
+            "All Mail",
+            &[
+                NameAttribute::All,
+                NameAttribute::Archive,
+                NameAttribute::Drafts,
+            ],
+        );
+        assert_eq!(archive.name, "All Mail");
+        assert!(archive.is_all);
+        assert!(archive.is_archive);
+        assert!(archive.is_drafts);
+        assert!(!archive.is_sent);
+        assert!(!archive.is_trash);
+        assert!(archive.is_selectable);
+
+        let trash =
+            classify_remote_mailbox("Bin", &[NameAttribute::Trash, NameAttribute::NoSelect]);
+        assert!(trash.is_trash);
+        assert!(!trash.is_selectable);
+    }
+
+    #[test]
+    fn product_managed_create_roles_have_fixed_names() {
+        assert_eq!(CreatableMailboxRole::Archive.canonical_name(), "Archive");
+        assert_eq!(CreatableMailboxRole::Trash.canonical_name(), "Trash");
+    }
+
+    #[test]
+    fn capability_driven_command_selection_is_explicit() {
+        assert_eq!(choose_message_move_method(true), MessageMoveMethod::UidMove);
+        assert_eq!(
+            choose_message_move_method(false),
+            MessageMoveMethod::UidCopyThenDelete
+        );
+        assert_eq!(
+            choose_delete_finalization(true),
+            DeleteFinalization::UidExpunge
+        );
+        assert_eq!(
+            choose_delete_finalization(false),
+            DeleteFinalization::DeferredServerCleanup
+        );
+    }
+
+    #[test]
+    fn store_queries_are_fixed_and_never_replace_unrelated_flags() {
+        assert_eq!(
+            FixedFlagMutation::Seen(true).query(),
+            "+FLAGS.SILENT (\\Seen)"
+        );
+        assert_eq!(
+            FixedFlagMutation::Seen(false).query(),
+            "-FLAGS.SILENT (\\Seen)"
+        );
+        assert_eq!(
+            FixedFlagMutation::Flagged(true).query(),
+            "+FLAGS.SILENT (\\Flagged)"
+        );
+        assert_eq!(
+            FixedFlagMutation::Flagged(false).query(),
+            "-FLAGS.SILENT (\\Flagged)"
+        );
+        assert_eq!(
+            FixedFlagMutation::Deleted.query(),
+            "+FLAGS.SILENT (\\Deleted)"
+        );
+    }
+
+    #[test]
+    fn verifies_both_positive_and_negative_flag_state() {
+        let confirmed = vec![
+            (7, vec!["\\Seen".to_owned(), "\\Flagged".to_owned()]),
+            (8, vec!["\\Flagged".to_owned()]),
+        ];
+        assert!(ensure_flag_state(&confirmed, &[7], "\\Seen", true, "read").is_ok());
+        assert!(ensure_flag_state(&confirmed, &[8], "\\Seen", false, "read").is_ok());
+        assert!(ensure_flag_state(&confirmed, &[8], "\\Seen", true, "read").is_err());
+        assert!(ensure_flag_state(&confirmed, &[9], "\\Seen", false, "read").is_err());
+    }
+
+    #[test]
+    fn older_history_uses_a_bounded_exclusive_uid_window() {
+        let window = older_uid_search_window(5_001).expect("window");
+        assert_eq!(
+            window,
+            UidSearchWindow {
+                lower: 4_001,
+                upper: 5_000
+            }
+        );
+        assert_eq!(window.upper - window.lower + 1, HISTORY_UID_SEARCH_WINDOW);
+        assert_eq!(window.query(), "UID 4001:5000");
+        assert_eq!(older_uid_search_window(1), None);
+        assert_eq!(older_uid_search_window(0), None);
+    }
+
+    #[test]
+    fn older_history_returns_newest_page_and_an_exclusive_cursor() {
+        let page = finish_older_uid_search(
+            [5_001, 4_999, 4_997, 4_998, 4_998, 4_000],
+            UidSearchWindow {
+                lower: 4_001,
+                upper: 5_000,
+            },
+            2,
+        );
+        assert_eq!(page.uids, vec![4_998, 4_999]);
+        assert_eq!(page.next_before_uid, Some(4_998));
+        assert!(!page.reached_uid_floor);
+    }
+
+    #[test]
+    fn sparse_history_advances_without_claiming_the_uid_floor_was_reached() {
+        let sparse_page = finish_older_uid_search(
+            [],
+            UidSearchWindow {
+                lower: 4_001,
+                upper: 5_000,
+            },
+            50,
+        );
+        assert!(sparse_page.uids.is_empty());
+        assert_eq!(sparse_page.next_before_uid, Some(4_001));
+        assert!(!sparse_page.reached_uid_floor);
+
+        let final_page = finish_older_uid_search([], UidSearchWindow { lower: 1, upper: 2 }, 50);
+        assert_eq!(final_page.next_before_uid, None);
+        assert!(final_page.reached_uid_floor);
+    }
+
+    #[test]
+    fn history_page_size_is_bounded() {
+        assert!(validate_history_page_size(1).is_ok());
+        assert!(validate_history_page_size(MAX_HISTORY_PAGE_SIZE).is_ok());
+        assert!(validate_history_page_size(0).is_err());
+        assert!(validate_history_page_size(MAX_HISTORY_PAGE_SIZE + 1).is_err());
+    }
+
+    #[test]
     fn detects_advertised_seen_flag_support() {
         assert!(mailbox_allows_seen_updates(&[]));
         assert!(mailbox_allows_seen_updates(&[Flag::Seen, Flag::Flagged]));
@@ -905,5 +1466,15 @@ mod tests {
         assert!(mailbox_allows_flagged_updates(&[]));
         assert!(mailbox_allows_flagged_updates(&[Flag::Seen, Flag::Flagged]));
         assert!(!mailbox_allows_flagged_updates(&[Flag::Seen]));
+    }
+
+    #[test]
+    fn detects_advertised_deleted_flag_support() {
+        assert!(mailbox_allows_deleted_updates(&[]));
+        assert!(mailbox_allows_deleted_updates(&[
+            Flag::Deleted,
+            Flag::Flagged
+        ]));
+        assert!(!mailbox_allows_deleted_updates(&[Flag::Seen]));
     }
 }

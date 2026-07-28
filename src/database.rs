@@ -1,4 +1,5 @@
 use std::{
+    cmp::Ordering,
     collections::HashSet,
     fs,
     path::{Path, PathBuf},
@@ -9,38 +10,67 @@ use rusqlite::{
     Connection, OptionalExtension, Row, TransactionBehavior, named_params, params, types::Type,
 };
 use serde::{Serialize, de::DeserializeOwned};
+use uuid::Uuid;
 
 use crate::{
-    AccountConfig, Draft, InboxMessage, MailError, OutboxItem, OutboxStatus, Result,
-    mime::{draft_has_unsupported_content, reply_message_ids},
+    AccountConfig, ComposeFormat, ComposeRequest, Draft, InboxMessage, MailError, OutboxItem,
+    OutboxRecipientGroups, OutboxStatus, Result,
+    managed_attachments::ImportedManagedAttachment,
+    mime::{build_envelope, draft_has_unsupported_content, reply_message_ids},
+    models::{
+        AttachmentDisposition, AttachmentMeta, DraftAttachmentMeta, ForwardContext,
+        ForwardQuotedRenderMode, MailboxCapability, MailboxCapabilityStatus,
+        MailboxCapabilityUnavailableReason, MailboxRole, MessageActionKind,
+        MessageMutationErrorKind, MessageMutationReceipt, MessagePage, MessagePageCursor,
+        MessagePageItem, MutationStatus, PendingMessageProjection, RemoteHistoryState,
+        RemoteMutationPhase, SystemFlagKind, SystemFlagMutationReceipt,
+    },
 };
 
 const MESSAGE_COLUMNS: &str = "id, account_id, mailbox, uid, message_id, in_reply_to_json, \
     references_json, subject, sender_json, to_json, cc_json, sent_at, internal_date, flags_json, \
-    size_bytes, preview, body_text, body_html, attachment_names_json, body_fetched, raw_rfc822, synced_at";
+    size_bytes, preview, body_text, body_html, attachment_names_json, body_fetched, raw_rfc822, \
+    synced_at, bcc_json";
 // Inbox rows only need enough local body data to paint an immediate fallback.
 // The empty HTML sentinel preserves `body_html.is_some()` without reading the
 // potentially large HTML/RFC822 payload for every visible list item.
 const MESSAGE_SUMMARY_COLUMNS: &str = "id, account_id, mailbox, uid, message_id, in_reply_to_json, \
     references_json, subject, sender_json, to_json, cc_json, sent_at, internal_date, flags_json, \
     size_bytes, preview, body_text, CASE WHEN body_html IS NULL THEN NULL ELSE '' END, \
-    attachment_names_json, body_fetched, X'', synced_at";
+    attachment_names_json, body_fetched, X'', synced_at, bcc_json";
 // Contact history is a header-derived view. Keep the familiar InboxMessage
 // shape for the desktop DTO while ensuring a contact-list query cannot carry a
 // complete text body, HTML fragment, or RFC822 payload into React.
 const CONTACT_MESSAGE_SUMMARY_COLUMNS: &str = "id, account_id, mailbox, uid, message_id, \
     in_reply_to_json, references_json, subject, sender_json, to_json, cc_json, sent_at, \
     internal_date, flags_json, size_bytes, preview, NULL, NULL, attachment_names_json, \
-    body_fetched, X'', synced_at";
+    body_fetched, X'', synced_at, bcc_json";
 const DRAFT_COLUMNS: &str = "id, account_id, to_json, cc_json, bcc_json, subject, \
-    body_text, reply_context_json, status, remote_mailbox, remote_uid, created_at, updated_at, \
-    raw_rfc822, local_version, has_unsupported_content";
+    body_text, compose_format_json, reply_context_json, status, remote_mailbox, remote_uid, \
+    created_at, updated_at, raw_rfc822, local_version, has_unsupported_content";
 const DRAFT_SYNC_COLUMNS: &str = "id, account_id, to_json, cc_json, bcc_json, subject, \
-    body_text, reply_context_json, status, remote_mailbox, remote_uid, created_at, updated_at, \
-    raw_rfc822, local_version, has_unsupported_content, revision, synced_revision, \
+    body_text, compose_format_json, reply_context_json, status, remote_mailbox, remote_uid, \
+    created_at, updated_at, raw_rfc822, local_version, has_unsupported_content, revision, synced_revision, \
     remote_uid_validity, is_deleted";
+const DRAFT_VERSION_SNAPSHOT_COLUMNS: &str = "account_id, draft_id, draft_local_version, \
+    protocol_revision, to_json, cc_json, bcc_json, subject, body_text, compose_format_json, \
+    reply_context_json, has_unsupported_content";
 const OUTBOX_COLUMNS: &str = "id, account_id, draft_id, draft_revision, draft_local_version, \
-    recipients_json, status, attempts, last_error, created_at, sent_at, raw_rfc822";
+    recipients_json, status, attempts, last_error, created_at, sent_at, raw_rfc822, \
+    recipient_groups_json";
+const ALIASED_MESSAGE_SUMMARY_COLUMNS: &str = "m.id, m.account_id, m.mailbox, m.uid, \
+    m.message_id, m.in_reply_to_json, m.references_json, m.subject, m.sender_json, m.to_json, \
+    m.cc_json, m.sent_at, m.internal_date, m.flags_json, m.size_bytes, m.preview, m.body_text, \
+    CASE WHEN m.body_html IS NULL THEN NULL ELSE '' END, m.attachment_names_json, \
+    m.body_fetched, X'', m.synced_at, m.bcc_json";
+const DEFAULT_MESSAGE_PAGE_SIZE: usize = 50;
+const MAX_MESSAGE_PAGE_SIZE: usize = 100;
+const MAX_CURSOR_TOKEN_BYTES: usize = 64;
+const MESSAGE_CURSOR_TTL_SECONDS: i64 = 24 * 60 * 60;
+const MAX_SEARCH_QUERY_CHARS: usize = 256;
+const MAX_MAILBOX_DISPLAY_CHARS: usize = 1_024;
+const MAX_IDENTITY_MESSAGE_ID_CHARS: usize = 1_024;
+const MAX_IDENTITY_DATE_CHARS: usize = 128;
 
 /// Persisted IMAP synchronization cursor for one account/mailbox pair.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -54,6 +84,96 @@ pub(crate) struct MailboxState {
     pub last_synced_at: Option<String>,
 }
 
+/// Server-history cursor persisted independently from the newest-message sync
+/// cursor. The server is authoritative only when `complete` is true.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct MailboxHistory {
+    pub before_uid: Option<u32>,
+    pub complete: bool,
+    pub remote_total: Option<u32>,
+}
+
+/// One durable move/delete intent. It intentionally has no foreign key to
+/// `messages`, so UIDVALIDITY reset and cache reconciliation cannot erase an
+/// operation that still needs remote reconciliation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PendingMessageAction {
+    pub operation_id: String,
+    pub account_id: String,
+    pub source_mailbox: String,
+    pub source_uid_validity: u32,
+    pub source_uid: u32,
+    pub source_role: MailboxRole,
+    pub destination_role: Option<MailboxRole>,
+    pub kind: MessageActionKind,
+    pub revision: u64,
+    pub status: MutationStatus,
+    pub remote_phase: RemoteMutationPhase,
+    pub source_message_id: Option<String>,
+    pub source_internal_date: Option<String>,
+    pub source_size_bytes: u32,
+    pub error_kind: Option<MessageMutationErrorKind>,
+    /// The provider acknowledged `\Deleted`, but no UIDPLUS-capable command
+    /// proved that the source UID vanished from this mailbox epoch.
+    pub source_cleanup_pending: bool,
+    /// A unique strong-identity destination row has replaced the optimistic
+    /// destination projection. This remains separate from source cleanup.
+    pub destination_reconciled: bool,
+    pub updated_at: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PendingSystemFlagMutation {
+    pub operation_id: String,
+    pub account_id: String,
+    pub source_mailbox: String,
+    pub source_uid_validity: u32,
+    pub source_uid: u32,
+    pub source_role: MailboxRole,
+    pub flag: SystemFlagKind,
+    pub desired: bool,
+    pub revision: u64,
+    pub status: MutationStatus,
+    pub error_kind: Option<MessageMutationErrorKind>,
+    pub updated_at: String,
+}
+
+#[derive(Clone, Debug)]
+struct MessageCursorPayload {
+    account_id: String,
+    mailbox: String,
+    role: MailboxRole,
+    uid_validity: Option<u32>,
+    query_normalized: String,
+    sort_at: Option<String>,
+    uid: Option<u32>,
+    id: Option<i64>,
+    remote_before_uid: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct MessagePageCursorContext {
+    pub account_id: String,
+    pub mailbox: String,
+    pub role: MailboxRole,
+    pub uid_validity: Option<u32>,
+    pub remote_before_uid: Option<u32>,
+}
+
+#[derive(Clone, Debug)]
+struct PageCandidate {
+    item: MessagePageItem,
+    sort_at: String,
+    uid: u32,
+    id: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ContactMessageSource {
+    pub public_id: String,
+    pub message: InboxMessage,
+}
+
 /// Internal draft row including synchronization metadata. The public `Draft`
 /// model stays backwards compatible while the repository retains the base
 /// revision needed for deterministic two-way reconciliation.
@@ -65,6 +185,54 @@ pub(crate) struct DraftRecord {
     pub synced_revision: u64,
     pub remote_uid_validity: Option<u32>,
     pub is_deleted: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct NewDraftAttachment {
+    pub imported: ImportedManagedAttachment,
+    pub source_attachment_id: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ManagedDraftAttachment {
+    pub meta: DraftAttachmentMeta,
+    pub internal_name: String,
+    pub sha256_hex: Option<String>,
+    pub disposition: AttachmentDisposition,
+    pub transfer_encoding: String,
+}
+
+/// Immutable editor-visible state for one exact local draft version. Attachment
+/// references and the optional forward-context reference are stored in sibling
+/// version-keyed tables.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DraftVersionSnapshot {
+    pub account_id: String,
+    pub draft_id: String,
+    pub local_version: u64,
+    pub protocol_revision: u64,
+    pub request: ComposeRequest,
+    pub has_unsupported_content: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DraftAttachmentVersionSnapshot {
+    pub local_version: u64,
+    pub attachments: Vec<ManagedDraftAttachment>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct OrphanedManagedAttachment {
+    pub id: String,
+    pub account_id: String,
+    pub internal_name: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PreparedForwardInsert {
+    Inserted,
+    SourceChanged,
+    IdCollision,
 }
 
 /// A thread-safe repository handle. It contains only a path; short-lived
@@ -107,6 +275,10 @@ impl Repository {
                  highest_uid INTEGER,
                  highest_modseq TEXT,
                  last_synced_at TEXT,
+                 history_before_uid INTEGER,
+                 history_complete INTEGER NOT NULL DEFAULT 0
+                     CHECK (history_complete IN (0, 1)),
+                 remote_total INTEGER,
                  PRIMARY KEY (account_id, name),
                  FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
              );
@@ -120,8 +292,33 @@ impl Repository {
                      REFERENCES mailboxes(account_id, name) ON DELETE CASCADE
              );
 
+             CREATE TABLE IF NOT EXISTS mailbox_capabilities (
+                 account_id TEXT NOT NULL,
+                 role TEXT NOT NULL CHECK (
+                     role IN ('inbox', 'sent', 'drafts', 'archive', 'trash')
+                 ),
+                 status TEXT NOT NULL CHECK (
+                     status IN (
+                         'discovery_pending', 'available',
+                         'needs_creation_confirmation', 'unavailable'
+                     )
+                 ),
+                 display_name TEXT,
+                 unavailable_reason TEXT CHECK (
+                     unavailable_reason IS NULL OR unavailable_reason IN (
+                         'create_not_supported', 'create_failed',
+                         'created_mailbox_not_selectable', 'provider_unsupported'
+                     )
+                 ),
+                 retryable INTEGER NOT NULL DEFAULT 0 CHECK (retryable IN (0, 1)),
+                 updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                 PRIMARY KEY (account_id, role),
+                 FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
+             );
+
              CREATE TABLE IF NOT EXISTS messages (
                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 public_id TEXT NOT NULL CHECK (length(public_id) = 36),
                  account_id TEXT NOT NULL,
                  mailbox TEXT NOT NULL,
                  uid INTEGER NOT NULL,
@@ -132,6 +329,7 @@ impl Repository {
                  sender_json TEXT,
                  to_json TEXT NOT NULL DEFAULT '[]',
                  cc_json TEXT NOT NULL DEFAULT '[]',
+                 bcc_json TEXT NOT NULL DEFAULT '[]',
                  sent_at TEXT,
                  internal_date TEXT,
                  flags_json TEXT NOT NULL DEFAULT '[]',
@@ -155,26 +353,150 @@ impl Repository {
                  ON messages(account_id, message_id);
 
              CREATE TABLE IF NOT EXISTS pending_seen_updates (
+                 operation_id TEXT NOT NULL UNIQUE,
                  account_id TEXT NOT NULL,
                  mailbox TEXT NOT NULL,
+                 source_uid_validity INTEGER NOT NULL CHECK (source_uid_validity >= 0),
                  uid INTEGER NOT NULL,
-                 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-                 PRIMARY KEY (account_id, mailbox, uid),
-                 FOREIGN KEY (account_id, mailbox, uid)
-                     REFERENCES messages(account_id, mailbox, uid) ON DELETE CASCADE
+                 desired INTEGER NOT NULL DEFAULT 1 CHECK (desired IN (0, 1)),
+                 revision INTEGER NOT NULL DEFAULT 1 CHECK (revision > 0),
+                 status TEXT NOT NULL DEFAULT 'pending' CHECK (
+                     status IN (
+                         'pending', 'in_flight', 'confirmed',
+                         'needs_attention', 'outcome_unknown'
+                     )
+                 ),
+                 error_kind TEXT CHECK (
+                     error_kind IS NULL OR error_kind IN (
+                         'uid_validity_changed', 'source_missing',
+                         'ambiguous_remote_state', 'network_unavailable',
+                         'mailbox_unavailable', 'permission_denied',
+                         'server_rejected', 'unsupported', 'unknown'
+                     )
+                 ),
+                 updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                 PRIMARY KEY (account_id, mailbox, source_uid_validity, uid),
+                 FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
              );
-
              CREATE TABLE IF NOT EXISTS pending_flagged_updates (
+                 operation_id TEXT NOT NULL UNIQUE,
                  account_id TEXT NOT NULL,
                  mailbox TEXT NOT NULL,
+                 source_uid_validity INTEGER NOT NULL CHECK (source_uid_validity >= 0),
                  uid INTEGER NOT NULL,
                  desired INTEGER NOT NULL CHECK (desired IN (0, 1)),
                  revision INTEGER NOT NULL DEFAULT 1 CHECK (revision > 0),
+                 status TEXT NOT NULL DEFAULT 'pending' CHECK (
+                     status IN (
+                         'pending', 'in_flight', 'confirmed',
+                         'needs_attention', 'outcome_unknown'
+                     )
+                 ),
+                 error_kind TEXT CHECK (
+                     error_kind IS NULL OR error_kind IN (
+                         'uid_validity_changed', 'source_missing',
+                         'ambiguous_remote_state', 'network_unavailable',
+                         'mailbox_unavailable', 'permission_denied',
+                         'server_rejected', 'unsupported', 'unknown'
+                     )
+                 ),
                  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-                 PRIMARY KEY (account_id, mailbox, uid),
-                 FOREIGN KEY (account_id, mailbox, uid)
-                     REFERENCES messages(account_id, mailbox, uid) ON DELETE CASCADE
+                 PRIMARY KEY (account_id, mailbox, source_uid_validity, uid),
+                 FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
              );
+             CREATE TABLE IF NOT EXISTS pending_message_actions (
+                 operation_id TEXT PRIMARY KEY NOT NULL,
+                 account_id TEXT NOT NULL,
+                 source_mailbox TEXT NOT NULL,
+                 source_uid_validity INTEGER NOT NULL CHECK (source_uid_validity > 0),
+                 source_uid INTEGER NOT NULL CHECK (source_uid > 0),
+                 source_role TEXT NOT NULL CHECK (
+                     source_role IN ('inbox', 'sent', 'drafts', 'archive', 'trash')
+                 ),
+                 destination_role TEXT CHECK (
+                     destination_role IS NULL OR destination_role IN (
+                         'inbox', 'sent', 'drafts', 'archive', 'trash'
+                     )
+                 ),
+                 kind TEXT NOT NULL CHECK (
+                     kind IN ('archive', 'move_to_trash', 'permanent_delete')
+                 ),
+                 revision INTEGER NOT NULL DEFAULT 1 CHECK (revision > 0),
+                 status TEXT NOT NULL CHECK (
+                     status IN (
+                         'pending', 'in_flight', 'confirmed',
+                         'needs_attention', 'outcome_unknown'
+                     )
+                 ),
+                 remote_phase TEXT NOT NULL DEFAULT 'queued' CHECK (
+                     remote_phase IN (
+                         'queued', 'transfer_started', 'transfer_acknowledged',
+                         'source_delete_started', 'source_delete_acknowledged'
+                     )
+                 ),
+                 source_message_id TEXT,
+                 source_internal_date TEXT,
+                 source_size_bytes INTEGER NOT NULL DEFAULT 0,
+                 error_kind TEXT CHECK (
+                     error_kind IS NULL OR error_kind IN (
+                         'uid_validity_changed', 'source_missing',
+                         'ambiguous_remote_state', 'network_unavailable',
+                         'mailbox_unavailable', 'permission_denied',
+                         'server_rejected', 'unsupported', 'unknown'
+                     )
+                 ),
+                 source_cleanup_pending INTEGER NOT NULL DEFAULT 0
+                     CHECK (source_cleanup_pending IN (0, 1)),
+                 destination_reconciled INTEGER NOT NULL DEFAULT 0
+                     CHECK (destination_reconciled IN (0, 1)),
+                 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                 updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                 CHECK (
+                     (
+                         kind = 'archive'
+                         AND source_role IN ('inbox', 'sent')
+                         AND destination_role = 'archive'
+                     ) OR (
+                         kind = 'move_to_trash'
+                         AND source_role IN ('inbox', 'sent', 'archive')
+                         AND destination_role = 'trash'
+                     ) OR (
+                         kind = 'permanent_delete'
+                         AND source_role = 'trash'
+                         AND destination_role IS NULL
+                     )
+                 ),
+                 UNIQUE (account_id, source_mailbox, source_uid_validity, source_uid),
+                 FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
+             );
+             CREATE INDEX IF NOT EXISTS idx_pending_message_actions_account_status
+                 ON pending_message_actions(account_id, status, updated_at);
+             CREATE INDEX IF NOT EXISTS idx_pending_message_actions_destination
+                 ON pending_message_actions(account_id, destination_role, status);
+
+             CREATE TABLE IF NOT EXISTS message_page_cursors (
+                 token TEXT PRIMARY KEY NOT NULL,
+                 account_id TEXT NOT NULL,
+                 role TEXT NOT NULL CHECK (
+                     role IN ('inbox', 'sent', 'drafts', 'archive', 'trash')
+                 ),
+                 mailbox TEXT NOT NULL,
+                 uid_validity INTEGER,
+                 sort_at TEXT,
+                 uid INTEGER,
+                 message_row_id INTEGER,
+                 remote_before_uid INTEGER NOT NULL CHECK (remote_before_uid > 0),
+                 query_normalized TEXT NOT NULL,
+                 created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+                 CHECK (
+                     (sort_at IS NULL AND uid IS NULL AND message_row_id IS NULL)
+                     OR
+                     (sort_at IS NOT NULL AND uid > 0 AND message_row_id > 0)
+                 ),
+                 FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
+             );
+             CREATE INDEX IF NOT EXISTS idx_message_page_cursors_expiry
+                 ON message_page_cursors(created_at);
 
              CREATE TABLE IF NOT EXISTS drafts (
                  id TEXT PRIMARY KEY NOT NULL,
@@ -184,6 +506,7 @@ impl Repository {
                  bcc_json TEXT NOT NULL DEFAULT '[]',
                  subject TEXT NOT NULL DEFAULT '',
                  body_text TEXT NOT NULL DEFAULT '',
+                 compose_format_json TEXT NOT NULL DEFAULT '{}',
                  reply_context_json TEXT,
                  status TEXT NOT NULL,
                  remote_mailbox TEXT,
@@ -211,6 +534,7 @@ impl Repository {
                      draft_local_version IS NULL OR draft_local_version > 0
                  ),
                  recipients_json TEXT NOT NULL DEFAULT '[]',
+                 recipient_groups_json TEXT,
                  status TEXT NOT NULL CHECK (status IN (
                      'queued', 'sending', 'sent', 'retryable', 'rejected', 'delivery_unknown'
                  )),
@@ -234,13 +558,20 @@ impl Repository {
         migrate_pending_seen_v8(&connection)?;
         migrate_pending_flagged_v9(&connection)?;
         migrate_message_previews_v10(&connection)?;
+        migrate_compose_format_v11(&connection)?;
+        migrate_mailboxes_and_mutations_v12(&connection)?;
+        migrate_managed_attachments_v13(&connection)?;
+        migrate_message_public_ids_v14(&connection)?;
+        migrate_immutable_draft_versions_v15(&connection)?;
+        migrate_bcc_and_outbox_recipient_groups_v16(&connection)?;
+        migrate_managed_attachment_digests_v17(&connection)?;
         connection.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_drafts_remote_identity
                  ON drafts(account_id, remote_mailbox, remote_uid);
              CREATE INDEX IF NOT EXISTS idx_messages_preview_backfill
                  ON messages(account_id, mailbox, internal_date DESC, uid DESC)
                  WHERE preview_fetched = 0 AND body_fetched = 0;
-             PRAGMA user_version = 10;",
+             PRAGMA user_version = 17;",
         )?;
         Ok(repository)
     }
@@ -294,6 +625,32 @@ impl Repository {
              ON CONFLICT(account_id, name) DO NOTHING",
             params![account.account_id],
         )?;
+        transaction.execute(
+            "INSERT INTO mailbox_roles (account_id, role, mailbox)
+             VALUES (?1, 'inbox', 'INBOX')
+             ON CONFLICT(account_id, role) DO UPDATE SET mailbox = excluded.mailbox",
+            params![account.account_id],
+        )?;
+        for role in MailboxRole::ALL {
+            let (status, display_name, retryable) = if role == MailboxRole::Inbox {
+                (MailboxCapabilityStatus::Available, Some("INBOX"), false)
+            } else {
+                (MailboxCapabilityStatus::DiscoveryPending, None, true)
+            };
+            transaction.execute(
+                "INSERT INTO mailbox_capabilities (
+                     account_id, role, status, display_name, unavailable_reason, retryable
+                 ) VALUES (?1, ?2, ?3, ?4, NULL, ?5)
+                 ON CONFLICT(account_id, role) DO NOTHING",
+                params![
+                    account.account_id,
+                    role.as_str(),
+                    status.as_str(),
+                    display_name,
+                    retryable,
+                ],
+            )?;
+        }
         transaction.commit()?;
         Ok(())
     }
@@ -352,12 +709,137 @@ impl Repository {
         Ok(())
     }
 
+    pub(crate) fn mailbox_history(
+        &self,
+        account_id: &str,
+        mailbox: &str,
+    ) -> Result<Option<MailboxHistory>> {
+        let connection = self.connection()?;
+        connection
+            .query_row(
+                "SELECT history_before_uid, history_complete, remote_total
+                 FROM mailboxes
+                 WHERE account_id = ?1 AND name = ?2",
+                params![account_id, mailbox],
+                |row| {
+                    Ok(MailboxHistory {
+                        before_uid: row.get(0)?,
+                        complete: row.get(1)?,
+                        remote_total: row.get(2)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    pub(crate) fn update_mailbox_history(
+        &self,
+        account_id: &str,
+        mailbox: &str,
+        history: &MailboxHistory,
+    ) -> Result<()> {
+        let state = self
+            .mailbox_state(account_id, mailbox)?
+            .ok_or_else(|| privacy_safe_not_found("mailbox"))?;
+        let uid_validity = state
+            .uid_validity
+            .filter(|value| *value > 0)
+            .ok_or_else(|| {
+                MailError::Validation(
+                    "the mailbox epoch is not ready for history advancement".to_owned(),
+                )
+            })?;
+        let current = self
+            .mailbox_history(account_id, mailbox)?
+            .ok_or_else(|| privacy_safe_not_found("mailbox"))?;
+        self.advance_mailbox_history(
+            account_id,
+            mailbox,
+            uid_validity,
+            current.before_uid,
+            history.before_uid,
+            history.complete,
+            history.remote_total,
+        )?;
+        Ok(())
+    }
+
+    /// Advances the remote-history boundary only if both the mailbox epoch and
+    /// the caller's previously observed exclusive UID bound still match.
+    pub(crate) fn advance_mailbox_history(
+        &self,
+        expected_account_id: &str,
+        mailbox: &str,
+        expected_uid_validity: u32,
+        expected_before_uid: Option<u32>,
+        next_before_uid: Option<u32>,
+        complete: bool,
+        remote_total: Option<u32>,
+    ) -> Result<bool> {
+        if expected_uid_validity == 0
+            || expected_before_uid == Some(0)
+            || next_before_uid == Some(0)
+        {
+            return Err(MailError::Validation(
+                "the mailbox history cursor is invalid".to_owned(),
+            ));
+        }
+        if let (Some(expected), Some(next)) = (expected_before_uid, next_before_uid)
+            && next >= expected
+        {
+            return Err(MailError::Validation(
+                "the mailbox history cursor must move to an older UID bound".to_owned(),
+            ));
+        }
+        if expected_before_uid.is_some() && next_before_uid.is_none() && !complete {
+            return Err(MailError::Validation(
+                "an unfinished mailbox history scan cannot discard its UID bound".to_owned(),
+            ));
+        }
+        let connection = self.connection()?;
+        let changed = connection.execute(
+            "UPDATE mailboxes
+             SET history_before_uid = CASE
+                     WHEN history_complete = 1 THEN history_before_uid
+                     ELSE ?5
+                 END,
+                 history_complete = MAX(history_complete, ?6),
+                 remote_total = COALESCE(?7, remote_total)
+             WHERE account_id = ?1 AND name = ?2
+               AND uid_validity = ?3
+               AND history_before_uid IS ?4
+               AND (history_complete = 0 OR ?6 = 1)",
+            params![
+                expected_account_id,
+                mailbox,
+                expected_uid_validity,
+                expected_before_uid,
+                next_before_uid,
+                complete,
+                remote_total,
+            ],
+        )?;
+        Ok(changed == 1)
+    }
+
     pub(crate) fn assign_mailbox_role(
         &self,
         account_id: &str,
         role: &str,
         mailbox: &str,
     ) -> Result<()> {
+        let role = parse_mailbox_role(role)?;
+        self.assign_semantic_mailbox_role(account_id, role, mailbox)
+    }
+
+    pub(crate) fn assign_semantic_mailbox_role(
+        &self,
+        account_id: &str,
+        role: MailboxRole,
+        mailbox: &str,
+    ) -> Result<()> {
+        validate_mailbox_display_name(mailbox)?;
         let mut connection = self.connection()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         transaction.execute(
@@ -368,38 +850,159 @@ impl Repository {
         transaction.execute(
             "INSERT INTO mailbox_roles (account_id, role, mailbox) VALUES (?1, ?2, ?3)
              ON CONFLICT(account_id, role) DO UPDATE SET mailbox = excluded.mailbox",
-            params![account_id, role, mailbox],
+            params![account_id, role.as_str(), mailbox],
+        )?;
+        transaction.execute(
+            "INSERT INTO mailbox_capabilities (
+                 account_id, role, status, display_name, unavailable_reason, retryable
+             ) VALUES (?1, ?2, 'available', ?3, NULL, 0)
+             ON CONFLICT(account_id, role) DO UPDATE SET
+                 status = 'available',
+                 display_name = excluded.display_name,
+                 unavailable_reason = NULL,
+                 retryable = 0,
+                 updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
+            params![account_id, role.as_str(), mailbox],
         )?;
         transaction.commit()?;
         Ok(())
     }
 
     pub(crate) fn mailbox_for_role(&self, account_id: &str, role: &str) -> Result<String> {
+        self.mailbox_for_semantic_role(account_id, parse_mailbox_role(role)?)
+    }
+
+    pub(crate) fn mailbox_for_semantic_role(
+        &self,
+        account_id: &str,
+        role: MailboxRole,
+    ) -> Result<String> {
         let connection = self.connection()?;
         connection
             .query_row(
                 "SELECT mailbox FROM mailbox_roles WHERE account_id = ?1 AND role = ?2",
-                params![account_id, role],
+                params![account_id, role.as_str()],
                 |row| row.get(0),
             )
             .optional()?
             .ok_or_else(|| MailError::NotFound {
                 entity: "mailbox role",
-                id: format!("{account_id}:{role}"),
+                id: format!("{account_id}:{}", role.as_str()),
             })
+    }
+
+    pub(crate) fn set_mailbox_capability(
+        &self,
+        account_id: &str,
+        capability: &MailboxCapability,
+    ) -> Result<()> {
+        validate_mailbox_capability(capability)?;
+        if capability.status == MailboxCapabilityStatus::Available {
+            return self.assign_semantic_mailbox_role(
+                account_id,
+                capability.role,
+                capability
+                    .display_name
+                    .as_deref()
+                    .expect("validated available capability has a display name"),
+            );
+        }
+        let connection = self.connection()?;
+        connection.execute(
+            "INSERT INTO mailbox_capabilities (
+                 account_id, role, status, display_name, unavailable_reason, retryable
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(account_id, role) DO UPDATE SET
+                 status = excluded.status,
+                 display_name = excluded.display_name,
+                 unavailable_reason = excluded.unavailable_reason,
+                 retryable = excluded.retryable,
+                 updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
+            params![
+                account_id,
+                capability.role.as_str(),
+                capability.status.as_str(),
+                capability.display_name,
+                capability
+                    .unavailable_reason
+                    .map(MailboxCapabilityUnavailableReason::as_str),
+                capability.retryable,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn mailbox_capabilities(&self, account_id: &str) -> Result<Vec<MailboxCapability>> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT role, status, display_name, unavailable_reason, retryable
+             FROM mailbox_capabilities
+             WHERE account_id = ?1
+             ORDER BY CASE role
+                 WHEN 'inbox' THEN 0
+                 WHEN 'sent' THEN 1
+                 WHEN 'drafts' THEN 2
+                 WHEN 'archive' THEN 3
+                 WHEN 'trash' THEN 4
+                 ELSE 5
+             END",
+        )?;
+        statement
+            .query_map(params![account_id], row_to_mailbox_capability)?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    pub(crate) fn mailbox_capability(
+        &self,
+        account_id: &str,
+        role: MailboxRole,
+    ) -> Result<Option<MailboxCapability>> {
+        let connection = self.connection()?;
+        connection
+            .query_row(
+                "SELECT role, status, display_name, unavailable_reason, retryable
+                 FROM mailbox_capabilities
+                 WHERE account_id = ?1 AND role = ?2",
+                params![account_id, role.as_str()],
+                row_to_mailbox_capability,
+            )
+            .optional()
+            .map_err(Into::into)
     }
 
     /// Clears cached messages and all cursors after an IMAP UIDVALIDITY change.
     pub(crate) fn reset_mailbox(&self, account_id: &str, mailbox: &str) -> Result<usize> {
         let mut connection = self.connection()?;
         let transaction = connection.transaction()?;
+        for table in ["pending_seen_updates", "pending_flagged_updates"] {
+            transaction.execute(
+                &format!(
+                    "UPDATE {table}
+                     SET status = 'needs_attention',
+                         error_kind = 'uid_validity_changed',
+                         updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                     WHERE account_id = ?1 AND mailbox = ?2 AND status <> 'confirmed'"
+                ),
+                params![account_id, mailbox],
+            )?;
+        }
+        transaction.execute(
+            "UPDATE pending_message_actions
+             SET status = 'needs_attention',
+                 error_kind = 'uid_validity_changed',
+                 updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE account_id = ?1 AND source_mailbox = ?2 AND status <> 'confirmed'",
+            params![account_id, mailbox],
+        )?;
         let removed = transaction.execute(
             "DELETE FROM messages WHERE account_id = ?1 AND mailbox = ?2",
             params![account_id, mailbox],
         )?;
         transaction.execute(
             "UPDATE mailboxes SET uid_validity = NULL, uid_next = NULL,
-                 highest_uid = NULL, highest_modseq = NULL, last_synced_at = NULL
+                 highest_uid = NULL, highest_modseq = NULL, last_synced_at = NULL,
+                 history_before_uid = NULL, history_complete = 0, remote_total = NULL
              WHERE account_id = ?1 AND name = ?2",
             params![account_id, mailbox],
         )?;
@@ -433,8 +1036,57 @@ impl Repository {
         };
         let mut removed = 0;
         for uid in cached.into_iter().filter(|uid| !remote_uids.contains(uid)) {
+            for table in ["pending_seen_updates", "pending_flagged_updates"] {
+                transaction.execute(
+                    &format!(
+                        "UPDATE {table}
+                         SET status = 'needs_attention',
+                             error_kind = 'source_missing',
+                             updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                         WHERE account_id = ?1 AND mailbox = ?2 AND uid = ?3
+                           AND status <> 'confirmed'"
+                    ),
+                    params![account_id, mailbox, uid],
+                )?;
+            }
+            transaction.execute(
+                "UPDATE pending_message_actions
+                 SET status = 'needs_attention',
+                     error_kind = 'source_missing',
+                     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                 WHERE account_id = ?1 AND source_mailbox = ?2 AND source_uid = ?3
+                   AND status <> 'confirmed'",
+                params![account_id, mailbox, uid],
+            )?;
+            transaction.execute(
+                "DELETE FROM pending_message_actions AS p
+                 WHERE p.account_id = ?1 AND p.source_mailbox = ?2 AND p.source_uid = ?3
+                   AND p.status = 'confirmed'
+                   AND p.source_cleanup_pending = 0
+                   AND p.kind = 'permanent_delete'
+                   AND p.destination_role IS NULL
+                   AND p.source_uid_validity = (
+                       SELECT b.uid_validity
+                       FROM mailboxes b
+                       WHERE b.account_id = p.account_id AND b.name = p.source_mailbox
+                   )",
+                params![account_id, mailbox, uid],
+            )?;
             removed += transaction.execute(
-                "DELETE FROM messages WHERE account_id = ?1 AND mailbox = ?2 AND uid = ?3",
+                "DELETE FROM messages AS m
+                 WHERE m.account_id = ?1 AND m.mailbox = ?2 AND m.uid = ?3
+                   AND NOT EXISTS (
+                       SELECT 1
+                       FROM pending_message_actions p
+                       JOIN mailboxes b
+                         ON b.account_id = p.account_id
+                        AND b.name = p.source_mailbox
+                        AND b.uid_validity = p.source_uid_validity
+                       WHERE p.account_id = m.account_id
+                         AND p.source_mailbox = m.mailbox
+                         AND p.source_uid = m.uid
+                         AND p.status = 'confirmed'
+                   )",
                 params![account_id, mailbox, uid],
             )?;
         }
@@ -462,6 +1114,7 @@ impl Repository {
         preview_fetched: bool,
     ) -> Result<i64> {
         let connection = self.connection()?;
+        let public_id = Uuid::new_v4().to_string();
         connection.execute(
             "INSERT INTO mailboxes (account_id, name) VALUES (?1, ?2)
              ON CONFLICT(account_id, name) DO NOTHING",
@@ -478,12 +1131,12 @@ impl Repository {
         connection.execute(
             "INSERT INTO messages (
                  account_id, mailbox, uid, message_id, in_reply_to_json, references_json, subject, sender_json,
-                 to_json, cc_json, sent_at, internal_date, flags_json, size_bytes,
+                 to_json, cc_json, bcc_json, sent_at, internal_date, flags_json, size_bytes,
                  preview, preview_fetched, body_text, body_html, attachment_names_json, body_fetched,
-                 raw_rfc822, synced_at
+                 raw_rfc822, synced_at, public_id
              ) VALUES (
                  ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
-                 ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22
+                 ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24
              )
              ON CONFLICT(account_id, mailbox, uid) DO UPDATE SET
                  message_id = excluded.message_id,
@@ -493,6 +1146,7 @@ impl Repository {
                  sender_json = excluded.sender_json,
                  to_json = excluded.to_json,
                  cc_json = excluded.cc_json,
+                 bcc_json = excluded.bcc_json,
                  sent_at = excluded.sent_at,
                  internal_date = excluded.internal_date,
                  flags_json = excluded.flags_json,
@@ -519,6 +1173,7 @@ impl Repository {
                 sender_json,
                 encode_json(&message.to)?,
                 encode_json(&message.cc)?,
+                encode_json(&message.bcc)?,
                 message.sent_at,
                 message.internal_date,
                 encode_json(&flags)?,
@@ -531,6 +1186,7 @@ impl Repository {
                 message.body_fetched,
                 message.raw_rfc822,
                 message.synced_at,
+                public_id,
             ],
         )?;
         connection
@@ -559,62 +1215,425 @@ impl Repository {
         ensure_changed(changed, "message", format!("{account_id}:{mailbox}/{uid}"))
     }
 
-    /// Marks one cached message read immediately and persists an idempotent
-    /// IMAP write-behind record. Remote flag reconciliation must preserve this
-    /// local intent until the server has confirmed `\Seen`.
+    pub(crate) fn queue_system_flag_mutation(
+        &self,
+        expected_account_id: &str,
+        mailbox: &str,
+        uid: u32,
+        flag: SystemFlagKind,
+        desired: bool,
+    ) -> Result<(bool, PendingSystemFlagMutation)> {
+        let table = system_flag_table(flag);
+        let target = system_flag_name(flag);
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let source: Option<(String, Option<u32>, String, String)> = transaction
+            .query_row(
+                "SELECT m.flags_json, b.uid_validity, m.account_id,
+                        COALESCE((
+                            SELECT r.role FROM mailbox_roles r
+                            WHERE r.account_id = m.account_id AND r.mailbox = m.mailbox
+                            ORDER BY CASE r.role WHEN 'inbox' THEN 0 ELSE 1 END
+                            LIMIT 1
+                        ), '')
+                 FROM messages m
+                 JOIN mailboxes b
+                   ON b.account_id = m.account_id AND b.name = m.mailbox
+                 WHERE m.account_id = ?1 AND m.mailbox = ?2 AND m.uid = ?3",
+                params![expected_account_id, mailbox, uid],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()?;
+        let (encoded, source_uid_validity, actual_account_id, role) =
+            source.ok_or_else(|| privacy_safe_not_found("message"))?;
+        if actual_account_id != expected_account_id {
+            return Err(account_scope_mismatch());
+        }
+        let source_uid_validity =
+            source_uid_validity
+                .filter(|epoch| *epoch > 0)
+                .ok_or_else(|| {
+                    MailError::Validation(
+                        "the message mailbox epoch is not ready for a remote mutation".to_owned(),
+                    )
+                })?;
+        let source_role = parse_mailbox_role(&role)?;
+        if source_role == MailboxRole::Drafts {
+            return Err(MailError::Validation(
+                "system flags are unavailable for this mailbox role".to_owned(),
+            ));
+        }
+        let mut flags: Vec<String> = serde_json::from_str(&encoded)?;
+        let changed = set_system_flag(&mut flags, target, desired);
+        if changed {
+            transaction.execute(
+                "UPDATE messages SET flags_json = ?4
+                 WHERE account_id = ?1 AND mailbox = ?2 AND uid = ?3",
+                params![expected_account_id, mailbox, uid, encode_json(&flags)?],
+            )?;
+        }
+
+        let existing = query_system_flag_mutation_by_identity(
+            &transaction,
+            flag,
+            expected_account_id,
+            mailbox,
+            source_uid_validity,
+            uid,
+        )?;
+        let mutation = if let Some(existing) = existing {
+            if existing.status != MutationStatus::Pending {
+                if existing.desired == desired {
+                    transaction.commit()?;
+                    return Ok((changed, existing));
+                }
+                if existing.status == MutationStatus::Confirmed {
+                    transaction.execute(
+                        &format!(
+                            "UPDATE {table}
+                             SET desired = ?2,
+                                 revision = revision + 1,
+                                 status = 'pending',
+                                 error_kind = NULL,
+                                 updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                             WHERE operation_id = ?1 AND status = 'confirmed'"
+                        ),
+                        params![existing.operation_id, desired],
+                    )?;
+                } else {
+                    return Err(MailError::Validation(
+                        "the earlier flag mutation must be reconciled before changing its target"
+                            .to_owned(),
+                    ));
+                }
+            }
+            if existing.status == MutationStatus::Pending && existing.desired != desired {
+                transaction.execute(
+                    &format!(
+                        "UPDATE {table}
+                         SET desired = ?2,
+                             revision = revision + 1,
+                             error_kind = NULL,
+                             updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                         WHERE operation_id = ?1 AND status = 'pending'"
+                    ),
+                    params![existing.operation_id, desired],
+                )?;
+            }
+            query_system_flag_mutation_by_operation(
+                &transaction,
+                flag,
+                expected_account_id,
+                &existing.operation_id,
+            )?
+            .expect("existing flag operation remains present")
+        } else {
+            let operation_id = Uuid::now_v7().to_string();
+            transaction.execute(
+                &format!(
+                    "INSERT INTO {table} (
+                         operation_id, account_id, mailbox, source_uid_validity, uid,
+                         desired, revision, status, error_kind
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, 'pending', NULL)"
+                ),
+                params![
+                    operation_id,
+                    expected_account_id,
+                    mailbox,
+                    source_uid_validity,
+                    uid,
+                    desired,
+                ],
+            )?;
+            query_system_flag_mutation_by_operation(
+                &transaction,
+                flag,
+                expected_account_id,
+                &operation_id,
+            )?
+            .expect("inserted flag operation")
+        };
+        transaction.commit()?;
+        Ok((changed, mutation))
+    }
+
+    pub(crate) fn pending_system_flag_mutations(
+        &self,
+        expected_account_id: &str,
+        mailbox: &str,
+        flag: SystemFlagKind,
+    ) -> Result<Vec<PendingSystemFlagMutation>> {
+        let connection = self.connection()?;
+        query_pending_system_flag_mutations(&connection, flag, expected_account_id, mailbox)
+    }
+
+    pub(crate) fn system_flag_mutations_requiring_reconciliation(
+        &self,
+        expected_account_id: &str,
+        mailbox: &str,
+        flag: SystemFlagKind,
+    ) -> Result<Vec<PendingSystemFlagMutation>> {
+        let connection = self.connection()?;
+        query_reconcilable_system_flag_mutations(&connection, flag, expected_account_id, mailbox)
+    }
+
+    pub(crate) fn claim_system_flag_mutation(
+        &self,
+        expected_account_id: &str,
+        operation_id: &str,
+        flag: SystemFlagKind,
+        expected_revision: u64,
+    ) -> Result<Option<PendingSystemFlagMutation>> {
+        let table = system_flag_table(flag);
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let changed = transaction.execute(
+            &format!(
+                "UPDATE {table} AS q
+                 SET status = 'in_flight',
+                     error_kind = NULL,
+                     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                 WHERE q.account_id = ?1 AND q.operation_id = ?2
+                   AND q.revision = ?3 AND q.status = 'pending'
+                   AND EXISTS (
+                       SELECT 1 FROM mailboxes b
+                       WHERE b.account_id = q.account_id AND b.name = q.mailbox
+                         AND b.uid_validity = q.source_uid_validity
+                   )"
+            ),
+            params![
+                expected_account_id,
+                operation_id,
+                u64_to_i64(expected_revision)
+            ],
+        )?;
+        if changed == 0 {
+            transaction.execute(
+                &format!(
+                    "UPDATE {table} AS q
+                     SET status = 'needs_attention',
+                         error_kind = 'uid_validity_changed',
+                         updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                     WHERE q.account_id = ?1 AND q.operation_id = ?2
+                       AND q.revision = ?3 AND q.status = 'pending'
+                       AND NOT EXISTS (
+                           SELECT 1 FROM mailboxes b
+                           WHERE b.account_id = q.account_id AND b.name = q.mailbox
+                             AND b.uid_validity = q.source_uid_validity
+                       )"
+                ),
+                params![
+                    expected_account_id,
+                    operation_id,
+                    u64_to_i64(expected_revision)
+                ],
+            )?;
+            transaction.commit()?;
+            return Ok(None);
+        }
+        let claimed = query_system_flag_mutation_by_operation(
+            &transaction,
+            flag,
+            expected_account_id,
+            operation_id,
+        )?;
+        transaction.commit()?;
+        Ok(claimed)
+    }
+
+    pub(crate) fn finalize_system_flag_mutation_confirmed(
+        &self,
+        expected_account_id: &str,
+        operation_id: &str,
+        flag: SystemFlagKind,
+        expected_revision: u64,
+        server_flags: &[String],
+    ) -> Result<bool> {
+        finalize_system_flag_mutation_confirmed(
+            &mut self.connection()?,
+            expected_account_id,
+            operation_id,
+            flag,
+            expected_revision,
+            server_flags,
+            false,
+        )
+    }
+
+    pub(crate) fn finalize_system_flag_mutation_failure(
+        &self,
+        expected_account_id: &str,
+        operation_id: &str,
+        flag: SystemFlagKind,
+        expected_revision: u64,
+        status: MutationStatus,
+        error_kind: MessageMutationErrorKind,
+    ) -> Result<bool> {
+        if !matches!(
+            status,
+            MutationStatus::OutcomeUnknown | MutationStatus::NeedsAttention
+        ) {
+            return Err(MailError::Validation(
+                "an in-flight flag mutation may only stop in a recoverable state".to_owned(),
+            ));
+        }
+        let table = system_flag_table(flag);
+        let connection = self.connection()?;
+        let changed = connection.execute(
+            &format!(
+                "UPDATE {table}
+                 SET status = ?4,
+                     error_kind = ?5,
+                     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                 WHERE account_id = ?1 AND operation_id = ?2
+                   AND revision = ?3 AND status = 'in_flight'"
+            ),
+            params![
+                expected_account_id,
+                operation_id,
+                u64_to_i64(expected_revision),
+                status.as_str(),
+                error_kind.as_str(),
+            ],
+        )?;
+        Ok(changed == 1)
+    }
+
+    pub(crate) fn reconcile_system_flag_mutation_confirmed(
+        &self,
+        expected_account_id: &str,
+        operation_id: &str,
+        flag: SystemFlagKind,
+        expected_revision: u64,
+        server_flags: &[String],
+    ) -> Result<bool> {
+        finalize_system_flag_mutation_confirmed(
+            &mut self.connection()?,
+            expected_account_id,
+            operation_id,
+            flag,
+            expected_revision,
+            server_flags,
+            true,
+        )
+    }
+
+    pub(crate) fn requeue_system_flag_mutation_after_reconcile(
+        &self,
+        expected_account_id: &str,
+        operation_id: &str,
+        flag: SystemFlagKind,
+        expected_revision: u64,
+    ) -> Result<bool> {
+        let table = system_flag_table(flag);
+        let connection = self.connection()?;
+        let changed = connection.execute(
+            &format!(
+                "UPDATE {table} AS q
+                 SET status = 'pending',
+                     revision = revision + 1,
+                     error_kind = NULL,
+                     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                 WHERE q.account_id = ?1 AND q.operation_id = ?2 AND q.revision = ?3
+                   AND q.status IN ('outcome_unknown', 'needs_attention')
+                   AND EXISTS (
+                       SELECT 1 FROM mailboxes b
+                       WHERE b.account_id = q.account_id AND b.name = q.mailbox
+                         AND b.uid_validity = q.source_uid_validity
+                   )"
+            ),
+            params![
+                expected_account_id,
+                operation_id,
+                u64_to_i64(expected_revision)
+            ],
+        )?;
+        Ok(changed == 1)
+    }
+
+    pub(crate) fn system_flag_mutation_receipt(
+        &self,
+        expected_account_id: &str,
+        operation_id: &str,
+        flag: SystemFlagKind,
+    ) -> Result<Option<SystemFlagMutationReceipt>> {
+        let connection = self.connection()?;
+        Ok(query_system_flag_mutation_by_operation(
+            &connection,
+            flag,
+            expected_account_id,
+            operation_id,
+        )?
+        .map(system_flag_mutation_receipt))
+    }
+
+    // Compatibility wrappers retained while backend integration moves to the
+    // explicit queue/claim/finalize API above.
+    pub(crate) fn set_message_seen_pending(
+        &self,
+        account_id: &str,
+        mailbox: &str,
+        uid: u32,
+        desired: bool,
+    ) -> Result<(bool, u64)> {
+        self.queue_system_flag_mutation(account_id, mailbox, uid, SystemFlagKind::Seen, desired)
+            .map(|(changed, mutation)| (changed, mutation.revision))
+    }
+
     pub(crate) fn mark_message_seen_pending(
         &self,
         account_id: &str,
         mailbox: &str,
         uid: u32,
     ) -> Result<bool> {
-        let mut connection = self.connection()?;
-        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let encoded: Option<String> = transaction
-            .query_row(
-                "SELECT flags_json FROM messages
-                 WHERE account_id = ?1 AND mailbox = ?2 AND uid = ?3",
-                params![account_id, mailbox, uid],
-                |row| row.get(0),
-            )
-            .optional()?;
-        let encoded = encoded.ok_or_else(|| MailError::NotFound {
-            entity: "message",
-            id: format!("{account_id}:{mailbox}/{uid}"),
-        })?;
-        let mut flags: Vec<String> = serde_json::from_str(&encoded)?;
-        let changed = add_seen_flag(&mut flags);
-        if changed {
-            transaction.execute(
-                "UPDATE messages SET flags_json = ?4
-                 WHERE account_id = ?1 AND mailbox = ?2 AND uid = ?3",
-                params![account_id, mailbox, uid, encode_json(&flags)?],
-            )?;
-        }
-        transaction.execute(
-            "INSERT INTO pending_seen_updates (account_id, mailbox, uid)
-             VALUES (?1, ?2, ?3)
-             ON CONFLICT(account_id, mailbox, uid) DO NOTHING",
-            params![account_id, mailbox, uid],
-        )?;
-        transaction.commit()?;
-        Ok(changed)
+        self.set_message_seen_pending(account_id, mailbox, uid, true)
+            .map(|(changed, _)| changed)
+    }
+
+    pub(crate) fn pending_seen_updates(
+        &self,
+        account_id: &str,
+        mailbox: &str,
+    ) -> Result<Vec<(u32, bool, u64)>> {
+        self.pending_system_flag_mutations(account_id, mailbox, SystemFlagKind::Seen)
+            .map(|mutations| {
+                mutations
+                    .into_iter()
+                    .map(|mutation| (mutation.source_uid, mutation.desired, mutation.revision))
+                    .collect()
+            })
     }
 
     pub(crate) fn pending_seen_uids(&self, account_id: &str, mailbox: &str) -> Result<Vec<u32>> {
-        let connection = self.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT uid FROM pending_seen_updates
-             WHERE account_id = ?1 AND mailbox = ?2 ORDER BY uid",
-        )?;
-        statement
-            .query_map(params![account_id, mailbox], |row| row.get(0))?
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(Into::into)
+        self.pending_seen_updates(account_id, mailbox)
+            .map(|updates| {
+                updates
+                    .into_iter()
+                    .filter_map(|(uid, desired, _)| desired.then_some(uid))
+                    .collect()
+            })
     }
 
-    /// Commits the server-confirmed flags and removes the write-behind record
-    /// atomically, so a crash cannot lose the user's read action.
+    pub(crate) fn complete_pending_seen_if_unchanged(
+        &self,
+        account_id: &str,
+        mailbox: &str,
+        uid: u32,
+        desired: bool,
+        revision: u64,
+        flags: &[String],
+    ) -> Result<bool> {
+        self.compatibility_complete_system_flag(
+            account_id,
+            mailbox,
+            uid,
+            desired,
+            revision,
+            SystemFlagKind::Seen,
+            flags,
+        )
+    }
+
     pub(crate) fn complete_pending_seen(
         &self,
         account_id: &str,
@@ -622,27 +1641,18 @@ impl Repository {
         uid: u32,
         flags: &[String],
     ) -> Result<()> {
-        let mut connection = self.connection()?;
-        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let flags = flags_with_pending_updates(&transaction, account_id, mailbox, uid, flags)?;
-        let changed = transaction.execute(
-            "UPDATE messages SET flags_json = ?4
-             WHERE account_id = ?1 AND mailbox = ?2 AND uid = ?3",
-            params![account_id, mailbox, uid, encode_json(&flags)?],
-        )?;
-        ensure_changed(changed, "message", format!("{account_id}:{mailbox}/{uid}"))?;
-        transaction.execute(
-            "DELETE FROM pending_seen_updates
-             WHERE account_id = ?1 AND mailbox = ?2 AND uid = ?3",
-            params![account_id, mailbox, uid],
-        )?;
-        transaction.commit()?;
+        if let Some((_, desired, revision)) = self
+            .pending_seen_updates(account_id, mailbox)?
+            .into_iter()
+            .find(|(pending_uid, desired, _)| *pending_uid == uid && *desired)
+        {
+            self.complete_pending_seen_if_unchanged(
+                account_id, mailbox, uid, desired, revision, flags,
+            )?;
+        }
         Ok(())
     }
 
-    /// Applies an optimistic star/unstar action and stores its monotonic local
-    /// revision. The revision prevents a slower earlier IMAP command from
-    /// deleting or visually reverting a newer opposite toggle.
     pub(crate) fn set_message_flagged_pending(
         &self,
         account_id: &str,
@@ -650,41 +1660,8 @@ impl Repository {
         uid: u32,
         desired: bool,
     ) -> Result<bool> {
-        let mut connection = self.connection()?;
-        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let encoded: Option<String> = transaction
-            .query_row(
-                "SELECT flags_json FROM messages
-                 WHERE account_id = ?1 AND mailbox = ?2 AND uid = ?3",
-                params![account_id, mailbox, uid],
-                |row| row.get(0),
-            )
-            .optional()?;
-        let encoded = encoded.ok_or_else(|| MailError::NotFound {
-            entity: "message",
-            id: format!("{account_id}:{mailbox}/{uid}"),
-        })?;
-        let mut flags: Vec<String> = serde_json::from_str(&encoded)?;
-        let changed = set_system_flag(&mut flags, "\\Flagged", desired);
-        if changed {
-            transaction.execute(
-                "UPDATE messages SET flags_json = ?4
-                 WHERE account_id = ?1 AND mailbox = ?2 AND uid = ?3",
-                params![account_id, mailbox, uid, encode_json(&flags)?],
-            )?;
-        }
-        transaction.execute(
-            "INSERT INTO pending_flagged_updates (
-                 account_id, mailbox, uid, desired, revision
-             ) VALUES (?1, ?2, ?3, ?4, 1)
-             ON CONFLICT(account_id, mailbox, uid) DO UPDATE SET
-                 desired = excluded.desired,
-                 revision = pending_flagged_updates.revision + 1,
-                 updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
-            params![account_id, mailbox, uid, desired],
-        )?;
-        transaction.commit()?;
-        Ok(changed)
+        self.queue_system_flag_mutation(account_id, mailbox, uid, SystemFlagKind::Flagged, desired)
+            .map(|(changed, _)| changed)
     }
 
     pub(crate) fn pending_flagged_updates(
@@ -692,22 +1669,15 @@ impl Repository {
         account_id: &str,
         mailbox: &str,
     ) -> Result<Vec<(u32, bool, u64)>> {
-        let connection = self.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT uid, desired, revision FROM pending_flagged_updates
-             WHERE account_id = ?1 AND mailbox = ?2 ORDER BY uid",
-        )?;
-        statement
-            .query_map(params![account_id, mailbox], |row| {
-                let revision = row.get::<_, i64>(2)?;
-                Ok((row.get(0)?, row.get(1)?, decode_u64(2, revision)?))
-            })?
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(Into::into)
+        self.pending_system_flag_mutations(account_id, mailbox, SystemFlagKind::Flagged)
+            .map(|mutations| {
+                mutations
+                    .into_iter()
+                    .map(|mutation| (mutation.source_uid, mutation.desired, mutation.revision))
+                    .collect()
+            })
     }
 
-    /// Completes only the exact optimistic toggle that produced this remote
-    /// confirmation. A newer local toggle keeps its pending row and overlay.
     pub(crate) fn complete_pending_flagged(
         &self,
         account_id: &str,
@@ -717,36 +1687,1183 @@ impl Repository {
         revision: u64,
         flags: &[String],
     ) -> Result<bool> {
-        let mut connection = self.connection()?;
-        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let current: Option<(bool, i64)> = transaction
-            .query_row(
-                "SELECT desired, revision FROM pending_flagged_updates
-                 WHERE account_id = ?1 AND mailbox = ?2 AND uid = ?3",
-                params![account_id, mailbox, uid],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()?;
-        let matches = current.is_some_and(|(current_desired, current_revision)| {
-            current_desired == desired && current_revision == u64_to_i64(revision)
-        });
-        if !matches {
+        self.compatibility_complete_system_flag(
+            account_id,
+            mailbox,
+            uid,
+            desired,
+            revision,
+            SystemFlagKind::Flagged,
+            flags,
+        )
+    }
+
+    fn compatibility_complete_system_flag(
+        &self,
+        account_id: &str,
+        mailbox: &str,
+        uid: u32,
+        desired: bool,
+        revision: u64,
+        flag: SystemFlagKind,
+        flags: &[String],
+    ) -> Result<bool> {
+        let pending = self
+            .pending_system_flag_mutations(account_id, mailbox, flag)?
+            .into_iter()
+            .find(|mutation| {
+                mutation.source_uid == uid
+                    && mutation.desired == desired
+                    && mutation.revision == revision
+            });
+        let Some(pending) = pending else {
+            return Ok(false);
+        };
+        if self
+            .claim_system_flag_mutation(account_id, &pending.operation_id, flag, revision)?
+            .is_none()
+        {
             return Ok(false);
         }
-        let flags = flags_with_pending_updates(&transaction, account_id, mailbox, uid, flags)?;
-        let changed = transaction.execute(
-            "UPDATE messages SET flags_json = ?4
-             WHERE account_id = ?1 AND mailbox = ?2 AND uid = ?3",
-            params![account_id, mailbox, uid, encode_json(&flags)?],
+        self.finalize_system_flag_mutation_confirmed(
+            account_id,
+            &pending.operation_id,
+            flag,
+            revision,
+            flags,
+        )
+    }
+
+    /// Compatibility entry point for callers that have not yet threaded their
+    /// already-validated account ID through to the repository boundary.
+    pub(crate) fn queue_message_action(
+        &self,
+        message_id: i64,
+        source_role: MailboxRole,
+        kind: MessageActionKind,
+        destination_role: Option<MailboxRole>,
+    ) -> Result<MessageMutationReceipt> {
+        let connection = self.connection()?;
+        let account_id = connection
+            .query_row(
+                "SELECT account_id FROM messages WHERE id = ?1",
+                params![message_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .ok_or_else(|| privacy_safe_not_found("message"))?;
+        self.queue_message_action_for_account(
+            &account_id,
+            message_id,
+            source_role,
+            kind,
+            destination_role,
+        )
+    }
+
+    /// Persists one account-scoped optimistic Archive/Trash/permanent-delete
+    /// intent before any network operation. Only an ordinary pending intent may
+    /// be folded; an in-flight or recoverable outcome must first be reconciled.
+    pub(crate) fn queue_message_action_for_account(
+        &self,
+        expected_account_id: &str,
+        message_id: i64,
+        source_role: MailboxRole,
+        kind: MessageActionKind,
+        destination_role: Option<MailboxRole>,
+    ) -> Result<MessageMutationReceipt> {
+        validate_message_action(source_role, kind, destination_role)?;
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let source: Option<(
+            String,
+            String,
+            u32,
+            Option<String>,
+            Option<String>,
+            u32,
+            Option<u32>,
+        )> = transaction
+            .query_row(
+                "SELECT m.account_id, m.mailbox, m.uid, m.message_id,
+                        m.internal_date, m.size_bytes, b.uid_validity
+                 FROM messages m
+                 JOIN mailboxes b
+                   ON b.account_id = m.account_id AND b.name = m.mailbox
+                 WHERE m.id = ?1 AND m.account_id = ?2",
+                params![message_id, expected_account_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let (
+            account_id,
+            source_mailbox,
+            source_uid,
+            source_message_id,
+            source_internal_date,
+            source_size_bytes,
+            source_uid_validity,
+        ) = source.ok_or_else(|| privacy_safe_not_found("message"))?;
+        if account_id != expected_account_id {
+            return Err(account_scope_mismatch());
+        }
+        let source_uid_validity = source_uid_validity.ok_or_else(|| {
+            MailError::Validation(
+                "the message mailbox has no confirmed UIDVALIDITY epoch".to_owned(),
+            )
+        })?;
+        if source_uid_validity == 0 {
+            return Err(MailError::Validation(
+                "the message mailbox has an invalid UIDVALIDITY epoch".to_owned(),
+            ));
+        }
+        let mapped_source: Option<String> = transaction
+            .query_row(
+                "SELECT mailbox FROM mailbox_roles
+                 WHERE account_id = ?1 AND role = ?2",
+                params![account_id, source_role.as_str()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let source_matches = mapped_source.as_deref().is_some_and(|mapped| {
+            if source_role == MailboxRole::Inbox {
+                mapped.eq_ignore_ascii_case(&source_mailbox)
+            } else {
+                mapped == source_mailbox
+            }
+        });
+        if !source_matches {
+            return Err(MailError::Validation(
+                "the message does not belong to the requested semantic mailbox".to_owned(),
+            ));
+        }
+        if let Some(destination_role) = destination_role {
+            let destination_available = transaction.query_row(
+                "SELECT EXISTS(
+                     SELECT 1
+                     FROM mailbox_roles r
+                     JOIN mailbox_capabilities c
+                       ON c.account_id = r.account_id AND c.role = r.role
+                     WHERE r.account_id = ?1 AND r.role = ?2 AND c.status = 'available'
+                 )",
+                params![account_id, destination_role.as_str()],
+                |row| row.get::<_, bool>(0),
+            )?;
+            if !destination_available {
+                return Err(MailError::Validation(
+                    "the destination mailbox capability is unavailable".to_owned(),
+                ));
+            }
+        }
+
+        let existing = query_message_action_by_identity(
+            &transaction,
+            expected_account_id,
+            &source_mailbox,
+            source_uid_validity,
+            source_uid,
         )?;
-        ensure_changed(changed, "message", format!("{account_id}:{mailbox}/{uid}"))?;
-        transaction.execute(
-            "DELETE FROM pending_flagged_updates
-             WHERE account_id = ?1 AND mailbox = ?2 AND uid = ?3 AND revision = ?4",
-            params![account_id, mailbox, uid, u64_to_i64(revision)],
+        let action = if let Some(existing) = existing {
+            if existing.status != MutationStatus::Pending {
+                return Err(MailError::Validation(
+                    "the earlier message action must be reconciled before another action"
+                        .to_owned(),
+                ));
+            }
+            let same_intent = existing.source_role == source_role
+                && existing.kind == kind
+                && existing.destination_role == destination_role;
+            if !same_intent {
+                transaction.execute(
+                    "UPDATE pending_message_actions
+                     SET source_role = ?2,
+                         destination_role = ?3,
+                         kind = ?4,
+                         revision = revision + 1,
+                         remote_phase = 'queued',
+                         source_message_id = ?5,
+                         source_internal_date = ?6,
+                         source_size_bytes = ?7,
+                         error_kind = NULL,
+                         source_cleanup_pending = 0,
+                         destination_reconciled = 0,
+                         updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                     WHERE operation_id = ?1 AND status = 'pending'",
+                    params![
+                        existing.operation_id,
+                        source_role.as_str(),
+                        destination_role.map(MailboxRole::as_str),
+                        kind.as_str(),
+                        bounded_identity_field(
+                            source_message_id.as_deref(),
+                            MAX_IDENTITY_MESSAGE_ID_CHARS
+                        ),
+                        bounded_identity_field(
+                            source_internal_date.as_deref(),
+                            MAX_IDENTITY_DATE_CHARS
+                        ),
+                        source_size_bytes,
+                    ],
+                )?;
+            }
+            query_message_action_by_operation(
+                &transaction,
+                expected_account_id,
+                &existing.operation_id,
+            )?
+            .expect("existing message operation remains present")
+        } else {
+            let operation_id = Uuid::now_v7().to_string();
+            transaction.execute(
+                "INSERT INTO pending_message_actions (
+                     operation_id, account_id, source_mailbox, source_uid_validity, source_uid,
+                     source_role, destination_role, kind, revision, status, remote_phase,
+                     source_message_id, source_internal_date, source_size_bytes, error_kind
+                 ) VALUES (
+                     ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, 'pending', 'queued',
+                     ?9, ?10, ?11, NULL
+                 )",
+                params![
+                    operation_id,
+                    expected_account_id,
+                    source_mailbox,
+                    source_uid_validity,
+                    source_uid,
+                    source_role.as_str(),
+                    destination_role.map(MailboxRole::as_str),
+                    kind.as_str(),
+                    bounded_identity_field(
+                        source_message_id.as_deref(),
+                        MAX_IDENTITY_MESSAGE_ID_CHARS
+                    ),
+                    bounded_identity_field(
+                        source_internal_date.as_deref(),
+                        MAX_IDENTITY_DATE_CHARS
+                    ),
+                    source_size_bytes,
+                ],
+            )?;
+            query_message_action_by_operation(&transaction, expected_account_id, &operation_id)?
+                .expect("inserted message operation")
+        };
+        let receipt = message_mutation_receipt(&action);
+        transaction.commit()?;
+        Ok(receipt)
+    }
+
+    pub(crate) fn pending_message_actions(
+        &self,
+        account_id: &str,
+    ) -> Result<Vec<PendingMessageAction>> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT operation_id, account_id, source_mailbox, source_uid_validity,
+                    source_uid, source_role, destination_role, kind, revision, status,
+                    remote_phase, source_message_id, source_internal_date, source_size_bytes,
+                    error_kind, source_cleanup_pending, destination_reconciled, updated_at
+             FROM pending_message_actions p
+             WHERE p.account_id = ?1 AND p.status = 'pending'
+               AND EXISTS (
+                   SELECT 1 FROM mailboxes b
+                   WHERE b.account_id = p.account_id AND b.name = p.source_mailbox
+                     AND b.uid_validity = p.source_uid_validity
+               )
+               AND EXISTS (
+                   SELECT 1 FROM messages m
+                   WHERE m.account_id = p.account_id AND m.mailbox = p.source_mailbox
+                     AND m.uid = p.source_uid
+               )
+             ORDER BY p.updated_at, p.operation_id",
+        )?;
+        statement
+            .query_map(params![account_id], row_to_pending_message_action)?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    pub(crate) fn message_actions_requiring_reconciliation(
+        &self,
+        account_id: &str,
+    ) -> Result<Vec<PendingMessageAction>> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT operation_id, account_id, source_mailbox, source_uid_validity,
+                    source_uid, source_role, destination_role, kind, revision, status,
+                    remote_phase, source_message_id, source_internal_date, source_size_bytes,
+                    error_kind, source_cleanup_pending, destination_reconciled, updated_at
+             FROM pending_message_actions
+             WHERE account_id = ?1
+               AND status IN ('in_flight', 'outcome_unknown', 'needs_attention')
+             ORDER BY updated_at, operation_id",
+        )?;
+        statement
+            .query_map(params![account_id], row_to_pending_message_action)?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    pub(crate) fn message_action(
+        &self,
+        account_id: &str,
+        operation_id: &str,
+    ) -> Result<Option<PendingMessageAction>> {
+        let connection = self.connection()?;
+        connection
+            .query_row(
+                "SELECT operation_id, account_id, source_mailbox, source_uid_validity,
+                        source_uid, source_role, destination_role, kind, revision, status,
+                        remote_phase, source_message_id, source_internal_date, source_size_bytes,
+                        error_kind, source_cleanup_pending, destination_reconciled, updated_at
+                 FROM pending_message_actions
+                 WHERE account_id = ?1 AND operation_id = ?2",
+                params![account_id, operation_id],
+                row_to_pending_message_action,
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    pub(crate) fn claim_message_action(
+        &self,
+        account_id: &str,
+        operation_id: &str,
+        expected_revision: u64,
+    ) -> Result<Option<PendingMessageAction>> {
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let Some(action) =
+            query_message_action_by_operation(&transaction, account_id, operation_id)?
+        else {
+            transaction.commit()?;
+            return Ok(None);
+        };
+        if action.revision != expected_revision || action.status != MutationStatus::Pending {
+            transaction.commit()?;
+            return Ok(None);
+        }
+        let current_epoch: Option<Option<u32>> = transaction
+            .query_row(
+                "SELECT uid_validity FROM mailboxes
+                 WHERE account_id = ?1 AND name = ?2",
+                params![account_id, action.source_mailbox],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let source_exists = transaction.query_row(
+            "SELECT EXISTS(
+                 SELECT 1 FROM messages
+                 WHERE account_id = ?1 AND mailbox = ?2 AND uid = ?3
+             )",
+            params![account_id, action.source_mailbox, action.source_uid],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if current_epoch.flatten() != Some(action.source_uid_validity) || !source_exists {
+            let error = if current_epoch.flatten() != Some(action.source_uid_validity) {
+                MessageMutationErrorKind::UidValidityChanged
+            } else {
+                MessageMutationErrorKind::SourceMissing
+            };
+            transaction.execute(
+                "UPDATE pending_message_actions
+                 SET status = 'needs_attention',
+                     error_kind = ?4,
+                     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                 WHERE account_id = ?1 AND operation_id = ?2 AND revision = ?3
+                   AND status = 'pending'",
+                params![
+                    account_id,
+                    operation_id,
+                    u64_to_i64(expected_revision),
+                    error.as_str(),
+                ],
+            )?;
+            transaction.commit()?;
+            return Ok(None);
+        }
+        let changed = transaction.execute(
+            "UPDATE pending_message_actions
+             SET status = 'in_flight',
+                 error_kind = NULL,
+                 updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE account_id = ?1 AND operation_id = ?2 AND revision = ?3
+               AND status = 'pending'",
+            params![account_id, operation_id, u64_to_i64(expected_revision)],
+        )?;
+        let claimed = if changed == 1 {
+            query_message_action_by_operation(&transaction, account_id, operation_id)?
+        } else {
+            None
+        };
+        transaction.commit()?;
+        Ok(claimed)
+    }
+
+    pub(crate) fn advance_message_action_remote_phase(
+        &self,
+        account_id: &str,
+        operation_id: &str,
+        expected_revision: u64,
+        expected_phase: RemoteMutationPhase,
+        next_phase: RemoteMutationPhase,
+    ) -> Result<bool> {
+        let connection = self.connection()?;
+        let Some(action) =
+            query_message_action_by_operation(&connection, account_id, operation_id)?
+        else {
+            return Ok(false);
+        };
+        if action.revision != expected_revision
+            || action.status != MutationStatus::InFlight
+            || action.remote_phase != expected_phase
+        {
+            return Ok(false);
+        }
+        if !valid_remote_phase_transition(action.kind, expected_phase, next_phase) {
+            return Err(MailError::Validation(
+                "the remote mutation phase transition is invalid".to_owned(),
+            ));
+        }
+        let changed = connection.execute(
+            "UPDATE pending_message_actions
+             SET remote_phase = ?5,
+                 updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE account_id = ?1 AND operation_id = ?2 AND revision = ?3
+               AND status = 'in_flight' AND remote_phase = ?4",
+            params![
+                account_id,
+                operation_id,
+                u64_to_i64(expected_revision),
+                expected_phase.as_str(),
+                next_phase.as_str(),
+            ],
+        )?;
+        Ok(changed == 1)
+    }
+
+    pub(crate) fn finalize_message_action(
+        &self,
+        account_id: &str,
+        operation_id: &str,
+        expected_revision: u64,
+        status: MutationStatus,
+        error_kind: Option<MessageMutationErrorKind>,
+    ) -> Result<bool> {
+        if status == MutationStatus::Confirmed {
+            if error_kind.is_some() {
+                return Err(MailError::Validation(
+                    "a confirmed message action cannot retain an error category".to_owned(),
+                ));
+            }
+            return self.finalize_message_action_confirmed(
+                account_id,
+                operation_id,
+                expected_revision,
+                false,
+            );
+        }
+        if !matches!(
+            status,
+            MutationStatus::OutcomeUnknown | MutationStatus::NeedsAttention
+        ) {
+            return Err(MailError::Validation(
+                "an in-flight message action has an invalid final status".to_owned(),
+            ));
+        }
+        let connection = self.connection()?;
+        let Some(action) =
+            query_message_action_by_operation(&connection, account_id, operation_id)?
+        else {
+            return Ok(false);
+        };
+        if action.revision != expected_revision || action.status != MutationStatus::InFlight {
+            return Ok(false);
+        }
+        if error_kind.is_none() {
+            return Err(MailError::Validation(
+                "a recoverable message action status requires an error category".to_owned(),
+            ));
+        }
+        let changed = connection.execute(
+            "UPDATE pending_message_actions
+             SET status = ?4,
+                 error_kind = ?5,
+                 updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE account_id = ?1 AND operation_id = ?2 AND revision = ?3
+               AND status = 'in_flight'",
+            params![
+                account_id,
+                operation_id,
+                u64_to_i64(expected_revision),
+                status.as_str(),
+                error_kind.map(MessageMutationErrorKind::as_str),
+            ],
+        )?;
+        Ok(changed == 1)
+    }
+
+    /// Atomically records a successful source delete and whether the provider
+    /// proved final UID removal. Without that proof the confirmed action is a
+    /// durable source tombstone until a same-epoch synchronization confirms
+    /// that the UID is absent.
+    pub(crate) fn finalize_message_action_confirmed(
+        &self,
+        account_id: &str,
+        operation_id: &str,
+        expected_revision: u64,
+        source_cleanup_pending: bool,
+    ) -> Result<bool> {
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let Some(action) =
+            query_message_action_by_operation(&transaction, account_id, operation_id)?
+        else {
+            transaction.commit()?;
+            return Ok(false);
+        };
+        if action.revision != expected_revision || action.status != MutationStatus::InFlight {
+            transaction.commit()?;
+            return Ok(false);
+        }
+        if action.remote_phase != RemoteMutationPhase::SourceDeleteAcknowledged {
+            return Err(MailError::Validation(
+                "a confirmed message action requires an acknowledged remote delete".to_owned(),
+            ));
+        }
+        let changed = transaction.execute(
+            "UPDATE pending_message_actions
+             SET status = 'confirmed',
+                 remote_phase = 'source_delete_acknowledged',
+                 error_kind = NULL,
+                 source_cleanup_pending = ?4,
+                 destination_reconciled = 0,
+                 updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE account_id = ?1 AND operation_id = ?2 AND revision = ?3
+               AND status = 'in_flight'
+               AND remote_phase = 'source_delete_acknowledged'",
+            params![
+                account_id,
+                operation_id,
+                u64_to_i64(expected_revision),
+                source_cleanup_pending,
+            ],
         )?;
         transaction.commit()?;
-        Ok(true)
+        Ok(changed == 1)
+    }
+
+    pub(crate) fn reconcile_message_action(
+        &self,
+        account_id: &str,
+        operation_id: &str,
+        expected_revision: u64,
+        resolution: MutationStatus,
+        error_kind: Option<MessageMutationErrorKind>,
+    ) -> Result<bool> {
+        if resolution == MutationStatus::Confirmed {
+            if error_kind.is_some() {
+                return Err(MailError::Validation(
+                    "a reconciled message action cannot retain an error category".to_owned(),
+                ));
+            }
+            return self.reconcile_message_action_confirmed(
+                account_id,
+                operation_id,
+                expected_revision,
+                false,
+            );
+        }
+        if !matches!(
+            resolution,
+            MutationStatus::Pending
+                | MutationStatus::NeedsAttention
+                | MutationStatus::OutcomeUnknown
+        ) {
+            return Err(MailError::Validation(
+                "the message action reconciliation result is invalid".to_owned(),
+            ));
+        }
+        if matches!(
+            resolution,
+            MutationStatus::NeedsAttention | MutationStatus::OutcomeUnknown
+        ) && error_kind.is_none()
+        {
+            return Err(MailError::Validation(
+                "a recoverable message action status requires an error category".to_owned(),
+            ));
+        }
+        if matches!(resolution, MutationStatus::Pending) && error_kind.is_some() {
+            return Err(MailError::Validation(
+                "a reconciled message action cannot retain an error category".to_owned(),
+            ));
+        }
+        let connection = self.connection()?;
+        let (next_revision, next_phase) = match resolution {
+            MutationStatus::Pending => (
+                expected_revision.saturating_add(1),
+                RemoteMutationPhase::Queued,
+            ),
+            _ => {
+                let Some(action) =
+                    query_message_action_by_operation(&connection, account_id, operation_id)?
+                else {
+                    return Ok(false);
+                };
+                (expected_revision, action.remote_phase)
+            }
+        };
+        let changed = connection.execute(
+            "UPDATE pending_message_actions
+             SET status = ?4,
+                 revision = ?5,
+                 remote_phase = ?6,
+                 error_kind = ?7,
+                 updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE account_id = ?1 AND operation_id = ?2 AND revision = ?3
+               AND status IN ('in_flight', 'outcome_unknown', 'needs_attention')",
+            params![
+                account_id,
+                operation_id,
+                u64_to_i64(expected_revision),
+                resolution.as_str(),
+                u64_to_i64(next_revision),
+                next_phase.as_str(),
+                error_kind.map(MessageMutationErrorKind::as_str),
+            ],
+        )?;
+        Ok(changed == 1)
+    }
+
+    /// Reconciliation counterpart to `finalize_message_action_confirmed`.
+    /// The reconciliation worker calls this only after it has proved the exact
+    /// source deletion outcome. A persisted transfer-acknowledged or
+    /// source-delete-started phase is advanced to the acknowledged phase in
+    /// the same statement; transfer-started is intentionally excluded.
+    pub(crate) fn reconcile_message_action_confirmed(
+        &self,
+        account_id: &str,
+        operation_id: &str,
+        expected_revision: u64,
+        source_cleanup_pending: bool,
+    ) -> Result<bool> {
+        let connection = self.connection()?;
+        let changed = connection.execute(
+            "UPDATE pending_message_actions
+             SET status = 'confirmed',
+                 remote_phase = 'source_delete_acknowledged',
+                 error_kind = NULL,
+                 source_cleanup_pending = ?4,
+                 destination_reconciled = 0,
+                 updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE account_id = ?1 AND operation_id = ?2 AND revision = ?3
+               AND status IN ('in_flight', 'outcome_unknown', 'needs_attention')
+               AND (
+                   remote_phase IN (
+                       'transfer_acknowledged', 'source_delete_started',
+                       'source_delete_acknowledged'
+                   )
+                   OR (
+                       ?4 = 0
+                       AND remote_phase = 'queued'
+                       AND kind = 'permanent_delete'
+                       AND destination_role IS NULL
+                   )
+               )",
+            params![
+                account_id,
+                operation_id,
+                u64_to_i64(expected_revision),
+                source_cleanup_pending,
+            ],
+        )?;
+        Ok(changed == 1)
+    }
+
+    pub(crate) fn purge_confirmed_message_action_after_convergence(
+        &self,
+        account_id: &str,
+        operation_id: &str,
+        expected_revision: u64,
+    ) -> Result<bool> {
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let source: Option<(String, u32, u32)> = transaction
+            .query_row(
+                "SELECT source_mailbox, source_uid_validity, source_uid
+                 FROM pending_message_actions
+                 WHERE account_id = ?1 AND operation_id = ?2 AND revision = ?3
+                   AND status = 'confirmed'
+                   AND source_cleanup_pending = 0",
+                params![account_id, operation_id, u64_to_i64(expected_revision)],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()?;
+        let Some((source_mailbox, source_uid_validity, source_uid)) = source else {
+            transaction.commit()?;
+            return Ok(false);
+        };
+        let changed = transaction.execute(
+            "DELETE FROM pending_message_actions
+             WHERE account_id = ?1 AND operation_id = ?2 AND revision = ?3
+               AND status = 'confirmed'
+               AND source_cleanup_pending = 0",
+            params![account_id, operation_id, u64_to_i64(expected_revision)],
+        )?;
+        if changed == 1 {
+            transaction.execute(
+                "DELETE FROM messages AS m
+                 WHERE m.account_id = ?1 AND m.mailbox = ?2 AND m.uid = ?3
+                   AND EXISTS (
+                       SELECT 1 FROM mailboxes b
+                       WHERE b.account_id = m.account_id AND b.name = m.mailbox
+                         AND b.uid_validity = ?4
+                   )
+                   AND NOT EXISTS (
+                       SELECT 1 FROM pending_message_actions p
+                       WHERE p.account_id = m.account_id
+                         AND p.source_mailbox = m.mailbox
+                         AND p.source_uid_validity = ?4
+                         AND p.source_uid = m.uid
+                   )",
+                params![account_id, source_mailbox, source_uid, source_uid_validity,],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(changed == 1)
+    }
+
+    pub(crate) fn purge_confirmed_message_action_if_destination_unique(
+        &self,
+        account_id: &str,
+        operation_id: &str,
+    ) -> Result<bool> {
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let action: Option<(String, u32, u32, String, String, u32, String, bool)> = transaction
+            .query_row(
+                "SELECT source_mailbox, source_uid_validity, source_uid,
+                        source_message_id, source_internal_date, source_size_bytes,
+                        destination_role, source_cleanup_pending
+                 FROM pending_message_actions
+                 WHERE account_id = ?1 AND operation_id = ?2
+                   AND status = 'confirmed'
+                   AND source_message_id IS NOT NULL
+                   AND source_internal_date IS NOT NULL
+                   AND source_size_bytes > 0
+                   AND destination_role IS NOT NULL",
+                params![account_id, operation_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((
+            source_mailbox,
+            source_uid_validity,
+            source_uid,
+            source_message_id,
+            source_internal_date,
+            source_size_bytes,
+            destination_role,
+            source_cleanup_pending,
+        )) = action
+        else {
+            transaction.commit()?;
+            return Ok(false);
+        };
+        let destination_mailbox: Option<String> = transaction
+            .query_row(
+                "SELECT mailbox FROM mailbox_roles
+                 WHERE account_id = ?1 AND role = ?2",
+                params![account_id, destination_role],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(destination_mailbox) =
+            destination_mailbox.filter(|mailbox| mailbox != &source_mailbox)
+        else {
+            transaction.commit()?;
+            return Ok(false);
+        };
+        let destination_matches: u32 = transaction.query_row(
+            "SELECT COUNT(*)
+             FROM messages
+             WHERE account_id = ?1 AND mailbox = ?2
+               AND message_id = ?3 AND internal_date = ?4 AND size_bytes = ?5",
+            params![
+                account_id,
+                destination_mailbox,
+                source_message_id,
+                source_internal_date,
+                source_size_bytes,
+            ],
+            |row| row.get(0),
+        )?;
+        if destination_matches != 1 {
+            transaction.commit()?;
+            return Ok(false);
+        }
+        let changed = if source_cleanup_pending {
+            transaction.execute(
+                "UPDATE pending_message_actions
+                 SET destination_reconciled = 1,
+                     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                 WHERE account_id = ?1 AND operation_id = ?2
+                   AND status = 'confirmed' AND source_cleanup_pending = 1",
+                params![account_id, operation_id],
+            )?
+        } else {
+            transaction.execute(
+                "DELETE FROM pending_message_actions
+                 WHERE account_id = ?1 AND operation_id = ?2
+                   AND status = 'confirmed' AND source_cleanup_pending = 0",
+                params![account_id, operation_id],
+            )?
+        };
+        if changed == 1 {
+            transaction.execute(
+                "DELETE FROM messages AS m
+                 WHERE m.account_id = ?1 AND m.mailbox = ?2 AND m.uid = ?3
+                   AND EXISTS (
+                       SELECT 1 FROM mailboxes b
+                       WHERE b.account_id = m.account_id AND b.name = m.mailbox
+                         AND b.uid_validity = ?4
+                   )",
+                params![account_id, source_mailbox, source_uid, source_uid_validity,],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(changed == 1)
+    }
+
+    /// Lists confirmed actions whose source UID still requires same-epoch
+    /// disappearance proof. These rows are tombstones, not retryable network
+    /// actions, and must never cause COPY or STORE to run again.
+    pub(crate) fn confirmed_source_cleanup_tombstones(
+        &self,
+        account_id: &str,
+    ) -> Result<Vec<PendingMessageAction>> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT operation_id, account_id, source_mailbox, source_uid_validity,
+                    source_uid, source_role, destination_role, kind, revision, status,
+                    remote_phase, source_message_id, source_internal_date, source_size_bytes,
+                    error_kind, source_cleanup_pending, destination_reconciled, updated_at
+             FROM pending_message_actions
+             WHERE account_id = ?1
+               AND status = 'confirmed'
+               AND source_cleanup_pending = 1
+             ORDER BY updated_at, operation_id",
+        )?;
+        statement
+            .query_map(params![account_id], row_to_pending_message_action)?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    /// Purges a source-cleanup tombstone only after the caller has completed a
+    /// same-epoch remote UID listing and proved this exact UID absent.
+    pub(crate) fn purge_confirmed_source_cleanup_if_remote_absent(
+        &self,
+        account_id: &str,
+        operation_id: &str,
+        expected_revision: u64,
+        confirmed_uid_validity: u32,
+        confirmed_source_uid: u32,
+    ) -> Result<bool> {
+        if confirmed_uid_validity == 0 || confirmed_source_uid == 0 {
+            return Err(MailError::Validation(
+                "source cleanup confirmation requires a valid mailbox epoch and UID".to_owned(),
+            ));
+        }
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let source: Option<(String, u32, u32)> = transaction
+            .query_row(
+                "SELECT source_mailbox, source_uid_validity, source_uid
+                 FROM pending_message_actions
+                 WHERE account_id = ?1 AND operation_id = ?2 AND revision = ?3
+                   AND status = 'confirmed' AND source_cleanup_pending = 1
+                   AND source_uid_validity = ?4 AND source_uid = ?5",
+                params![
+                    account_id,
+                    operation_id,
+                    u64_to_i64(expected_revision),
+                    confirmed_uid_validity,
+                    confirmed_source_uid,
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()?;
+        let Some((source_mailbox, source_uid_validity, source_uid)) = source else {
+            transaction.commit()?;
+            return Ok(false);
+        };
+        let epoch_matches = transaction.query_row(
+            "SELECT EXISTS(
+                 SELECT 1 FROM mailboxes
+                 WHERE account_id = ?1 AND name = ?2 AND uid_validity = ?3
+             )",
+            params![account_id, source_mailbox, source_uid_validity],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if !epoch_matches {
+            transaction.commit()?;
+            return Ok(false);
+        }
+        let cleanup_is_unblocked = transaction.query_row(
+            "SELECT EXISTS(
+                 SELECT 1 FROM pending_message_actions
+                 WHERE account_id = ?1 AND operation_id = ?2 AND revision = ?3
+                   AND status = 'confirmed' AND source_cleanup_pending = 1
+                   AND (
+                       (kind = 'permanent_delete' AND destination_role IS NULL)
+                       OR destination_reconciled = 1
+                   )
+             )",
+            params![account_id, operation_id, u64_to_i64(expected_revision)],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if !cleanup_is_unblocked {
+            transaction.commit()?;
+            return Ok(false);
+        }
+        let changed = transaction.execute(
+            "DELETE FROM pending_message_actions
+             WHERE account_id = ?1 AND operation_id = ?2 AND revision = ?3
+               AND status = 'confirmed' AND source_cleanup_pending = 1
+               AND source_uid_validity = ?4 AND source_uid = ?5
+               AND (
+                   (kind = 'permanent_delete' AND destination_role IS NULL)
+                   OR destination_reconciled = 1
+               )",
+            params![
+                account_id,
+                operation_id,
+                u64_to_i64(expected_revision),
+                source_uid_validity,
+                source_uid,
+            ],
+        )?;
+        if changed == 1 {
+            transaction.execute(
+                "DELETE FROM messages
+                 WHERE account_id = ?1 AND mailbox = ?2 AND uid = ?3",
+                params![account_id, source_mailbox, source_uid],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(changed == 1)
+    }
+
+    /// Compatibility adapter retained while backend integration migrates to
+    /// the explicit queue/claim/phase/finalize/reconcile API.
+    pub(crate) fn update_message_action_status_if_unchanged(
+        &self,
+        account_id: &str,
+        operation_id: &str,
+        revision: u64,
+        status: MutationStatus,
+        error_kind: Option<MessageMutationErrorKind>,
+    ) -> Result<bool> {
+        match status {
+            MutationStatus::InFlight => self
+                .claim_message_action(account_id, operation_id, revision)
+                .map(|claimed| claimed.is_some()),
+            MutationStatus::Confirmed
+            | MutationStatus::OutcomeUnknown
+            | MutationStatus::NeedsAttention => {
+                self.finalize_message_action(account_id, operation_id, revision, status, error_kind)
+            }
+            MutationStatus::Pending => self.reconcile_message_action(
+                account_id,
+                operation_id,
+                revision,
+                status,
+                error_kind,
+            ),
+        }
+    }
+
+    /// Lists one account-scoped semantic mailbox using a stable keyset. Search
+    /// is restricted to synchronized summary fields and never inspects a cached
+    /// body or raw RFC822 payload.
+    pub(crate) fn list_mailbox_page(
+        &self,
+        account_id: &str,
+        role: MailboxRole,
+        cursor: Option<&MessagePageCursor>,
+        page_size: usize,
+        query: Option<&str>,
+    ) -> Result<MessagePage> {
+        let page_size = validate_page_size(page_size)?;
+        let query = normalize_search_query(query)?;
+        let capability = self.mailbox_capability(account_id, role)?;
+        let Some(capability) = capability else {
+            return Ok(unavailable_message_page(RemoteHistoryState::NotChecked));
+        };
+        if capability.status != MailboxCapabilityStatus::Available {
+            let state = match capability.status {
+                MailboxCapabilityStatus::Unavailable
+                | MailboxCapabilityStatus::NeedsCreationConfirmation => {
+                    RemoteHistoryState::Unavailable
+                }
+                MailboxCapabilityStatus::DiscoveryPending => RemoteHistoryState::NotChecked,
+                MailboxCapabilityStatus::Available => unreachable!(),
+            };
+            return Ok(unavailable_message_page(state));
+        }
+        let mailbox = self.mailbox_for_semantic_role(account_id, role)?;
+        let state =
+            self.mailbox_state(account_id, &mailbox)?
+                .ok_or_else(|| MailError::NotFound {
+                    entity: "mailbox",
+                    id: format!("{account_id}:{}", bounded_diagnostic_id(&mailbox)),
+                })?;
+        let history = self
+            .mailbox_history(account_id, &mailbox)?
+            .unwrap_or_default();
+        let connection = self.connection()?;
+        let decoded_cursor = cursor
+            .map(|cursor| {
+                load_and_validate_message_cursor(
+                    &connection,
+                    cursor,
+                    account_id,
+                    &mailbox,
+                    role,
+                    state.uid_validity,
+                    query.as_deref().unwrap_or_default(),
+                )
+            })
+            .transpose()?;
+        let search_pattern = query.as_deref().map(search_like_pattern);
+        let fetch_limit = page_size.saturating_add(1);
+        let mut candidates = query_regular_page_candidates(
+            &connection,
+            account_id,
+            &mailbox,
+            role,
+            state.uid_validity,
+            decoded_cursor.as_ref(),
+            search_pattern.as_deref(),
+            fetch_limit,
+        )?;
+        candidates.extend(query_pending_page_candidates(
+            &connection,
+            account_id,
+            role,
+            decoded_cursor.as_ref(),
+            search_pattern.as_deref(),
+            fetch_limit,
+        )?);
+        candidates.sort_by(compare_page_candidates);
+        let has_more_local = candidates.len() > page_size;
+        candidates.truncate(page_size);
+        let items = candidates
+            .iter()
+            .map(|candidate| candidate.item.clone())
+            .collect::<Vec<_>>();
+        let remote_history_state = if has_more_local {
+            RemoteHistoryState::NotChecked
+        } else if history.complete {
+            RemoteHistoryState::Complete
+        } else {
+            RemoteHistoryState::MayHaveMore
+        };
+        let end_reached = !has_more_local && remote_history_state == RemoteHistoryState::Complete;
+        let next_cursor = if end_reached {
+            None
+        } else {
+            let boundary = candidates.last().map(|candidate| {
+                (
+                    Some(candidate.sort_at.clone()),
+                    Some(candidate.uid),
+                    Some(candidate.id),
+                )
+            });
+            let (sort_at, uid, id) = boundary.unwrap_or_else(|| {
+                decoded_cursor
+                    .as_ref()
+                    .map(|cursor| (cursor.sort_at.clone(), cursor.uid, cursor.id))
+                    .unwrap_or((None, None, None))
+            });
+            let remote_before_uid = history
+                .before_uid
+                .or(state.uid_next)
+                .or_else(|| state.highest_uid.and_then(|uid| uid.checked_add(1)))
+                .unwrap_or(1);
+            Some(issue_message_cursor(
+                &connection,
+                MessageCursorPayload {
+                    account_id: account_id.to_owned(),
+                    mailbox,
+                    role,
+                    uid_validity: state.uid_validity,
+                    query_normalized: query.unwrap_or_default(),
+                    sort_at,
+                    uid,
+                    id,
+                    remote_before_uid,
+                },
+            )?)
+        };
+        Ok(MessagePage {
+            items,
+            next_cursor,
+            has_more_local,
+            remote_history_state,
+            end_reached,
+        })
+    }
+
+    /// Returns the local rows now available behind an existing continuation
+    /// cursor. The backend performs any bounded IMAP history fetch first.
+    pub(crate) fn load_older_mailbox_page(
+        &self,
+        account_id: &str,
+        role: MailboxRole,
+        cursor: &MessagePageCursor,
+        page_size: usize,
+        query: Option<&str>,
+    ) -> Result<MessagePage> {
+        self.list_mailbox_page(account_id, role, Some(cursor), page_size, query)
+    }
+
+    /// Extracts only the bounded server-history context needed by the backend.
+    /// Callers still validate the cursor again through `list_mailbox_page` after
+    /// synchronizing older summaries.
+    pub(crate) fn message_page_cursor_context(
+        &self,
+        cursor: &MessagePageCursor,
+    ) -> Result<MessagePageCursorContext> {
+        let connection = self.connection()?;
+        let payload = load_message_cursor(&connection, cursor)?;
+        Ok(MessagePageCursorContext {
+            account_id: payload.account_id,
+            mailbox: payload.mailbox,
+            role: payload.role,
+            uid_validity: payload.uid_validity,
+            remote_before_uid: Some(payload.remote_before_uid),
+        })
     }
 
     pub(crate) fn list_inbox(
@@ -805,15 +2922,20 @@ impl Repository {
     pub(crate) fn list_contact_source_messages(
         &self,
         account_id: &str,
-    ) -> Result<Vec<InboxMessage>> {
+    ) -> Result<Vec<ContactMessageSource>> {
         let connection = self.connection()?;
         let sql = format!(
-            "SELECT {CONTACT_MESSAGE_SUMMARY_COLUMNS} FROM messages
+            "SELECT {CONTACT_MESSAGE_SUMMARY_COLUMNS}, public_id FROM messages
              WHERE account_id = ?1
              ORDER BY COALESCE(internal_date, sent_at, synced_at) DESC, uid DESC, id DESC"
         );
         let mut statement = connection.prepare(&sql)?;
-        let rows = statement.query_map(params![account_id], row_to_message)?;
+        let rows = statement.query_map(params![account_id], |row| {
+            Ok(ContactMessageSource {
+                public_id: row.get(23)?,
+                message: row_to_message(row)?,
+            })
+        })?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(Into::into)
     }
@@ -827,6 +2949,61 @@ impl Repository {
             .ok_or_else(|| MailError::NotFound {
                 entity: "message",
                 id: id.to_string(),
+            })
+    }
+
+    /// Resolves an opaque desktop message identity only inside its owning
+    /// account. The returned model retains the internal row ID for Rust-only
+    /// queue and cursor work.
+    pub(crate) fn get_message_by_public_id(
+        &self,
+        expected_account_id: &str,
+        public_id: &str,
+    ) -> Result<InboxMessage> {
+        validate_message_public_id(public_id)?;
+        let connection = self.connection()?;
+        let sql = format!(
+            "SELECT {MESSAGE_COLUMNS} FROM messages
+             WHERE account_id = ?1 AND public_id = ?2"
+        );
+        connection
+            .query_row(
+                &sql,
+                params![expected_account_id, public_id],
+                row_to_message,
+            )
+            .optional()?
+            .ok_or_else(|| MailError::NotFound {
+                entity: "message",
+                id: "opaque-id".to_owned(),
+            })
+    }
+
+    /// Converts a Rust-only local row identity to its opaque desktop identity.
+    /// Both predicates are required because SQLite row IDs can collide across
+    /// the separate databases used by different accounts.
+    pub(crate) fn message_public_id_by_local_id(
+        &self,
+        expected_account_id: &str,
+        local_id: i64,
+    ) -> Result<String> {
+        if local_id <= 0 {
+            return Err(MailError::NotFound {
+                entity: "message",
+                id: "local-id".to_owned(),
+            });
+        }
+        let connection = self.connection()?;
+        connection
+            .query_row(
+                "SELECT public_id FROM messages WHERE account_id = ?1 AND id = ?2",
+                params![expected_account_id, local_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .ok_or_else(|| MailError::NotFound {
+                entity: "message",
+                id: "local-id".to_owned(),
             })
     }
 
@@ -956,15 +3133,38 @@ impl Repository {
     pub(crate) fn save_draft_record(&self, record: &DraftRecord) -> Result<()> {
         let draft = &record.draft;
         let connection = self.connection()?;
+        let expected_snapshot = DraftVersionSnapshot {
+            account_id: draft.account_id.clone(),
+            draft_id: draft.id.clone(),
+            local_version: record.local_version,
+            protocol_revision: record.revision,
+            request: draft.compose_request(),
+            has_unsupported_content: draft.has_unsupported_content,
+        };
+        let existing_snapshot = query_draft_version_snapshot(
+            &connection,
+            &draft.account_id,
+            &draft.id,
+            record.local_version,
+        )?;
+        if existing_snapshot
+            .as_ref()
+            .is_some_and(|existing| existing != &expected_snapshot)
+        {
+            return Err(MailError::Validation(
+                "an immutable draft version snapshot cannot be rewritten".to_owned(),
+            ));
+        }
         connection.execute(
             "INSERT INTO drafts (
-                 id, account_id, to_json, cc_json, bcc_json, subject, body_text, reply_context_json,
-                 status, remote_mailbox, remote_uid, created_at, updated_at, raw_rfc822,
+                 id, account_id, to_json, cc_json, bcc_json, subject, body_text,
+                 compose_format_json, reply_context_json, status, remote_mailbox, remote_uid,
+                 created_at, updated_at, raw_rfc822,
                  local_version, has_unsupported_content, revision, synced_revision,
                  remote_uid_validity, is_deleted
              ) VALUES (
                  ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-                 ?14, ?15, ?16, ?17, ?18, ?19, ?20
+                 ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21
              )
              ON CONFLICT(id) DO UPDATE SET
                  account_id = excluded.account_id,
@@ -973,6 +3173,7 @@ impl Repository {
                  bcc_json = excluded.bcc_json,
                  subject = excluded.subject,
                  body_text = excluded.body_text,
+                 compose_format_json = excluded.compose_format_json,
                  reply_context_json = excluded.reply_context_json,
                  status = excluded.status,
                  remote_mailbox = excluded.remote_mailbox,
@@ -993,6 +3194,7 @@ impl Repository {
                 encode_json(&draft.bcc)?,
                 draft.subject,
                 draft.body_text,
+                encode_json(&draft.format)?,
                 draft.reply_context.as_ref().map(encode_json).transpose()?,
                 draft.status,
                 draft.remote_mailbox,
@@ -1008,13 +3210,19 @@ impl Repository {
                 record.is_deleted,
             ],
         )?;
+        if existing_snapshot.is_none() {
+            insert_draft_version_snapshot(&connection, record)?;
+        }
         Ok(())
     }
 
     /// Inserts a draft only if no row with the same stable id already exists.
     pub(crate) fn insert_draft_if_absent(&self, record: &DraftRecord) -> Result<bool> {
-        let connection = self.connection()?;
-        Ok(insert_draft_record_if_absent(&connection, record)? == 1)
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let inserted = insert_draft_record_if_absent(&transaction, record)? == 1;
+        transaction.commit()?;
+        Ok(inserted)
     }
 
     /// Replaces a draft only while every local sync token still matches. This
@@ -1048,6 +3256,7 @@ impl Repository {
                  bcc_json = :bcc_json,
                  subject = :subject,
                  body_text = :body_text,
+                 compose_format_json = :compose_format_json,
                  reply_context_json = :reply_context_json,
                  status = :replacement_status,
                  remote_mailbox = :replacement_mailbox,
@@ -1078,6 +3287,7 @@ impl Repository {
                 ":bcc_json": bcc_json,
                 ":subject": replacement.draft.subject,
                 ":body_text": replacement.draft.body_text,
+                ":compose_format_json": encode_json(&replacement.draft.format)?,
                 ":reply_context_json": replacement
                     .draft
                     .reply_context
@@ -1111,12 +3321,80 @@ impl Repository {
         if changed != 1 {
             return Err(MailError::Database(rusqlite::Error::ExecuteReturnedResults));
         }
+        if replacement.local_version == expected.local_version {
+            let persisted = query_draft_version_snapshot(
+                &transaction,
+                &replacement.draft.account_id,
+                &replacement.draft.id,
+                replacement.local_version,
+            )?
+            .ok_or_else(|| {
+                MailError::Validation(
+                    "the immutable draft version snapshot is unavailable".to_owned(),
+                )
+            })?;
+            let replacement_snapshot = DraftVersionSnapshot {
+                account_id: replacement.draft.account_id.clone(),
+                draft_id: replacement.draft.id.clone(),
+                local_version: replacement.local_version,
+                protocol_revision: replacement.revision,
+                request: replacement.draft.compose_request(),
+                has_unsupported_content: replacement.draft.has_unsupported_content,
+            };
+            if persisted != replacement_snapshot {
+                return Err(MailError::Validation(
+                    "an immutable draft version snapshot cannot be rewritten".to_owned(),
+                ));
+            }
+        } else {
+            insert_draft_version_snapshot(&transaction, replacement)?;
+            clone_draft_attachment_rows(
+                &transaction,
+                &expected.draft.account_id,
+                &expected.draft.id,
+                expected.local_version,
+                &replacement.draft.id,
+                replacement.local_version,
+            )?;
+            clone_draft_version_forward_context_ref(
+                &transaction,
+                &expected.draft.account_id,
+                &expected.draft.id,
+                expected.local_version,
+                &replacement.draft.id,
+                replacement.local_version,
+            )?;
+        }
         if let Some(copy) = conflict_copy
             && insert_draft_record_if_absent(&transaction, copy)? != 1
         {
             return Err(MailError::Validation(
                 "could not reserve a unique draft conflict copy id".to_owned(),
             ));
+        }
+        if let Some(copy) = conflict_copy {
+            clone_draft_attachment_rows(
+                &transaction,
+                &expected.draft.account_id,
+                &expected.draft.id,
+                expected.local_version,
+                &copy.draft.id,
+                copy.local_version,
+            )?;
+            clone_forward_context_rows(
+                &transaction,
+                &expected.draft.account_id,
+                &expected.draft.id,
+                &copy.draft.id,
+            )?;
+            clone_draft_version_forward_context_ref(
+                &transaction,
+                &expected.draft.account_id,
+                &expected.draft.id,
+                expected.local_version,
+                &copy.draft.id,
+                copy.local_version,
+            )?;
         }
         transaction.commit()?;
         Ok(true)
@@ -1146,6 +3424,21 @@ impl Repository {
             })
     }
 
+    pub(crate) fn draft_version_snapshot(
+        &self,
+        account_id: &str,
+        draft_id: &str,
+        local_version: u64,
+    ) -> Result<Option<DraftVersionSnapshot>> {
+        if local_version == 0 {
+            return Err(MailError::Validation(
+                "a draft version snapshot must be positive".to_owned(),
+            ));
+        }
+        let connection = self.connection()?;
+        query_draft_version_snapshot(&connection, account_id, draft_id, local_version)
+    }
+
     pub(crate) fn list_drafts(&self, account_id: &str) -> Result<Vec<Draft>> {
         let connection = self.connection()?;
         let sql = format!(
@@ -1171,9 +3464,885 @@ impl Repository {
             .map_err(Into::into)
     }
 
-    pub(crate) fn tombstone_draft(&self, id: &str, updated_at: &str) -> Result<()> {
+    /// Returns the attachment set only when the caller's draft version is
+    /// still current. `Some([])` is a valid exact empty set; `None` is a CAS
+    /// miss and must never be treated as an empty newer draft.
+    pub(crate) fn list_draft_attachments_at_version(
+        &self,
+        account_id: &str,
+        draft_id: &str,
+        expected_local_version: u64,
+    ) -> Result<Option<DraftAttachmentVersionSnapshot>> {
+        if expected_local_version == 0 {
+            return Err(MailError::Validation(
+                "a draft attachment version must be positive".to_owned(),
+            ));
+        }
+        let connection = self.connection()?;
+        if !draft_version_exists(
+            &connection,
+            account_id,
+            draft_id,
+            expected_local_version,
+            false,
+        )? {
+            return Ok(None);
+        }
+        Ok(Some(DraftAttachmentVersionSnapshot {
+            local_version: expected_local_version,
+            attachments: query_draft_attachments(
+                &connection,
+                account_id,
+                draft_id,
+                expected_local_version,
+            )?,
+        }))
+    }
+
+    /// Imports new immutable blob records and appends their associations while
+    /// advancing the exact editable draft version in one transaction. A stale
+    /// version returns `None` without registering any blob or changing any
+    /// association.
+    pub(crate) fn add_draft_attachments_if_local_version(
+        &self,
+        account_id: &str,
+        draft_id: &str,
+        expected_local_version: u64,
+        additions: &[NewDraftAttachment],
+        updated_at: &str,
+    ) -> Result<Option<DraftAttachmentVersionSnapshot>> {
+        self.add_draft_attachments_with_raw_if_local_version(
+            account_id,
+            draft_id,
+            expected_local_version,
+            additions,
+            updated_at,
+            None,
+        )
+    }
+
+    /// Production attachment edits persist the MIME bytes built from the same
+    /// exact attachment snapshot in the version-advancing transaction.
+    pub(crate) fn add_draft_attachments_and_raw_if_local_version(
+        &self,
+        account_id: &str,
+        draft_id: &str,
+        expected_local_version: u64,
+        additions: &[NewDraftAttachment],
+        updated_at: &str,
+        raw_rfc822: &[u8],
+    ) -> Result<Option<DraftAttachmentVersionSnapshot>> {
+        self.add_draft_attachments_with_raw_if_local_version(
+            account_id,
+            draft_id,
+            expected_local_version,
+            additions,
+            updated_at,
+            Some(raw_rfc822),
+        )
+    }
+
+    fn add_draft_attachments_with_raw_if_local_version(
+        &self,
+        account_id: &str,
+        draft_id: &str,
+        expected_local_version: u64,
+        additions: &[NewDraftAttachment],
+        updated_at: &str,
+        raw_rfc822: Option<&[u8]>,
+    ) -> Result<Option<DraftAttachmentVersionSnapshot>> {
+        if additions.is_empty() {
+            return Err(MailError::Validation(
+                "at least one managed attachment is required".to_owned(),
+            ));
+        }
+        let next_local_version = expected_local_version
+            .checked_add(1)
+            .ok_or_else(|| MailError::Validation("draft local version limit reached".to_owned()))?;
+        validate_new_draft_attachments(additions)?;
+
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        validate_combined_draft_attachment_metadata(
+            &transaction,
+            account_id,
+            draft_id,
+            expected_local_version,
+            additions,
+        )?;
+        let changed = transaction.execute(
+            "UPDATE drafts
+             SET local_version = ?4,
+                 revision = revision + 1,
+                 updated_at = ?5,
+                 raw_rfc822 = COALESCE(?6, raw_rfc822),
+                 status = 'local',
+                 has_unsupported_content = 0
+             WHERE account_id = ?1 AND id = ?2 AND local_version = ?3
+               AND is_deleted = 0 AND status != 'sent'",
+            params![
+                account_id,
+                draft_id,
+                u64_to_i64(expected_local_version),
+                u64_to_i64(next_local_version),
+                updated_at,
+                raw_rfc822,
+            ],
+        )?;
+        if changed == 0 {
+            transaction.commit()?;
+            return Ok(None);
+        }
+        if changed != 1 {
+            return Err(MailError::Database(rusqlite::Error::ExecuteReturnedResults));
+        }
+        insert_current_draft_version_snapshot(&transaction, account_id, draft_id)?;
+        clone_draft_attachment_rows(
+            &transaction,
+            account_id,
+            draft_id,
+            expected_local_version,
+            draft_id,
+            next_local_version,
+        )?;
+        clone_draft_version_forward_context_ref(
+            &transaction,
+            account_id,
+            draft_id,
+            expected_local_version,
+            draft_id,
+            next_local_version,
+        )?;
+
+        let mut next_position: i64 = transaction.query_row(
+            "SELECT COALESCE(MAX(position) + 1, 0)
+             FROM draft_attachment_refs
+             WHERE account_id = ?1 AND draft_id = ?2 AND draft_local_version = ?3",
+            params![account_id, draft_id, u64_to_i64(next_local_version)],
+            |row| row.get(0),
+        )?;
+        for addition in additions {
+            let imported = &addition.imported;
+            let inserted = transaction.execute(
+                "INSERT INTO managed_attachment_blobs (
+                     id, account_id, origin_draft_id, internal_name, name, mime_type,
+                     size_bytes, sha256_hex, disposition, transfer_encoding
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'attachment', 'base64')
+                 ON CONFLICT(id) DO NOTHING",
+                params![
+                    imported.id,
+                    account_id,
+                    draft_id,
+                    imported.internal_name,
+                    imported.name,
+                    imported.mime_type,
+                    u64_to_i64(imported.size_bytes),
+                    imported.sha256_hex,
+                ],
+            )?;
+            if inserted != 1 {
+                return Err(MailError::Validation(
+                    "a managed attachment identifier collision was detected".to_owned(),
+                ));
+            }
+            transaction.execute(
+                "INSERT INTO draft_attachment_refs (
+                     account_id, draft_id, draft_local_version, position,
+                     blob_id, source_attachment_id
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    account_id,
+                    draft_id,
+                    u64_to_i64(next_local_version),
+                    next_position,
+                    imported.id,
+                    addition.source_attachment_id,
+                ],
+            )?;
+            next_position = next_position.checked_add(1).ok_or_else(|| {
+                MailError::Validation("draft attachment position limit reached".to_owned())
+            })?;
+        }
+        let attachments =
+            query_draft_attachments(&transaction, account_id, draft_id, next_local_version)?;
+        transaction.commit()?;
+        Ok(Some(DraftAttachmentVersionSnapshot {
+            local_version: next_local_version,
+            attachments,
+        }))
+    }
+
+    /// Removes one exact association and advances the draft version. A stale
+    /// caller returns `None` before the attachment lookup, so it can never
+    /// remove an attachment from a newer draft.
+    pub(crate) fn remove_draft_attachment_if_local_version(
+        &self,
+        account_id: &str,
+        draft_id: &str,
+        attachment_id: &str,
+        expected_local_version: u64,
+        updated_at: &str,
+    ) -> Result<Option<DraftAttachmentVersionSnapshot>> {
+        self.remove_draft_attachment_with_raw_if_local_version(
+            account_id,
+            draft_id,
+            attachment_id,
+            expected_local_version,
+            updated_at,
+            None,
+        )
+    }
+
+    pub(crate) fn remove_draft_attachment_and_raw_if_local_version(
+        &self,
+        account_id: &str,
+        draft_id: &str,
+        attachment_id: &str,
+        expected_local_version: u64,
+        updated_at: &str,
+        raw_rfc822: &[u8],
+    ) -> Result<Option<DraftAttachmentVersionSnapshot>> {
+        self.remove_draft_attachment_with_raw_if_local_version(
+            account_id,
+            draft_id,
+            attachment_id,
+            expected_local_version,
+            updated_at,
+            Some(raw_rfc822),
+        )
+    }
+
+    fn remove_draft_attachment_with_raw_if_local_version(
+        &self,
+        account_id: &str,
+        draft_id: &str,
+        attachment_id: &str,
+        expected_local_version: u64,
+        updated_at: &str,
+        raw_rfc822: Option<&[u8]>,
+    ) -> Result<Option<DraftAttachmentVersionSnapshot>> {
+        let next_local_version = expected_local_version
+            .checked_add(1)
+            .ok_or_else(|| MailError::Validation("draft local version limit reached".to_owned()))?;
+        validate_opaque_attachment_id(attachment_id)?;
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if !draft_version_exists(
+            &transaction,
+            account_id,
+            draft_id,
+            expected_local_version,
+            true,
+        )? {
+            transaction.commit()?;
+            return Ok(None);
+        }
+        let changed = transaction.execute(
+            "UPDATE drafts
+             SET local_version = ?4,
+                 revision = revision + 1,
+                 updated_at = ?5,
+                 raw_rfc822 = COALESCE(?6, raw_rfc822),
+                 status = 'local',
+                 has_unsupported_content = 0
+             WHERE account_id = ?1 AND id = ?2 AND local_version = ?3
+               AND is_deleted = 0 AND status != 'sent'",
+            params![
+                account_id,
+                draft_id,
+                u64_to_i64(expected_local_version),
+                u64_to_i64(next_local_version),
+                updated_at,
+                raw_rfc822,
+            ],
+        )?;
+        if changed != 1 {
+            return Err(MailError::Database(rusqlite::Error::ExecuteReturnedResults));
+        }
+        insert_current_draft_version_snapshot(&transaction, account_id, draft_id)?;
+        clone_draft_attachment_rows(
+            &transaction,
+            account_id,
+            draft_id,
+            expected_local_version,
+            draft_id,
+            next_local_version,
+        )?;
+        clone_draft_version_forward_context_ref(
+            &transaction,
+            account_id,
+            draft_id,
+            expected_local_version,
+            draft_id,
+            next_local_version,
+        )?;
+        let removed = transaction.execute(
+            "DELETE FROM draft_attachment_refs
+             WHERE account_id = ?1 AND draft_id = ?2
+               AND draft_local_version = ?3 AND blob_id = ?4",
+            params![
+                account_id,
+                draft_id,
+                u64_to_i64(next_local_version),
+                attachment_id,
+            ],
+        )?;
+        if removed != 1 {
+            return Err(privacy_safe_not_found("draft attachment"));
+        }
+        let attachments =
+            query_draft_attachments(&transaction, account_id, draft_id, next_local_version)?;
+        transaction.commit()?;
+        Ok(Some(DraftAttachmentVersionSnapshot {
+            local_version: next_local_version,
+            attachments,
+        }))
+    }
+
+    pub(crate) fn clone_draft_attachments_to_conflict(
+        &self,
+        account_id: &str,
+        source_draft_id: &str,
+        source_local_version: u64,
+        conflict_draft_id: &str,
+        conflict_local_version: u64,
+    ) -> Result<bool> {
+        if source_draft_id == conflict_draft_id {
+            return Err(MailError::Validation(
+                "a draft conflict copy requires a distinct id".to_owned(),
+            ));
+        }
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if !draft_version_exists(
+            &transaction,
+            account_id,
+            source_draft_id,
+            source_local_version,
+            false,
+        )? || !draft_version_exists(
+            &transaction,
+            account_id,
+            conflict_draft_id,
+            conflict_local_version,
+            false,
+        )? {
+            transaction.commit()?;
+            return Ok(false);
+        }
+        clone_draft_attachment_rows(
+            &transaction,
+            account_id,
+            source_draft_id,
+            source_local_version,
+            conflict_draft_id,
+            conflict_local_version,
+        )?;
+        clone_forward_context_rows(&transaction, account_id, source_draft_id, conflict_draft_id)?;
+        clone_draft_version_forward_context_ref(
+            &transaction,
+            account_id,
+            source_draft_id,
+            source_local_version,
+            conflict_draft_id,
+            conflict_local_version,
+        )?;
+        transaction.commit()?;
+        Ok(true)
+    }
+
+    /// Creates one fully prepared forward draft in a single SQLite
+    /// transaction. The complete source RFC822 is rechecked under the same
+    /// write lock so a force-refresh cannot silently change the message after
+    /// extraction but before the immutable context is persisted.
+    pub(crate) fn insert_prepared_forward_if_source_unchanged(
+        &self,
+        source_message_row_id: i64,
+        expected_source_raw: &[u8],
+        record: &DraftRecord,
+        context: &ForwardContext,
+        additions: &[NewDraftAttachment],
+    ) -> Result<PreparedForwardInsert> {
+        validate_forward_context(context)?;
+        validate_new_draft_attachments(additions)?;
+        if record.draft.account_id.is_empty()
+            || record.local_version == 0
+            || record.local_version != record.draft.local_version
+            || record.is_deleted
+        {
+            return Err(MailError::Validation(
+                "the prepared forward draft record is invalid".to_owned(),
+            ));
+        }
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let source_unchanged: bool = transaction.query_row(
+            "SELECT EXISTS(
+                 SELECT 1 FROM messages
+                 WHERE id = ?1 AND account_id = ?2 AND body_fetched = 1
+                   AND raw_rfc822 = ?3
+             )",
+            params![
+                source_message_row_id,
+                record.draft.account_id,
+                expected_source_raw
+            ],
+            |row| row.get(0),
+        )?;
+        if !source_unchanged {
+            transaction.commit()?;
+            return Ok(PreparedForwardInsert::SourceChanged);
+        }
+        if insert_draft_record_if_absent(&transaction, record)? != 1 {
+            transaction.commit()?;
+            return Ok(PreparedForwardInsert::IdCollision);
+        }
+        insert_forward_context_rows(
+            &transaction,
+            &record.draft.account_id,
+            &record.draft.id,
+            context,
+        )?;
+        attach_forward_context_to_all_versions(
+            &transaction,
+            &record.draft.account_id,
+            &record.draft.id,
+        )?;
+        insert_new_draft_attachment_rows(
+            &transaction,
+            &record.draft.account_id,
+            &record.draft.id,
+            record.local_version,
+            0,
+            additions,
+        )?;
+        transaction.commit()?;
+        Ok(PreparedForwardInsert::Inserted)
+    }
+
+    /// Inserts a stale editor branch without changing the canonical draft.
+    /// Existing immutable refs and forward context are cloned from one exact
+    /// current snapshot, and newly selected bytes are registered atomically.
+    pub(crate) fn insert_attachment_conflict_if_source_unchanged(
+        &self,
+        source: &DraftRecord,
+        source_attachment_local_version: u64,
+        conflict: &DraftRecord,
+        additions: &[NewDraftAttachment],
+    ) -> Result<bool> {
+        validate_new_draft_attachments(additions)?;
+        if source.draft.account_id != conflict.draft.account_id
+            || source.draft.id == conflict.draft.id
+            || conflict.local_version == 0
+            || conflict.local_version != conflict.draft.local_version
+        {
+            return Err(MailError::Validation(
+                "the draft attachment conflict identity is invalid".to_owned(),
+            ));
+        }
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if !draft_version_exists(
+            &transaction,
+            &source.draft.account_id,
+            &source.draft.id,
+            source_attachment_local_version,
+            false,
+        )? {
+            return Err(MailError::Validation(
+                "the exact stale draft attachment snapshot is unavailable".to_owned(),
+            ));
+        }
+        validate_combined_draft_attachment_metadata(
+            &transaction,
+            &source.draft.account_id,
+            &source.draft.id,
+            source_attachment_local_version,
+            additions,
+        )?;
+        let source_is_current: bool = transaction.query_row(
+            "SELECT EXISTS(
+                 SELECT 1 FROM drafts
+                 WHERE account_id = ?1 AND id = ?2 AND local_version = ?3
+                   AND revision = ?4 AND status = ?5 AND is_deleted = ?6
+                   AND raw_rfc822 = ?7
+             )",
+            params![
+                source.draft.account_id,
+                source.draft.id,
+                u64_to_i64(source.local_version),
+                u64_to_i64(source.revision),
+                source.draft.status,
+                source.is_deleted,
+                source.draft.raw_rfc822,
+            ],
+            |row| row.get(0),
+        )?;
+        if !source_is_current {
+            transaction.commit()?;
+            return Ok(false);
+        }
+        if insert_draft_record_if_absent(&transaction, conflict)? != 1 {
+            transaction.commit()?;
+            return Ok(false);
+        }
+        clone_draft_attachment_rows(
+            &transaction,
+            &source.draft.account_id,
+            &source.draft.id,
+            source_attachment_local_version,
+            &conflict.draft.id,
+            conflict.local_version,
+        )?;
+        clone_forward_context_rows(
+            &transaction,
+            &source.draft.account_id,
+            &source.draft.id,
+            &conflict.draft.id,
+        )?;
+        clone_draft_version_forward_context_ref(
+            &transaction,
+            &source.draft.account_id,
+            &source.draft.id,
+            source_attachment_local_version,
+            &conflict.draft.id,
+            conflict.local_version,
+        )?;
+        let next_position: i64 = transaction.query_row(
+            "SELECT COALESCE(MAX(position) + 1, 0)
+             FROM draft_attachment_refs
+             WHERE account_id = ?1 AND draft_id = ?2 AND draft_local_version = ?3",
+            params![
+                conflict.draft.account_id,
+                conflict.draft.id,
+                u64_to_i64(conflict.local_version)
+            ],
+            |row| row.get(0),
+        )?;
+        insert_new_draft_attachment_rows(
+            &transaction,
+            &conflict.draft.account_id,
+            &conflict.draft.id,
+            conflict.local_version,
+            next_position,
+            additions,
+        )?;
+        transaction.commit()?;
+        Ok(true)
+    }
+
+    /// Binds an immutable Outbox row to the complete attachment set of its
+    /// confirmed draft version. Repeating the exact binding is idempotent;
+    /// attempting to reuse the Outbox ID for another snapshot is rejected.
+    pub(crate) fn bind_outbox_attachments(
+        &self,
+        account_id: &str,
+        outbox_id: &str,
+        draft_id: &str,
+        draft_local_version: u64,
+    ) -> Result<bool> {
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let changed = bind_outbox_attachment_rows(
+            &transaction,
+            account_id,
+            outbox_id,
+            draft_id,
+            draft_local_version,
+        )?;
+        transaction.commit()?;
+        Ok(changed)
+    }
+
+    pub(crate) fn list_outbox_attachments(
+        &self,
+        account_id: &str,
+        outbox_id: &str,
+    ) -> Result<Vec<ManagedDraftAttachment>> {
+        let connection = self.connection()?;
+        query_outbox_attachments(&connection, account_id, outbox_id)
+    }
+
+    /// Initializes the digest of one legacy managed blob after Rust has read
+    /// and hashed the exact account-scoped file. The compare-and-set includes
+    /// every filesystem identity field used by that read. A concurrent writer
+    /// may win only with the same digest; cross-account and changed metadata
+    /// are indistinguishable from an unavailable blob.
+    pub(crate) fn initialize_managed_attachment_digest(
+        &self,
+        account_id: &str,
+        blob_id: &str,
+        internal_name: &str,
+        size_bytes: u64,
+        sha256_hex: &str,
+    ) -> Result<String> {
+        validate_opaque_attachment_id(blob_id)?;
+        if internal_name != format!("{blob_id}.blob") || internal_name.len() > 80 {
+            return Err(managed_attachment_integrity_error());
+        }
+        if size_bytes > crate::mime::MAX_MANAGED_ATTACHMENT_BYTES {
+            return Err(managed_attachment_integrity_error());
+        }
+        validate_managed_attachment_digest(sha256_hex)?;
+
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute(
+            "UPDATE managed_attachment_blobs
+             SET sha256_hex = ?5
+             WHERE account_id = ?1
+               AND id = ?2
+               AND internal_name = ?3
+               AND size_bytes = ?4
+               AND sha256_hex IS NULL",
+            params![
+                account_id,
+                blob_id,
+                internal_name,
+                u64_to_i64(size_bytes),
+                sha256_hex,
+            ],
+        )?;
+        let stored = transaction
+            .query_row(
+                "SELECT sha256_hex
+                 FROM managed_attachment_blobs
+                 WHERE account_id = ?1
+                   AND id = ?2
+                   AND internal_name = ?3
+                   AND size_bytes = ?4",
+                params![account_id, blob_id, internal_name, u64_to_i64(size_bytes),],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten()
+            .ok_or_else(managed_attachment_integrity_error)?;
+        if stored != sha256_hex {
+            return Err(managed_attachment_integrity_error());
+        }
+        transaction.commit()?;
+        Ok(stored)
+    }
+
+    /// Releases only a terminal draft's associations. Outbox references remain
+    /// intact and therefore continue protecting every immutable send blob.
+    pub(crate) fn release_terminal_draft_attachments(
+        &self,
+        account_id: &str,
+        draft_id: &str,
+        expected_local_version: u64,
+    ) -> Result<bool> {
         let connection = self.connection()?;
         let changed = connection.execute(
+            "DELETE FROM draft_attachment_refs
+             WHERE account_id = ?1 AND draft_id = ?2
+               AND EXISTS (
+                   SELECT 1 FROM drafts d
+                   WHERE d.account_id = ?1 AND d.id = ?2 AND d.local_version = ?3
+                     AND (d.is_deleted = 1 OR d.status = 'sent')
+               )",
+            params![account_id, draft_id, u64_to_i64(expected_local_version),],
+        )?;
+        Ok(changed > 0)
+    }
+
+    pub(crate) fn terminal_draft_attachment_versions(
+        &self,
+        account_id: &str,
+    ) -> Result<Vec<(String, u64)>> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT d.id, d.local_version
+             FROM drafts d
+             WHERE d.account_id = ?1
+               AND (d.is_deleted = 1 OR d.status = 'sent')
+               AND EXISTS (
+                   SELECT 1 FROM draft_attachment_refs r
+                   WHERE r.account_id = d.account_id AND r.draft_id = d.id
+               )
+             ORDER BY d.id, d.local_version",
+        )?;
+        statement
+            .query_map(params![account_id], |row| {
+                Ok((row.get(0)?, decode_u64(1, row.get(1)?)?))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    pub(crate) fn list_orphaned_managed_attachments(
+        &self,
+        account_id: &str,
+    ) -> Result<Vec<OrphanedManagedAttachment>> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT b.id, b.account_id, b.internal_name
+             FROM managed_attachment_blobs b
+             WHERE b.account_id = ?1
+               AND NOT EXISTS (
+                   SELECT 1 FROM draft_attachment_refs d
+                   WHERE d.account_id = b.account_id AND d.blob_id = b.id
+               )
+               AND NOT EXISTS (
+                   SELECT 1 FROM outbox_attachment_refs o
+                   WHERE o.account_id = b.account_id AND o.blob_id = b.id
+               )
+             ORDER BY b.created_at, b.id",
+        )?;
+        statement
+            .query_map(params![account_id], |row| {
+                Ok(OrphanedManagedAttachment {
+                    id: row.get(0)?,
+                    account_id: row.get(1)?,
+                    internal_name: row.get(2)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    pub(crate) fn all_managed_attachment_internal_names(&self) -> Result<HashSet<String>> {
+        let connection = self.connection()?;
+        let mut statement =
+            connection.prepare("SELECT internal_name FROM managed_attachment_blobs")?;
+        let names = statement
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<std::result::Result<HashSet<_>, _>>()?;
+        Ok(names)
+    }
+
+    /// Removes the database ownership row only if it remains unreferenced at
+    /// commit time. The returned internal name can then be deleted from the
+    /// controlled store; a later sweep safely catches an interrupted file
+    /// deletion.
+    pub(crate) fn take_orphaned_managed_attachment(
+        &self,
+        account_id: &str,
+        attachment_id: &str,
+    ) -> Result<Option<OrphanedManagedAttachment>> {
+        validate_opaque_attachment_id(attachment_id)?;
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let orphan = transaction
+            .query_row(
+                "SELECT b.id, b.account_id, b.internal_name
+                 FROM managed_attachment_blobs b
+                 WHERE b.account_id = ?1 AND b.id = ?2
+                   AND NOT EXISTS (
+                       SELECT 1 FROM draft_attachment_refs d
+                       WHERE d.account_id = b.account_id AND d.blob_id = b.id
+                   )
+                   AND NOT EXISTS (
+                       SELECT 1 FROM outbox_attachment_refs o
+                       WHERE o.account_id = b.account_id AND o.blob_id = b.id
+                   )",
+                params![account_id, attachment_id],
+                |row| {
+                    Ok(OrphanedManagedAttachment {
+                        id: row.get(0)?,
+                        account_id: row.get(1)?,
+                        internal_name: row.get(2)?,
+                    })
+                },
+            )
+            .optional()?;
+        let Some(orphan) = orphan else {
+            transaction.commit()?;
+            return Ok(None);
+        };
+        let removed = transaction.execute(
+            "DELETE FROM managed_attachment_blobs
+             WHERE account_id = ?1 AND id = ?2
+               AND NOT EXISTS (
+                   SELECT 1 FROM draft_attachment_refs d
+                   WHERE d.account_id = ?1 AND d.blob_id = ?2
+               )
+               AND NOT EXISTS (
+                   SELECT 1 FROM outbox_attachment_refs o
+                   WHERE o.account_id = ?1 AND o.blob_id = ?2
+               )",
+            params![account_id, attachment_id],
+        )?;
+        transaction.commit()?;
+        Ok((removed == 1).then_some(orphan))
+    }
+
+    pub(crate) fn save_forward_context_if_absent(
+        &self,
+        account_id: &str,
+        draft_id: &str,
+        context: &ForwardContext,
+    ) -> Result<bool> {
+        validate_forward_context(context)?;
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let current_version: Option<u64> = transaction
+            .query_row(
+                "SELECT local_version FROM drafts
+                 WHERE account_id = ?1 AND id = ?2 AND is_deleted = 0",
+                params![account_id, draft_id],
+                |row| decode_u64(0, row.get(0)?),
+            )
+            .optional()?;
+        if current_version.is_none() {
+            return Err(privacy_safe_not_found("draft"));
+        }
+        if let Some(existing) = query_forward_context(&transaction, account_id, draft_id)? {
+            if existing == *context {
+                attach_forward_context_to_current_version(&transaction, account_id, draft_id)?;
+                transaction.commit()?;
+                return Ok(false);
+            }
+            return Err(MailError::Validation(
+                "the immutable forward context cannot be replaced".to_owned(),
+            ));
+        }
+        insert_forward_context_rows(&transaction, account_id, draft_id, context)?;
+        attach_forward_context_to_current_version(&transaction, account_id, draft_id)?;
+        transaction.commit()?;
+        Ok(true)
+    }
+
+    pub(crate) fn forward_context(
+        &self,
+        account_id: &str,
+        draft_id: &str,
+    ) -> Result<Option<ForwardContext>> {
+        let connection = self.connection()?;
+        query_forward_context(&connection, account_id, draft_id)
+    }
+
+    pub(crate) fn forward_context_at_version(
+        &self,
+        account_id: &str,
+        draft_id: &str,
+        local_version: u64,
+    ) -> Result<Option<ForwardContext>> {
+        if local_version == 0 {
+            return Err(MailError::Validation(
+                "a draft forward-context version must be positive".to_owned(),
+            ));
+        }
+        let connection = self.connection()?;
+        let linked: bool = connection.query_row(
+            "SELECT EXISTS(
+                 SELECT 1 FROM draft_version_forward_context_refs
+                 WHERE account_id = ?1 AND draft_id = ?2
+                   AND draft_local_version = ?3
+             )",
+            params![account_id, draft_id, u64_to_i64(local_version)],
+            |row| row.get(0),
+        )?;
+        if !linked {
+            return Ok(None);
+        }
+        query_forward_context(&connection, account_id, draft_id)
+    }
+
+    pub(crate) fn tombstone_draft(&self, id: &str, updated_at: &str) -> Result<()> {
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let changed = transaction.execute(
             "UPDATE drafts SET
                  is_deleted = 1,
                  status = 'local',
@@ -1183,6 +4352,25 @@ impl Repository {
              WHERE id = ?1 AND status != 'sent'",
             params![id, updated_at],
         )?;
+        if changed == 1 {
+            let account_id: String = transaction.query_row(
+                "SELECT account_id FROM drafts WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )?;
+            insert_current_draft_version_snapshot(&transaction, &account_id, id)?;
+            attach_forward_context_to_current_version(&transaction, &account_id, id)?;
+            transaction.execute(
+                "DELETE FROM draft_attachment_refs
+                 WHERE account_id = ?2 AND draft_id = ?1
+                   AND EXISTS (
+                       SELECT 1 FROM drafts d
+                       WHERE d.id = ?1 AND d.account_id = ?2 AND d.is_deleted = 1
+                   )",
+                params![id, account_id],
+            )?;
+        }
+        transaction.commit()?;
         ensure_changed(changed, "draft", id.to_owned())
     }
 
@@ -1193,8 +4381,9 @@ impl Repository {
         expected_local_version: u64,
         updated_at: &str,
     ) -> Result<bool> {
-        let connection = self.connection()?;
-        let changed = connection.execute(
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let changed = transaction.execute(
             "UPDATE drafts SET
                  is_deleted = 1,
                  status = 'local',
@@ -1213,6 +4402,16 @@ impl Repository {
                 updated_at
             ],
         )?;
+        if changed == 1 {
+            insert_current_draft_version_snapshot(&transaction, account_id, id)?;
+            attach_forward_context_to_current_version(&transaction, account_id, id)?;
+            transaction.execute(
+                "DELETE FROM draft_attachment_refs
+                 WHERE account_id = ?1 AND draft_id = ?2",
+                params![account_id, id],
+            )?;
+        }
+        transaction.commit()?;
         Ok(changed == 1)
     }
 
@@ -1298,13 +4497,14 @@ impl Repository {
     #[cfg(test)]
     pub(crate) fn enqueue_outbox(&self, item: &OutboxItem) -> Result<()> {
         validate_outbox_draft_link(item)?;
-        let connection = self.connection()?;
-        connection.execute(
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute(
             "INSERT INTO outbox (
                  id, account_id, draft_id, draft_revision, draft_local_version,
                  recipients_json, status, attempts,
-                 last_error, created_at, sent_at, raw_rfc822
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+                 last_error, created_at, sent_at, raw_rfc822, recipient_groups_json
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
              ON CONFLICT(id) DO NOTHING",
             params![
                 item.id,
@@ -1319,8 +4519,14 @@ impl Repository {
                 item.created_at,
                 item.sent_at,
                 item.raw_rfc822,
+                item.recipient_groups
+                    .as_ref()
+                    .map(encode_json)
+                    .transpose()?,
             ],
         )?;
+        bind_outbox_item_attachment_rows(&transaction, item)?;
+        transaction.commit()?;
         Ok(())
     }
 
@@ -1330,6 +4536,7 @@ impl Repository {
     /// both the old and new contents.
     pub(crate) fn enqueue_new_outbox(&self, item: &OutboxItem) -> Result<()> {
         validate_outbox_draft_link(item)?;
+        validate_new_outbox_recipient_groups(item)?;
         let mut connection = self.connection()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         prepare_new_draft_send(&transaction, item)?;
@@ -1337,8 +4544,8 @@ impl Repository {
             "INSERT INTO outbox (
                  id, account_id, draft_id, draft_revision, draft_local_version,
                  recipients_json, status, attempts,
-                 last_error, created_at, sent_at, raw_rfc822
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+                 last_error, created_at, sent_at, raw_rfc822, recipient_groups_json
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
              ON CONFLICT(id) DO NOTHING",
             params![
                 item.id,
@@ -1353,6 +4560,10 @@ impl Repository {
                 item.created_at,
                 item.sent_at,
                 item.raw_rfc822,
+                item.recipient_groups
+                    .as_ref()
+                    .map(encode_json)
+                    .transpose()?,
             ],
         )?;
         if inserted != 1 {
@@ -1361,6 +4572,7 @@ impl Repository {
                 item.id
             )));
         }
+        bind_outbox_item_attachment_rows(&transaction, item)?;
         transaction.commit()?;
         Ok(())
     }
@@ -1371,6 +4583,7 @@ impl Repository {
     /// recovery could mistake for an abandoned message.
     pub(crate) fn enqueue_and_claim_outbox(&self, item: &OutboxItem) -> Result<OutboxItem> {
         validate_outbox_draft_link(item)?;
+        validate_new_outbox_recipient_groups(item)?;
         if item.status != OutboxStatus::Queued || item.attempts != 0 {
             return Err(MailError::Validation(
                 "a new Outbox claim must start queued with zero attempts".to_owned(),
@@ -1384,8 +4597,8 @@ impl Repository {
             "INSERT INTO outbox (
                  id, account_id, draft_id, draft_revision, draft_local_version,
                  recipients_json, status, attempts,
-                 last_error, created_at, sent_at, raw_rfc822
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'queued', 0, ?7, ?8, ?9, ?10)
+                 last_error, created_at, sent_at, raw_rfc822, recipient_groups_json
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'queued', 0, ?7, ?8, ?9, ?10, ?11)
              ON CONFLICT(id) DO NOTHING",
             params![
                 item.id,
@@ -1398,6 +4611,10 @@ impl Repository {
                 item.created_at,
                 item.sent_at,
                 item.raw_rfc822,
+                item.recipient_groups
+                    .as_ref()
+                    .map(encode_json)
+                    .transpose()?,
             ],
         )?;
         if inserted != 1 {
@@ -1406,6 +4623,7 @@ impl Repository {
                 item.id
             )));
         }
+        bind_outbox_item_attachment_rows(&transaction, item)?;
         let claimed = transaction.execute(
             "UPDATE outbox SET status = 'sending', attempts = attempts + 1, last_error = NULL
              WHERE id = ?1 AND account_id = ?2 AND status = 'queued' AND attempts = 0",
@@ -1551,6 +4769,59 @@ impl Repository {
         Ok(claimed)
     }
 
+    /// Atomically claims one exact ambiguous SMTP attempt for a user-approved
+    /// duplicate-risk retry. `expected_attempts` binds the decision to the
+    /// generation the user reviewed: if this retry itself becomes ambiguous,
+    /// a repeated invocation carrying the old generation cannot send again.
+    pub(crate) fn claim_delivery_unknown_retry(
+        &self,
+        id: &str,
+        account_id: &str,
+        expected_attempts: u32,
+    ) -> Result<OutboxItem> {
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let sql = format!("SELECT {OUTBOX_COLUMNS} FROM outbox WHERE id = ?1");
+        let current = transaction
+            .query_row(&sql, params![id], row_to_outbox)
+            .optional()?
+            .ok_or_else(|| MailError::NotFound {
+                entity: "outbox item",
+                id: id.to_owned(),
+            })?;
+
+        if current.account_id != account_id {
+            return Err(MailError::NotFound {
+                entity: "outbox item",
+                id: id.to_owned(),
+            });
+        }
+        if current.status != OutboxStatus::DeliveryUnknown || current.attempts != expected_attempts
+        {
+            return Err(MailError::Validation(format!(
+                "outbox item '{id}' is no longer the reviewed delivery-unknown attempt; refresh before deciding again"
+            )));
+        }
+
+        let changed = transaction.execute(
+            "UPDATE outbox SET
+                 status = 'sending', attempts = attempts + 1, last_error = NULL
+             WHERE id = ?1
+               AND account_id = ?2
+               AND status = 'delivery_unknown'
+               AND attempts = ?3",
+            params![id, account_id, i64::from(expected_attempts)],
+        )?;
+        if changed != 1 {
+            return Err(MailError::Validation(format!(
+                "outbox item '{id}' is no longer the reviewed delivery-unknown attempt; refresh before deciding again"
+            )));
+        }
+        let claimed = transaction.query_row(&sql, params![id], row_to_outbox)?;
+        transaction.commit()?;
+        Ok(claimed)
+    }
+
     /// Atomically records successful SMTP delivery. The editable draft is
     /// consumed only when it is still the exact revision used to build this
     /// immutable Outbox message. A newer/deleted draft is preserved and the
@@ -1575,24 +4846,162 @@ impl Repository {
             params![outbox_id],
         )?;
         ensure_changed(outbox_changed, "outbox item", outbox_id.to_owned())?;
+        finalize_outbox_draft_state(&transaction, &outbox)?;
+        transaction.commit()?;
+        Ok(())
+    }
 
-        let consumed = match (outbox.draft_id.as_deref(), outbox.draft_local_version) {
-            (Some(draft_id), Some(draft_local_version)) => {
-                transaction.execute(
-                    "UPDATE drafts SET status = 'sent'
-                     WHERE id = ?1 AND account_id = ?2 AND local_version = ?3 AND is_deleted = 0",
-                    params![draft_id, outbox.account_id, u64_to_i64(draft_local_version)],
-                )? == 1
-            }
-            _ => false,
-        };
-        if !consumed {
-            transaction.execute(
-                "UPDATE outbox SET
-                     draft_id = NULL, draft_revision = NULL, draft_local_version = NULL
-                 WHERE id = ?1",
-                params![outbox_id],
-            )?;
+    /// Applies the user's "confirmed delivered" decision to exactly the
+    /// ambiguous attempt generation they reviewed. A repeated/concurrent call
+    /// after the transition is rejected without changing the row.
+    pub(crate) fn confirm_delivery_unknown_as_sent(
+        &self,
+        outbox_id: &str,
+        account_id: &str,
+        expected_attempts: u32,
+    ) -> Result<OutboxItem> {
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let sql = format!("SELECT {OUTBOX_COLUMNS} FROM outbox WHERE id = ?1");
+        let outbox = transaction
+            .query_row(&sql, params![outbox_id], row_to_outbox)
+            .optional()?
+            .ok_or_else(|| MailError::NotFound {
+                entity: "outbox item",
+                id: outbox_id.to_owned(),
+            })?;
+        if outbox.account_id != account_id {
+            return Err(MailError::NotFound {
+                entity: "outbox item",
+                id: outbox_id.to_owned(),
+            });
+        }
+        if outbox.status != OutboxStatus::DeliveryUnknown || outbox.attempts != expected_attempts {
+            return Err(MailError::Validation(format!(
+                "outbox item '{outbox_id}' is no longer the reviewed delivery-unknown attempt; refresh before deciding again"
+            )));
+        }
+
+        let changed = transaction.execute(
+            "UPDATE outbox SET
+                 status = 'sent', last_error = NULL
+             WHERE id = ?1
+               AND account_id = ?2
+               AND status = 'delivery_unknown'
+               AND attempts = ?3",
+            params![outbox_id, account_id, i64::from(expected_attempts)],
+        )?;
+        if changed != 1 {
+            return Err(MailError::Validation(format!(
+                "outbox item '{outbox_id}' is no longer the reviewed delivery-unknown attempt; refresh before deciding again"
+            )));
+        }
+        finalize_outbox_draft_state(&transaction, &outbox)?;
+        let confirmed = transaction.query_row(&sql, params![outbox_id], row_to_outbox)?;
+        transaction.commit()?;
+        Ok(confirmed)
+    }
+
+    /// Records confirmed SMTP success only if this is still the exact claimed
+    /// `sending` generation. A late result from an older process cannot finish
+    /// a newer manual attempt.
+    pub(crate) fn finalize_claimed_outbox_sent(
+        &self,
+        outbox_id: &str,
+        account_id: &str,
+        claimed_attempts: u32,
+    ) -> Result<()> {
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let sql = format!("SELECT {OUTBOX_COLUMNS} FROM outbox WHERE id = ?1");
+        let outbox = transaction
+            .query_row(&sql, params![outbox_id], row_to_outbox)
+            .optional()?
+            .ok_or_else(|| MailError::NotFound {
+                entity: "outbox item",
+                id: outbox_id.to_owned(),
+            })?;
+        if outbox.account_id != account_id {
+            return Err(MailError::NotFound {
+                entity: "outbox item",
+                id: outbox_id.to_owned(),
+            });
+        }
+        let changed = transaction.execute(
+            "UPDATE outbox SET
+                 status = 'sent', last_error = NULL,
+                 sent_at = COALESCE(sent_at, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+             WHERE id = ?1
+               AND account_id = ?2
+               AND status = 'sending'
+               AND attempts = ?3",
+            params![outbox_id, account_id, i64::from(claimed_attempts)],
+        )?;
+        if changed != 1 {
+            return Err(MailError::Validation(format!(
+                "outbox item '{outbox_id}' is no longer the claimed SMTP attempt"
+            )));
+        }
+        finalize_outbox_draft_state(&transaction, &outbox)?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// Records the classified failure of one exact claimed SMTP generation.
+    /// Only terminal/review states produced by the SMTP classifier are
+    /// accepted, and a late result cannot overwrite a newer attempt.
+    pub(crate) fn complete_claimed_outbox_failure(
+        &self,
+        outbox_id: &str,
+        account_id: &str,
+        claimed_attempts: u32,
+        status: OutboxStatus,
+        last_error: &str,
+    ) -> Result<()> {
+        if !matches!(
+            status,
+            OutboxStatus::Retryable | OutboxStatus::Rejected | OutboxStatus::DeliveryUnknown
+        ) {
+            return Err(MailError::Validation(
+                "a claimed SMTP failure must be retryable, rejected, or delivery-unknown"
+                    .to_owned(),
+            ));
+        }
+
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let sql = format!("SELECT {OUTBOX_COLUMNS} FROM outbox WHERE id = ?1");
+        let current = transaction
+            .query_row(&sql, params![outbox_id], row_to_outbox)
+            .optional()?
+            .ok_or_else(|| MailError::NotFound {
+                entity: "outbox item",
+                id: outbox_id.to_owned(),
+            })?;
+        if current.account_id != account_id {
+            return Err(MailError::NotFound {
+                entity: "outbox item",
+                id: outbox_id.to_owned(),
+            });
+        }
+        let changed = transaction.execute(
+            "UPDATE outbox SET status = ?4, last_error = ?5
+             WHERE id = ?1
+               AND account_id = ?2
+               AND status = 'sending'
+               AND attempts = ?3",
+            params![
+                outbox_id,
+                account_id,
+                i64::from(claimed_attempts),
+                status.as_str(),
+                last_error
+            ],
+        )?;
+        if changed != 1 {
+            return Err(MailError::Validation(format!(
+                "outbox item '{outbox_id}' is no longer the claimed SMTP attempt"
+            )));
         }
         transaction.commit()?;
         Ok(())
@@ -1631,6 +5040,40 @@ impl Repository {
             )
             .map_err(Into::into)
     }
+}
+
+fn finalize_outbox_draft_state(
+    transaction: &rusqlite::Transaction<'_>,
+    outbox: &OutboxItem,
+) -> Result<()> {
+    let consumed = match (outbox.draft_id.as_deref(), outbox.draft_local_version) {
+        (Some(draft_id), Some(draft_local_version)) => {
+            transaction.execute(
+                "UPDATE drafts SET status = 'sent'
+                 WHERE id = ?1 AND account_id = ?2 AND local_version = ?3 AND is_deleted = 0",
+                params![draft_id, outbox.account_id, u64_to_i64(draft_local_version)],
+            )? == 1
+        }
+        _ => false,
+    };
+    if !consumed {
+        transaction.execute(
+            "UPDATE outbox SET
+                 draft_id = NULL, draft_revision = NULL, draft_local_version = NULL
+             WHERE id = ?1",
+            params![outbox.id],
+        )?;
+    } else if let Some(draft_id) = outbox.draft_id.as_deref() {
+        // The immutable Outbox refs were inserted in the same transaction
+        // that created this item, so a consumed draft no longer needs a
+        // second reference set to protect the exact blobs.
+        transaction.execute(
+            "DELETE FROM draft_attachment_refs
+             WHERE account_id = ?1 AND draft_id = ?2",
+            params![outbox.account_id, draft_id],
+        )?;
+    }
+    Ok(())
 }
 
 fn configure_connection(connection: &Connection) -> Result<()> {
@@ -1802,6 +5245,817 @@ fn migrate_message_previews_v10(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn migrate_compose_format_v11(connection: &Connection) -> Result<()> {
+    if !table_has_column(connection, "drafts", "compose_format_json")? {
+        connection.execute_batch(
+            "ALTER TABLE drafts
+                 ADD COLUMN compose_format_json TEXT NOT NULL DEFAULT '{}';",
+        )?;
+    }
+    Ok(())
+}
+
+fn migrate_system_flag_queue_v12(
+    connection: &Connection,
+    table: &str,
+    legacy_desired: bool,
+) -> Result<()> {
+    debug_assert!(matches!(
+        table,
+        "pending_seen_updates" | "pending_flagged_updates"
+    ));
+    let required_columns = [
+        "operation_id",
+        "source_uid_validity",
+        "desired",
+        "revision",
+        "status",
+        "error_kind",
+        "updated_at",
+    ];
+    let has_required_columns = required_columns
+        .into_iter()
+        .map(|column| table_has_column(connection, table, column))
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .all(|present| present);
+    let is_current =
+        has_required_columns && !table_references_table(connection, table, "messages")?;
+    if is_current {
+        return Ok(());
+    }
+
+    let backup = format!("{table}_v12_backup");
+    let operation_expression = if table_has_column(connection, table, "operation_id")? {
+        "q.operation_id"
+    } else {
+        "NULL"
+    };
+    let epoch_expression = if table_has_column(connection, table, "source_uid_validity")? {
+        "q.source_uid_validity"
+    } else {
+        "b.uid_validity"
+    };
+    let desired_expression = if table_has_column(connection, table, "desired")? {
+        "q.desired"
+    } else if legacy_desired {
+        "1"
+    } else {
+        "0"
+    };
+    let revision_expression = if table_has_column(connection, table, "revision")? {
+        "q.revision"
+    } else {
+        "1"
+    };
+    let status_expression = if table_has_column(connection, table, "status")? {
+        "q.status"
+    } else {
+        "'pending'"
+    };
+    let error_expression = if table_has_column(connection, table, "error_kind")? {
+        "q.error_kind"
+    } else {
+        "NULL"
+    };
+    let updated_expression = if table_has_column(connection, table, "updated_at")? {
+        "q.updated_at"
+    } else if table_has_column(connection, table, "created_at")? {
+        "q.created_at"
+    } else {
+        "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"
+    };
+
+    let migrate = (|| -> Result<()> {
+        connection.execute_batch(&format!(
+            "BEGIN IMMEDIATE;
+             ALTER TABLE {table} RENAME TO {backup};
+             CREATE TABLE {table} (
+                 operation_id TEXT NOT NULL UNIQUE,
+                 account_id TEXT NOT NULL,
+                 mailbox TEXT NOT NULL,
+                 source_uid_validity INTEGER NOT NULL CHECK (source_uid_validity >= 0),
+                 uid INTEGER NOT NULL,
+                 desired INTEGER NOT NULL CHECK (desired IN (0, 1)),
+                 revision INTEGER NOT NULL DEFAULT 1 CHECK (revision > 0),
+                 status TEXT NOT NULL DEFAULT 'pending' CHECK (
+                     status IN (
+                         'pending', 'in_flight', 'confirmed',
+                         'needs_attention', 'outcome_unknown'
+                     )
+                 ),
+                 error_kind TEXT CHECK (
+                     error_kind IS NULL OR error_kind IN (
+                         'uid_validity_changed', 'source_missing',
+                         'ambiguous_remote_state', 'network_unavailable',
+                         'mailbox_unavailable', 'permission_denied',
+                         'server_rejected', 'unsupported', 'unknown'
+                     )
+                 ),
+                 updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                 PRIMARY KEY (account_id, mailbox, source_uid_validity, uid),
+                 FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
+             );"
+        ))?;
+        let rows = {
+            let sql = format!(
+                "SELECT {operation_expression}, q.account_id, q.mailbox,
+                        COALESCE({epoch_expression}, 0), q.uid, {desired_expression},
+                        {revision_expression}, {status_expression}, {error_expression},
+                        {updated_expression}
+                 FROM {backup} q
+                 LEFT JOIN mailboxes b
+                   ON b.account_id = q.account_id AND b.name = q.mailbox"
+            );
+            let mut statement = connection.prepare(&sql)?;
+            statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, Option<String>>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, u32>(3)?,
+                        row.get::<_, u32>(4)?,
+                        row.get::<_, bool>(5)?,
+                        row.get::<_, i64>(6)?,
+                        row.get::<_, String>(7)?,
+                        row.get::<_, Option<String>>(8)?,
+                        row.get::<_, String>(9)?,
+                    ))
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()?
+        };
+        for (
+            operation_id,
+            account_id,
+            mailbox,
+            source_uid_validity,
+            uid,
+            desired,
+            revision,
+            old_status,
+            old_error,
+            updated_at,
+        ) in rows
+        {
+            let status = if source_uid_validity == 0 {
+                MutationStatus::NeedsAttention
+            } else {
+                MutationStatus::from_str(&old_status).unwrap_or(MutationStatus::NeedsAttention)
+            };
+            let error_kind = if source_uid_validity == 0 {
+                Some(MessageMutationErrorKind::UidValidityChanged)
+            } else {
+                old_error
+                    .as_deref()
+                    .and_then(MessageMutationErrorKind::from_str)
+            };
+            let operation_id = operation_id
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| Uuid::now_v7().to_string());
+            connection.execute(
+                &format!(
+                    "INSERT INTO {table} (
+                         operation_id, account_id, mailbox, source_uid_validity, uid,
+                         desired, revision, status, error_kind, updated_at
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)"
+                ),
+                params![
+                    operation_id,
+                    account_id,
+                    mailbox,
+                    source_uid_validity,
+                    uid,
+                    desired,
+                    revision.max(1),
+                    status.as_str(),
+                    error_kind.map(MessageMutationErrorKind::as_str),
+                    updated_at,
+                ],
+            )?;
+        }
+        connection.execute_batch(&format!(
+            "DROP TABLE {backup};
+             CREATE INDEX idx_{table}_worker
+                 ON {table}(account_id, mailbox, status, updated_at);
+             COMMIT;"
+        ))?;
+        Ok(())
+    })();
+    if migrate.is_err() {
+        let _ = connection.execute_batch("ROLLBACK;");
+    }
+    migrate
+}
+
+fn migrate_mailboxes_and_mutations_v12(connection: &Connection) -> Result<()> {
+    for (column, declaration) in [
+        ("history_before_uid", "INTEGER"),
+        (
+            "history_complete",
+            "INTEGER NOT NULL DEFAULT 0 CHECK (history_complete IN (0, 1))",
+        ),
+        ("remote_total", "INTEGER"),
+    ] {
+        if !table_has_column(connection, "mailboxes", column)? {
+            connection.execute_batch(&format!(
+                "ALTER TABLE mailboxes ADD COLUMN {column} {declaration};"
+            ))?;
+        }
+    }
+
+    migrate_system_flag_queue_v12(connection, "pending_seen_updates", true)?;
+    migrate_system_flag_queue_v12(connection, "pending_flagged_updates", false)?;
+    connection.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_pending_seen_worker
+             ON pending_seen_updates(account_id, mailbox, status, updated_at);
+         CREATE INDEX IF NOT EXISTS idx_pending_flagged_worker
+             ON pending_flagged_updates(account_id, mailbox, status, updated_at);",
+    )?;
+    if !table_has_column(connection, "pending_message_actions", "remote_phase")? {
+        connection.execute_batch(
+            "ALTER TABLE pending_message_actions
+                 ADD COLUMN remote_phase TEXT NOT NULL DEFAULT 'queued'
+                 CHECK (
+                     remote_phase IN (
+                         'queued', 'transfer_started', 'transfer_acknowledged',
+                         'source_delete_started', 'source_delete_acknowledged'
+                     )
+                 );",
+        )?;
+    }
+    connection.execute_batch(
+        "CREATE TRIGGER IF NOT EXISTS trg_pending_message_actions_validate_insert
+         BEFORE INSERT ON pending_message_actions
+         WHEN NOT (
+             (
+                 NEW.kind = 'archive'
+                 AND NEW.source_role IN ('inbox', 'sent')
+                 AND NEW.destination_role = 'archive'
+             ) OR (
+                 NEW.kind = 'move_to_trash'
+                 AND NEW.source_role IN ('inbox', 'sent', 'archive')
+                 AND NEW.destination_role = 'trash'
+             ) OR (
+                 NEW.kind = 'permanent_delete'
+                 AND NEW.source_role = 'trash'
+                 AND NEW.destination_role IS NULL
+             )
+         )
+         BEGIN
+             SELECT RAISE(ABORT, 'invalid message action role combination');
+         END;
+         CREATE TRIGGER IF NOT EXISTS trg_pending_message_actions_validate_update
+         BEFORE UPDATE OF source_role, destination_role, kind ON pending_message_actions
+         WHEN NOT (
+             (
+                 NEW.kind = 'archive'
+                 AND NEW.source_role IN ('inbox', 'sent')
+                 AND NEW.destination_role = 'archive'
+             ) OR (
+                 NEW.kind = 'move_to_trash'
+                 AND NEW.source_role IN ('inbox', 'sent', 'archive')
+                 AND NEW.destination_role = 'trash'
+             ) OR (
+                 NEW.kind = 'permanent_delete'
+                 AND NEW.source_role = 'trash'
+                 AND NEW.destination_role IS NULL
+             )
+         )
+         BEGIN
+             SELECT RAISE(ABORT, 'invalid message action role combination');
+         END;",
+    )?;
+
+    connection.execute(
+        "INSERT INTO mailbox_roles (account_id, role, mailbox)
+         SELECT a.id, 'inbox', m.name
+         FROM accounts a
+         JOIN mailboxes m
+           ON m.account_id = a.id AND m.name = 'INBOX' COLLATE NOCASE
+         WHERE true
+         ON CONFLICT(account_id, role) DO NOTHING",
+        [],
+    )?;
+    for role in MailboxRole::ALL {
+        connection.execute(
+            "INSERT INTO mailbox_capabilities (
+                 account_id, role, status, display_name, unavailable_reason, retryable
+             )
+             SELECT id, ?1, 'discovery_pending', NULL, NULL, 1
+             FROM accounts
+             WHERE true
+             ON CONFLICT(account_id, role) DO NOTHING",
+            params![role.as_str()],
+        )?;
+    }
+    connection.execute(
+        "UPDATE mailbox_capabilities
+         SET status = 'available',
+             display_name = (
+                 SELECT r.mailbox
+                 FROM mailbox_roles r
+                 WHERE r.account_id = mailbox_capabilities.account_id
+                   AND r.role = mailbox_capabilities.role
+             ),
+             unavailable_reason = NULL,
+             retryable = 0,
+             updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         WHERE EXISTS (
+             SELECT 1
+             FROM mailbox_roles r
+             WHERE r.account_id = mailbox_capabilities.account_id
+               AND r.role = mailbox_capabilities.role
+         )",
+        [],
+    )?;
+    connection.execute_batch(
+        "UPDATE pending_seen_updates
+         SET status = 'outcome_unknown',
+             error_kind = COALESCE(error_kind, 'unknown'),
+             updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         WHERE status = 'in_flight';
+         UPDATE pending_flagged_updates
+         SET status = 'outcome_unknown',
+             error_kind = COALESCE(error_kind, 'unknown'),
+             updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         WHERE status = 'in_flight';
+         UPDATE pending_message_actions
+         SET status = 'outcome_unknown',
+             error_kind = COALESCE(error_kind, 'unknown'),
+             updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         WHERE status = 'in_flight';",
+    )?;
+    connection.execute(
+        "DELETE FROM message_page_cursors
+         WHERE created_at < unixepoch() - ?1",
+        params![MESSAGE_CURSOR_TTL_SECONDS],
+    )?;
+    Ok(())
+}
+
+fn migrate_managed_attachments_v13(connection: &Connection) -> Result<()> {
+    for (column, declaration) in [
+        (
+            "source_cleanup_pending",
+            "INTEGER NOT NULL DEFAULT 0 CHECK (source_cleanup_pending IN (0, 1))",
+        ),
+        (
+            "destination_reconciled",
+            "INTEGER NOT NULL DEFAULT 0 CHECK (destination_reconciled IN (0, 1))",
+        ),
+    ] {
+        if !table_has_column(connection, "pending_message_actions", column)? {
+            connection.execute_batch(&format!(
+                "ALTER TABLE pending_message_actions ADD COLUMN {column} {declaration};"
+            ))?;
+        }
+    }
+
+    connection.execute_batch(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_drafts_account_id
+             ON drafts(account_id, id);
+         CREATE UNIQUE INDEX IF NOT EXISTS idx_drafts_account_version
+             ON drafts(account_id, id, local_version);
+         CREATE UNIQUE INDEX IF NOT EXISTS idx_outbox_account_id
+             ON outbox(account_id, id);
+
+         CREATE TABLE IF NOT EXISTS managed_attachment_blobs (
+             id TEXT PRIMARY KEY NOT NULL
+                 CHECK (length(id) BETWEEN 1 AND 128),
+             account_id TEXT NOT NULL,
+             origin_draft_id TEXT,
+             internal_name TEXT NOT NULL UNIQUE
+                 CHECK (
+                     length(internal_name) BETWEEN 1 AND 80
+                     AND instr(internal_name, '/') = 0
+                     AND instr(internal_name, char(92)) = 0
+                     AND instr(internal_name, ':') = 0
+                     AND internal_name NOT IN ('.', '..')
+                     AND substr(internal_name, -5) = '.blob'
+                 ),
+             name TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 720),
+             mime_type TEXT NOT NULL CHECK (length(mime_type) BETWEEN 1 AND 255),
+             size_bytes INTEGER NOT NULL CHECK (size_bytes >= 0),
+             sha256_hex TEXT CHECK (
+                 sha256_hex IS NULL
+                 OR (
+                     length(sha256_hex) = 64
+                     AND lower(sha256_hex) = sha256_hex
+                     AND sha256_hex NOT GLOB '*[^0-9a-f]*'
+                 )
+             ),
+             disposition TEXT NOT NULL DEFAULT 'attachment'
+                 CHECK (disposition IN ('attachment', 'inline')),
+             transfer_encoding TEXT NOT NULL DEFAULT 'base64'
+                 CHECK (transfer_encoding IN ('base64')),
+             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+             UNIQUE (account_id, id),
+             FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
+         );
+         CREATE INDEX IF NOT EXISTS idx_managed_attachment_blobs_account
+             ON managed_attachment_blobs(account_id, created_at, id);
+
+         CREATE TABLE IF NOT EXISTS draft_attachment_refs (
+             account_id TEXT NOT NULL,
+             draft_id TEXT NOT NULL,
+             draft_local_version INTEGER NOT NULL CHECK (draft_local_version > 0),
+             position INTEGER NOT NULL CHECK (position >= 0),
+             blob_id TEXT NOT NULL,
+             source_attachment_id TEXT,
+             PRIMARY KEY (account_id, draft_id, draft_local_version, position),
+             UNIQUE (account_id, draft_id, draft_local_version, blob_id),
+             FOREIGN KEY (account_id, draft_id, draft_local_version)
+                 REFERENCES drafts(account_id, id, local_version)
+                 ON UPDATE CASCADE ON DELETE CASCADE,
+             FOREIGN KEY (account_id, blob_id)
+                 REFERENCES managed_attachment_blobs(account_id, id)
+                 ON DELETE NO ACTION DEFERRABLE INITIALLY DEFERRED
+         );
+         CREATE INDEX IF NOT EXISTS idx_draft_attachment_refs_blob
+             ON draft_attachment_refs(account_id, blob_id);
+
+         CREATE TABLE IF NOT EXISTS outbox_attachment_sets (
+             account_id TEXT NOT NULL,
+             outbox_id TEXT NOT NULL,
+             draft_id TEXT NOT NULL,
+             draft_local_version INTEGER NOT NULL CHECK (draft_local_version > 0),
+             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+             PRIMARY KEY (account_id, outbox_id),
+             FOREIGN KEY (account_id, outbox_id)
+                 REFERENCES outbox(account_id, id) ON DELETE CASCADE
+         );
+
+         CREATE TABLE IF NOT EXISTS outbox_attachment_refs (
+             account_id TEXT NOT NULL,
+             outbox_id TEXT NOT NULL,
+             position INTEGER NOT NULL CHECK (position >= 0),
+             blob_id TEXT NOT NULL,
+             PRIMARY KEY (account_id, outbox_id, position),
+             UNIQUE (account_id, outbox_id, blob_id),
+             FOREIGN KEY (account_id, outbox_id)
+                 REFERENCES outbox_attachment_sets(account_id, outbox_id)
+                 ON DELETE CASCADE,
+             FOREIGN KEY (account_id, blob_id)
+                 REFERENCES managed_attachment_blobs(account_id, id)
+                 ON DELETE NO ACTION DEFERRABLE INITIALLY DEFERRED
+         );
+         CREATE INDEX IF NOT EXISTS idx_outbox_attachment_refs_blob
+             ON outbox_attachment_refs(account_id, blob_id);
+
+         CREATE TABLE IF NOT EXISTS draft_forward_contexts (
+             account_id TEXT NOT NULL,
+             draft_id TEXT NOT NULL,
+             source_message_id TEXT NOT NULL,
+             original_subject TEXT NOT NULL,
+             from_json TEXT,
+             to_json TEXT NOT NULL DEFAULT '[]',
+             cc_json TEXT NOT NULL DEFAULT '[]',
+             sent_at TEXT,
+             quoted_text TEXT NOT NULL,
+             quoted_html TEXT,
+             quoted_render_mode TEXT CHECK (
+                 quoted_render_mode IS NULL OR quoted_render_mode IN (
+                     'plain', 'native_html', 'isolated_html'
+                 )
+             ),
+             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+             PRIMARY KEY (account_id, draft_id),
+             FOREIGN KEY (account_id, draft_id)
+                 REFERENCES drafts(account_id, id) ON DELETE CASCADE
+         );
+
+         CREATE TABLE IF NOT EXISTS draft_forward_source_attachments (
+             account_id TEXT NOT NULL,
+             draft_id TEXT NOT NULL,
+             position INTEGER NOT NULL CHECK (position >= 0),
+             attachment_id TEXT NOT NULL,
+             original_name TEXT,
+             safe_display_name TEXT NOT NULL,
+             mime_type TEXT NOT NULL,
+             size_bytes INTEGER NOT NULL CHECK (size_bytes >= 0),
+             disposition TEXT NOT NULL CHECK (disposition IN ('attachment', 'inline')),
+             PRIMARY KEY (account_id, draft_id, position),
+             UNIQUE (account_id, draft_id, attachment_id),
+             FOREIGN KEY (account_id, draft_id)
+                 REFERENCES draft_forward_contexts(account_id, draft_id)
+                 ON DELETE CASCADE
+         );
+
+         CREATE TRIGGER IF NOT EXISTS trg_managed_attachment_blobs_immutable
+         BEFORE UPDATE ON managed_attachment_blobs
+         BEGIN
+             SELECT RAISE(ABORT, 'managed attachment blobs are immutable');
+         END;
+         CREATE TRIGGER IF NOT EXISTS trg_draft_forward_contexts_immutable
+         BEFORE UPDATE ON draft_forward_contexts
+         BEGIN
+             SELECT RAISE(ABORT, 'forward context is immutable');
+         END;
+         CREATE TRIGGER IF NOT EXISTS trg_draft_forward_source_attachments_immutable
+         BEFORE UPDATE ON draft_forward_source_attachments
+         BEGIN
+             SELECT RAISE(ABORT, 'forward source attachment inventory is immutable');
+         END;",
+    )?;
+    Ok(())
+}
+
+fn migrate_message_public_ids_v14(connection: &Connection) -> Result<()> {
+    let schema_version: u32 =
+        connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    let added_column = !table_has_column(connection, "messages", "public_id")?;
+    if added_column {
+        connection.execute_batch("ALTER TABLE messages ADD COLUMN public_id TEXT;")?;
+    }
+
+    // A normal v14 startup must not scan a potentially million-row mailbox.
+    // Only an initial or interrupted migration performs the bounded repair
+    // query; schema objects below are cheap and idempotent on every open.
+    let needs_repair = added_column
+        || (schema_version < 14
+            && connection.query_row(
+                "SELECT EXISTS (
+                     SELECT 1 FROM messages
+                     WHERE public_id IS NULL
+                        OR length(public_id) <> 36
+                        OR substr(public_id, 9, 1) <> '-'
+                        OR substr(public_id, 14, 1) <> '-'
+                        OR substr(public_id, 19, 1) <> '-'
+                        OR substr(public_id, 24, 1) <> '-'
+                        OR substr(public_id, 15, 1) <> '4'
+                        OR substr(public_id, 20, 1) NOT IN ('8', '9', 'a', 'b')
+                        OR lower(public_id) <> public_id
+                        OR public_id GLOB '*[^0-9a-f-]*'
+                     LIMIT 1
+                 ) OR EXISTS (
+                     SELECT 1 FROM messages
+                     WHERE public_id IS NOT NULL
+                     GROUP BY public_id HAVING count(*) > 1
+                     LIMIT 1
+                 )",
+                [],
+                |row| row.get::<_, bool>(0),
+            )?);
+    if needs_repair {
+        connection.execute_batch(
+            "DROP TRIGGER IF EXISTS trg_messages_public_id_required_insert;
+             DROP TRIGGER IF EXISTS trg_messages_public_id_immutable;",
+        )?;
+        let transaction = connection.unchecked_transaction()?;
+        let row_ids = {
+            let mut statement = transaction.prepare(
+                "SELECT m.id
+                 FROM messages m
+                 WHERE m.public_id IS NULL
+                    OR length(m.public_id) <> 36
+                    OR substr(m.public_id, 9, 1) <> '-'
+                    OR substr(m.public_id, 14, 1) <> '-'
+                    OR substr(m.public_id, 19, 1) <> '-'
+                    OR substr(m.public_id, 24, 1) <> '-'
+                    OR substr(m.public_id, 15, 1) <> '4'
+                    OR substr(m.public_id, 20, 1) NOT IN ('8', '9', 'a', 'b')
+                    OR lower(m.public_id) <> m.public_id
+                    OR m.public_id GLOB '*[^0-9a-f-]*'
+                    OR EXISTS (
+                        SELECT 1 FROM messages duplicate
+                        WHERE duplicate.public_id = m.public_id
+                          AND duplicate.id < m.id
+                    )
+                 ORDER BY m.id",
+            )?;
+            statement
+                .query_map([], |row| row.get::<_, i64>(0))?
+                .collect::<std::result::Result<Vec<_>, _>>()?
+        };
+        for row_id in row_ids {
+            transaction.execute(
+                "UPDATE messages SET public_id = ?2 WHERE id = ?1",
+                params![row_id, Uuid::new_v4().to_string()],
+            )?;
+        }
+        transaction.commit()?;
+    }
+    connection.execute_batch(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_public_id
+             ON messages(public_id);
+         CREATE TRIGGER IF NOT EXISTS trg_messages_public_id_required_insert
+         BEFORE INSERT ON messages
+         WHEN NEW.public_id IS NULL
+           OR length(NEW.public_id) <> 36
+           OR substr(NEW.public_id, 9, 1) <> '-'
+           OR substr(NEW.public_id, 14, 1) <> '-'
+           OR substr(NEW.public_id, 19, 1) <> '-'
+           OR substr(NEW.public_id, 24, 1) <> '-'
+           OR substr(NEW.public_id, 15, 1) <> '4'
+           OR substr(NEW.public_id, 20, 1) NOT IN ('8', '9', 'a', 'b')
+           OR lower(NEW.public_id) <> NEW.public_id
+           OR NEW.public_id GLOB '*[^0-9a-f-]*'
+         BEGIN
+             SELECT RAISE(ABORT, 'message public id is required');
+         END;
+         CREATE TRIGGER IF NOT EXISTS trg_messages_public_id_immutable
+         BEFORE UPDATE OF public_id ON messages
+         WHEN NEW.public_id IS NOT OLD.public_id
+         BEGIN
+             SELECT RAISE(ABORT, 'message public id is immutable');
+         END;",
+    )?;
+    Ok(())
+}
+
+fn migrate_immutable_draft_versions_v15(connection: &Connection) -> Result<()> {
+    let schema_version: u32 =
+        connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    if !table_has_column(connection, "managed_attachment_blobs", "sha256_hex")? {
+        connection.execute_batch(
+            "ALTER TABLE managed_attachment_blobs
+             ADD COLUMN sha256_hex TEXT CHECK (
+                 sha256_hex IS NULL
+                 OR (
+                     length(sha256_hex) = 64
+                     AND lower(sha256_hex) = sha256_hex
+                     AND sha256_hex NOT GLOB '*[^0-9a-f]*'
+                 )
+             );",
+        )?;
+    }
+
+    let transaction = connection.unchecked_transaction()?;
+    transaction.execute_batch(
+        "CREATE TABLE IF NOT EXISTS draft_version_snapshots (
+             account_id TEXT NOT NULL,
+             draft_id TEXT NOT NULL,
+             draft_local_version INTEGER NOT NULL CHECK (draft_local_version > 0),
+             protocol_revision INTEGER NOT NULL CHECK (protocol_revision > 0),
+             to_json TEXT NOT NULL DEFAULT '[]',
+             cc_json TEXT NOT NULL DEFAULT '[]',
+             bcc_json TEXT NOT NULL DEFAULT '[]',
+             subject TEXT NOT NULL DEFAULT '',
+             body_text TEXT NOT NULL DEFAULT '',
+             compose_format_json TEXT NOT NULL DEFAULT '{}',
+             reply_context_json TEXT,
+             has_unsupported_content INTEGER NOT NULL DEFAULT 0
+                 CHECK (has_unsupported_content IN (0, 1)),
+             created_at TEXT NOT NULL
+                 DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+             PRIMARY KEY (account_id, draft_id, draft_local_version),
+             FOREIGN KEY (account_id, draft_id)
+                 REFERENCES drafts(account_id, id) ON DELETE CASCADE
+         );
+
+         INSERT OR IGNORE INTO draft_version_snapshots (
+             account_id, draft_id, draft_local_version, protocol_revision,
+             to_json, cc_json, bcc_json, subject, body_text,
+             compose_format_json, reply_context_json, has_unsupported_content
+         )
+         SELECT account_id, id, local_version, revision,
+                to_json, cc_json, bcc_json, subject, body_text,
+                compose_format_json, reply_context_json, has_unsupported_content
+         FROM drafts;
+
+         CREATE TABLE IF NOT EXISTS draft_version_forward_context_refs (
+             account_id TEXT NOT NULL,
+             draft_id TEXT NOT NULL,
+             draft_local_version INTEGER NOT NULL CHECK (draft_local_version > 0),
+             PRIMARY KEY (account_id, draft_id, draft_local_version),
+             FOREIGN KEY (account_id, draft_id, draft_local_version)
+                 REFERENCES draft_version_snapshots(
+                     account_id, draft_id, draft_local_version
+                 ) ON DELETE CASCADE,
+             FOREIGN KEY (account_id, draft_id)
+                 REFERENCES draft_forward_contexts(account_id, draft_id)
+                 ON DELETE CASCADE
+         );
+
+         INSERT OR IGNORE INTO draft_version_forward_context_refs (
+             account_id, draft_id, draft_local_version
+         )
+         SELECT s.account_id, s.draft_id, s.draft_local_version
+         FROM draft_version_snapshots s
+         JOIN draft_forward_contexts c
+           ON c.account_id = s.account_id AND c.draft_id = s.draft_id;",
+    )?;
+
+    if schema_version < 15 {
+        transaction.execute_batch(
+            "DROP TABLE IF EXISTS draft_attachment_refs_v15;
+             CREATE TABLE draft_attachment_refs_v15 (
+                 account_id TEXT NOT NULL,
+                 draft_id TEXT NOT NULL,
+                 draft_local_version INTEGER NOT NULL
+                     CHECK (draft_local_version > 0),
+                 position INTEGER NOT NULL CHECK (position >= 0),
+                 blob_id TEXT NOT NULL,
+                 source_attachment_id TEXT,
+                 PRIMARY KEY (
+                     account_id, draft_id, draft_local_version, position
+                 ),
+                 UNIQUE (
+                     account_id, draft_id, draft_local_version, blob_id
+                 ),
+                 FOREIGN KEY (
+                     account_id, draft_id, draft_local_version
+                 ) REFERENCES draft_version_snapshots(
+                     account_id, draft_id, draft_local_version
+                 ) ON DELETE CASCADE,
+                 FOREIGN KEY (account_id, blob_id)
+                     REFERENCES managed_attachment_blobs(account_id, id)
+                     ON DELETE NO ACTION DEFERRABLE INITIALLY DEFERRED
+             );
+             INSERT INTO draft_attachment_refs_v15 (
+                 account_id, draft_id, draft_local_version, position,
+                 blob_id, source_attachment_id
+             )
+             SELECT account_id, draft_id, draft_local_version, position,
+                    blob_id, source_attachment_id
+             FROM draft_attachment_refs;
+             DROP TABLE draft_attachment_refs;
+             ALTER TABLE draft_attachment_refs_v15
+                 RENAME TO draft_attachment_refs;",
+        )?;
+    }
+    transaction.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_draft_attachment_refs_blob
+             ON draft_attachment_refs(account_id, blob_id);
+         CREATE INDEX IF NOT EXISTS idx_draft_version_snapshots_draft
+             ON draft_version_snapshots(account_id, draft_id, draft_local_version);
+         CREATE TRIGGER IF NOT EXISTS trg_draft_version_snapshots_immutable
+         BEFORE UPDATE ON draft_version_snapshots
+         BEGIN
+             SELECT RAISE(ABORT, 'draft version snapshot is immutable');
+         END;",
+    )?;
+    transaction.commit()?;
+    Ok(())
+}
+
+fn migrate_bcc_and_outbox_recipient_groups_v16(connection: &Connection) -> Result<()> {
+    if !table_has_column(connection, "messages", "bcc_json")? {
+        // A legacy cached message has no trustworthy Bcc source. In
+        // particular, neither the account address nor any transport envelope
+        // proves that a Bcc header existed, so old rows intentionally start
+        // empty.
+        connection.execute_batch(
+            "ALTER TABLE messages
+                 ADD COLUMN bcc_json TEXT NOT NULL DEFAULT '[]';",
+        )?;
+    }
+    if !table_has_column(connection, "outbox", "recipient_groups_json")? {
+        // Legacy rows retain only the flat SMTP envelope. Keep grouping NULL:
+        // deriving To/Cc/Bcc from either the envelope or RFC822 bytes could
+        // silently reveal or misclassify a blind recipient.
+        connection.execute_batch(
+            "ALTER TABLE outbox
+                 ADD COLUMN recipient_groups_json TEXT;",
+        )?;
+    }
+    connection.execute_batch(
+        "CREATE TRIGGER IF NOT EXISTS trg_outbox_delivery_payload_immutable
+         BEFORE UPDATE OF recipients_json, recipient_groups_json, raw_rfc822 ON outbox
+         WHEN NEW.recipients_json IS NOT OLD.recipients_json
+           OR NEW.recipient_groups_json IS NOT OLD.recipient_groups_json
+           OR NEW.raw_rfc822 IS NOT OLD.raw_rfc822
+         BEGIN
+             SELECT RAISE(ABORT, 'Outbox delivery payload is immutable');
+         END;",
+    )?;
+    Ok(())
+}
+
+fn migrate_managed_attachment_digests_v17(connection: &Connection) -> Result<()> {
+    let transaction = connection.unchecked_transaction()?;
+    transaction.execute_batch(
+        "DROP TRIGGER IF EXISTS trg_managed_attachment_blobs_immutable;
+         DROP TRIGGER IF EXISTS trg_managed_attachment_digest_once;
+
+         CREATE TRIGGER trg_managed_attachment_blobs_immutable
+         BEFORE UPDATE OF
+             id, account_id, origin_draft_id, internal_name, name, mime_type,
+             size_bytes, disposition, transfer_encoding, created_at
+         ON managed_attachment_blobs
+         BEGIN
+             SELECT RAISE(ABORT, 'managed attachment blobs are immutable');
+         END;
+
+         CREATE TRIGGER trg_managed_attachment_digest_once
+         BEFORE UPDATE OF sha256_hex ON managed_attachment_blobs
+         WHEN OLD.sha256_hex IS NOT NULL
+           OR NEW.sha256_hex IS NULL
+           OR length(NEW.sha256_hex) <> 64
+           OR lower(NEW.sha256_hex) <> NEW.sha256_hex
+           OR NEW.sha256_hex GLOB '*[^0-9a-f]*'
+         BEGIN
+             SELECT RAISE(
+                 ABORT,
+                 'managed attachment digest may only be initialized once'
+             );
+         END;",
+    )?;
+    transaction.commit()?;
+    Ok(())
+}
+
 fn flags_with_pending_updates(
     connection: &Connection,
     account_id: &str,
@@ -1809,22 +6063,34 @@ fn flags_with_pending_updates(
     uid: u32,
     flags: &[String],
 ) -> Result<Vec<String>> {
-    let pending_seen = connection.query_row(
-        "SELECT EXISTS(
-             SELECT 1 FROM pending_seen_updates
-             WHERE account_id = ?1 AND mailbox = ?2 AND uid = ?3
-         )",
-        params![account_id, mailbox, uid],
-        |row| row.get::<_, bool>(0),
-    )?;
+    let pending_seen: Option<bool> = connection
+        .query_row(
+            "SELECT q.desired
+             FROM pending_seen_updates q
+             JOIN mailboxes b
+               ON b.account_id = q.account_id
+              AND b.name = q.mailbox
+              AND b.uid_validity = q.source_uid_validity
+             WHERE q.account_id = ?1 AND q.mailbox = ?2 AND q.uid = ?3
+               AND q.status <> 'confirmed'",
+            params![account_id, mailbox, uid],
+            |row| row.get(0),
+        )
+        .optional()?;
     let mut flags = flags.to_vec();
-    if pending_seen {
-        add_seen_flag(&mut flags);
+    if let Some(desired) = pending_seen {
+        set_system_flag(&mut flags, "\\Seen", desired);
     }
     let pending_flagged: Option<bool> = connection
         .query_row(
-            "SELECT desired FROM pending_flagged_updates
-             WHERE account_id = ?1 AND mailbox = ?2 AND uid = ?3",
+            "SELECT q.desired
+             FROM pending_flagged_updates q
+             JOIN mailboxes b
+               ON b.account_id = q.account_id
+              AND b.name = q.mailbox
+              AND b.uid_validity = q.source_uid_validity
+             WHERE q.account_id = ?1 AND q.mailbox = ?2 AND q.uid = ?3
+               AND q.status <> 'confirmed'",
             params![account_id, mailbox, uid],
             |row| row.get(0),
         )
@@ -1833,10 +6099,6 @@ fn flags_with_pending_updates(
         set_system_flag(&mut flags, "\\Flagged", desired);
     }
     Ok(flags)
-}
-
-fn add_seen_flag(flags: &mut Vec<String>) -> bool {
-    set_system_flag(flags, "\\Seen", true)
 }
 
 fn set_system_flag(flags: &mut Vec<String>, target: &str, desired: bool) -> bool {
@@ -1852,6 +6114,932 @@ fn set_system_flag(flags: &mut Vec<String>, target: &str, desired: bool) -> bool
     true
 }
 
+fn system_flag_table(flag: SystemFlagKind) -> &'static str {
+    match flag {
+        SystemFlagKind::Seen => "pending_seen_updates",
+        SystemFlagKind::Flagged => "pending_flagged_updates",
+    }
+}
+
+fn system_flag_name(flag: SystemFlagKind) -> &'static str {
+    match flag {
+        SystemFlagKind::Seen => "\\Seen",
+        SystemFlagKind::Flagged => "\\Flagged",
+    }
+}
+
+fn privacy_safe_not_found(entity: &'static str) -> MailError {
+    MailError::NotFound {
+        entity,
+        id: "unavailable".to_owned(),
+    }
+}
+
+fn account_scope_mismatch() -> MailError {
+    MailError::Validation("the requested item is outside the active account".to_owned())
+}
+
+fn query_system_flag_mutation_by_identity(
+    connection: &Connection,
+    flag: SystemFlagKind,
+    account_id: &str,
+    mailbox: &str,
+    source_uid_validity: u32,
+    uid: u32,
+) -> Result<Option<PendingSystemFlagMutation>> {
+    let table = system_flag_table(flag);
+    connection
+        .query_row(
+            &format!(
+                "SELECT q.operation_id, q.account_id, q.mailbox, q.source_uid_validity,
+                        q.uid,
+                        COALESCE((
+                            SELECT r.role
+                            FROM mailbox_roles r
+                            WHERE r.account_id = q.account_id AND r.mailbox = q.mailbox
+                            ORDER BY CASE r.role WHEN 'inbox' THEN 0 ELSE 1 END
+                            LIMIT 1
+                        ), 'inbox'),
+                        q.desired, q.revision, q.status, q.error_kind, q.updated_at
+                 FROM {table} q
+                 WHERE q.account_id = ?1 AND q.mailbox = ?2
+                   AND q.source_uid_validity = ?3 AND q.uid = ?4"
+            ),
+            params![account_id, mailbox, source_uid_validity, uid],
+            |row| row_to_pending_system_flag_mutation(row, flag),
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+fn query_system_flag_mutation_by_operation(
+    connection: &Connection,
+    flag: SystemFlagKind,
+    account_id: &str,
+    operation_id: &str,
+) -> Result<Option<PendingSystemFlagMutation>> {
+    let table = system_flag_table(flag);
+    connection
+        .query_row(
+            &format!(
+                "SELECT q.operation_id, q.account_id, q.mailbox, q.source_uid_validity,
+                        q.uid,
+                        COALESCE((
+                            SELECT r.role
+                            FROM mailbox_roles r
+                            WHERE r.account_id = q.account_id AND r.mailbox = q.mailbox
+                            ORDER BY CASE r.role WHEN 'inbox' THEN 0 ELSE 1 END
+                            LIMIT 1
+                        ), 'inbox'),
+                        q.desired, q.revision, q.status, q.error_kind, q.updated_at
+                 FROM {table} q
+                 WHERE q.account_id = ?1 AND q.operation_id = ?2"
+            ),
+            params![account_id, operation_id],
+            |row| row_to_pending_system_flag_mutation(row, flag),
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+fn query_pending_system_flag_mutations(
+    connection: &Connection,
+    flag: SystemFlagKind,
+    account_id: &str,
+    mailbox: &str,
+) -> Result<Vec<PendingSystemFlagMutation>> {
+    let table = system_flag_table(flag);
+    let mut statement = connection.prepare(&format!(
+        "SELECT q.operation_id, q.account_id, q.mailbox, q.source_uid_validity,
+                q.uid,
+                COALESCE((
+                    SELECT r.role
+                    FROM mailbox_roles r
+                    WHERE r.account_id = q.account_id AND r.mailbox = q.mailbox
+                    ORDER BY CASE r.role WHEN 'inbox' THEN 0 ELSE 1 END
+                    LIMIT 1
+                ), 'inbox'),
+                q.desired, q.revision, q.status, q.error_kind, q.updated_at
+         FROM {table} q
+         JOIN mailboxes b
+           ON b.account_id = q.account_id AND b.name = q.mailbox
+          AND b.uid_validity = q.source_uid_validity
+         WHERE q.account_id = ?1 AND q.mailbox = ?2 AND q.status = 'pending'
+         ORDER BY q.updated_at, q.operation_id"
+    ))?;
+    statement
+        .query_map(params![account_id, mailbox], |row| {
+            row_to_pending_system_flag_mutation(row, flag)
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(Into::into)
+}
+
+fn query_reconcilable_system_flag_mutations(
+    connection: &Connection,
+    flag: SystemFlagKind,
+    account_id: &str,
+    mailbox: &str,
+) -> Result<Vec<PendingSystemFlagMutation>> {
+    let table = system_flag_table(flag);
+    let mut statement = connection.prepare(&format!(
+        "SELECT q.operation_id, q.account_id, q.mailbox, q.source_uid_validity,
+                q.uid,
+                COALESCE((
+                    SELECT r.role
+                    FROM mailbox_roles r
+                    WHERE r.account_id = q.account_id AND r.mailbox = q.mailbox
+                    ORDER BY CASE r.role WHEN 'inbox' THEN 0 ELSE 1 END
+                    LIMIT 1
+                ), 'inbox'),
+                q.desired, q.revision, q.status, q.error_kind, q.updated_at
+         FROM {table} q
+         JOIN mailboxes b
+           ON b.account_id = q.account_id AND b.name = q.mailbox
+          AND b.uid_validity = q.source_uid_validity
+         WHERE q.account_id = ?1 AND q.mailbox = ?2
+           AND q.status IN ('outcome_unknown', 'needs_attention')
+         ORDER BY q.updated_at, q.operation_id"
+    ))?;
+    statement
+        .query_map(params![account_id, mailbox], |row| {
+            row_to_pending_system_flag_mutation(row, flag)
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(Into::into)
+}
+
+fn row_to_pending_system_flag_mutation(
+    row: &Row<'_>,
+    flag: SystemFlagKind,
+) -> rusqlite::Result<PendingSystemFlagMutation> {
+    let error_kind = row.get::<_, Option<String>>(9)?;
+    Ok(PendingSystemFlagMutation {
+        operation_id: row.get(0)?,
+        account_id: row.get(1)?,
+        source_mailbox: row.get(2)?,
+        source_uid_validity: row.get(3)?,
+        source_uid: row.get(4)?,
+        source_role: mailbox_role_from_column(5, row.get(5)?)?,
+        flag,
+        desired: row.get(6)?,
+        revision: decode_u64(7, row.get(7)?)?,
+        status: mutation_status_from_column(8, row.get(8)?)?,
+        error_kind: error_kind
+            .map(|value| message_mutation_error_from_column(9, value))
+            .transpose()?,
+        updated_at: row.get(10)?,
+    })
+}
+
+fn system_flag_mutation_receipt(mutation: PendingSystemFlagMutation) -> SystemFlagMutationReceipt {
+    SystemFlagMutationReceipt {
+        operation_id: mutation.operation_id,
+        local_revision: mutation.revision,
+        status: mutation.status,
+        source_role: mutation.source_role,
+        flag: mutation.flag,
+        desired: mutation.desired,
+    }
+}
+
+fn finalize_system_flag_mutation_confirmed(
+    connection: &mut Connection,
+    account_id: &str,
+    operation_id: &str,
+    flag: SystemFlagKind,
+    expected_revision: u64,
+    server_flags: &[String],
+    allow_reconcile: bool,
+) -> Result<bool> {
+    let table = system_flag_table(flag);
+    let target = system_flag_name(flag);
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let Some(mutation) =
+        query_system_flag_mutation_by_operation(&transaction, flag, account_id, operation_id)?
+    else {
+        transaction.commit()?;
+        return Ok(false);
+    };
+    let status_is_valid = if allow_reconcile {
+        matches!(
+            mutation.status,
+            MutationStatus::OutcomeUnknown | MutationStatus::NeedsAttention
+        )
+    } else {
+        mutation.status == MutationStatus::InFlight
+    };
+    if mutation.revision != expected_revision || !status_is_valid {
+        transaction.commit()?;
+        return Ok(false);
+    }
+    let server_matches = server_flags
+        .iter()
+        .any(|value| value.eq_ignore_ascii_case(target))
+        == mutation.desired;
+    if !server_matches {
+        transaction.execute(
+            &format!(
+                "UPDATE {table}
+                 SET status = 'needs_attention',
+                     error_kind = 'ambiguous_remote_state',
+                     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                 WHERE account_id = ?1 AND operation_id = ?2 AND revision = ?3
+                   AND status = ?4"
+            ),
+            params![
+                account_id,
+                operation_id,
+                u64_to_i64(expected_revision),
+                mutation.status.as_str(),
+            ],
+        )?;
+        transaction.commit()?;
+        return Ok(false);
+    }
+    transaction.execute(
+        "UPDATE messages
+         SET flags_json = ?5
+         WHERE account_id = ?1 AND mailbox = ?2 AND uid = ?3
+           AND EXISTS (
+               SELECT 1 FROM mailboxes b
+               WHERE b.account_id = messages.account_id AND b.name = messages.mailbox
+                 AND b.uid_validity = ?4
+           )",
+        params![
+            account_id,
+            mutation.source_mailbox,
+            mutation.source_uid,
+            mutation.source_uid_validity,
+            encode_json(server_flags)?,
+        ],
+    )?;
+    let changed = transaction.execute(
+        &format!(
+            "UPDATE {table}
+             SET status = 'confirmed',
+                 error_kind = NULL,
+                 updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE account_id = ?1 AND operation_id = ?2 AND revision = ?3
+               AND status = ?4"
+        ),
+        params![
+            account_id,
+            operation_id,
+            u64_to_i64(expected_revision),
+            mutation.status.as_str(),
+        ],
+    )?;
+    transaction.commit()?;
+    Ok(changed == 1)
+}
+
+fn parse_mailbox_role(value: &str) -> Result<MailboxRole> {
+    MailboxRole::from_str(value).ok_or_else(|| {
+        MailError::Validation("the mailbox role is not supported by this version".to_owned())
+    })
+}
+
+fn validate_mailbox_display_name(value: &str) -> Result<()> {
+    if value.is_empty()
+        || value.chars().count() > MAX_MAILBOX_DISPLAY_CHARS
+        || value.chars().any(char::is_control)
+    {
+        return Err(MailError::Validation(
+            "the mailbox display name is invalid".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_mailbox_capability(capability: &MailboxCapability) -> Result<()> {
+    if let Some(display_name) = capability.display_name.as_deref() {
+        validate_mailbox_display_name(display_name)?;
+    }
+    let reason_is_valid = match capability.status {
+        MailboxCapabilityStatus::Unavailable => capability.unavailable_reason.is_some(),
+        _ => capability.unavailable_reason.is_none(),
+    };
+    if !reason_is_valid {
+        return Err(MailError::Validation(
+            "the mailbox capability reason does not match its status".to_owned(),
+        ));
+    }
+    if capability.status == MailboxCapabilityStatus::Available && capability.display_name.is_none()
+    {
+        return Err(MailError::Validation(
+            "an available mailbox capability requires a display name".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_message_action(
+    source_role: MailboxRole,
+    kind: MessageActionKind,
+    destination_role: Option<MailboxRole>,
+) -> Result<()> {
+    let valid = match kind {
+        MessageActionKind::Archive => {
+            matches!(source_role, MailboxRole::Inbox | MailboxRole::Sent)
+                && destination_role == Some(MailboxRole::Archive)
+        }
+        MessageActionKind::MoveToTrash => {
+            matches!(
+                source_role,
+                MailboxRole::Inbox | MailboxRole::Sent | MailboxRole::Archive
+            ) && destination_role == Some(MailboxRole::Trash)
+        }
+        MessageActionKind::PermanentDelete => {
+            source_role == MailboxRole::Trash && destination_role.is_none()
+        }
+    };
+    if !valid {
+        return Err(MailError::Validation(
+            "the message action has an invalid semantic destination".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn query_message_action_by_identity(
+    connection: &Connection,
+    account_id: &str,
+    source_mailbox: &str,
+    source_uid_validity: u32,
+    source_uid: u32,
+) -> Result<Option<PendingMessageAction>> {
+    connection
+        .query_row(
+            "SELECT operation_id, account_id, source_mailbox, source_uid_validity,
+                    source_uid, source_role, destination_role, kind, revision, status,
+                    remote_phase, source_message_id, source_internal_date, source_size_bytes,
+                    error_kind, source_cleanup_pending, destination_reconciled, updated_at
+             FROM pending_message_actions
+             WHERE account_id = ?1 AND source_mailbox = ?2
+               AND source_uid_validity = ?3 AND source_uid = ?4",
+            params![account_id, source_mailbox, source_uid_validity, source_uid],
+            row_to_pending_message_action,
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+fn query_message_action_by_operation(
+    connection: &Connection,
+    account_id: &str,
+    operation_id: &str,
+) -> Result<Option<PendingMessageAction>> {
+    connection
+        .query_row(
+            "SELECT operation_id, account_id, source_mailbox, source_uid_validity,
+                    source_uid, source_role, destination_role, kind, revision, status,
+                    remote_phase, source_message_id, source_internal_date, source_size_bytes,
+                    error_kind, source_cleanup_pending, destination_reconciled, updated_at
+             FROM pending_message_actions
+             WHERE account_id = ?1 AND operation_id = ?2",
+            params![account_id, operation_id],
+            row_to_pending_message_action,
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+fn message_mutation_receipt(action: &PendingMessageAction) -> MessageMutationReceipt {
+    MessageMutationReceipt {
+        operation_id: action.operation_id.clone(),
+        local_revision: action.revision,
+        status: action.status,
+        source_role: action.source_role,
+        destination_role: action.destination_role,
+    }
+}
+
+fn valid_remote_phase_transition(
+    kind: MessageActionKind,
+    current: RemoteMutationPhase,
+    next: RemoteMutationPhase,
+) -> bool {
+    match kind {
+        MessageActionKind::Archive | MessageActionKind::MoveToTrash => matches!(
+            (current, next),
+            (
+                RemoteMutationPhase::Queued,
+                RemoteMutationPhase::TransferStarted
+            ) | (
+                RemoteMutationPhase::TransferStarted,
+                RemoteMutationPhase::TransferAcknowledged
+            ) | (
+                RemoteMutationPhase::TransferStarted,
+                RemoteMutationPhase::SourceDeleteAcknowledged
+            ) | (
+                RemoteMutationPhase::TransferAcknowledged,
+                RemoteMutationPhase::SourceDeleteStarted
+            ) | (
+                RemoteMutationPhase::SourceDeleteStarted,
+                RemoteMutationPhase::SourceDeleteAcknowledged
+            )
+        ),
+        MessageActionKind::PermanentDelete => matches!(
+            (current, next),
+            (
+                RemoteMutationPhase::Queued,
+                RemoteMutationPhase::SourceDeleteStarted
+            ) | (
+                RemoteMutationPhase::SourceDeleteStarted,
+                RemoteMutationPhase::SourceDeleteAcknowledged
+            )
+        ),
+    }
+}
+
+fn bounded_identity_field(value: Option<&str>, max_chars: usize) -> Option<String> {
+    let bounded = value?
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(max_chars)
+        .collect::<String>();
+    (!bounded.is_empty()).then_some(bounded)
+}
+
+fn bounded_diagnostic_id(value: &str) -> String {
+    format!("{:016x}", stable_fingerprint(value.as_bytes()))
+}
+
+fn validate_page_size(page_size: usize) -> Result<usize> {
+    let page_size = if page_size == 0 {
+        DEFAULT_MESSAGE_PAGE_SIZE
+    } else {
+        page_size
+    };
+    if page_size > MAX_MESSAGE_PAGE_SIZE {
+        return Err(MailError::Validation(format!(
+            "message page size cannot exceed {MAX_MESSAGE_PAGE_SIZE}"
+        )));
+    }
+    Ok(page_size)
+}
+
+fn normalize_search_query(query: Option<&str>) -> Result<Option<String>> {
+    let Some(query) = query.map(str::trim).filter(|query| !query.is_empty()) else {
+        return Ok(None);
+    };
+    if query.chars().count() > MAX_SEARCH_QUERY_CHARS || query.chars().any(char::is_control) {
+        return Err(MailError::Validation(
+            "the local mail search query is invalid".to_owned(),
+        ));
+    }
+    Ok(Some(query.to_lowercase()))
+}
+
+fn search_like_pattern(query: &str) -> String {
+    let mut escaped = String::with_capacity(query.len().saturating_add(2));
+    escaped.push('%');
+    for character in query.chars().flat_map(char::to_lowercase) {
+        if matches!(character, '\\' | '%' | '_') {
+            escaped.push('\\');
+        }
+        escaped.push(character);
+    }
+    escaped.push('%');
+    escaped
+}
+
+fn stable_fingerprint(bytes: &[u8]) -> u64 {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
+fn unavailable_message_page(remote_history_state: RemoteHistoryState) -> MessagePage {
+    MessagePage {
+        items: Vec::new(),
+        next_cursor: None,
+        has_more_local: false,
+        remote_history_state,
+        end_reached: remote_history_state == RemoteHistoryState::Complete,
+    }
+}
+
+fn issue_message_cursor(
+    connection: &Connection,
+    payload: MessageCursorPayload,
+) -> Result<MessagePageCursor> {
+    validate_message_cursor_payload(&payload)?;
+    connection.execute(
+        "DELETE FROM message_page_cursors
+         WHERE created_at < unixepoch() - ?1",
+        params![MESSAGE_CURSOR_TTL_SECONDS],
+    )?;
+    let token = Uuid::now_v7().to_string();
+    connection.execute(
+        "INSERT INTO message_page_cursors (
+             token, account_id, role, mailbox, uid_validity,
+             sort_at, uid, message_row_id, remote_before_uid, query_normalized
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        params![
+            token,
+            payload.account_id,
+            payload.role.as_str(),
+            payload.mailbox,
+            payload.uid_validity,
+            payload.sort_at,
+            payload.uid,
+            payload.id,
+            payload.remote_before_uid,
+            payload.query_normalized,
+        ],
+    )?;
+    Ok(MessagePageCursor::new(token))
+}
+
+fn load_message_cursor(
+    connection: &Connection,
+    cursor: &MessagePageCursor,
+) -> Result<MessageCursorPayload> {
+    validate_message_cursor_token(cursor)?;
+    let payload = connection
+        .query_row(
+            "SELECT account_id, mailbox, role, uid_validity, query_normalized,
+                    sort_at, uid, message_row_id, remote_before_uid
+             FROM message_page_cursors
+             WHERE token = ?1
+               AND created_at >= unixepoch() - ?2",
+            params![cursor.as_str(), MESSAGE_CURSOR_TTL_SECONDS],
+            |row| {
+                Ok(MessageCursorPayload {
+                    account_id: row.get(0)?,
+                    mailbox: row.get(1)?,
+                    role: mailbox_role_from_column(2, row.get(2)?)?,
+                    uid_validity: row.get(3)?,
+                    query_normalized: row.get(4)?,
+                    sort_at: row.get(5)?,
+                    uid: row.get(6)?,
+                    id: row.get(7)?,
+                    remote_before_uid: row.get(8)?,
+                })
+            },
+        )
+        .optional()?
+        .ok_or_else(invalid_message_cursor)?;
+    validate_message_cursor_payload(&payload)?;
+    Ok(payload)
+}
+
+fn load_and_validate_message_cursor(
+    connection: &Connection,
+    cursor: &MessagePageCursor,
+    account_id: &str,
+    mailbox: &str,
+    role: MailboxRole,
+    uid_validity: Option<u32>,
+    query_normalized: &str,
+) -> Result<MessageCursorPayload> {
+    let payload = load_message_cursor(connection, cursor)?;
+    if payload.account_id != account_id
+        || payload.mailbox != mailbox
+        || payload.role != role
+        || payload.uid_validity != uid_validity
+        || payload.query_normalized != query_normalized
+    {
+        return Err(invalid_message_cursor());
+    }
+    Ok(payload)
+}
+
+fn validate_message_cursor_token(cursor: &MessagePageCursor) -> Result<()> {
+    let token = cursor.as_str();
+    if token.is_empty() || token.len() > MAX_CURSOR_TOKEN_BYTES || Uuid::parse_str(token).is_err() {
+        return Err(invalid_message_cursor());
+    }
+    Ok(())
+}
+
+fn validate_message_cursor_payload(payload: &MessageCursorPayload) -> Result<()> {
+    let keyset_is_consistent = matches!(
+        (&payload.sort_at, payload.uid, payload.id),
+        (None, None, None) | (Some(_), Some(_), Some(_))
+    );
+    if payload.account_id.is_empty()
+        || payload.account_id.len() > 256
+        || payload.mailbox.is_empty()
+        || payload.mailbox.chars().count() > MAX_MAILBOX_DISPLAY_CHARS
+        || payload.mailbox.chars().any(char::is_control)
+        || payload.query_normalized.chars().count() > MAX_SEARCH_QUERY_CHARS
+        || payload.query_normalized.chars().any(char::is_control)
+        || !keyset_is_consistent
+        || payload.uid == Some(0)
+        || payload.id.is_some_and(|id| id <= 0)
+        || payload.remote_before_uid == 0
+        || payload.sort_at.as_deref().is_some_and(|value| {
+            value.len() > MAX_IDENTITY_DATE_CHARS || value.chars().any(char::is_control)
+        })
+    {
+        return Err(invalid_message_cursor());
+    }
+    Ok(())
+}
+
+fn invalid_message_cursor() -> MailError {
+    MailError::Validation(
+        "the message cursor does not belong to this account, mailbox epoch, or search".to_owned(),
+    )
+}
+
+fn validate_message_public_id(public_id: &str) -> Result<()> {
+    let parsed = Uuid::parse_str(public_id).map_err(|_| {
+        MailError::Validation("the opaque message identifier is invalid".to_owned())
+    })?;
+    if parsed.to_string() != public_id || parsed.get_version() != Some(uuid::Version::Random) {
+        return Err(MailError::Validation(
+            "the opaque message identifier is invalid".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn query_regular_page_candidates(
+    connection: &Connection,
+    account_id: &str,
+    mailbox: &str,
+    role: MailboxRole,
+    uid_validity: Option<u32>,
+    cursor: Option<&MessageCursorPayload>,
+    search_pattern: Option<&str>,
+    limit: usize,
+) -> Result<Vec<PageCandidate>> {
+    let sql = format!(
+        "SELECT {ALIASED_MESSAGE_SUMMARY_COLUMNS}, m.public_id,
+                COALESCE(m.internal_date, m.sent_at, m.synced_at) AS sort_at
+         FROM messages m
+         WHERE m.account_id = :account_id
+           AND m.mailbox = :mailbox
+           AND NOT EXISTS (
+               SELECT 1
+               FROM pending_message_actions p
+               WHERE p.account_id = m.account_id
+                 AND p.source_mailbox = m.mailbox
+                 AND p.source_uid = m.uid
+                 AND p.source_uid_validity = :uid_validity
+           )
+           AND (
+               :search_pattern IS NULL
+               OR lower(m.subject) LIKE :search_pattern ESCAPE '\\'
+               OR lower(COALESCE(m.sender_json, '')) LIKE :search_pattern ESCAPE '\\'
+               OR lower(m.to_json) LIKE :search_pattern ESCAPE '\\'
+               OR lower(m.cc_json) LIKE :search_pattern ESCAPE '\\'
+               OR lower(m.preview) LIKE :search_pattern ESCAPE '\\'
+           )
+           AND (
+               :cursor_sort IS NULL
+               OR COALESCE(m.internal_date, m.sent_at, m.synced_at) < :cursor_sort
+               OR (
+                   COALESCE(m.internal_date, m.sent_at, m.synced_at) = :cursor_sort
+                   AND m.uid < :cursor_uid
+               )
+               OR (
+                   COALESCE(m.internal_date, m.sent_at, m.synced_at) = :cursor_sort
+                   AND m.uid = :cursor_uid
+                   AND m.id < :cursor_id
+               )
+           )
+         ORDER BY sort_at DESC, m.uid DESC, m.id DESC
+         LIMIT :limit"
+    );
+    let mut statement = connection.prepare(&sql)?;
+    let mut rows = statement.query(named_params! {
+        ":account_id": account_id,
+        ":mailbox": mailbox,
+        ":uid_validity": uid_validity,
+        ":search_pattern": search_pattern,
+        ":cursor_sort": cursor.and_then(|cursor| cursor.sort_at.as_deref()),
+        ":cursor_uid": cursor.and_then(|cursor| cursor.uid),
+        ":cursor_id": cursor.and_then(|cursor| cursor.id),
+        ":limit": usize_to_i64(limit),
+    })?;
+    let mut candidates = Vec::new();
+    while let Some(row) = rows.next()? {
+        let message = row_to_message(row)?;
+        let public_id = row.get(23)?;
+        let sort_at = row.get(24)?;
+        candidates.push(PageCandidate {
+            uid: message.uid,
+            id: message.id,
+            item: MessagePageItem {
+                public_id,
+                message,
+                displayed_role: role,
+                pending_mutation: None,
+            },
+            sort_at,
+        });
+    }
+    Ok(candidates)
+}
+
+fn query_pending_page_candidates(
+    connection: &Connection,
+    account_id: &str,
+    role: MailboxRole,
+    cursor: Option<&MessageCursorPayload>,
+    search_pattern: Option<&str>,
+    limit: usize,
+) -> Result<Vec<PageCandidate>> {
+    let sql = format!(
+        "SELECT {ALIASED_MESSAGE_SUMMARY_COLUMNS}, m.public_id,
+                COALESCE(m.internal_date, m.sent_at, m.synced_at) AS sort_at,
+                p.operation_id, p.revision, p.status, p.kind, p.source_role,
+                p.destination_role, p.error_kind
+         FROM pending_message_actions p
+         JOIN messages m
+           ON m.account_id = p.account_id
+          AND m.mailbox = p.source_mailbox
+          AND m.uid = p.source_uid
+         JOIN mailboxes b
+           ON b.account_id = p.account_id
+          AND b.name = p.source_mailbox
+          AND b.uid_validity = p.source_uid_validity
+         WHERE p.account_id = :account_id
+           AND p.destination_role = :destination_role
+           AND p.destination_reconciled = 0
+           AND p.status IN (
+               'pending', 'in_flight', 'confirmed', 'needs_attention', 'outcome_unknown'
+           )
+           AND (
+               :search_pattern IS NULL
+               OR lower(m.subject) LIKE :search_pattern ESCAPE '\\'
+               OR lower(COALESCE(m.sender_json, '')) LIKE :search_pattern ESCAPE '\\'
+               OR lower(m.to_json) LIKE :search_pattern ESCAPE '\\'
+               OR lower(m.cc_json) LIKE :search_pattern ESCAPE '\\'
+               OR lower(m.preview) LIKE :search_pattern ESCAPE '\\'
+           )
+           AND (
+               :cursor_sort IS NULL
+               OR COALESCE(m.internal_date, m.sent_at, m.synced_at) < :cursor_sort
+               OR (
+                   COALESCE(m.internal_date, m.sent_at, m.synced_at) = :cursor_sort
+                   AND m.uid < :cursor_uid
+               )
+               OR (
+                   COALESCE(m.internal_date, m.sent_at, m.synced_at) = :cursor_sort
+                   AND m.uid = :cursor_uid
+                   AND m.id < :cursor_id
+               )
+           )
+         ORDER BY sort_at DESC, m.uid DESC, m.id DESC
+         LIMIT :limit"
+    );
+    let mut statement = connection.prepare(&sql)?;
+    let mut rows = statement.query(named_params! {
+        ":account_id": account_id,
+        ":destination_role": role.as_str(),
+        ":search_pattern": search_pattern,
+        ":cursor_sort": cursor.and_then(|cursor| cursor.sort_at.as_deref()),
+        ":cursor_uid": cursor.and_then(|cursor| cursor.uid),
+        ":cursor_id": cursor.and_then(|cursor| cursor.id),
+        ":limit": usize_to_i64(limit),
+    })?;
+    let mut candidates = Vec::new();
+    while let Some(row) = rows.next()? {
+        let message = row_to_message(row)?;
+        let public_id = row.get(23)?;
+        let sort_at = row.get(24)?;
+        let destination_role = mailbox_role_from_column(30, row.get(30)?)?;
+        let projection = PendingMessageProjection {
+            operation_id: row.get(25)?,
+            local_revision: decode_u64(26, row.get(26)?)?,
+            status: mutation_status_from_column(27, row.get(27)?)?,
+            kind: message_action_kind_from_column(28, row.get(28)?)?,
+            source_role: mailbox_role_from_column(29, row.get(29)?)?,
+            destination_role,
+            error_kind: row
+                .get::<_, Option<String>>(31)?
+                .map(|value| message_mutation_error_from_column(31, value))
+                .transpose()?,
+        };
+        candidates.push(PageCandidate {
+            uid: message.uid,
+            id: message.id,
+            item: MessagePageItem {
+                public_id,
+                message,
+                displayed_role: role,
+                pending_mutation: Some(projection),
+            },
+            sort_at,
+        });
+    }
+    Ok(candidates)
+}
+
+fn compare_page_candidates(left: &PageCandidate, right: &PageCandidate) -> Ordering {
+    right
+        .sort_at
+        .cmp(&left.sort_at)
+        .then_with(|| right.uid.cmp(&left.uid))
+        .then_with(|| right.id.cmp(&left.id))
+}
+
+fn row_to_mailbox_capability(row: &Row<'_>) -> rusqlite::Result<MailboxCapability> {
+    let reason = row.get::<_, Option<String>>(3)?;
+    Ok(MailboxCapability {
+        role: mailbox_role_from_column(0, row.get(0)?)?,
+        status: mailbox_capability_status_from_column(1, row.get(1)?)?,
+        display_name: row.get(2)?,
+        unavailable_reason: reason
+            .map(|value| mailbox_unavailable_reason_from_column(3, value))
+            .transpose()?,
+        retryable: row.get(4)?,
+    })
+}
+
+fn row_to_pending_message_action(row: &Row<'_>) -> rusqlite::Result<PendingMessageAction> {
+    let destination = row.get::<_, Option<String>>(6)?;
+    let error_kind = row.get::<_, Option<String>>(14)?;
+    Ok(PendingMessageAction {
+        operation_id: row.get(0)?,
+        account_id: row.get(1)?,
+        source_mailbox: row.get(2)?,
+        source_uid_validity: row.get(3)?,
+        source_uid: row.get(4)?,
+        source_role: mailbox_role_from_column(5, row.get(5)?)?,
+        destination_role: destination
+            .map(|value| mailbox_role_from_column(6, value))
+            .transpose()?,
+        kind: message_action_kind_from_column(7, row.get(7)?)?,
+        revision: decode_u64(8, row.get(8)?)?,
+        status: mutation_status_from_column(9, row.get(9)?)?,
+        remote_phase: remote_mutation_phase_from_column(10, row.get(10)?)?,
+        source_message_id: row.get(11)?,
+        source_internal_date: row.get(12)?,
+        source_size_bytes: row.get(13)?,
+        error_kind: error_kind
+            .map(|value| message_mutation_error_from_column(14, value))
+            .transpose()?,
+        source_cleanup_pending: row.get(15)?,
+        destination_reconciled: row.get(16)?,
+        updated_at: row.get(17)?,
+    })
+}
+
+fn mailbox_role_from_column(index: usize, value: String) -> rusqlite::Result<MailboxRole> {
+    MailboxRole::from_str(&value).ok_or_else(|| invalid_enum_column(index, &value))
+}
+
+fn mailbox_capability_status_from_column(
+    index: usize,
+    value: String,
+) -> rusqlite::Result<MailboxCapabilityStatus> {
+    MailboxCapabilityStatus::from_str(&value).ok_or_else(|| invalid_enum_column(index, &value))
+}
+
+fn mailbox_unavailable_reason_from_column(
+    index: usize,
+    value: String,
+) -> rusqlite::Result<MailboxCapabilityUnavailableReason> {
+    MailboxCapabilityUnavailableReason::from_str(&value)
+        .ok_or_else(|| invalid_enum_column(index, &value))
+}
+
+fn mutation_status_from_column(index: usize, value: String) -> rusqlite::Result<MutationStatus> {
+    MutationStatus::from_str(&value).ok_or_else(|| invalid_enum_column(index, &value))
+}
+
+fn remote_mutation_phase_from_column(
+    index: usize,
+    value: String,
+) -> rusqlite::Result<RemoteMutationPhase> {
+    RemoteMutationPhase::from_str(&value).ok_or_else(|| invalid_enum_column(index, &value))
+}
+
+fn message_action_kind_from_column(
+    index: usize,
+    value: String,
+) -> rusqlite::Result<MessageActionKind> {
+    MessageActionKind::from_str(&value).ok_or_else(|| invalid_enum_column(index, &value))
+}
+
+fn message_mutation_error_from_column(
+    index: usize,
+    value: String,
+) -> rusqlite::Result<MessageMutationErrorKind> {
+    MessageMutationErrorKind::from_str(&value).ok_or_else(|| invalid_enum_column(index, &value))
+}
+
+fn invalid_enum_column(index: usize, value: &str) -> rusqlite::Error {
+    rusqlite::Error::FromSqlConversionFailure(
+        index,
+        Type::Text,
+        Box::new(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("unsupported bounded enum value {value}"),
+        )),
+    )
+}
+
 fn table_has_column(connection: &Connection, table: &str, column: &str) -> Result<bool> {
     debug_assert!(
         table
@@ -1865,6 +7053,20 @@ fn table_has_column(connection: &Connection, table: &str, column: &str) -> Resul
     Ok(names.iter().any(|name| name == column))
 }
 
+fn table_references_table(
+    connection: &Connection,
+    table: &str,
+    referenced_table: &str,
+) -> Result<bool> {
+    let mut statement = connection.prepare(&format!("PRAGMA foreign_key_list({table})"))?;
+    let targets = statement
+        .query_map([], |row| row.get::<_, String>(2))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(targets
+        .iter()
+        .any(|target| target.eq_ignore_ascii_case(referenced_table)))
+}
+
 fn validate_same_draft_identity(expected: &DraftRecord, replacement: &DraftRecord) -> Result<()> {
     if expected.draft.id != replacement.draft.id
         || expected.draft.account_id != replacement.draft.account_id
@@ -1874,6 +7076,730 @@ fn validate_same_draft_identity(expected: &DraftRecord, replacement: &DraftRecor
         ));
     }
     Ok(())
+}
+
+fn validate_opaque_attachment_id(value: &str) -> Result<()> {
+    if value.is_empty()
+        || value.len() > 128
+        || value.chars().any(char::is_control)
+        || Uuid::parse_str(value).is_err()
+    {
+        return Err(MailError::Validation(
+            "the managed attachment identifier is invalid".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn managed_attachment_integrity_error() -> MailError {
+    MailError::Validation(
+        "a managed attachment is unavailable or failed its immutable content check; remove it and attach the original file again"
+            .to_owned(),
+    )
+}
+
+fn validate_managed_attachment_digest(value: &str) -> Result<()> {
+    if value.len() != 64
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+    {
+        return Err(managed_attachment_integrity_error());
+    }
+    Ok(())
+}
+
+fn validate_managed_internal_name(attachment: &ImportedManagedAttachment) -> Result<()> {
+    validate_opaque_attachment_id(&attachment.id)?;
+    let expected_internal_name = format!("{}.blob", attachment.id);
+    let path = Path::new(&attachment.internal_name);
+    let mut components = path.components();
+    let single_component = matches!(components.next(), Some(std::path::Component::Normal(_)))
+        && components.next().is_none();
+    if !single_component
+        || attachment.internal_name != expected_internal_name
+        || attachment.internal_name.len() > 80
+    {
+        return Err(MailError::Validation(
+            "the managed attachment storage name is invalid".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_new_draft_attachments(additions: &[NewDraftAttachment]) -> Result<()> {
+    if additions.len() > crate::mime::MAX_ATTACHMENT_PARTS {
+        return Err(MailError::Validation(
+            "too many managed attachments are selected".to_owned(),
+        ));
+    }
+    let mut ids = HashSet::new();
+    let mut internal_names = HashSet::new();
+    let mut total_bytes = 0u64;
+    for addition in additions {
+        let imported = &addition.imported;
+        validate_managed_internal_name(imported)?;
+        if !ids.insert(imported.id.as_str())
+            || !internal_names.insert(imported.internal_name.as_str())
+        {
+            return Err(MailError::Validation(
+                "the selected attachment set contains duplicate identifiers".to_owned(),
+            ));
+        }
+        if imported.name != crate::mime::safe_attachment_filename(Some(&imported.name))
+            || imported.mime_type.is_empty()
+            || imported.mime_type.len() > 255
+            || !imported.mime_type.contains('/')
+            || imported.mime_type.chars().any(char::is_control)
+            || imported.size_bytes > i64::MAX as u64
+            || imported.size_bytes > crate::mime::MAX_MANAGED_ATTACHMENT_BYTES
+            || imported.sha256_hex.len() != 64
+            || !imported
+                .sha256_hex
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+        {
+            return Err(MailError::Validation(
+                "the managed attachment metadata is invalid".to_owned(),
+            ));
+        }
+        total_bytes = total_bytes
+            .checked_add(imported.size_bytes)
+            .ok_or_else(|| {
+                MailError::Validation("managed attachment byte total overflowed".to_owned())
+            })?;
+        if total_bytes > crate::mime::MAX_MANAGED_ATTACHMENT_TOTAL_BYTES {
+            return Err(MailError::Validation(
+                "the selected attachment set is too large".to_owned(),
+            ));
+        }
+        if addition
+            .source_attachment_id
+            .as_deref()
+            .is_some_and(|value| {
+                value.is_empty() || value.len() > 256 || value.chars().any(char::is_control)
+            })
+        {
+            return Err(MailError::Validation(
+                "the forwarded source attachment identifier is invalid".to_owned(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_combined_draft_attachment_metadata(
+    connection: &Connection,
+    account_id: &str,
+    draft_id: &str,
+    local_version: u64,
+    additions: &[NewDraftAttachment],
+) -> Result<()> {
+    let (existing_count, existing_bytes): (u64, u64) = connection.query_row(
+        "SELECT COUNT(*), COALESCE(SUM(b.size_bytes), 0)
+         FROM draft_attachment_refs r
+         JOIN managed_attachment_blobs b
+           ON b.account_id = r.account_id AND b.id = r.blob_id
+         WHERE r.account_id = ?1 AND r.draft_id = ?2
+           AND r.draft_local_version = ?3",
+        params![account_id, draft_id, u64_to_i64(local_version)],
+        |row| Ok((decode_u64(0, row.get(0)?)?, decode_u64(1, row.get(1)?)?)),
+    )?;
+    let combined_count = existing_count
+        .checked_add(additions.len() as u64)
+        .ok_or_else(|| MailError::Validation("managed attachment count overflowed".to_owned()))?;
+    if combined_count > crate::mime::MAX_ATTACHMENT_PARTS as u64 {
+        return Err(MailError::Validation(
+            "too many managed attachments are selected".to_owned(),
+        ));
+    }
+    let mut combined_bytes = existing_bytes;
+    for addition in additions {
+        combined_bytes = combined_bytes
+            .checked_add(addition.imported.size_bytes)
+            .ok_or_else(|| {
+                MailError::Validation("managed attachment byte total overflowed".to_owned())
+            })?;
+    }
+    if combined_bytes > crate::mime::MAX_MANAGED_ATTACHMENT_TOTAL_BYTES {
+        return Err(MailError::Validation(
+            "the combined managed attachment set is too large".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn insert_new_draft_attachment_rows(
+    connection: &Connection,
+    account_id: &str,
+    draft_id: &str,
+    draft_local_version: u64,
+    mut next_position: i64,
+    additions: &[NewDraftAttachment],
+) -> Result<()> {
+    for addition in additions {
+        let imported = &addition.imported;
+        let inserted = connection.execute(
+            "INSERT INTO managed_attachment_blobs (
+                 id, account_id, origin_draft_id, internal_name, name, mime_type,
+                 size_bytes, sha256_hex, disposition, transfer_encoding
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'attachment', 'base64')
+             ON CONFLICT(id) DO NOTHING",
+            params![
+                imported.id,
+                account_id,
+                draft_id,
+                imported.internal_name,
+                imported.name,
+                imported.mime_type,
+                u64_to_i64(imported.size_bytes),
+                imported.sha256_hex,
+            ],
+        )?;
+        if inserted != 1 {
+            return Err(MailError::Validation(
+                "a managed attachment identifier collision was detected".to_owned(),
+            ));
+        }
+        connection.execute(
+            "INSERT INTO draft_attachment_refs (
+                 account_id, draft_id, draft_local_version, position,
+                 blob_id, source_attachment_id
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                account_id,
+                draft_id,
+                u64_to_i64(draft_local_version),
+                next_position,
+                imported.id,
+                addition.source_attachment_id,
+            ],
+        )?;
+        next_position = next_position.checked_add(1).ok_or_else(|| {
+            MailError::Validation("draft attachment position limit reached".to_owned())
+        })?;
+    }
+    Ok(())
+}
+
+fn draft_version_exists(
+    connection: &Connection,
+    account_id: &str,
+    draft_id: &str,
+    local_version: u64,
+    require_editable: bool,
+) -> Result<bool> {
+    connection
+        .query_row(
+            "SELECT EXISTS(
+                 SELECT 1
+                 FROM draft_version_snapshots v
+                 JOIN drafts d
+                   ON d.account_id = v.account_id AND d.id = v.draft_id
+                 WHERE v.account_id = ?1
+                   AND v.draft_id = ?2
+                   AND v.draft_local_version = ?3
+                   AND (
+                       ?4 = 0
+                       OR (
+                           d.local_version = v.draft_local_version
+                           AND d.is_deleted = 0
+                           AND d.status != 'sent'
+                       )
+                   )
+             )",
+            params![
+                account_id,
+                draft_id,
+                u64_to_i64(local_version),
+                require_editable,
+            ],
+            |row| row.get(0),
+        )
+        .map_err(Into::into)
+}
+
+fn query_draft_attachments(
+    connection: &Connection,
+    account_id: &str,
+    draft_id: &str,
+    local_version: u64,
+) -> Result<Vec<ManagedDraftAttachment>> {
+    let mut statement = connection.prepare(
+        "SELECT b.id, b.name, b.mime_type, b.size_bytes, r.source_attachment_id,
+                b.internal_name, b.sha256_hex, b.disposition, b.transfer_encoding
+         FROM draft_attachment_refs r
+         JOIN managed_attachment_blobs b
+           ON b.account_id = r.account_id AND b.id = r.blob_id
+         WHERE r.account_id = ?1 AND r.draft_id = ?2 AND r.draft_local_version = ?3
+         ORDER BY r.position",
+    )?;
+    statement
+        .query_map(
+            params![account_id, draft_id, u64_to_i64(local_version)],
+            |row| {
+                let disposition = row.get::<_, String>(7)?;
+                Ok(ManagedDraftAttachment {
+                    meta: DraftAttachmentMeta {
+                        id: row.get(0)?,
+                        name: row.get(1)?,
+                        mime_type: row.get(2)?,
+                        size_bytes: decode_u64(3, row.get(3)?)?,
+                        source_attachment_id: row.get(4)?,
+                    },
+                    internal_name: row.get(5)?,
+                    sha256_hex: row.get(6)?,
+                    disposition: attachment_disposition_from_column(7, disposition)?,
+                    transfer_encoding: row.get(8)?,
+                })
+            },
+        )?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(Into::into)
+}
+
+fn query_outbox_attachments(
+    connection: &Connection,
+    account_id: &str,
+    outbox_id: &str,
+) -> Result<Vec<ManagedDraftAttachment>> {
+    let mut statement = connection.prepare(
+        "SELECT b.id, b.name, b.mime_type, b.size_bytes, b.internal_name,
+                b.sha256_hex, b.disposition, b.transfer_encoding
+         FROM outbox_attachment_refs r
+         JOIN managed_attachment_blobs b
+           ON b.account_id = r.account_id AND b.id = r.blob_id
+         WHERE r.account_id = ?1 AND r.outbox_id = ?2
+         ORDER BY r.position",
+    )?;
+    statement
+        .query_map(params![account_id, outbox_id], |row| {
+            let disposition = row.get::<_, String>(6)?;
+            Ok(ManagedDraftAttachment {
+                meta: DraftAttachmentMeta {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    mime_type: row.get(2)?,
+                    size_bytes: decode_u64(3, row.get(3)?)?,
+                    source_attachment_id: None,
+                },
+                internal_name: row.get(4)?,
+                sha256_hex: row.get(5)?,
+                disposition: attachment_disposition_from_column(6, disposition)?,
+                transfer_encoding: row.get(7)?,
+            })
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(Into::into)
+}
+
+fn clone_draft_attachment_rows(
+    connection: &Connection,
+    account_id: &str,
+    source_draft_id: &str,
+    source_local_version: u64,
+    target_draft_id: &str,
+    target_local_version: u64,
+) -> Result<()> {
+    let target_count: u32 = connection.query_row(
+        "SELECT COUNT(*) FROM draft_attachment_refs
+         WHERE account_id = ?1 AND draft_id = ?2 AND draft_local_version = ?3",
+        params![
+            account_id,
+            target_draft_id,
+            u64_to_i64(target_local_version)
+        ],
+        |row| row.get(0),
+    )?;
+    if target_count > 0 {
+        let source = query_draft_attachments(
+            connection,
+            account_id,
+            source_draft_id,
+            source_local_version,
+        )?;
+        let target = query_draft_attachments(
+            connection,
+            account_id,
+            target_draft_id,
+            target_local_version,
+        )?;
+        if source == target {
+            return Ok(());
+        }
+        return Err(MailError::Validation(
+            "the draft conflict attachment set is already different".to_owned(),
+        ));
+    }
+    connection.execute(
+        "INSERT INTO draft_attachment_refs (
+             account_id, draft_id, draft_local_version, position,
+             blob_id, source_attachment_id
+         )
+         SELECT account_id, ?4, ?5, position, blob_id, source_attachment_id
+         FROM draft_attachment_refs
+         WHERE account_id = ?1 AND draft_id = ?2 AND draft_local_version = ?3
+         ORDER BY position",
+        params![
+            account_id,
+            source_draft_id,
+            u64_to_i64(source_local_version),
+            target_draft_id,
+            u64_to_i64(target_local_version),
+        ],
+    )?;
+    Ok(())
+}
+
+fn bind_outbox_item_attachment_rows(connection: &Connection, item: &OutboxItem) -> Result<bool> {
+    match (
+        item.draft_id.as_deref(),
+        item.draft_revision,
+        item.draft_local_version,
+    ) {
+        (Some(draft_id), Some(_), Some(local_version)) => bind_outbox_attachment_rows(
+            connection,
+            &item.account_id,
+            &item.id,
+            draft_id,
+            local_version,
+        ),
+        (None, None, None) => Ok(false),
+        _ => Err(MailError::Validation(
+            "an Outbox draft link must include both exact draft versions".to_owned(),
+        )),
+    }
+}
+
+fn bind_outbox_attachment_rows(
+    connection: &Connection,
+    account_id: &str,
+    outbox_id: &str,
+    draft_id: &str,
+    draft_local_version: u64,
+) -> Result<bool> {
+    if draft_local_version == 0 {
+        return Err(MailError::Validation(
+            "an Outbox attachment set requires a positive draft version".to_owned(),
+        ));
+    }
+    let link: Option<(Option<String>, Option<u64>, Option<u64>)> = connection
+        .query_row(
+            "SELECT draft_id, draft_revision, draft_local_version
+             FROM outbox WHERE account_id = ?1 AND id = ?2",
+            params![account_id, outbox_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get::<_, Option<i64>>(1)?
+                        .map(|value| decode_u64(1, value))
+                        .transpose()?,
+                    row.get::<_, Option<i64>>(2)?
+                        .map(|value| decode_u64(2, value))
+                        .transpose()?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((Some(linked_draft_id), Some(draft_revision), Some(linked_local_version))) = link
+    else {
+        return Err(MailError::Validation(
+            "the Outbox attachment binding is incomplete".to_owned(),
+        ));
+    };
+    if linked_draft_id != draft_id || linked_local_version != draft_local_version {
+        return Err(MailError::Validation(
+            "the Outbox attachment binding does not match its confirmed draft version".to_owned(),
+        ));
+    }
+    let existing: Option<(String, u64)> = connection
+        .query_row(
+            "SELECT draft_id, draft_local_version
+             FROM outbox_attachment_sets
+             WHERE account_id = ?1 AND outbox_id = ?2",
+            params![account_id, outbox_id],
+            |row| Ok((row.get(0)?, decode_u64(1, row.get(1)?)?)),
+        )
+        .optional()?;
+    if let Some(existing) = existing {
+        if existing == (draft_id.to_owned(), draft_local_version) {
+            return Ok(false);
+        }
+        return Err(MailError::Validation(
+            "the immutable Outbox attachment set is already bound".to_owned(),
+        ));
+    }
+    let exact_draft_exists: bool = connection.query_row(
+        "SELECT EXISTS(
+             SELECT 1 FROM drafts
+             WHERE account_id = ?1 AND id = ?2
+               AND revision = ?3 AND local_version = ?4
+               AND is_deleted = 0 AND status != 'sent'
+         )",
+        params![
+            account_id,
+            draft_id,
+            u64_to_i64(draft_revision),
+            u64_to_i64(draft_local_version),
+        ],
+        |row| row.get(0),
+    )?;
+    if !exact_draft_exists {
+        return Err(MailError::Validation(
+            "the confirmed draft attachment version is no longer current".to_owned(),
+        ));
+    }
+    connection.execute(
+        "INSERT INTO outbox_attachment_sets (
+             account_id, outbox_id, draft_id, draft_local_version
+         ) VALUES (?1, ?2, ?3, ?4)",
+        params![
+            account_id,
+            outbox_id,
+            draft_id,
+            u64_to_i64(draft_local_version),
+        ],
+    )?;
+    connection.execute(
+        "INSERT INTO outbox_attachment_refs (account_id, outbox_id, position, blob_id)
+         SELECT account_id, ?4, position, blob_id
+         FROM draft_attachment_refs
+         WHERE account_id = ?1 AND draft_id = ?2 AND draft_local_version = ?3
+         ORDER BY position",
+        params![
+            account_id,
+            draft_id,
+            u64_to_i64(draft_local_version),
+            outbox_id,
+        ],
+    )?;
+    Ok(true)
+}
+
+fn validate_forward_context(context: &ForwardContext) -> Result<()> {
+    if context.source_message_id.is_empty()
+        || context.source_message_id.len() > 256
+        || context.source_message_id.chars().any(char::is_control)
+    {
+        return Err(MailError::Validation(
+            "the forward source message identifier is invalid".to_owned(),
+        ));
+    }
+    let mut ids = HashSet::new();
+    for attachment in &context.source_attachments {
+        if attachment.id.is_empty()
+            || attachment.id.len() > 256
+            || attachment.id.chars().any(char::is_control)
+            || !ids.insert(attachment.id.as_str())
+            || attachment.safe_display_name.is_empty()
+            || attachment.safe_display_name.len() > 720
+            || attachment.mime_type.is_empty()
+            || attachment.mime_type.len() > 255
+            || attachment.size_bytes > i64::MAX as u64
+        {
+            return Err(MailError::Validation(
+                "the immutable forward attachment inventory is invalid".to_owned(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn insert_forward_context_rows(
+    connection: &Connection,
+    account_id: &str,
+    draft_id: &str,
+    context: &ForwardContext,
+) -> Result<()> {
+    connection.execute(
+        "INSERT INTO draft_forward_contexts (
+             account_id, draft_id, source_message_id, original_subject, from_json,
+             to_json, cc_json, sent_at, quoted_text, quoted_html, quoted_render_mode
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        params![
+            account_id,
+            draft_id,
+            context.source_message_id,
+            context.original_subject,
+            context.from.as_ref().map(encode_json).transpose()?,
+            encode_json(&context.to)?,
+            encode_json(&context.cc)?,
+            context.sent_at,
+            context.quoted_text,
+            context.quoted_html,
+            context
+                .quoted_render_mode
+                .map(forward_quoted_render_mode_as_str),
+        ],
+    )?;
+    for (position, attachment) in context.source_attachments.iter().enumerate() {
+        connection.execute(
+            "INSERT INTO draft_forward_source_attachments (
+                 account_id, draft_id, position, attachment_id, original_name,
+                 safe_display_name, mime_type, size_bytes, disposition
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                account_id,
+                draft_id,
+                usize_to_i64(position),
+                attachment.id,
+                attachment.original_name,
+                attachment.safe_display_name,
+                attachment.mime_type,
+                u64_to_i64(attachment.size_bytes),
+                attachment_disposition_as_str(attachment.disposition),
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+fn query_forward_context(
+    connection: &Connection,
+    account_id: &str,
+    draft_id: &str,
+) -> Result<Option<ForwardContext>> {
+    let context: Option<(
+        String,
+        String,
+        Option<String>,
+        String,
+        String,
+        Option<String>,
+        String,
+        Option<String>,
+        Option<String>,
+    )> = connection
+        .query_row(
+            "SELECT source_message_id, original_subject, from_json, to_json, cc_json,
+                    sent_at, quoted_text, quoted_html, quoted_render_mode
+             FROM draft_forward_contexts
+             WHERE account_id = ?1 AND draft_id = ?2",
+            params![account_id, draft_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                    row.get(8)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((
+        source_message_id,
+        original_subject,
+        from_json,
+        to_json,
+        cc_json,
+        sent_at,
+        quoted_text,
+        quoted_html,
+        quoted_render_mode,
+    )) = context
+    else {
+        return Ok(None);
+    };
+    let mut statement = connection.prepare(
+        "SELECT attachment_id, original_name, safe_display_name, mime_type,
+                size_bytes, disposition
+         FROM draft_forward_source_attachments
+         WHERE account_id = ?1 AND draft_id = ?2
+         ORDER BY position",
+    )?;
+    let source_attachments = statement
+        .query_map(params![account_id, draft_id], |row| {
+            let disposition = row.get::<_, String>(5)?;
+            Ok(AttachmentMeta {
+                id: row.get(0)?,
+                original_name: row.get(1)?,
+                safe_display_name: row.get(2)?,
+                mime_type: row.get(3)?,
+                size_bytes: decode_u64(4, row.get(4)?)?,
+                disposition: attachment_disposition_from_column(5, disposition)?,
+            })
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(Some(ForwardContext {
+        source_message_id,
+        original_subject,
+        from: from_json
+            .as_deref()
+            .map(|value| decode_json(2, value))
+            .transpose()?,
+        to: decode_json(3, &to_json)?,
+        cc: decode_json(4, &cc_json)?,
+        sent_at,
+        quoted_text,
+        quoted_html,
+        quoted_render_mode: quoted_render_mode
+            .map(|value| forward_quoted_render_mode_from_column(8, value))
+            .transpose()?,
+        source_attachments,
+    }))
+}
+
+fn clone_forward_context_rows(
+    connection: &Connection,
+    account_id: &str,
+    source_draft_id: &str,
+    target_draft_id: &str,
+) -> Result<()> {
+    if let Some(context) = query_forward_context(connection, account_id, source_draft_id)? {
+        if let Some(existing) = query_forward_context(connection, account_id, target_draft_id)? {
+            if existing == context {
+                return Ok(());
+            }
+            return Err(MailError::Validation(
+                "the draft conflict forward context is already different".to_owned(),
+            ));
+        }
+        insert_forward_context_rows(connection, account_id, target_draft_id, &context)?;
+    }
+    Ok(())
+}
+
+fn attachment_disposition_as_str(disposition: AttachmentDisposition) -> &'static str {
+    match disposition {
+        AttachmentDisposition::Attachment => "attachment",
+        AttachmentDisposition::Inline => "inline",
+    }
+}
+
+fn attachment_disposition_from_column(
+    index: usize,
+    value: String,
+) -> rusqlite::Result<AttachmentDisposition> {
+    match value.as_str() {
+        "attachment" => Ok(AttachmentDisposition::Attachment),
+        "inline" => Ok(AttachmentDisposition::Inline),
+        _ => Err(invalid_enum_column(index, &value)),
+    }
+}
+
+fn forward_quoted_render_mode_as_str(mode: ForwardQuotedRenderMode) -> &'static str {
+    match mode {
+        ForwardQuotedRenderMode::Plain => "plain",
+        ForwardQuotedRenderMode::NativeHtml => "native_html",
+        ForwardQuotedRenderMode::IsolatedHtml => "isolated_html",
+    }
+}
+
+fn forward_quoted_render_mode_from_column(
+    index: usize,
+    value: String,
+) -> rusqlite::Result<ForwardQuotedRenderMode> {
+    match value.as_str() {
+        "plain" => Ok(ForwardQuotedRenderMode::Plain),
+        "native_html" => Ok(ForwardQuotedRenderMode::NativeHtml),
+        "isolated_html" => Ok(ForwardQuotedRenderMode::IsolatedHtml),
+        _ => Err(invalid_enum_column(index, &value)),
+    }
 }
 
 fn validate_outbox_draft_link(item: &OutboxItem) -> Result<()> {
@@ -1891,6 +7817,32 @@ fn validate_outbox_draft_link(item: &OutboxItem) -> Result<()> {
     Ok(())
 }
 
+fn validate_new_outbox_recipient_groups(item: &OutboxItem) -> Result<()> {
+    let groups = item.recipient_groups.as_ref().ok_or_else(|| {
+        MailError::Validation(
+            "a new Outbox item requires exact To, Cc and Bcc recipient grouping".to_owned(),
+        )
+    })?;
+    let request = ComposeRequest {
+        to: groups.to.clone(),
+        cc: groups.cc.clone(),
+        bcc: groups.bcc.clone(),
+        subject: String::new(),
+        body_text: String::new(),
+        format: ComposeFormat::default(),
+        reply_context: None,
+    };
+    request.validate()?;
+    let (_, normalized_recipients) =
+        build_envelope("outbox-validation@mine-mail.invalid", &request)?;
+    if normalized_recipients != item.recipients {
+        return Err(MailError::Validation(
+            "the grouped Outbox recipients do not match its immutable SMTP envelope".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 /// Revalidates draft-version send safety while holding an IMMEDIATE write
 /// transaction. This closes the race between the earlier UI/core check and a
 /// concurrent manual retry in another process.
@@ -1903,6 +7855,24 @@ fn prepare_new_draft_send(
     else {
         return Ok(());
     };
+    let snapshot =
+        query_draft_version_snapshot(transaction, &item.account_id, draft_id, draft_local_version)?
+            .ok_or_else(|| {
+                MailError::Validation(
+                    "the confirmed draft version has no immutable recipient snapshot".to_owned(),
+                )
+            })?;
+    if Some(snapshot.protocol_revision) != item.draft_revision {
+        return Err(MailError::Validation(
+            "the Outbox protocol revision does not match its draft snapshot".to_owned(),
+        ));
+    }
+    let expected_groups = OutboxRecipientGroups::from(&snapshot.request);
+    if item.recipient_groups.as_ref() != Some(&expected_groups) {
+        return Err(MailError::Validation(
+            "the grouped Outbox recipients do not match its confirmed draft version".to_owned(),
+        ));
+    }
 
     let sql = format!(
         "SELECT {OUTBOX_COLUMNS} FROM outbox
@@ -1952,42 +7922,202 @@ fn prepare_new_draft_send(
 
 fn insert_draft_record_if_absent(connection: &Connection, record: &DraftRecord) -> Result<usize> {
     let draft = &record.draft;
-    connection
-        .execute(
-            "INSERT INTO drafts (
-                 id, account_id, to_json, cc_json, bcc_json, subject, body_text, reply_context_json,
-             status, remote_mailbox, remote_uid, created_at, updated_at, raw_rfc822,
+    let inserted = connection.execute(
+        "INSERT INTO drafts (
+                 id, account_id, to_json, cc_json, bcc_json, subject, body_text,
+                 compose_format_json, reply_context_json, status, remote_mailbox, remote_uid,
+                 created_at, updated_at, raw_rfc822,
                  local_version, has_unsupported_content, revision, synced_revision,
                  remote_uid_validity, is_deleted
              ) VALUES (
                  ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-                 ?14, ?15, ?16, ?17, ?18, ?19, ?20
+                 ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21
              )
              ON CONFLICT(id) DO NOTHING",
-            params![
-                draft.id,
-                draft.account_id,
-                encode_json(&draft.to)?,
-                encode_json(&draft.cc)?,
-                encode_json(&draft.bcc)?,
-                draft.subject,
-                draft.body_text,
-                draft.reply_context.as_ref().map(encode_json).transpose()?,
-                draft.status,
-                draft.remote_mailbox,
-                draft.remote_uid,
-                draft.created_at,
-                draft.updated_at,
-                draft.raw_rfc822,
-                u64_to_i64(record.local_version),
-                draft.has_unsupported_content,
-                u64_to_i64(record.revision),
-                u64_to_i64(record.synced_revision),
-                record.remote_uid_validity,
-                record.is_deleted,
-            ],
+        params![
+            draft.id,
+            draft.account_id,
+            encode_json(&draft.to)?,
+            encode_json(&draft.cc)?,
+            encode_json(&draft.bcc)?,
+            draft.subject,
+            draft.body_text,
+            encode_json(&draft.format)?,
+            draft.reply_context.as_ref().map(encode_json).transpose()?,
+            draft.status,
+            draft.remote_mailbox,
+            draft.remote_uid,
+            draft.created_at,
+            draft.updated_at,
+            draft.raw_rfc822,
+            u64_to_i64(record.local_version),
+            draft.has_unsupported_content,
+            u64_to_i64(record.revision),
+            u64_to_i64(record.synced_revision),
+            record.remote_uid_validity,
+            record.is_deleted,
+        ],
+    )?;
+    if inserted == 1 {
+        insert_draft_version_snapshot(connection, record)?;
+    }
+    Ok(inserted)
+}
+
+fn insert_draft_version_snapshot(connection: &Connection, record: &DraftRecord) -> Result<()> {
+    if record.local_version == 0
+        || record.revision == 0
+        || record.local_version != record.draft.local_version
+    {
+        return Err(MailError::Validation(
+            "the immutable draft version snapshot is invalid".to_owned(),
+        ));
+    }
+    let changed = connection.execute(
+        "INSERT INTO draft_version_snapshots (
+             account_id, draft_id, draft_local_version, protocol_revision,
+             to_json, cc_json, bcc_json, subject, body_text,
+             compose_format_json, reply_context_json, has_unsupported_content
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+        params![
+            record.draft.account_id,
+            record.draft.id,
+            u64_to_i64(record.local_version),
+            u64_to_i64(record.revision),
+            encode_json(&record.draft.to)?,
+            encode_json(&record.draft.cc)?,
+            encode_json(&record.draft.bcc)?,
+            record.draft.subject,
+            record.draft.body_text,
+            encode_json(&record.draft.format)?,
+            record
+                .draft
+                .reply_context
+                .as_ref()
+                .map(encode_json)
+                .transpose()?,
+            record.draft.has_unsupported_content,
+        ],
+    )?;
+    if changed != 1 {
+        return Err(MailError::Database(rusqlite::Error::ExecuteReturnedResults));
+    }
+    Ok(())
+}
+
+fn insert_current_draft_version_snapshot(
+    connection: &Connection,
+    account_id: &str,
+    draft_id: &str,
+) -> Result<()> {
+    let changed = connection.execute(
+        "INSERT INTO draft_version_snapshots (
+             account_id, draft_id, draft_local_version, protocol_revision,
+             to_json, cc_json, bcc_json, subject, body_text,
+             compose_format_json, reply_context_json, has_unsupported_content
+         )
+         SELECT account_id, id, local_version, revision,
+                to_json, cc_json, bcc_json, subject, body_text,
+                compose_format_json, reply_context_json, has_unsupported_content
+         FROM drafts
+         WHERE account_id = ?1 AND id = ?2",
+        params![account_id, draft_id],
+    )?;
+    if changed != 1 {
+        return Err(MailError::Validation(
+            "the current draft version could not be snapshotted".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn query_draft_version_snapshot(
+    connection: &Connection,
+    account_id: &str,
+    draft_id: &str,
+    local_version: u64,
+) -> Result<Option<DraftVersionSnapshot>> {
+    let sql = format!(
+        "SELECT {DRAFT_VERSION_SNAPSHOT_COLUMNS}
+         FROM draft_version_snapshots
+         WHERE account_id = ?1 AND draft_id = ?2 AND draft_local_version = ?3"
+    );
+    connection
+        .query_row(
+            &sql,
+            params![account_id, draft_id, u64_to_i64(local_version)],
+            row_to_draft_version_snapshot,
         )
+        .optional()
         .map_err(Into::into)
+}
+
+fn clone_draft_version_forward_context_ref(
+    connection: &Connection,
+    account_id: &str,
+    source_draft_id: &str,
+    source_local_version: u64,
+    target_draft_id: &str,
+    target_local_version: u64,
+) -> Result<()> {
+    connection.execute(
+        "INSERT OR IGNORE INTO draft_version_forward_context_refs (
+             account_id, draft_id, draft_local_version
+         )
+         SELECT account_id, ?4, ?5
+         FROM draft_version_forward_context_refs
+         WHERE account_id = ?1 AND draft_id = ?2 AND draft_local_version = ?3",
+        params![
+            account_id,
+            source_draft_id,
+            u64_to_i64(source_local_version),
+            target_draft_id,
+            u64_to_i64(target_local_version),
+        ],
+    )?;
+    Ok(())
+}
+
+fn attach_forward_context_to_all_versions(
+    connection: &Connection,
+    account_id: &str,
+    draft_id: &str,
+) -> Result<()> {
+    connection.execute(
+        "INSERT OR IGNORE INTO draft_version_forward_context_refs (
+             account_id, draft_id, draft_local_version
+         )
+         SELECT s.account_id, s.draft_id, s.draft_local_version
+         FROM draft_version_snapshots s
+         JOIN draft_forward_contexts c
+           ON c.account_id = s.account_id AND c.draft_id = s.draft_id
+         WHERE s.account_id = ?1 AND s.draft_id = ?2",
+        params![account_id, draft_id],
+    )?;
+    Ok(())
+}
+
+fn attach_forward_context_to_current_version(
+    connection: &Connection,
+    account_id: &str,
+    draft_id: &str,
+) -> Result<()> {
+    connection.execute(
+        "INSERT OR IGNORE INTO draft_version_forward_context_refs (
+             account_id, draft_id, draft_local_version
+         )
+         SELECT s.account_id, s.draft_id, s.draft_local_version
+         FROM drafts d
+         JOIN draft_version_snapshots s
+           ON s.account_id = d.account_id
+          AND s.draft_id = d.id
+          AND s.draft_local_version = d.local_version
+         JOIN draft_forward_contexts c
+           ON c.account_id = d.account_id AND c.draft_id = d.id
+         WHERE d.account_id = ?1 AND d.id = ?2",
+        params![account_id, draft_id],
+    )?;
+    Ok(())
 }
 
 fn encode_json<T: Serialize + ?Sized>(value: &T) -> Result<String> {
@@ -2033,6 +8163,7 @@ fn row_to_message(row: &Row<'_>) -> rusqlite::Result<InboxMessage> {
             .transpose()?,
         to: decode_json(9, &row.get::<_, String>(9)?)?,
         cc: decode_json(10, &row.get::<_, String>(10)?)?,
+        bcc: decode_json(22, &row.get::<_, String>(22)?)?,
         sent_at: row.get(11)?,
         internal_date: row.get(12)?,
         flags: decode_json(13, &row.get::<_, String>(13)?)?,
@@ -2048,27 +8179,61 @@ fn row_to_message(row: &Row<'_>) -> rusqlite::Result<InboxMessage> {
 }
 
 fn row_to_draft(row: &Row<'_>) -> rusqlite::Result<Draft> {
-    let reply_context_json: Option<String> = row.get(7)?;
+    let compose_format_json: String = row.get(7)?;
+    let reply_context_json: Option<String> = row.get(8)?;
     Ok(Draft {
         id: row.get(0)?,
-        local_version: decode_u64(14, row.get(14)?)?,
-        has_unsupported_content: row.get(15)?,
+        local_version: decode_u64(15, row.get(15)?)?,
+        has_unsupported_content: row.get(16)?,
         account_id: row.get(1)?,
         to: decode_json(2, &row.get::<_, String>(2)?)?,
         cc: decode_json(3, &row.get::<_, String>(3)?)?,
         bcc: decode_json(4, &row.get::<_, String>(4)?)?,
         subject: row.get(5)?,
         body_text: row.get(6)?,
+        format: if compose_format_json.trim().is_empty() {
+            ComposeFormat::default()
+        } else {
+            decode_json(7, &compose_format_json)?
+        },
         reply_context: reply_context_json
             .as_deref()
-            .map(|json| decode_json(7, json))
+            .map(|json| decode_json(8, json))
             .transpose()?,
-        status: row.get(8)?,
-        remote_mailbox: row.get(9)?,
-        remote_uid: row.get(10)?,
-        created_at: row.get(11)?,
-        updated_at: row.get(12)?,
-        raw_rfc822: row.get(13)?,
+        status: row.get(9)?,
+        remote_mailbox: row.get(10)?,
+        remote_uid: row.get(11)?,
+        created_at: row.get(12)?,
+        updated_at: row.get(13)?,
+        raw_rfc822: row.get(14)?,
+    })
+}
+
+fn row_to_draft_version_snapshot(row: &Row<'_>) -> rusqlite::Result<DraftVersionSnapshot> {
+    let compose_format_json: String = row.get(9)?;
+    let reply_context_json: Option<String> = row.get(10)?;
+    Ok(DraftVersionSnapshot {
+        account_id: row.get(0)?,
+        draft_id: row.get(1)?,
+        local_version: decode_u64(2, row.get(2)?)?,
+        protocol_revision: decode_u64(3, row.get(3)?)?,
+        request: ComposeRequest {
+            to: decode_json(4, &row.get::<_, String>(4)?)?,
+            cc: decode_json(5, &row.get::<_, String>(5)?)?,
+            bcc: decode_json(6, &row.get::<_, String>(6)?)?,
+            subject: row.get(7)?,
+            body_text: row.get(8)?,
+            format: if compose_format_json.trim().is_empty() {
+                ComposeFormat::default()
+            } else {
+                decode_json(9, &compose_format_json)?
+            },
+            reply_context: reply_context_json
+                .as_deref()
+                .map(|json| decode_json(10, json))
+                .transpose()?,
+        },
+        has_unsupported_content: row.get(11)?,
     })
 }
 
@@ -2078,10 +8243,10 @@ fn row_to_draft_record(row: &Row<'_>) -> rusqlite::Result<DraftRecord> {
     Ok(DraftRecord {
         draft,
         local_version,
-        revision: decode_u64(16, row.get(16)?)?,
-        synced_revision: decode_u64(17, row.get(17)?)?,
-        remote_uid_validity: row.get(18)?,
-        is_deleted: row.get(19)?,
+        revision: decode_u64(17, row.get(17)?)?,
+        synced_revision: decode_u64(18, row.get(18)?)?,
+        remote_uid_validity: row.get(19)?,
+        is_deleted: row.get(20)?,
     })
 }
 
@@ -2105,6 +8270,11 @@ fn row_to_outbox(row: &Row<'_>) -> rusqlite::Result<OutboxItem> {
         draft_revision,
         draft_local_version,
         recipients: decode_json(5, &row.get::<_, String>(5)?)?,
+        recipient_groups: row
+            .get::<_, Option<String>>(12)?
+            .as_deref()
+            .map(|json| decode_json(12, json))
+            .transpose()?,
         status,
         attempts: row.get(7)?,
         last_error: row.get(8)?,
@@ -2135,16 +8305,28 @@ mod tests {
     use std::{
         collections::HashSet,
         fs,
+        path::Path,
         sync::{Arc, Barrier},
         thread,
     };
 
-    use rusqlite::Connection;
+    use rusqlite::{Connection, params};
     use tempfile::TempDir;
 
-    use super::{DraftRecord, MailboxState, Repository, migrate_message_previews_v10};
+    use super::{
+        DraftRecord, MailboxHistory, MailboxState, NewDraftAttachment, Repository,
+        migrate_message_previews_v10,
+    };
     use crate::{
-        AccountConfig, Draft, InboxMessage, MailAddress, MailError, OutboxItem, OutboxStatus,
+        AccountConfig, AttachmentDisposition, AttachmentMeta, ComposeFormat, Draft, ForwardContext,
+        ForwardQuotedRenderMode, InboxMessage, MailAddress, MailError, OutboxItem,
+        OutboxRecipientGroups, OutboxStatus, StationeryTheme,
+        managed_attachments::ImportedManagedAttachment,
+        models::{
+            MailboxCapability, MailboxCapabilityStatus, MailboxCapabilityUnavailableReason,
+            MailboxRole, MessageActionKind, MessageMutationErrorKind, MessagePageCursor,
+            MutationStatus, RemoteHistoryState, RemoteMutationPhase, SystemFlagKind,
+        },
     };
 
     fn setup() -> (TempDir, Repository, AccountConfig) {
@@ -2160,6 +8342,293 @@ mod tests {
             .initialize_account(&account)
             .expect("account row");
         (directory, repository, account)
+    }
+
+    fn create_legacy_core_fixture(path: &Path) -> Connection {
+        let connection = Connection::open(path).expect("legacy fixture database");
+        connection
+            .execute_batch(
+                "PRAGMA foreign_keys = ON;
+                 CREATE TABLE accounts (
+                     id TEXT PRIMARY KEY NOT NULL,
+                     email TEXT NOT NULL,
+                     created_at TEXT NOT NULL,
+                     updated_at TEXT NOT NULL
+                 );
+                 CREATE TABLE mailboxes (
+                     account_id TEXT NOT NULL,
+                     name TEXT NOT NULL,
+                     uid_validity INTEGER,
+                     uid_next INTEGER,
+                     highest_uid INTEGER,
+                     highest_modseq TEXT,
+                     last_synced_at TEXT,
+                     PRIMARY KEY (account_id, name),
+                     FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
+                 );
+                 CREATE TABLE messages (
+                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                     account_id TEXT NOT NULL,
+                     mailbox TEXT NOT NULL,
+                     uid INTEGER NOT NULL,
+                     message_id TEXT,
+                     in_reply_to_json TEXT NOT NULL DEFAULT '[]',
+                     references_json TEXT NOT NULL DEFAULT '[]',
+                     subject TEXT NOT NULL DEFAULT '',
+                     sender_json TEXT,
+                     to_json TEXT NOT NULL DEFAULT '[]',
+                     cc_json TEXT NOT NULL DEFAULT '[]',
+                     sent_at TEXT,
+                     internal_date TEXT,
+                     flags_json TEXT NOT NULL DEFAULT '[]',
+                     size_bytes INTEGER NOT NULL DEFAULT 0,
+                     preview TEXT NOT NULL DEFAULT '',
+                     preview_fetched INTEGER NOT NULL DEFAULT 0,
+                     body_text TEXT,
+                     body_html TEXT,
+                     attachment_names_json TEXT NOT NULL DEFAULT '[]',
+                     body_fetched INTEGER NOT NULL DEFAULT 0,
+                     raw_rfc822 BLOB NOT NULL DEFAULT X'',
+                     synced_at TEXT NOT NULL,
+                     UNIQUE (account_id, mailbox, uid),
+                     FOREIGN KEY (account_id, mailbox)
+                         REFERENCES mailboxes(account_id, name) ON DELETE CASCADE
+                 );
+                 CREATE TABLE drafts (
+                     id TEXT PRIMARY KEY NOT NULL,
+                     account_id TEXT NOT NULL,
+                     to_json TEXT NOT NULL DEFAULT '[]',
+                     cc_json TEXT NOT NULL DEFAULT '[]',
+                     bcc_json TEXT NOT NULL DEFAULT '[]',
+                     subject TEXT NOT NULL DEFAULT '',
+                     body_text TEXT NOT NULL DEFAULT '',
+                     reply_context_json TEXT,
+                     status TEXT NOT NULL,
+                     remote_mailbox TEXT,
+                     remote_uid INTEGER,
+                     created_at TEXT NOT NULL,
+                     updated_at TEXT NOT NULL,
+                     raw_rfc822 BLOB NOT NULL DEFAULT X'',
+                     local_version INTEGER NOT NULL DEFAULT 1,
+                     has_unsupported_content INTEGER NOT NULL DEFAULT 0,
+                     revision INTEGER NOT NULL DEFAULT 1,
+                     synced_revision INTEGER NOT NULL DEFAULT 0,
+                     remote_uid_validity INTEGER,
+                     is_deleted INTEGER NOT NULL DEFAULT 0,
+                     FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
+                 );
+                 INSERT INTO accounts (
+                     id, email, created_at, updated_at
+                 ) VALUES (
+                     'fixture', 'fixture@example.invalid',
+                     '2026-07-01T00:00:00Z', '2026-07-01T00:00:00Z'
+                 );
+                 INSERT INTO mailboxes (
+                     account_id, name, uid_validity, uid_next, highest_uid,
+                     highest_modseq, last_synced_at
+                 ) VALUES (
+                     'fixture', 'INBOX', 88, 43, 42, NULL, '2026-07-01T00:00:00Z'
+                 );
+                 INSERT INTO messages (
+                     account_id, mailbox, uid, message_id, in_reply_to_json,
+                     references_json, subject, sender_json, to_json, cc_json,
+                     sent_at, internal_date, flags_json, size_bytes, preview,
+                     preview_fetched, body_text, body_html, attachment_names_json,
+                     body_fetched, raw_rfc822, synced_at
+                 ) VALUES (
+                     'fixture', 'INBOX', 42, 'fixture-42@example.invalid', '[]',
+                     '[]', 'Fixture', NULL, '[]', '[]', NULL,
+                     '2026-07-01T00:00:00Z', '[\"\\\\Seen\"]', 10, 'fixture',
+                     1, NULL, NULL, '[]', 0, X'', '2026-07-01T00:00:00Z'
+                 );",
+            )
+            .expect("legacy core schema");
+        connection
+    }
+
+    fn create_real_pre_v12_fixture(path: &Path, version: u32, compose_json: Option<&str>) {
+        let connection = create_legacy_core_fixture(path);
+        if compose_json.is_some() {
+            connection
+                .execute_batch(
+                    "ALTER TABLE drafts
+                         ADD COLUMN compose_format_json TEXT NOT NULL DEFAULT '{}';",
+                )
+                .expect("v11 compose column");
+        }
+        connection
+            .execute_batch(
+                "CREATE TABLE pending_seen_updates (
+                     account_id TEXT NOT NULL,
+                     mailbox TEXT NOT NULL,
+                     uid INTEGER NOT NULL,
+                     created_at TEXT NOT NULL,
+                     PRIMARY KEY (account_id, mailbox, uid),
+                     FOREIGN KEY (account_id, mailbox, uid)
+                         REFERENCES messages(account_id, mailbox, uid) ON DELETE CASCADE
+                 );
+                 CREATE TABLE pending_flagged_updates (
+                     account_id TEXT NOT NULL,
+                     mailbox TEXT NOT NULL,
+                     uid INTEGER NOT NULL,
+                     desired INTEGER NOT NULL,
+                     revision INTEGER NOT NULL,
+                     updated_at TEXT NOT NULL,
+                     PRIMARY KEY (account_id, mailbox, uid),
+                     FOREIGN KEY (account_id, mailbox, uid)
+                         REFERENCES messages(account_id, mailbox, uid) ON DELETE CASCADE
+                 );
+                 INSERT INTO pending_seen_updates (
+                     account_id, mailbox, uid, created_at
+                 ) VALUES (
+                     'fixture', 'INBOX', 42, '2026-07-01T00:01:00Z'
+                 );
+                 INSERT INTO pending_flagged_updates (
+                     account_id, mailbox, uid, desired, revision, updated_at
+                 ) VALUES (
+                     'fixture', 'INBOX', 42, 0, 4, '2026-07-01T00:02:00Z'
+                 );",
+            )
+            .expect("pre-v12 flag queues");
+        if let Some(compose_json) = compose_json {
+            connection
+                .execute(
+                    "INSERT INTO drafts (
+                         id, account_id, subject, body_text, compose_format_json,
+                         status, created_at, updated_at, local_version,
+                         has_unsupported_content, revision, synced_revision, is_deleted
+                     ) VALUES (
+                         'fixture-draft', 'fixture', 'Fixture draft', 'legacy body', ?1,
+                         'local', '2026-07-01T00:00:00Z', '2026-07-01T00:00:00Z',
+                         3, 0, 3, 0, 0
+                     )",
+                    params![compose_json],
+                )
+                .expect("v11 draft");
+        } else {
+            connection
+                .execute_batch(
+                    "INSERT INTO drafts (
+                         id, account_id, subject, body_text, status, created_at,
+                         updated_at, local_version, has_unsupported_content,
+                         revision, synced_revision, is_deleted
+                     ) VALUES (
+                         'fixture-draft', 'fixture', 'Fixture draft', 'legacy body',
+                         'local', '2026-07-01T00:00:00Z', '2026-07-01T00:00:00Z',
+                         3, 0, 3, 0, 0
+                     );",
+                )
+                .expect("v10 draft");
+        }
+        connection
+            .pragma_update(None, "user_version", version)
+            .expect("legacy schema version");
+    }
+
+    fn create_real_intermediate_v12_fixture(path: &Path, compose_json: &str) {
+        let connection = create_legacy_core_fixture(path);
+        connection
+            .execute_batch(
+                "ALTER TABLE mailboxes ADD COLUMN history_before_uid INTEGER;
+                 ALTER TABLE mailboxes
+                     ADD COLUMN history_complete INTEGER NOT NULL DEFAULT 0;
+                 ALTER TABLE mailboxes ADD COLUMN remote_total INTEGER;
+                 ALTER TABLE drafts
+                     ADD COLUMN compose_format_json TEXT NOT NULL DEFAULT '{}';
+                 CREATE TABLE pending_seen_updates (
+                     operation_id TEXT NOT NULL UNIQUE,
+                     account_id TEXT NOT NULL,
+                     mailbox TEXT NOT NULL,
+                     source_uid_validity INTEGER NOT NULL,
+                     uid INTEGER NOT NULL,
+                     desired INTEGER NOT NULL,
+                     revision INTEGER NOT NULL,
+                     status TEXT NOT NULL,
+                     error_kind TEXT,
+                     updated_at TEXT NOT NULL,
+                     PRIMARY KEY (account_id, mailbox, uid),
+                     FOREIGN KEY (account_id, mailbox, uid)
+                         REFERENCES messages(account_id, mailbox, uid) ON DELETE CASCADE
+                 );
+                 CREATE TABLE pending_flagged_updates (
+                     operation_id TEXT NOT NULL UNIQUE,
+                     account_id TEXT NOT NULL,
+                     mailbox TEXT NOT NULL,
+                     source_uid_validity INTEGER NOT NULL,
+                     uid INTEGER NOT NULL,
+                     desired INTEGER NOT NULL,
+                     revision INTEGER NOT NULL,
+                     status TEXT NOT NULL,
+                     error_kind TEXT,
+                     updated_at TEXT NOT NULL,
+                     PRIMARY KEY (account_id, mailbox, uid),
+                     FOREIGN KEY (account_id, mailbox, uid)
+                         REFERENCES messages(account_id, mailbox, uid) ON DELETE CASCADE
+                 );
+                 CREATE TABLE pending_message_actions (
+                     operation_id TEXT PRIMARY KEY NOT NULL,
+                     account_id TEXT NOT NULL,
+                     source_mailbox TEXT NOT NULL,
+                     source_uid_validity INTEGER NOT NULL,
+                     source_uid INTEGER NOT NULL,
+                     source_role TEXT NOT NULL,
+                     destination_role TEXT,
+                     kind TEXT NOT NULL,
+                     revision INTEGER NOT NULL,
+                     status TEXT NOT NULL,
+                     source_message_id TEXT,
+                     source_internal_date TEXT,
+                     source_size_bytes INTEGER NOT NULL,
+                     error_kind TEXT,
+                     created_at TEXT NOT NULL,
+                     updated_at TEXT NOT NULL,
+                     UNIQUE (account_id, source_mailbox, source_uid_validity, source_uid),
+                     FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
+                 );
+                 INSERT INTO pending_seen_updates (
+                     operation_id, account_id, mailbox, source_uid_validity, uid,
+                     desired, revision, status, error_kind, updated_at
+                 ) VALUES (
+                     'seen-intermediate', 'fixture', 'INBOX', 88, 42,
+                     1, 5, 'in_flight', NULL, '2026-07-01T00:03:00Z'
+                 );
+                 INSERT INTO pending_flagged_updates (
+                     operation_id, account_id, mailbox, source_uid_validity, uid,
+                     desired, revision, status, error_kind, updated_at
+                 ) VALUES (
+                     'flagged-intermediate', 'fixture', 'INBOX', 88, 42,
+                     0, 6, 'pending', NULL, '2026-07-01T00:04:00Z'
+                 );
+                 INSERT INTO pending_message_actions (
+                     operation_id, account_id, source_mailbox, source_uid_validity,
+                     source_uid, source_role, destination_role, kind, revision, status,
+                     source_message_id, source_internal_date, source_size_bytes,
+                     error_kind, created_at, updated_at
+                 ) VALUES (
+                     'action-intermediate', 'fixture', 'INBOX', 88, 42,
+                     'inbox', 'archive', 'archive', 3, 'in_flight',
+                     'fixture-42@example.invalid', '2026-07-01T00:00:00Z', 10,
+                     NULL, '2026-07-01T00:05:00Z', '2026-07-01T00:05:00Z'
+                 );",
+            )
+            .expect("intermediate v12 schema");
+        connection
+            .execute(
+                "INSERT INTO drafts (
+                     id, account_id, subject, body_text, compose_format_json,
+                     status, created_at, updated_at, local_version,
+                     has_unsupported_content, revision, synced_revision, is_deleted
+                 ) VALUES (
+                     'fixture-draft', 'fixture', 'Fixture draft', 'legacy body', ?1,
+                     'local', '2026-07-01T00:00:00Z', '2026-07-01T00:00:00Z',
+                     3, 0, 3, 0, 0
+                 )",
+                params![compose_json],
+            )
+            .expect("intermediate v12 draft");
+        connection
+            .pragma_update(None, "user_version", 12)
+            .expect("intermediate schema version");
     }
 
     fn message(account_id: &str, body_fetched: bool) -> InboxMessage {
@@ -2178,6 +8647,7 @@ mod tests {
             }),
             to: vec![],
             cc: vec![],
+            bcc: vec![],
             sent_at: Some("2026-07-14T01:00:00Z".to_owned()),
             internal_date: Some("2026-07-14T01:00:01Z".to_owned()),
             flags: vec!["\\Seen".to_owned()],
@@ -2194,6 +8664,57 @@ mod tests {
             },
             synced_at: "2026-07-14T01:00:02Z".to_owned(),
         }
+    }
+
+    fn initialize_mailbox(
+        repository: &Repository,
+        account_id: &str,
+        role: MailboxRole,
+        mailbox: &str,
+        uid_validity: u32,
+    ) {
+        repository
+            .assign_semantic_mailbox_role(account_id, role, mailbox)
+            .expect("mailbox role");
+        repository
+            .upsert_mailbox_state(&MailboxState {
+                account_id: account_id.to_owned(),
+                mailbox: mailbox.to_owned(),
+                uid_validity: Some(uid_validity),
+                uid_next: None,
+                highest_uid: None,
+                highest_modseq: None,
+                last_synced_at: None,
+            })
+            .expect("mailbox state");
+    }
+
+    fn message_with_identity(
+        account_id: &str,
+        mailbox: &str,
+        uid: u32,
+        internal_date: &str,
+        subject: &str,
+    ) -> InboxMessage {
+        let mut mail = message(account_id, false);
+        mail.mailbox = mailbox.to_owned();
+        mail.uid = uid;
+        mail.message_id = Some(format!("message-{uid}@example.com"));
+        mail.internal_date = Some(internal_date.to_owned());
+        mail.subject = subject.to_owned();
+        mail
+    }
+
+    fn secondary_account(primary: &AccountConfig) -> AccountConfig {
+        AccountConfig::new(
+            "secondary",
+            "secondary@163.com",
+            "secondary-not-real-secret",
+            primary.imap.clone(),
+            primary.smtp.clone(),
+            primary.smtp_security,
+        )
+        .expect("secondary account")
     }
 
     fn draft_record(
@@ -2214,6 +8735,7 @@ mod tests {
                 bcc: vec![],
                 subject: subject.to_owned(),
                 body_text: format!("body for {subject}"),
+                format: Default::default(),
                 reply_context: None,
                 status: if revision == synced_revision {
                     "synced".to_owned()
@@ -2247,6 +8769,7 @@ mod tests {
             draft_revision: Some(draft.revision),
             draft_local_version: Some(draft.local_version),
             recipients: draft.draft.to.clone(),
+            recipient_groups: Some(OutboxRecipientGroups::from(&draft.draft.compose_request())),
             status,
             attempts,
             last_error: None,
@@ -2254,6 +8777,52 @@ mod tests {
             sent_at: None,
             raw_rfc822: format!("exact bytes for {id}").into_bytes(),
         }
+    }
+
+    fn new_attachment(name: &str, source_attachment_id: Option<&str>) -> NewDraftAttachment {
+        let id = uuid::Uuid::now_v7().to_string();
+        NewDraftAttachment {
+            imported: ImportedManagedAttachment {
+                internal_name: format!("{id}.blob"),
+                id,
+                name: name.to_owned(),
+                mime_type: if name.ends_with(".txt") {
+                    "text/plain".to_owned()
+                } else {
+                    "application/octet-stream".to_owned()
+                },
+                size_bytes: name.len() as u64,
+                sha256_hex: "00".repeat(32),
+            },
+            source_attachment_id: source_attachment_id.map(str::to_owned),
+        }
+    }
+
+    fn clear_attachment_digest_as_legacy_fixture(
+        repository: &Repository,
+        account_id: &str,
+        blob_id: &str,
+    ) {
+        let connection = repository.connection().expect("legacy fixture connection");
+        connection
+            .execute_batch(
+                "DROP TRIGGER IF EXISTS trg_managed_attachment_blobs_immutable;
+                 DROP TRIGGER IF EXISTS trg_managed_attachment_digest_once;",
+            )
+            .expect("disable current digest guards for legacy fixture");
+        assert_eq!(
+            connection
+                .execute(
+                    "UPDATE managed_attachment_blobs
+                     SET sha256_hex = NULL
+                     WHERE account_id = ?1 AND id = ?2",
+                    params![account_id, blob_id],
+                )
+                .expect("clear legacy digest"),
+            1
+        );
+        super::migrate_managed_attachment_digests_v17(&connection)
+            .expect("restore current digest guards");
     }
 
     #[test]
@@ -2288,8 +8857,294 @@ mod tests {
     }
 
     #[test]
+    fn message_public_id_survives_upsert_and_repository_reopen() {
+        let directory = TempDir::new().expect("temporary directory");
+        let path = directory.path().join("stable-public-id.sqlite3");
+        let account = AccountConfig::from_163_lines([
+            "stable-public-id@163.com",
+            "not-a-real-authorization-value",
+        ])
+        .expect("account");
+        let repository = Repository::open(&path).expect("repository");
+        repository
+            .initialize_account(&account)
+            .expect("account row");
+        repository
+            .upsert_message(&message(&account.account_id, false))
+            .expect("message");
+        let first_public_id = repository
+            .list_mailbox_page(&account.account_id, MailboxRole::Inbox, None, 50, None)
+            .expect("first page")
+            .items[0]
+            .public_id
+            .clone();
+        let parsed_public_id =
+            uuid::Uuid::parse_str(&first_public_id).expect("random UUID public id");
+        assert_eq!(parsed_public_id.get_version(), Some(uuid::Version::Random));
+        let first_contact = repository
+            .list_contact_source_messages(&account.account_id)
+            .expect("contact summary")
+            .remove(0);
+        assert_eq!(first_contact.public_id, first_public_id);
+        assert!(first_contact.message.body_text.is_none());
+        assert!(first_contact.message.body_html.is_none());
+        assert!(first_contact.message.raw_rfc822.is_empty());
+
+        let mut refreshed = message(&account.account_id, false);
+        refreshed.subject = "Refreshed without replacing identity".to_owned();
+        repository
+            .upsert_message(&refreshed)
+            .expect("ordinary conflict upsert");
+        let after_upsert = repository
+            .list_mailbox_page(&account.account_id, MailboxRole::Inbox, None, 50, None)
+            .expect("page after upsert")
+            .items[0]
+            .public_id
+            .clone();
+        assert_eq!(after_upsert, first_public_id);
+        drop(repository);
+
+        let reopened = Repository::open(&path).expect("reopened repository");
+        let after_reopen = reopened
+            .list_mailbox_page(&account.account_id, MailboxRole::Inbox, None, 50, None)
+            .expect("page after reopen")
+            .items[0]
+            .public_id
+            .clone();
+        assert_eq!(after_reopen, first_public_id);
+        assert_eq!(
+            reopened
+                .list_contact_source_messages(&account.account_id)
+                .expect("contact summary after reopen")[0]
+                .public_id,
+            first_public_id
+        );
+        assert_eq!(
+            reopened
+                .get_message_by_public_id(&account.account_id, &first_public_id)
+                .expect("account-bound public lookup")
+                .subject,
+            "Refreshed without replacing identity"
+        );
+    }
+
+    #[test]
+    fn message_bcc_round_trips_through_every_read_shape_without_expanding_search() {
+        let directory = TempDir::new().expect("temporary directory");
+        let path = directory.path().join("message-bcc.sqlite3");
+        let repository = Repository::open(&path).expect("repository");
+        let account = AccountConfig::from_163_lines([
+            "bcc-persistence@163.com",
+            "not-a-real-authorization-value",
+        ])
+        .expect("account");
+        repository
+            .initialize_account(&account)
+            .expect("account row");
+        initialize_mailbox(
+            &repository,
+            &account.account_id,
+            MailboxRole::Inbox,
+            "INBOX",
+            411,
+        );
+
+        let mut full = message(&account.account_id, true);
+        full.bcc = vec![MailAddress {
+            name: Some("Old Blind Header".to_owned()),
+            email: "old-blind@example.com".to_owned(),
+        }];
+        let row_id = repository.upsert_message(&full).expect("full message");
+
+        let mut refreshed_summary = message(&account.account_id, false);
+        refreshed_summary.subject = "Header refresh".to_owned();
+        refreshed_summary.bcc = vec![MailAddress {
+            name: Some("BlindPersistenceOnly".to_owned()),
+            email: "blind@example.com".to_owned(),
+        }];
+        repository
+            .upsert_message_summary(&refreshed_summary)
+            .expect("summary refresh");
+
+        let assert_bcc = |message: &InboxMessage| {
+            assert_eq!(
+                message
+                    .bcc
+                    .iter()
+                    .map(|address| (address.name.as_deref(), address.email.as_str()))
+                    .collect::<Vec<_>>(),
+                [(Some("BlindPersistenceOnly"), "blind@example.com")]
+            );
+        };
+        let stored = repository.get_message(row_id).expect("full read");
+        assert_bcc(&stored);
+        assert_eq!(stored.body_text.as_deref(), Some("Full body"));
+        assert_bcc(&repository.list_inbox(&account.account_id, 10, 0).unwrap()[0]);
+        assert_bcc(
+            &repository
+                .list_mailbox(&account.account_id, "INBOX", 10, 0)
+                .unwrap()[0],
+        );
+        assert_bcc(
+            &repository
+                .list_contact_source_messages(&account.account_id)
+                .unwrap()[0]
+                .message,
+        );
+        assert_bcc(
+            &repository
+                .list_mailbox_page(&account.account_id, MailboxRole::Inbox, None, 10, None)
+                .unwrap()
+                .items[0]
+                .message,
+        );
+        assert!(
+            repository
+                .list_mailbox_page(
+                    &account.account_id,
+                    MailboxRole::Inbox,
+                    None,
+                    10,
+                    Some("BlindPersistenceOnly"),
+                )
+                .expect("Bcc-excluded search")
+                .items
+                .is_empty()
+        );
+        drop(repository);
+
+        let reopened = Repository::open(&path).expect("reopened repository");
+        assert_bcc(&reopened.get_message(row_id).expect("read after restart"));
+    }
+
+    #[test]
+    fn uidvalidity_reset_reimport_gets_a_new_message_public_id() {
+        let (_directory, repository, account) = setup();
+        initialize_mailbox(
+            &repository,
+            &account.account_id,
+            MailboxRole::Inbox,
+            "INBOX",
+            91,
+        );
+        let source = message(&account.account_id, false);
+        repository.upsert_message(&source).expect("first epoch");
+        let old_public_id = repository
+            .list_mailbox_page(&account.account_id, MailboxRole::Inbox, None, 50, None)
+            .expect("old epoch page")
+            .items[0]
+            .public_id
+            .clone();
+
+        assert_eq!(
+            repository
+                .reset_mailbox(&account.account_id, "INBOX")
+                .expect("UIDVALIDITY reset"),
+            1
+        );
+        initialize_mailbox(
+            &repository,
+            &account.account_id,
+            MailboxRole::Inbox,
+            "INBOX",
+            92,
+        );
+        repository.upsert_message(&source).expect("new epoch");
+        let new_public_id = repository
+            .list_mailbox_page(&account.account_id, MailboxRole::Inbox, None, 50, None)
+            .expect("new epoch page")
+            .items[0]
+            .public_id
+            .clone();
+
+        assert_ne!(new_public_id, old_public_id);
+        assert_eq!(
+            repository
+                .list_contact_source_messages(&account.account_id)
+                .expect("new epoch contact summary")[0]
+                .public_id,
+            new_public_id
+        );
+        assert!(
+            repository
+                .get_message_by_public_id(&account.account_id, &old_public_id)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn separate_account_databases_never_accept_each_others_public_id() {
+        let first_directory = TempDir::new().expect("first directory");
+        let second_directory = TempDir::new().expect("second directory");
+        let first = AccountConfig::from_163_lines([
+            "opaque-first@163.com",
+            "not-a-real-first-authorization-value",
+        ])
+        .expect("first account");
+        let second = AccountConfig::from_163_lines([
+            "opaque-second@163.com",
+            "not-a-real-second-authorization-value",
+        ])
+        .expect("second account");
+        let first_repository =
+            Repository::open(first_directory.path().join("mail.sqlite3")).expect("first repo");
+        let second_repository =
+            Repository::open(second_directory.path().join("mail.sqlite3")).expect("second repo");
+        first_repository
+            .initialize_account(&first)
+            .expect("first account row");
+        second_repository
+            .initialize_account(&second)
+            .expect("second account row");
+
+        assert_eq!(
+            first_repository
+                .upsert_message(&message(&first.account_id, false))
+                .expect("first row"),
+            1
+        );
+        assert_eq!(
+            second_repository
+                .upsert_message(&message(&second.account_id, false))
+                .expect("second row"),
+            1
+        );
+        let first_token = first_repository
+            .list_mailbox_page(&first.account_id, MailboxRole::Inbox, None, 50, None)
+            .expect("first page")
+            .items[0]
+            .public_id
+            .clone();
+        let second_token = second_repository
+            .list_mailbox_page(&second.account_id, MailboxRole::Inbox, None, 50, None)
+            .expect("second page")
+            .items[0]
+            .public_id
+            .clone();
+
+        assert_ne!(first_token, second_token);
+        assert!(
+            second_repository
+                .get_message_by_public_id(&second.account_id, &first_token)
+                .is_err()
+        );
+        assert!(
+            first_repository
+                .get_message_by_public_id(&first.account_id, &second_token)
+                .is_err()
+        );
+    }
+
+    #[test]
     fn pending_seen_write_is_immediate_durable_and_reconciliation_safe() {
         let (_directory, repository, account) = setup();
+        initialize_mailbox(
+            &repository,
+            &account.account_id,
+            MailboxRole::Inbox,
+            "INBOX",
+            71,
+        );
         let mut unread = message(&account.account_id, false);
         unread.flags = vec!["\\Flagged".to_owned()];
         let row_id = repository.upsert_message(&unread).expect("unread message");
@@ -2353,8 +9208,149 @@ mod tests {
     }
 
     #[test]
+    fn pending_seen_revision_prevents_stale_read_result_from_overwriting_unread_intent() {
+        let (_directory, repository, account) = setup();
+        initialize_mailbox(
+            &repository,
+            &account.account_id,
+            MailboxRole::Inbox,
+            "INBOX",
+            72,
+        );
+        let mut unread = message(&account.account_id, false);
+        unread.flags.clear();
+        let row_id = repository.upsert_message(&unread).expect("unread message");
+
+        let (_, read_revision) = repository
+            .set_message_seen_pending(&account.account_id, "INBOX", unread.uid, true)
+            .expect("mark read");
+        let (_, unread_revision) = repository
+            .set_message_seen_pending(&account.account_id, "INBOX", unread.uid, false)
+            .expect("mark unread");
+        assert_eq!((read_revision, unread_revision), (1, 2));
+        assert_eq!(
+            repository
+                .pending_seen_updates(&account.account_id, "INBOX")
+                .expect("pending desired state"),
+            [(unread.uid, false, unread_revision)]
+        );
+
+        assert!(
+            !repository
+                .complete_pending_seen_if_unchanged(
+                    &account.account_id,
+                    "INBOX",
+                    unread.uid,
+                    true,
+                    read_revision,
+                    &["\\Seen".to_owned()],
+                )
+                .expect("ignore stale read result")
+        );
+        repository
+            .update_message_flags(
+                &account.account_id,
+                "INBOX",
+                unread.uid,
+                &["\\Seen".to_owned()],
+            )
+            .expect("stale server seen state");
+        assert!(
+            repository
+                .get_message(row_id)
+                .expect("unread overlay")
+                .flags
+                .is_empty()
+        );
+
+        assert!(
+            repository
+                .complete_pending_seen_if_unchanged(
+                    &account.account_id,
+                    "INBOX",
+                    unread.uid,
+                    false,
+                    unread_revision,
+                    &[],
+                )
+                .expect("confirm unread")
+        );
+        assert!(
+            repository
+                .pending_seen_updates(&account.account_id, "INBOX")
+                .expect("seen queue")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn confirmed_seen_mutation_can_queue_a_later_unread_intent() {
+        let (_directory, repository, account) = setup();
+        initialize_mailbox(
+            &repository,
+            &account.account_id,
+            MailboxRole::Inbox,
+            "INBOX",
+            74,
+        );
+        let mut unread = message(&account.account_id, false);
+        unread.flags.clear();
+        repository.upsert_message(&unread).expect("unread message");
+        let (_, read) = repository
+            .queue_system_flag_mutation(
+                &account.account_id,
+                "INBOX",
+                unread.uid,
+                SystemFlagKind::Seen,
+                true,
+            )
+            .expect("read intent");
+        repository
+            .claim_system_flag_mutation(
+                &account.account_id,
+                &read.operation_id,
+                SystemFlagKind::Seen,
+                read.revision,
+            )
+            .expect("claim read")
+            .expect("claimed read");
+        assert!(
+            repository
+                .finalize_system_flag_mutation_confirmed(
+                    &account.account_id,
+                    &read.operation_id,
+                    SystemFlagKind::Seen,
+                    read.revision,
+                    &["\\Seen".to_owned()],
+                )
+                .expect("confirm read")
+        );
+
+        let (_, unread_intent) = repository
+            .queue_system_flag_mutation(
+                &account.account_id,
+                "INBOX",
+                unread.uid,
+                SystemFlagKind::Seen,
+                false,
+            )
+            .expect("later unread intent");
+        assert_eq!(unread_intent.operation_id, read.operation_id);
+        assert_eq!(unread_intent.revision, read.revision + 1);
+        assert_eq!(unread_intent.status, MutationStatus::Pending);
+        assert!(!unread_intent.desired);
+    }
+
+    #[test]
     fn pending_flagged_toggle_is_durable_and_newer_intent_wins() {
         let (_directory, repository, account) = setup();
+        initialize_mailbox(
+            &repository,
+            &account.account_id,
+            MailboxRole::Inbox,
+            "INBOX",
+            73,
+        );
         let mail = message(&account.account_id, false);
         let row_id = repository.upsert_message(&mail).expect("message");
 
@@ -2455,6 +9451,82 @@ mod tests {
     }
 
     #[test]
+    fn uidvalidity_reset_preserves_flag_intent_without_overlaying_reused_uid() {
+        let (_directory, repository, account) = setup();
+        initialize_mailbox(
+            &repository,
+            &account.account_id,
+            MailboxRole::Inbox,
+            "INBOX",
+            401,
+        );
+        let mut original = message(&account.account_id, false);
+        original.flags = vec!["\\Seen".to_owned()];
+        repository
+            .upsert_message(&original)
+            .expect("original message");
+        let (_, mutation) = repository
+            .queue_system_flag_mutation(
+                &account.account_id,
+                "INBOX",
+                original.uid,
+                SystemFlagKind::Flagged,
+                true,
+            )
+            .expect("queue flag");
+
+        repository
+            .reset_mailbox(&account.account_id, "INBOX")
+            .expect("reset old epoch");
+        let receipt = repository
+            .system_flag_mutation_receipt(
+                &account.account_id,
+                &mutation.operation_id,
+                SystemFlagKind::Flagged,
+            )
+            .expect("flag receipt")
+            .expect("durable flag intent");
+        assert_eq!(receipt.status, MutationStatus::NeedsAttention);
+
+        initialize_mailbox(
+            &repository,
+            &account.account_id,
+            MailboxRole::Inbox,
+            "INBOX",
+            402,
+        );
+        let mut reused = original;
+        reused.flags = vec!["\\Seen".to_owned()];
+        let reused_id = repository.upsert_message(&reused).expect("reused UID");
+        repository
+            .update_message_flags(
+                &account.account_id,
+                "INBOX",
+                reused.uid,
+                &["\\Seen".to_owned()],
+            )
+            .expect("new epoch flags");
+        assert!(
+            !repository
+                .get_message(reused_id)
+                .expect("new epoch message")
+                .flags
+                .iter()
+                .any(|flag| flag.eq_ignore_ascii_case("\\Flagged"))
+        );
+        assert!(
+            repository
+                .system_flag_mutations_requiring_reconciliation(
+                    &account.account_id,
+                    "INBOX",
+                    SystemFlagKind::Flagged,
+                )
+                .expect("current epoch reconciliation queue")
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn sent_role_resolves_provider_mailbox_and_lists_only_that_mailbox() {
         let (_directory, repository, account) = setup();
         let mut sent = message(&account.account_id, false);
@@ -2480,6 +9552,1544 @@ mod tests {
             repository
                 .list_inbox(&account.account_id, 10, 0)
                 .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn mailbox_capabilities_and_history_are_account_scoped_and_round_trip() {
+        let (_directory, repository, account) = setup();
+        let capabilities = repository
+            .mailbox_capabilities(&account.account_id)
+            .expect("default capabilities");
+        assert_eq!(capabilities.len(), MailboxRole::ALL.len());
+        assert_eq!(
+            capabilities
+                .iter()
+                .find(|capability| capability.role == MailboxRole::Inbox)
+                .expect("inbox capability")
+                .status,
+            MailboxCapabilityStatus::Available
+        );
+        assert!(
+            capabilities
+                .iter()
+                .filter(|capability| capability.role != MailboxRole::Inbox)
+                .all(|capability| {
+                    capability.status == MailboxCapabilityStatus::DiscoveryPending
+                        && capability.retryable
+                })
+        );
+
+        repository
+            .set_mailbox_capability(
+                &account.account_id,
+                &MailboxCapability {
+                    role: MailboxRole::Archive,
+                    status: MailboxCapabilityStatus::Unavailable,
+                    display_name: None,
+                    unavailable_reason: Some(
+                        MailboxCapabilityUnavailableReason::CreateNotSupported,
+                    ),
+                    retryable: false,
+                },
+            )
+            .expect("unavailable archive");
+        let archive = repository
+            .mailbox_capability(&account.account_id, MailboxRole::Archive)
+            .expect("archive capability")
+            .expect("archive row");
+        assert_eq!(
+            archive.unavailable_reason,
+            Some(MailboxCapabilityUnavailableReason::CreateNotSupported)
+        );
+
+        initialize_mailbox(
+            &repository,
+            &account.account_id,
+            MailboxRole::Archive,
+            "Archive",
+            51,
+        );
+        let history = MailboxHistory {
+            before_uid: Some(700),
+            complete: false,
+            remote_total: Some(1_234),
+        };
+        repository
+            .update_mailbox_history(&account.account_id, "Archive", &history)
+            .expect("history state");
+        assert_eq!(
+            repository
+                .mailbox_history(&account.account_id, "Archive")
+                .expect("history")
+                .expect("history row"),
+            history
+        );
+        repository
+            .reset_mailbox(&account.account_id, "Archive")
+            .expect("reset archive");
+        assert_eq!(
+            repository
+                .mailbox_history(&account.account_id, "Archive")
+                .expect("reset history")
+                .expect("archive row"),
+            MailboxHistory::default()
+        );
+    }
+
+    #[test]
+    fn mailbox_history_cas_rejects_late_epoch_and_boundary_writers() {
+        let (_directory, repository, account) = setup();
+        initialize_mailbox(
+            &repository,
+            &account.account_id,
+            MailboxRole::Archive,
+            "Archive",
+            501,
+        );
+        assert!(
+            repository
+                .advance_mailbox_history(
+                    &account.account_id,
+                    "Archive",
+                    501,
+                    None,
+                    Some(900),
+                    false,
+                    Some(2_000),
+                )
+                .expect("establish history boundary")
+        );
+        assert!(
+            repository
+                .advance_mailbox_history(
+                    &account.account_id,
+                    "Archive",
+                    501,
+                    Some(900),
+                    Some(700),
+                    false,
+                    Some(2_000),
+                )
+                .expect("newer history page")
+        );
+        assert!(
+            !repository
+                .advance_mailbox_history(
+                    &account.account_id,
+                    "Archive",
+                    501,
+                    Some(900),
+                    Some(800),
+                    false,
+                    Some(2_000),
+                )
+                .expect("late page completion")
+        );
+        assert!(
+            !repository
+                .advance_mailbox_history(
+                    &account.account_id,
+                    "Archive",
+                    500,
+                    Some(700),
+                    Some(600),
+                    false,
+                    Some(2_000),
+                )
+                .expect("stale epoch")
+        );
+        assert!(
+            repository
+                .advance_mailbox_history(
+                    &account.account_id,
+                    "Archive",
+                    501,
+                    Some(700),
+                    None,
+                    true,
+                    Some(2_000),
+                )
+                .expect("history floor")
+        );
+        assert!(
+            !repository
+                .advance_mailbox_history(
+                    &account.account_id,
+                    "Archive",
+                    501,
+                    None,
+                    Some(100),
+                    false,
+                    Some(2_000),
+                )
+                .expect("complete history cannot regress")
+        );
+        assert_eq!(
+            repository
+                .mailbox_history(&account.account_id, "Archive")
+                .expect("history")
+                .expect("history row"),
+            MailboxHistory {
+                before_uid: None,
+                complete: true,
+                remote_total: Some(2_000),
+            }
+        );
+    }
+
+    #[test]
+    fn move_queue_collapses_to_latest_intent_and_projects_without_forging_uid() {
+        let (_directory, repository, account) = setup();
+        initialize_mailbox(
+            &repository,
+            &account.account_id,
+            MailboxRole::Inbox,
+            "INBOX",
+            77,
+        );
+        initialize_mailbox(
+            &repository,
+            &account.account_id,
+            MailboxRole::Archive,
+            "Archive",
+            81,
+        );
+        initialize_mailbox(
+            &repository,
+            &account.account_id,
+            MailboxRole::Trash,
+            "Trash",
+            82,
+        );
+        let source = message_with_identity(
+            &account.account_id,
+            "INBOX",
+            42,
+            "2026-07-20T12:00:00Z",
+            "Queued move",
+        );
+        let message_id = repository.upsert_message(&source).expect("source message");
+
+        let archive = repository
+            .queue_message_action(
+                message_id,
+                MailboxRole::Inbox,
+                MessageActionKind::Archive,
+                Some(MailboxRole::Archive),
+            )
+            .expect("archive intent");
+        assert_eq!(archive.local_revision, 1);
+        assert_eq!(archive.status, MutationStatus::Pending);
+        assert!(
+            repository
+                .list_mailbox_page(&account.account_id, MailboxRole::Inbox, None, 50, None)
+                .expect("inbox overlay")
+                .items
+                .is_empty()
+        );
+        let archive_page = repository
+            .list_mailbox_page(&account.account_id, MailboxRole::Archive, None, 50, None)
+            .expect("archive projection");
+        assert_eq!(archive_page.items.len(), 1);
+        let projected = &archive_page.items[0];
+        assert_eq!(projected.message.mailbox, "INBOX");
+        assert_eq!(projected.message.uid, 42);
+        assert_eq!(projected.displayed_role, MailboxRole::Archive);
+        assert_eq!(
+            projected
+                .pending_mutation
+                .as_ref()
+                .expect("pending projection")
+                .operation_id,
+            archive.operation_id
+        );
+
+        let trash = repository
+            .queue_message_action(
+                message_id,
+                MailboxRole::Inbox,
+                MessageActionKind::MoveToTrash,
+                Some(MailboxRole::Trash),
+            )
+            .expect("newer trash intent");
+        assert_eq!(trash.operation_id, archive.operation_id);
+        assert_eq!(trash.local_revision, 2);
+        assert!(
+            repository
+                .list_mailbox_page(&account.account_id, MailboxRole::Archive, None, 50, None)
+                .expect("archive no longer projected")
+                .items
+                .is_empty()
+        );
+        assert_eq!(
+            repository
+                .list_mailbox_page(&account.account_id, MailboxRole::Trash, None, 50, None)
+                .expect("trash projection")
+                .items
+                .len(),
+            1
+        );
+        assert!(
+            !repository
+                .update_message_action_status_if_unchanged(
+                    &account.account_id,
+                    &trash.operation_id,
+                    1,
+                    MutationStatus::Confirmed,
+                    None,
+                )
+                .expect("stale completion")
+        );
+        assert!(
+            repository
+                .claim_message_action(
+                    &account.account_id,
+                    &trash.operation_id,
+                    trash.local_revision,
+                )
+                .expect("claim message action")
+                .is_some()
+        );
+        assert!(
+            repository
+                .update_message_action_status_if_unchanged(
+                    &account.account_id,
+                    &trash.operation_id,
+                    trash.local_revision,
+                    MutationStatus::OutcomeUnknown,
+                    Some(MessageMutationErrorKind::NetworkUnavailable),
+                )
+                .expect("uncertain outcome")
+        );
+
+        let other = secondary_account(&account);
+        repository
+            .initialize_account(&other)
+            .expect("secondary account row");
+        assert!(
+            repository
+                .pending_message_actions(&other.account_id)
+                .expect("secondary queue")
+                .is_empty()
+        );
+        repository
+            .reset_mailbox(&account.account_id, "INBOX")
+            .expect("UIDVALIDITY reset");
+        assert!(
+            repository
+                .pending_message_actions(&account.account_id)
+                .expect("worker queue")
+                .is_empty()
+        );
+        let durable = repository
+            .message_action(&account.account_id, &trash.operation_id)
+            .expect("durable action query")
+            .expect("durable action");
+        assert_eq!(durable.source_uid_validity, 77);
+        assert_eq!(durable.status, MutationStatus::NeedsAttention);
+        assert_eq!(
+            durable.error_kind,
+            Some(MessageMutationErrorKind::UidValidityChanged)
+        );
+    }
+
+    #[test]
+    fn unknown_message_action_cannot_be_reordered_or_cross_account_scoped() {
+        let (_directory, repository, account) = setup();
+        initialize_mailbox(
+            &repository,
+            &account.account_id,
+            MailboxRole::Inbox,
+            "INBOX",
+            601,
+        );
+        initialize_mailbox(
+            &repository,
+            &account.account_id,
+            MailboxRole::Archive,
+            "Archive",
+            602,
+        );
+        initialize_mailbox(
+            &repository,
+            &account.account_id,
+            MailboxRole::Trash,
+            "Trash",
+            603,
+        );
+        let message_id = repository
+            .upsert_message(&message(&account.account_id, false))
+            .expect("source message");
+        let other = secondary_account(&account);
+        repository
+            .initialize_account(&other)
+            .expect("secondary account");
+        assert!(
+            repository
+                .queue_message_action_for_account(
+                    &other.account_id,
+                    message_id,
+                    MailboxRole::Inbox,
+                    MessageActionKind::Archive,
+                    Some(MailboxRole::Archive),
+                )
+                .is_err()
+        );
+
+        let queued = repository
+            .queue_message_action_for_account(
+                &account.account_id,
+                message_id,
+                MailboxRole::Inbox,
+                MessageActionKind::Archive,
+                Some(MailboxRole::Archive),
+            )
+            .expect("archive intent");
+        assert!(
+            repository
+                .claim_message_action(
+                    &account.account_id,
+                    &queued.operation_id,
+                    queued.local_revision,
+                )
+                .expect("claim action")
+                .is_some()
+        );
+        assert!(
+            repository
+                .advance_message_action_remote_phase(
+                    &account.account_id,
+                    &queued.operation_id,
+                    queued.local_revision,
+                    RemoteMutationPhase::Queued,
+                    RemoteMutationPhase::TransferStarted,
+                )
+                .expect("transfer started")
+        );
+        assert!(
+            repository
+                .finalize_message_action(
+                    &account.account_id,
+                    &queued.operation_id,
+                    queued.local_revision,
+                    MutationStatus::OutcomeUnknown,
+                    Some(MessageMutationErrorKind::NetworkUnavailable),
+                )
+                .expect("unknown outcome")
+        );
+        assert!(
+            repository
+                .queue_message_action_for_account(
+                    &account.account_id,
+                    message_id,
+                    MailboxRole::Inbox,
+                    MessageActionKind::MoveToTrash,
+                    Some(MailboxRole::Trash),
+                )
+                .is_err()
+        );
+        assert!(
+            repository
+                .pending_message_actions(&account.account_id)
+                .expect("ordinary worker queue")
+                .is_empty()
+        );
+        assert_eq!(
+            repository
+                .message_actions_requiring_reconciliation(&account.account_id)
+                .expect("reconciliation queue")
+                .len(),
+            1
+        );
+        assert!(
+            repository
+                .reconcile_message_action(
+                    &account.account_id,
+                    &queued.operation_id,
+                    queued.local_revision,
+                    MutationStatus::Pending,
+                    None,
+                )
+                .expect("explicit requeue")
+        );
+        let requeued = repository
+            .message_action(&account.account_id, &queued.operation_id)
+            .expect("message action")
+            .expect("requeued action");
+        assert_eq!(requeued.revision, queued.local_revision + 1);
+        assert_eq!(requeued.remote_phase, RemoteMutationPhase::Queued);
+
+        let connection = repository.connection().expect("connection");
+        let invalid_insert = connection.execute(
+            "INSERT INTO pending_message_actions (
+                 operation_id, account_id, source_mailbox, source_uid_validity, source_uid,
+                 source_role, destination_role, kind, revision, status, remote_phase,
+                 source_size_bytes
+             ) VALUES (?1, ?2, 'INBOX', 601, 999, 'trash', 'archive', 'archive',
+                       1, 'pending', 'queued', 0)",
+            params![uuid::Uuid::now_v7().to_string(), account.account_id],
+        );
+        assert!(invalid_insert.is_err());
+    }
+
+    #[test]
+    fn copy_delete_phase_survives_crash_as_reconcilable_unknown() {
+        let (directory, repository, account) = setup();
+        initialize_mailbox(
+            &repository,
+            &account.account_id,
+            MailboxRole::Inbox,
+            "INBOX",
+            701,
+        );
+        initialize_mailbox(
+            &repository,
+            &account.account_id,
+            MailboxRole::Archive,
+            "Archive",
+            702,
+        );
+        let message_id = repository
+            .upsert_message(&message(&account.account_id, false))
+            .expect("source message");
+        let queued = repository
+            .queue_message_action_for_account(
+                &account.account_id,
+                message_id,
+                MailboxRole::Inbox,
+                MessageActionKind::Archive,
+                Some(MailboxRole::Archive),
+            )
+            .expect("archive intent");
+        repository
+            .claim_message_action(
+                &account.account_id,
+                &queued.operation_id,
+                queued.local_revision,
+            )
+            .expect("claim")
+            .expect("claimed action");
+        for (expected, next) in [
+            (
+                RemoteMutationPhase::Queued,
+                RemoteMutationPhase::TransferStarted,
+            ),
+            (
+                RemoteMutationPhase::TransferStarted,
+                RemoteMutationPhase::TransferAcknowledged,
+            ),
+            (
+                RemoteMutationPhase::TransferAcknowledged,
+                RemoteMutationPhase::SourceDeleteStarted,
+            ),
+        ] {
+            assert!(
+                repository
+                    .advance_message_action_remote_phase(
+                        &account.account_id,
+                        &queued.operation_id,
+                        queued.local_revision,
+                        expected,
+                        next,
+                    )
+                    .expect("advance persisted phase")
+            );
+        }
+        drop(repository);
+
+        let reopened =
+            Repository::open(directory.path().join("mail.sqlite3")).expect("startup recovery");
+        let recovered = reopened
+            .message_action(&account.account_id, &queued.operation_id)
+            .expect("recovered action")
+            .expect("durable recovered action");
+        assert_eq!(recovered.status, MutationStatus::OutcomeUnknown);
+        assert_eq!(
+            recovered.remote_phase,
+            RemoteMutationPhase::SourceDeleteStarted
+        );
+        assert_eq!(
+            recovered.error_kind,
+            Some(MessageMutationErrorKind::Unknown)
+        );
+        assert!(
+            reopened
+                .pending_message_actions(&account.account_id)
+                .expect("worker queue")
+                .is_empty()
+        );
+        assert_eq!(
+            reopened
+                .message_actions_requiring_reconciliation(&account.account_id)
+                .expect("recovery queue"),
+            [recovered]
+        );
+    }
+
+    #[test]
+    fn confirmed_projection_survives_source_cleanup_until_unique_destination_converges() {
+        let (_directory, repository, account) = setup();
+        initialize_mailbox(
+            &repository,
+            &account.account_id,
+            MailboxRole::Inbox,
+            "INBOX",
+            801,
+        );
+        initialize_mailbox(
+            &repository,
+            &account.account_id,
+            MailboxRole::Archive,
+            "Archive",
+            802,
+        );
+        let source = message(&account.account_id, false);
+        let source_id = repository.upsert_message(&source).expect("source message");
+        let queued = repository
+            .queue_message_action_for_account(
+                &account.account_id,
+                source_id,
+                MailboxRole::Inbox,
+                MessageActionKind::Archive,
+                Some(MailboxRole::Archive),
+            )
+            .expect("archive action");
+        repository
+            .claim_message_action(
+                &account.account_id,
+                &queued.operation_id,
+                queued.local_revision,
+            )
+            .expect("claim action")
+            .expect("claimed action");
+        assert!(
+            repository
+                .advance_message_action_remote_phase(
+                    &account.account_id,
+                    &queued.operation_id,
+                    queued.local_revision,
+                    RemoteMutationPhase::Queued,
+                    RemoteMutationPhase::TransferStarted,
+                )
+                .expect("move started")
+        );
+        assert!(
+            repository
+                .advance_message_action_remote_phase(
+                    &account.account_id,
+                    &queued.operation_id,
+                    queued.local_revision,
+                    RemoteMutationPhase::TransferStarted,
+                    RemoteMutationPhase::SourceDeleteAcknowledged,
+                )
+                .expect("move acknowledged")
+        );
+        assert!(
+            repository
+                .finalize_message_action(
+                    &account.account_id,
+                    &queued.operation_id,
+                    queued.local_revision,
+                    MutationStatus::Confirmed,
+                    None,
+                )
+                .expect("confirm action")
+        );
+        assert_eq!(
+            repository
+                .delete_missing_uids(&account.account_id, "INBOX", &HashSet::new())
+                .expect("source reconciliation"),
+            0
+        );
+        assert!(repository.get_message(source_id).is_ok());
+        let projected = repository
+            .list_mailbox_page(&account.account_id, MailboxRole::Archive, None, 50, None)
+            .expect("confirmed target projection");
+        assert_eq!(projected.items.len(), 1);
+        assert_eq!(
+            projected.items[0]
+                .pending_mutation
+                .as_ref()
+                .expect("confirmed projection")
+                .status,
+            MutationStatus::Confirmed
+        );
+
+        let mut destination = source.clone();
+        destination.mailbox = "Archive".to_owned();
+        destination.uid = 900;
+        repository
+            .upsert_message(&destination)
+            .expect("real destination summary");
+        assert!(
+            repository
+                .purge_confirmed_message_action_if_destination_unique(
+                    &account.account_id,
+                    &queued.operation_id,
+                )
+                .expect("converge projection")
+        );
+        assert!(repository.get_message(source_id).is_err());
+        let converged = repository
+            .list_mailbox_page(&account.account_id, MailboxRole::Archive, None, 50, None)
+            .expect("converged target");
+        assert_eq!(converged.items.len(), 1);
+        assert_eq!(converged.items[0].message.uid, 900);
+        assert!(converged.items[0].pending_mutation.is_none());
+    }
+
+    #[test]
+    fn deferred_source_cleanup_keeps_tombstone_until_destination_and_source_converge() {
+        let (_directory, repository, account) = setup();
+        initialize_mailbox(
+            &repository,
+            &account.account_id,
+            MailboxRole::Inbox,
+            "INBOX",
+            901,
+        );
+        initialize_mailbox(
+            &repository,
+            &account.account_id,
+            MailboxRole::Archive,
+            "Archive",
+            902,
+        );
+        let source = message(&account.account_id, false);
+        let source_id = repository.upsert_message(&source).expect("source");
+        let queued = repository
+            .queue_message_action_for_account(
+                &account.account_id,
+                source_id,
+                MailboxRole::Inbox,
+                MessageActionKind::Archive,
+                Some(MailboxRole::Archive),
+            )
+            .expect("archive");
+        repository
+            .claim_message_action(
+                &account.account_id,
+                &queued.operation_id,
+                queued.local_revision,
+            )
+            .expect("claim")
+            .expect("claimed");
+        for (expected, next) in [
+            (
+                RemoteMutationPhase::Queued,
+                RemoteMutationPhase::TransferStarted,
+            ),
+            (
+                RemoteMutationPhase::TransferStarted,
+                RemoteMutationPhase::SourceDeleteAcknowledged,
+            ),
+        ] {
+            assert!(
+                repository
+                    .advance_message_action_remote_phase(
+                        &account.account_id,
+                        &queued.operation_id,
+                        queued.local_revision,
+                        expected,
+                        next,
+                    )
+                    .expect("phase")
+            );
+        }
+        assert!(
+            repository
+                .finalize_message_action_confirmed(
+                    &account.account_id,
+                    &queued.operation_id,
+                    queued.local_revision,
+                    true,
+                )
+                .expect("atomic deferred confirmation")
+        );
+        let tombstone = repository
+            .confirmed_source_cleanup_tombstones(&account.account_id)
+            .expect("tombstones")
+            .pop()
+            .expect("cleanup tombstone");
+        assert!(tombstone.source_cleanup_pending);
+        assert!(!tombstone.destination_reconciled);
+        assert!(
+            !repository
+                .purge_confirmed_source_cleanup_if_remote_absent(
+                    &account.account_id,
+                    &queued.operation_id,
+                    queued.local_revision,
+                    901,
+                    source.uid,
+                )
+                .expect("destination still projected")
+        );
+
+        let projected = repository
+            .list_mailbox_page(&account.account_id, MailboxRole::Archive, None, 50, None)
+            .expect("optimistic projection");
+        assert_eq!(projected.items.len(), 1);
+        assert!(projected.items[0].pending_mutation.is_some());
+
+        let mut destination = source.clone();
+        destination.mailbox = "Archive".to_owned();
+        destination.uid = 942;
+        repository
+            .upsert_message(&destination)
+            .expect("destination");
+        assert!(
+            repository
+                .purge_confirmed_message_action_if_destination_unique(
+                    &account.account_id,
+                    &queued.operation_id,
+                )
+                .expect("destination reconciliation")
+        );
+        let retained = repository
+            .message_action(&account.account_id, &queued.operation_id)
+            .expect("action query")
+            .expect("retained tombstone");
+        assert!(retained.source_cleanup_pending);
+        assert!(retained.destination_reconciled);
+        assert!(repository.get_message(source_id).is_err());
+        let converged = repository
+            .list_mailbox_page(&account.account_id, MailboxRole::Archive, None, 50, None)
+            .expect("real destination only");
+        assert_eq!(converged.items.len(), 1);
+        assert!(converged.items[0].pending_mutation.is_none());
+
+        repository
+            .upsert_message(&source)
+            .expect("source rediscovered before expunge");
+        assert!(
+            repository
+                .list_mailbox_page(&account.account_id, MailboxRole::Inbox, None, 50, None)
+                .expect("hidden rediscovered source")
+                .items
+                .is_empty()
+        );
+        assert!(
+            !repository
+                .purge_confirmed_source_cleanup_if_remote_absent(
+                    &account.account_id,
+                    &queued.operation_id,
+                    queued.local_revision,
+                    999,
+                    source.uid,
+                )
+                .expect("wrong epoch")
+        );
+        assert!(
+            repository
+                .purge_confirmed_source_cleanup_if_remote_absent(
+                    &account.account_id,
+                    &queued.operation_id,
+                    queued.local_revision,
+                    901,
+                    source.uid,
+                )
+                .expect("same epoch source absent")
+        );
+        assert!(
+            repository
+                .message_action(&account.account_id, &queued.operation_id)
+                .expect("purged action")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn recoverable_permanent_delete_can_become_a_deferred_cleanup_tombstone() {
+        let (_directory, repository, account) = setup();
+        initialize_mailbox(
+            &repository,
+            &account.account_id,
+            MailboxRole::Trash,
+            "Trash",
+            903,
+        );
+        let mut source = message(&account.account_id, false);
+        source.mailbox = "Trash".to_owned();
+        source.uid = 52;
+        let source_id = repository.upsert_message(&source).expect("trash source");
+        let queued = repository
+            .queue_message_action_for_account(
+                &account.account_id,
+                source_id,
+                MailboxRole::Trash,
+                MessageActionKind::PermanentDelete,
+                None,
+            )
+            .expect("permanent delete");
+        repository
+            .claim_message_action(
+                &account.account_id,
+                &queued.operation_id,
+                queued.local_revision,
+            )
+            .expect("claim")
+            .expect("claimed");
+        for (expected, next) in [(
+            RemoteMutationPhase::Queued,
+            RemoteMutationPhase::SourceDeleteStarted,
+        )] {
+            assert!(
+                repository
+                    .advance_message_action_remote_phase(
+                        &account.account_id,
+                        &queued.operation_id,
+                        queued.local_revision,
+                        expected,
+                        next,
+                    )
+                    .expect("delete phase")
+            );
+        }
+        assert!(
+            repository
+                .finalize_message_action(
+                    &account.account_id,
+                    &queued.operation_id,
+                    queued.local_revision,
+                    MutationStatus::OutcomeUnknown,
+                    Some(MessageMutationErrorKind::NetworkUnavailable),
+                )
+                .expect("recoverable finalize")
+        );
+        assert!(
+            repository
+                .reconcile_message_action_confirmed(
+                    &account.account_id,
+                    &queued.operation_id,
+                    queued.local_revision,
+                    true,
+                )
+                .expect("atomic reconciled confirmation")
+        );
+        let action = repository
+            .message_action(&account.account_id, &queued.operation_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(action.status, MutationStatus::Confirmed);
+        assert_eq!(
+            action.remote_phase,
+            RemoteMutationPhase::SourceDeleteAcknowledged
+        );
+        assert_eq!(action.error_kind, None);
+        assert!(action.source_cleanup_pending);
+        assert!(!action.destination_reconciled);
+        assert!(
+            repository
+                .purge_confirmed_source_cleanup_if_remote_absent(
+                    &account.account_id,
+                    &queued.operation_id,
+                    queued.local_revision,
+                    903,
+                    source.uid,
+                )
+                .expect("permanent-delete source absent")
+        );
+        assert!(repository.get_message(source_id).is_err());
+    }
+
+    #[test]
+    fn reconciled_confirmation_allows_only_proven_safe_durable_phases() {
+        let (_directory, repository, account) = setup();
+        initialize_mailbox(
+            &repository,
+            &account.account_id,
+            MailboxRole::Inbox,
+            "INBOX",
+            904,
+        );
+        initialize_mailbox(
+            &repository,
+            &account.account_id,
+            MailboxRole::Archive,
+            "Archive",
+            905,
+        );
+        let archive_source = repository
+            .upsert_message(&message(&account.account_id, false))
+            .expect("archive source");
+        let archive = repository
+            .queue_message_action_for_account(
+                &account.account_id,
+                archive_source,
+                MailboxRole::Inbox,
+                MessageActionKind::Archive,
+                Some(MailboxRole::Archive),
+            )
+            .expect("archive action");
+        repository
+            .claim_message_action(
+                &account.account_id,
+                &archive.operation_id,
+                archive.local_revision,
+            )
+            .unwrap()
+            .expect("archive claimed");
+        assert!(
+            repository
+                .advance_message_action_remote_phase(
+                    &account.account_id,
+                    &archive.operation_id,
+                    archive.local_revision,
+                    RemoteMutationPhase::Queued,
+                    RemoteMutationPhase::TransferStarted,
+                )
+                .unwrap()
+        );
+        assert!(
+            repository
+                .finalize_message_action(
+                    &account.account_id,
+                    &archive.operation_id,
+                    archive.local_revision,
+                    MutationStatus::OutcomeUnknown,
+                    Some(MessageMutationErrorKind::Unknown),
+                )
+                .unwrap()
+        );
+        assert!(
+            !repository
+                .reconcile_message_action_confirmed(
+                    &account.account_id,
+                    &archive.operation_id,
+                    archive.local_revision,
+                    true,
+                )
+                .expect("transfer-started must not confirm")
+        );
+        assert!(
+            repository
+                .reconcile_message_action(
+                    &account.account_id,
+                    &archive.operation_id,
+                    archive.local_revision,
+                    MutationStatus::Pending,
+                    None,
+                )
+                .expect("requeue archive")
+        );
+        let archive_revision = archive.local_revision + 1;
+        repository
+            .claim_message_action(&account.account_id, &archive.operation_id, archive_revision)
+            .unwrap()
+            .expect("archive reclaimed");
+        for (expected, next) in [
+            (
+                RemoteMutationPhase::Queued,
+                RemoteMutationPhase::TransferStarted,
+            ),
+            (
+                RemoteMutationPhase::TransferStarted,
+                RemoteMutationPhase::TransferAcknowledged,
+            ),
+        ] {
+            assert!(
+                repository
+                    .advance_message_action_remote_phase(
+                        &account.account_id,
+                        &archive.operation_id,
+                        archive_revision,
+                        expected,
+                        next,
+                    )
+                    .unwrap()
+            );
+        }
+        assert!(
+            repository
+                .finalize_message_action(
+                    &account.account_id,
+                    &archive.operation_id,
+                    archive_revision,
+                    MutationStatus::OutcomeUnknown,
+                    Some(MessageMutationErrorKind::Unknown),
+                )
+                .unwrap()
+        );
+        assert!(
+            repository
+                .reconcile_message_action_confirmed(
+                    &account.account_id,
+                    &archive.operation_id,
+                    archive_revision,
+                    true,
+                )
+                .expect("transfer acknowledged confirmation")
+        );
+        assert_eq!(
+            repository
+                .message_action(&account.account_id, &archive.operation_id)
+                .unwrap()
+                .unwrap()
+                .remote_phase,
+            RemoteMutationPhase::SourceDeleteAcknowledged
+        );
+
+        initialize_mailbox(
+            &repository,
+            &account.account_id,
+            MailboxRole::Trash,
+            "Trash",
+            906,
+        );
+        let mut trash = message(&account.account_id, false);
+        trash.mailbox = "Trash".to_owned();
+        trash.uid = 54;
+        let trash_id = repository.upsert_message(&trash).expect("trash source");
+        let permanent = repository
+            .queue_message_action_for_account(
+                &account.account_id,
+                trash_id,
+                MailboxRole::Trash,
+                MessageActionKind::PermanentDelete,
+                None,
+            )
+            .expect("permanent action");
+        repository
+            .claim_message_action(
+                &account.account_id,
+                &permanent.operation_id,
+                permanent.local_revision,
+            )
+            .unwrap()
+            .expect("permanent claimed");
+        assert!(
+            repository
+                .finalize_message_action(
+                    &account.account_id,
+                    &permanent.operation_id,
+                    permanent.local_revision,
+                    MutationStatus::NeedsAttention,
+                    Some(MessageMutationErrorKind::SourceMissing),
+                )
+                .unwrap()
+        );
+        assert!(
+            !repository
+                .reconcile_message_action_confirmed(
+                    &account.account_id,
+                    &permanent.operation_id,
+                    permanent.local_revision,
+                    true,
+                )
+                .expect("queued cleanup-pending confirmation is forbidden")
+        );
+        assert!(
+            repository
+                .reconcile_message_action_confirmed(
+                    &account.account_id,
+                    &permanent.operation_id,
+                    permanent.local_revision,
+                    false,
+                )
+                .expect("queued permanent source already absent")
+        );
+        let permanent = repository
+            .message_action(&account.account_id, &permanent.operation_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(permanent.status, MutationStatus::Confirmed);
+        assert!(!permanent.source_cleanup_pending);
+    }
+
+    #[test]
+    fn every_inflight_phase_enters_reconciliation_without_unsafe_confirmation() {
+        let (directory, repository, account) = setup();
+        initialize_mailbox(
+            &repository,
+            &account.account_id,
+            MailboxRole::Inbox,
+            "INBOX",
+            907,
+        );
+        let phases = [
+            RemoteMutationPhase::Queued,
+            RemoteMutationPhase::TransferStarted,
+            RemoteMutationPhase::TransferAcknowledged,
+            RemoteMutationPhase::SourceDeleteStarted,
+            RemoteMutationPhase::SourceDeleteAcknowledged,
+        ];
+        let connection = repository.connection().expect("connection");
+        let mut operation_ids = Vec::new();
+        for (offset, phase) in phases.into_iter().enumerate() {
+            let operation_id = uuid::Uuid::now_v7().to_string();
+            connection
+                .execute(
+                    "INSERT INTO pending_message_actions (
+                         operation_id, account_id, source_mailbox, source_uid_validity,
+                         source_uid, source_role, destination_role, kind, revision,
+                         status, remote_phase, source_size_bytes
+                     ) VALUES (
+                         ?1, ?2, 'INBOX', 907, ?3, 'inbox', 'archive', 'archive',
+                         1, 'in_flight', ?4, 10
+                     )",
+                    params![
+                        operation_id,
+                        account.account_id,
+                        100 + offset as u32,
+                        phase.as_str(),
+                    ],
+                )
+                .expect("in-flight fixture");
+            operation_ids.push(operation_id);
+        }
+        drop(connection);
+
+        let requiring = repository
+            .message_actions_requiring_reconciliation(&account.account_id)
+            .expect("all in-flight actions");
+        assert_eq!(requiring.len(), phases.len());
+        assert!(
+            requiring
+                .iter()
+                .all(|action| action.status == MutationStatus::InFlight)
+        );
+        for phase in phases {
+            assert!(requiring.iter().any(|action| action.remote_phase == phase));
+        }
+        drop(repository);
+        let repository =
+            Repository::open(directory.path().join("mail.sqlite3")).expect("restart repository");
+        let requiring_after_restart = repository
+            .message_actions_requiring_reconciliation(&account.account_id)
+            .expect("restart reconciliation queue");
+        assert_eq!(requiring_after_restart.len(), phases.len());
+        for phase in phases {
+            assert!(
+                requiring_after_restart
+                    .iter()
+                    .any(|action| action.remote_phase == phase)
+            );
+        }
+        assert!(
+            repository
+                .reconcile_message_action(
+                    &account.account_id,
+                    &operation_ids[0],
+                    1,
+                    MutationStatus::OutcomeUnknown,
+                    Some(MessageMutationErrorKind::Unknown),
+                )
+                .expect("queued in-flight reconciliation")
+        );
+        assert!(
+            !repository
+                .reconcile_message_action_confirmed(
+                    &account.account_id,
+                    &operation_ids[1],
+                    1,
+                    true,
+                )
+                .expect("transfer-started confirmation is forbidden")
+        );
+        for operation_id in &operation_ids[2..] {
+            assert!(
+                repository
+                    .reconcile_message_action_confirmed(&account.account_id, operation_id, 1, true,)
+                    .expect("post-transfer source cleanup confirmation")
+            );
+        }
+        let transfer_started = repository
+            .message_action(&account.account_id, &operation_ids[1])
+            .unwrap()
+            .unwrap();
+        assert_eq!(transfer_started.status, MutationStatus::OutcomeUnknown);
+        assert_eq!(
+            transfer_started.remote_phase,
+            RemoteMutationPhase::TransferStarted
+        );
+    }
+
+    #[test]
+    fn keyset_page_is_stable_for_equal_timestamps_and_newer_insertions() {
+        let (_directory, repository, account) = setup();
+        initialize_mailbox(
+            &repository,
+            &account.account_id,
+            MailboxRole::Inbox,
+            "INBOX",
+            90,
+        );
+        repository
+            .update_mailbox_history(
+                &account.account_id,
+                "INBOX",
+                &MailboxHistory {
+                    before_uid: Some(1),
+                    complete: true,
+                    remote_total: Some(6),
+                },
+            )
+            .expect("complete history");
+        for uid in 1..=6 {
+            repository
+                .upsert_message(&message_with_identity(
+                    &account.account_id,
+                    "INBOX",
+                    uid,
+                    "2026-07-21T09:00:00Z",
+                    &format!("Message {uid}"),
+                ))
+                .expect("message");
+        }
+
+        let first = repository
+            .list_mailbox_page(&account.account_id, MailboxRole::Inbox, None, 2, None)
+            .expect("first page");
+        assert_eq!(
+            first
+                .items
+                .iter()
+                .map(|item| item.message.uid)
+                .collect::<Vec<_>>(),
+            [6, 5]
+        );
+        assert!(first.has_more_local);
+        assert_eq!(first.remote_history_state, RemoteHistoryState::NotChecked);
+        let cursor = first.next_cursor.as_ref().expect("continuation");
+
+        repository
+            .upsert_message(&message_with_identity(
+                &account.account_id,
+                "INBOX",
+                7,
+                "2026-07-21T09:00:00Z",
+                "New arrival",
+            ))
+            .expect("newer insertion");
+        let second = repository
+            .load_older_mailbox_page(&account.account_id, MailboxRole::Inbox, cursor, 2, None)
+            .expect("second page");
+        assert_eq!(
+            second
+                .items
+                .iter()
+                .map(|item| item.message.uid)
+                .collect::<Vec<_>>(),
+            [4, 3]
+        );
+        assert!(
+            repository
+                .list_mailbox_page(&account.account_id, MailboxRole::Inbox, None, 101, None)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn page_cursor_rejects_cross_account_folder_epoch_and_search_reuse() {
+        let (_directory, repository, account) = setup();
+        initialize_mailbox(
+            &repository,
+            &account.account_id,
+            MailboxRole::Inbox,
+            "INBOX",
+            101,
+        );
+        initialize_mailbox(
+            &repository,
+            &account.account_id,
+            MailboxRole::Archive,
+            "Archive",
+            201,
+        );
+        repository
+            .upsert_message(&message_with_identity(
+                &account.account_id,
+                "INBOX",
+                9,
+                "2026-07-21T10:00:00Z",
+                "Needle",
+            ))
+            .expect("message");
+        let first = repository
+            .list_mailbox_page(
+                &account.account_id,
+                MailboxRole::Inbox,
+                None,
+                1,
+                Some("Needle"),
+            )
+            .expect("first page");
+        let cursor = first.next_cursor.as_ref().expect("remote continuation");
+        assert!(uuid::Uuid::parse_str(cursor.as_str()).is_ok());
+        assert!(!cursor.as_str().contains("Needle"));
+        let mut tampered_token = cursor.as_str().to_owned();
+        let replacement = if tampered_token.ends_with('0') {
+            '1'
+        } else {
+            '0'
+        };
+        tampered_token.pop();
+        tampered_token.push(replacement);
+        assert!(
+            repository
+                .message_page_cursor_context(&MessagePageCursor::new(tampered_token))
+                .is_err()
+        );
+        assert!(
+            repository
+                .message_page_cursor_context(&MessagePageCursor::new(
+                    uuid::Uuid::now_v7().to_string(),
+                ))
+                .is_err()
+        );
+        let stored_query: String = repository
+            .connection()
+            .expect("connection")
+            .query_row(
+                "SELECT query_normalized FROM message_page_cursors WHERE token = ?1",
+                params![cursor.as_str()],
+                |row| row.get(0),
+            )
+            .expect("stored cursor binding");
+        assert_eq!(stored_query, "needle");
+
+        let other = secondary_account(&account);
+        repository
+            .initialize_account(&other)
+            .expect("other account");
+        initialize_mailbox(
+            &repository,
+            &other.account_id,
+            MailboxRole::Inbox,
+            "INBOX",
+            101,
+        );
+        assert!(
+            repository
+                .list_mailbox_page(
+                    &other.account_id,
+                    MailboxRole::Inbox,
+                    Some(cursor),
+                    1,
+                    Some("Needle"),
+                )
+                .is_err()
+        );
+        assert!(
+            repository
+                .list_mailbox_page(
+                    &account.account_id,
+                    MailboxRole::Archive,
+                    Some(cursor),
+                    1,
+                    Some("Needle"),
+                )
+                .is_err()
+        );
+        assert!(
+            repository
+                .list_mailbox_page(
+                    &account.account_id,
+                    MailboxRole::Inbox,
+                    Some(cursor),
+                    1,
+                    Some("Different"),
+                )
+                .is_err()
+        );
+        initialize_mailbox(
+            &repository,
+            &account.account_id,
+            MailboxRole::Inbox,
+            "INBOX",
+            102,
+        );
+        assert!(
+            repository
+                .list_mailbox_page(
+                    &account.account_id,
+                    MailboxRole::Inbox,
+                    Some(cursor),
+                    1,
+                    Some("Needle"),
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn local_search_uses_all_summary_identity_fields_but_never_body_text() {
+        let (_directory, repository, account) = setup();
+        initialize_mailbox(
+            &repository,
+            &account.account_id,
+            MailboxRole::Inbox,
+            "INBOX",
+            301,
+        );
+        let mut subject = message_with_identity(
+            &account.account_id,
+            "INBOX",
+            1,
+            "2026-07-21T11:00:01Z",
+            "SubjectToken",
+        );
+        subject.sender = Some(MailAddress {
+            name: Some("SenderToken".to_owned()),
+            email: "sender@example.com".to_owned(),
+        });
+        subject.to = vec![MailAddress {
+            name: Some("ToToken".to_owned()),
+            email: "to@example.com".to_owned(),
+        }];
+        subject.cc = vec![MailAddress {
+            name: Some("CcToken".to_owned()),
+            email: "cc@example.com".to_owned(),
+        }];
+        subject.preview = "PreviewToken and 100% literal".to_owned();
+        subject.body_text = Some("BodyOnlySecret".to_owned());
+        subject.body_fetched = true;
+        repository
+            .upsert_message(&subject)
+            .expect("searchable summary");
+        repository
+            .upsert_message(&message_with_identity(
+                &account.account_id,
+                "INBOX",
+                2,
+                "2026-07-21T11:00:02Z",
+                "Unrelated",
+            ))
+            .expect("unrelated summary");
+
+        for query in [
+            "SubjectToken",
+            "SenderToken",
+            "ToToken",
+            "CcToken",
+            "PreviewToken",
+            "100%",
+        ] {
+            let page = repository
+                .list_mailbox_page(
+                    &account.account_id,
+                    MailboxRole::Inbox,
+                    None,
+                    1,
+                    Some(query),
+                )
+                .expect("local search");
+            assert_eq!(page.items.len(), 1, "query {query}");
+            assert_eq!(page.items[0].message.uid, 1, "query {query}");
+        }
+        assert!(
+            repository
+                .list_mailbox_page(
+                    &account.account_id,
+                    MailboxRole::Inbox,
+                    None,
+                    50,
+                    Some("BodyOnlySecret"),
+                )
+                .expect("body excluded")
+                .items
                 .is_empty()
         );
     }
@@ -2650,6 +11260,11 @@ mod tests {
             bcc: vec![],
             subject: "Draft".to_owned(),
             body_text: "Body".to_owned(),
+            format: ComposeFormat {
+                body_html: Some("<p><strong>Body</strong></p>".to_owned()),
+                stationery: StationeryTheme::Grid,
+                send_stationery: true,
+            },
             reply_context: None,
             status: "local".to_owned(),
             remote_mailbox: None,
@@ -2669,6 +11284,7 @@ mod tests {
             })
             .expect("save draft");
         let unsynced = repository.get_draft_record("draft-1").unwrap();
+        assert_eq!(unsynced.draft.format, draft.format);
         assert!(
             repository
                 .mark_draft_record_synced_if_unchanged(&unsynced, "Drafts", Some(7), Some(91))
@@ -2687,6 +11303,7 @@ mod tests {
             draft_revision: Some(3),
             draft_local_version: Some(draft.local_version),
             recipients: draft.to.clone(),
+            recipient_groups: None,
             status: OutboxStatus::Queued,
             attempts: 0,
             last_error: None,
@@ -2734,6 +11351,8 @@ mod tests {
             .expect("sync snapshot");
 
         let mut concurrent_edit = sync_snapshot.clone();
+        concurrent_edit.local_version = 2;
+        concurrent_edit.draft.local_version = 2;
         concurrent_edit.revision = 2;
         concurrent_edit.draft.status = "local".to_owned();
         concurrent_edit.draft.subject = "new local edit".to_owned();
@@ -2772,6 +11391,44 @@ mod tests {
     }
 
     #[test]
+    fn test_helper_rejects_rewriting_an_immutable_draft_version_snapshot() {
+        let (_directory, repository, account) = setup();
+        let original = draft_record(
+            &account.account_id,
+            "immutable-test-snapshot",
+            "Original",
+            1,
+            0,
+        );
+        repository
+            .save_draft_record(&original)
+            .expect("initial immutable snapshot");
+
+        let mut idempotent = original.clone();
+        idempotent.draft.updated_at = "2026-07-28T01:00:00Z".to_owned();
+        idempotent.draft.raw_rfc822 = b"same compose state, refreshed bytes".to_vec();
+        repository
+            .save_draft_record(&idempotent)
+            .expect("identical compose snapshot is idempotent");
+
+        let mut rewritten = idempotent.clone();
+        rewritten.draft.subject = "Different compose content".to_owned();
+        assert!(matches!(
+            repository.save_draft_record(&rewritten),
+            Err(MailError::Validation(_))
+        ));
+        assert_eq!(
+            repository
+                .draft_version_snapshot(&account.account_id, &original.draft.id, 1)
+                .unwrap()
+                .unwrap()
+                .request
+                .subject,
+            "Original"
+        );
+    }
+
+    #[test]
     fn stale_push_delete_and_remote_import_results_preserve_concurrent_local_state() {
         let (_directory, first, account) = setup();
         let second = Repository::open(&first.path).expect("second repository connection");
@@ -2782,6 +11439,8 @@ mod tests {
             .expect("sync snapshot");
 
         let mut concurrent_edit = sync_snapshot.clone();
+        concurrent_edit.local_version = 2;
+        concurrent_edit.draft.local_version = 2;
         concurrent_edit.revision = 2;
         concurrent_edit.draft.subject = "second edit".to_owned();
         concurrent_edit.draft.raw_rfc822 = b"second edit bytes".to_vec();
@@ -2844,6 +11503,7 @@ mod tests {
             draft_revision: None,
             draft_local_version: None,
             recipients: vec!["receiver@example.com".to_owned()],
+            recipient_groups: None,
             status: OutboxStatus::Retryable,
             attempts: 1,
             last_error: Some("temporary SMTP response".to_owned()),
@@ -2889,6 +11549,207 @@ mod tests {
     }
 
     #[test]
+    fn delivery_unknown_retry_is_bound_to_one_reviewed_attempt_generation() {
+        let (_directory, repository, account) = setup();
+        let secondary = secondary_account(&account);
+        repository
+            .initialize_account(&secondary)
+            .expect("secondary account");
+        let unknown = OutboxItem {
+            id: "ambiguous-outbox".to_owned(),
+            account_id: account.account_id.clone(),
+            draft_id: None,
+            draft_revision: None,
+            draft_local_version: None,
+            recipients: vec![
+                "receiver@example.com".to_owned(),
+                "hidden@example.com".to_owned(),
+            ],
+            recipient_groups: Some(OutboxRecipientGroups {
+                to: vec!["receiver@example.com".to_owned()],
+                cc: Vec::new(),
+                bcc: vec!["hidden@example.com".to_owned()],
+            }),
+            status: OutboxStatus::DeliveryUnknown,
+            attempts: 1,
+            last_error: Some("SMTP delivery state is unknown".to_owned()),
+            created_at: "2026-07-14T04:00:00Z".to_owned(),
+            sent_at: None,
+            raw_rfc822: b"From: sender@example.com\r\nTo: receiver@example.com\r\n\r\nExact body"
+                .to_vec(),
+        };
+        repository.enqueue_outbox(&unknown).expect("unknown item");
+
+        assert!(matches!(
+            repository.claim_delivery_unknown_retry(&unknown.id, &secondary.account_id, 1),
+            Err(MailError::NotFound { .. })
+        ));
+        assert!(matches!(
+            repository.claim_delivery_unknown_retry(&unknown.id, &account.account_id, 0),
+            Err(MailError::Validation(_))
+        ));
+
+        let claimed = repository
+            .claim_delivery_unknown_retry(&unknown.id, &account.account_id, 1)
+            .expect("claim reviewed generation");
+        assert_eq!(claimed.status, OutboxStatus::Sending);
+        assert_eq!(claimed.attempts, 2);
+        assert_eq!(claimed.raw_rfc822, unknown.raw_rfc822);
+        assert_eq!(claimed.recipients, unknown.recipients);
+        assert_eq!(claimed.recipient_groups, unknown.recipient_groups);
+
+        repository
+            .complete_claimed_outbox_failure(
+                &unknown.id,
+                &account.account_id,
+                claimed.attempts,
+                OutboxStatus::DeliveryUnknown,
+                "second ambiguous SMTP outcome",
+            )
+            .expect("new ambiguous outcome");
+        assert!(matches!(
+            repository.claim_delivery_unknown_retry(&unknown.id, &account.account_id, 1),
+            Err(MailError::Validation(_))
+        ));
+        let still_unknown = repository.get_outbox(&unknown.id).unwrap();
+        assert_eq!(still_unknown.status, OutboxStatus::DeliveryUnknown);
+        assert_eq!(still_unknown.attempts, 2);
+        assert_eq!(still_unknown.raw_rfc822, unknown.raw_rfc822);
+
+        let next_claim = repository
+            .claim_delivery_unknown_retry(&unknown.id, &account.account_id, 2)
+            .expect("new explicit decision");
+        assert_eq!(next_claim.status, OutboxStatus::Sending);
+        assert_eq!(next_claim.attempts, 3);
+        assert_eq!(next_claim.raw_rfc822, unknown.raw_rfc822);
+        assert_eq!(next_claim.recipients, unknown.recipients);
+        assert!(matches!(
+            repository.complete_claimed_outbox_failure(
+                &unknown.id,
+                &account.account_id,
+                claimed.attempts,
+                OutboxStatus::DeliveryUnknown,
+                "late result from the older attempt"
+            ),
+            Err(MailError::Validation(_))
+        ));
+        assert_eq!(
+            repository.get_outbox(&unknown.id).unwrap().status,
+            OutboxStatus::Sending
+        );
+        assert_eq!(repository.get_outbox(&unknown.id).unwrap().attempts, 3);
+
+        repository
+            .finalize_claimed_outbox_sent(&unknown.id, &account.account_id, next_claim.attempts)
+            .expect("finish current exact attempt");
+        let sent = repository.get_outbox(&unknown.id).unwrap();
+        assert_eq!(sent.status, OutboxStatus::Sent);
+        assert_eq!(sent.attempts, 3);
+        assert_eq!(sent.raw_rfc822, unknown.raw_rfc822);
+        assert_eq!(sent.recipients, unknown.recipients);
+    }
+
+    #[test]
+    fn confirming_delivery_unknown_is_atomic_account_scoped_and_single_transition() {
+        let (_directory, first, account) = setup();
+        let database_path = first.path.clone();
+        let second = Repository::open(&first.path).expect("second connection");
+        let secondary = secondary_account(&account);
+        first
+            .initialize_account(&secondary)
+            .expect("secondary account");
+        let draft = draft_record(
+            &account.account_id,
+            "ambiguous-draft",
+            "Exact ambiguous draft",
+            1,
+            0,
+        );
+        first.save_draft_record(&draft).expect("draft");
+        let mut unknown = linked_outbox(
+            &draft,
+            "confirmed-ambiguous-outbox",
+            OutboxStatus::DeliveryUnknown,
+            1,
+        );
+        unknown.last_error = Some("SMTP delivery state is unknown".to_owned());
+        let immutable_bytes = unknown.raw_rfc822.clone();
+        let immutable_recipients = unknown.recipients.clone();
+        first.enqueue_outbox(&unknown).expect("unknown Outbox");
+
+        assert!(matches!(
+            first.confirm_delivery_unknown_as_sent(&unknown.id, &secondary.account_id, 1),
+            Err(MailError::NotFound { .. })
+        ));
+        assert_eq!(
+            first.get_outbox(&unknown.id).unwrap().status,
+            OutboxStatus::DeliveryUnknown
+        );
+
+        let barrier = Arc::new(Barrier::new(2));
+        let first_barrier = Arc::clone(&barrier);
+        let second_barrier = Arc::clone(&barrier);
+        let first_id = unknown.id.clone();
+        let second_id = unknown.id.clone();
+        let first_account_id = account.account_id.clone();
+        let second_account_id = account.account_id.clone();
+        let first_confirmation = thread::spawn(move || {
+            first_barrier.wait();
+            first.confirm_delivery_unknown_as_sent(&first_id, &first_account_id, 1)
+        });
+        let second_confirmation = thread::spawn(move || {
+            second_barrier.wait();
+            second.confirm_delivery_unknown_as_sent(&second_id, &second_account_id, 1)
+        });
+        let results = [
+            first_confirmation.join().expect("first thread"),
+            second_confirmation.join().expect("second thread"),
+        ];
+        let successful = results
+            .iter()
+            .filter(|result| {
+                result.as_ref().is_ok_and(|item| {
+                    item.status == OutboxStatus::Sent
+                        && item.attempts == 1
+                        && item.raw_rfc822 == immutable_bytes
+                        && item.recipients == immutable_recipients
+                })
+            })
+            .count();
+        let rejected = results
+            .iter()
+            .filter(|result| matches!(result, Err(MailError::Validation(_))))
+            .count();
+        assert_eq!(successful, 1);
+        assert_eq!(rejected, 1);
+
+        let inspector = Repository::open(database_path).expect("inspector");
+        let sent = inspector.get_outbox(&unknown.id).expect("sent Outbox");
+        assert_eq!(sent.status, OutboxStatus::Sent);
+        assert_eq!(sent.attempts, 1);
+        assert_eq!(
+            sent.sent_at, None,
+            "the user's decision time is not the unknown SMTP delivery time"
+        );
+        assert_eq!(sent.raw_rfc822, immutable_bytes);
+        assert_eq!(sent.recipients, immutable_recipients);
+        assert_eq!(inspector.get_draft(&draft.draft.id).unwrap().status, "sent");
+        assert!(matches!(
+            inspector.claim_delivery_unknown_retry(&unknown.id, &account.account_id, 1),
+            Err(MailError::Validation(_))
+        ));
+        assert!(matches!(
+            inspector.confirm_delivery_unknown_as_sent(&unknown.id, &account.account_id, 2),
+            Err(MailError::Validation(_))
+        ));
+        assert_eq!(
+            inspector.get_outbox(&unknown.id).unwrap().attempts,
+            1,
+            "stale decisions must not mutate the confirmed item"
+        );
+    }
+
+    #[test]
     fn first_outbox_attempt_is_atomically_persisted_and_claimed_once() {
         let (_directory, first, account) = setup();
         let database_path = first.path.clone();
@@ -2901,6 +11762,11 @@ mod tests {
             draft_revision: None,
             draft_local_version: None,
             recipients: vec!["receiver@example.com".to_owned()],
+            recipient_groups: Some(OutboxRecipientGroups {
+                to: vec!["receiver@example.com".to_owned()],
+                cc: Vec::new(),
+                bcc: Vec::new(),
+            }),
             status: OutboxStatus::Queued,
             attempts: 0,
             last_error: None,
@@ -2956,6 +11822,190 @@ mod tests {
     }
 
     #[test]
+    fn outbox_recipient_groups_survive_restart_recovery_and_retry_without_legacy_inference() {
+        let (directory, repository, account) = setup();
+        let database_path = repository.path.clone();
+        let groups = OutboxRecipientGroups {
+            to: vec!["To Person <to@example.com>".to_owned()],
+            cc: vec!["Copy Person <copy@example.com>".to_owned()],
+            bcc: vec!["Blind Person <blind@example.com>".to_owned()],
+        };
+        let queued = OutboxItem {
+            id: "grouped-first-attempt".to_owned(),
+            account_id: account.account_id.clone(),
+            draft_id: None,
+            draft_revision: None,
+            draft_local_version: None,
+            recipients: vec![
+                "to@example.com".to_owned(),
+                "copy@example.com".to_owned(),
+                "blind@example.com".to_owned(),
+            ],
+            recipient_groups: Some(groups.clone()),
+            status: OutboxStatus::Queued,
+            attempts: 0,
+            last_error: None,
+            created_at: "2026-07-28T03:00:00Z".to_owned(),
+            sent_at: None,
+            raw_rfc822:
+                b"From: sender@example.com\r\nTo: to@example.com\r\nCc: copy@example.com\r\n\r\nBody"
+                    .to_vec(),
+        };
+        let claimed = repository
+            .enqueue_and_claim_outbox(&queued)
+            .expect("first grouped claim");
+        assert_eq!(claimed.recipient_groups.as_ref(), Some(&groups));
+
+        let retryable = OutboxItem {
+            id: "grouped-retry".to_owned(),
+            status: OutboxStatus::Retryable,
+            attempts: 1,
+            last_error: Some("temporary SMTP failure".to_owned()),
+            created_at: "2026-07-28T03:01:00Z".to_owned(),
+            ..queued.clone()
+        };
+        repository
+            .enqueue_new_outbox(&retryable)
+            .expect("persist grouped retry");
+
+        let legacy = OutboxItem {
+            id: "legacy-ungrouped".to_owned(),
+            recipient_groups: None,
+            status: OutboxStatus::Retryable,
+            attempts: 1,
+            raw_rfc822: b"From: sender@example.com\r\nTo: to@example.com\r\nBcc: blind@example.com\r\n\r\nLegacy"
+                .to_vec(),
+            created_at: "2026-07-28T03:02:00Z".to_owned(),
+            ..queued.clone()
+        };
+        assert!(
+            repository
+                .enqueue_new_outbox(&legacy)
+                .expect_err("new rows must never omit recipient grouping")
+                .to_string()
+                .contains("exact To, Cc and Bcc")
+        );
+        repository
+            .enqueue_outbox(&legacy)
+            .expect("legacy ungrouped row");
+        drop(repository);
+
+        let reopened = Repository::open(&database_path).expect("restart repository");
+        assert_eq!(reopened.recover_sending_as_delivery_unknown().unwrap(), 1);
+        let recovered = reopened
+            .get_outbox(&queued.id)
+            .expect("recovered first send");
+        assert_eq!(recovered.status, OutboxStatus::DeliveryUnknown);
+        assert_eq!(recovered.recipient_groups.as_ref(), Some(&groups));
+        let retried = reopened
+            .claim_retryable_outbox(&retryable.id, &account.account_id)
+            .expect("claim persisted retry");
+        assert_eq!(retried.recipient_groups.as_ref(), Some(&groups));
+        assert_eq!(
+            reopened
+                .get_outbox(&legacy.id)
+                .expect("legacy row after restart")
+                .recipient_groups,
+            None
+        );
+
+        let connection = reopened.connection().expect("immutable payload check");
+        assert!(
+            connection
+                .execute(
+                    "UPDATE outbox SET recipient_groups_json = '{}' WHERE id = ?1",
+                    params![queued.id],
+                )
+                .is_err()
+        );
+        drop(connection);
+        drop(reopened);
+        drop(directory);
+    }
+
+    #[test]
+    fn linked_outbox_groups_must_match_the_exact_immutable_draft_snapshot() {
+        let (_directory, repository, account) = setup();
+        let mut version_one =
+            draft_record(&account.account_id, "grouped-draft", "Grouped V1", 1, 0);
+        version_one.draft.to = vec!["to@example.com".to_owned()];
+        version_one.draft.cc = vec!["copy@example.com".to_owned()];
+        version_one.draft.bcc = vec!["blind@example.com".to_owned()];
+        repository
+            .save_draft_record(&version_one)
+            .expect("version one");
+
+        let exact = OutboxItem {
+            id: "grouped-draft-exact".to_owned(),
+            account_id: account.account_id.clone(),
+            draft_id: Some(version_one.draft.id.clone()),
+            draft_revision: Some(version_one.revision),
+            draft_local_version: Some(version_one.local_version),
+            recipients: vec![
+                "to@example.com".to_owned(),
+                "copy@example.com".to_owned(),
+                "blind@example.com".to_owned(),
+            ],
+            recipient_groups: Some(OutboxRecipientGroups::from(
+                &version_one.draft.compose_request(),
+            )),
+            status: OutboxStatus::Queued,
+            attempts: 0,
+            last_error: None,
+            created_at: "2026-07-28T04:00:00Z".to_owned(),
+            sent_at: None,
+            raw_rfc822: b"immutable grouped bytes".to_vec(),
+        };
+        let mismatched = OutboxItem {
+            id: "grouped-draft-mismatch".to_owned(),
+            recipient_groups: Some(OutboxRecipientGroups {
+                to: vec!["to@example.com".to_owned()],
+                cc: Vec::new(),
+                bcc: vec![
+                    "copy@example.com".to_owned(),
+                    "blind@example.com".to_owned(),
+                ],
+            }),
+            ..exact.clone()
+        };
+        assert!(
+            repository
+                .enqueue_and_claim_outbox(&mismatched)
+                .expect_err("same envelope with changed grouping must be rejected")
+                .to_string()
+                .contains("confirmed draft version")
+        );
+        assert!(matches!(
+            repository.get_outbox(&mismatched.id),
+            Err(MailError::NotFound { .. })
+        ));
+
+        let claimed = repository
+            .enqueue_and_claim_outbox(&exact)
+            .expect("exact grouped draft claim");
+        assert_eq!(claimed.recipient_groups, exact.recipient_groups);
+
+        let mut version_two = version_one.clone();
+        version_two.local_version = 2;
+        version_two.revision = 2;
+        version_two.draft.local_version = 2;
+        version_two.draft.to = vec!["new-to@example.com".to_owned()];
+        version_two.draft.cc.clear();
+        version_two.draft.bcc.clear();
+        version_two.draft.subject = "Grouped V2".to_owned();
+        repository
+            .save_draft_record(&version_two)
+            .expect("newer draft edit");
+        assert_eq!(
+            repository
+                .get_outbox(&exact.id)
+                .expect("immutable V1 Outbox")
+                .recipient_groups,
+            exact.recipient_groups
+        );
+    }
+
+    #[test]
     fn successful_retry_atomically_marks_outbox_and_linked_draft_sent() {
         let (_directory, repository, account) = setup();
         let draft = Draft {
@@ -2968,6 +12018,7 @@ mod tests {
             bcc: vec![],
             subject: "Retry draft".to_owned(),
             body_text: "Exact persisted body".to_owned(),
+            format: Default::default(),
             reply_context: None,
             status: "local".to_owned(),
             remote_mailbox: None,
@@ -2993,6 +12044,7 @@ mod tests {
             draft_revision: Some(1),
             draft_local_version: Some(draft.local_version),
             recipients: draft.to.clone(),
+            recipient_groups: None,
             status: OutboxStatus::Retryable,
             attempts: 1,
             last_error: Some("temporary SMTP response".to_owned()),
@@ -3277,6 +12329,1187 @@ mod tests {
     }
 
     #[test]
+    fn v14_migrates_existing_message_public_id_once_and_enforces_integrity() {
+        let directory = TempDir::new().expect("temporary directory");
+        let path = directory.path().join("real-v13-public-id.sqlite3");
+        let legacy = create_legacy_core_fixture(&path);
+        legacy
+            .pragma_update(None, "user_version", 13)
+            .expect("v13 marker");
+        drop(legacy);
+
+        let upgraded = Repository::open(&path).expect("v14 upgrade");
+        let public_id: String = upgraded
+            .connection()
+            .expect("connection")
+            .query_row("SELECT public_id FROM messages WHERE id = 1", [], |row| {
+                row.get(0)
+            })
+            .expect("migrated public id");
+        let parsed_public_id = uuid::Uuid::parse_str(&public_id).expect("canonical UUID");
+        assert_eq!(parsed_public_id.get_version(), Some(uuid::Version::Random));
+        assert_eq!(
+            upgraded
+                .get_message_by_public_id("fixture", &public_id)
+                .expect("migrated account lookup")
+                .id,
+            1
+        );
+        drop(upgraded);
+
+        let reopened = Repository::open(&path).expect("normal v14 reopen");
+        let connection = reopened.connection().expect("reopened connection");
+        let stable: String = connection
+            .query_row("SELECT public_id FROM messages WHERE id = 1", [], |row| {
+                row.get(0)
+            })
+            .expect("stable public id");
+        assert_eq!(stable, public_id);
+        let version: u32 = connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("schema version");
+        assert_eq!(version, 17);
+        assert!(
+            connection
+                .execute(
+                    "UPDATE messages SET public_id = ?1 WHERE id = 1",
+                    params![uuid::Uuid::new_v4().to_string()],
+                )
+                .is_err()
+        );
+        assert!(
+            connection
+                .execute(
+                    "UPDATE messages SET public_id = 'not-an-opaque-id' WHERE id = 1",
+                    []
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn real_v10_fixture_upgrades_flags_and_plain_draft_without_cascade() {
+        let directory = TempDir::new().expect("temporary directory");
+        let path = directory.path().join("real-v10.sqlite3");
+        create_real_pre_v12_fixture(&path, 10, None);
+
+        let upgraded = Repository::open(&path).expect("upgrade real v10 fixture");
+        assert!(
+            upgraded
+                .get_message(1)
+                .expect("legacy message")
+                .bcc
+                .is_empty()
+        );
+        assert_eq!(
+            upgraded
+                .pending_seen_updates("fixture", "INBOX")
+                .expect("seen queue"),
+            [(42, true, 1)]
+        );
+        assert_eq!(
+            upgraded
+                .pending_flagged_updates("fixture", "INBOX")
+                .expect("flagged queue"),
+            [(42, false, 4)]
+        );
+        assert_eq!(
+            upgraded
+                .get_draft_record("fixture-draft")
+                .expect("migrated draft")
+                .draft
+                .format,
+            ComposeFormat::default()
+        );
+        let connection = upgraded.connection().expect("connection");
+        let version: u32 = connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("schema version");
+        assert_eq!(version, 17);
+        assert!(super::table_has_column(&connection, "messages", "bcc_json").unwrap());
+        let seen_targets = {
+            let mut statement = connection
+                .prepare("PRAGMA foreign_key_list(pending_seen_updates)")
+                .expect("seen foreign keys");
+            statement
+                .query_map([], |row| row.get::<_, String>(2))
+                .expect("seen foreign key rows")
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .expect("seen foreign key targets")
+        };
+        assert_eq!(seen_targets, ["accounts"]);
+        connection
+            .execute(
+                "DELETE FROM messages
+                 WHERE account_id = 'fixture' AND mailbox = 'INBOX' AND uid = 42",
+                [],
+            )
+            .expect("delete migrated source");
+        assert_eq!(
+            upgraded
+                .pending_seen_updates("fixture", "INBOX")
+                .expect("durable seen queue"),
+            [(42, true, 1)]
+        );
+    }
+
+    #[test]
+    fn real_v11_fixture_preserves_compose_format_bytes_and_flag_intents() {
+        let directory = TempDir::new().expect("temporary directory");
+        let path = directory.path().join("real-v11.sqlite3");
+        let expected = ComposeFormat {
+            body_html: Some("<p><strong>Real v11</strong></p>".to_owned()),
+            stationery: StationeryTheme::Lined,
+            send_stationery: true,
+        };
+        let encoded = serde_json::to_string(&expected).expect("compose format json");
+        create_real_pre_v12_fixture(&path, 11, Some(&encoded));
+
+        let upgraded = Repository::open(&path).expect("upgrade real v11 fixture");
+        assert_eq!(
+            upgraded
+                .get_draft_record("fixture-draft")
+                .expect("migrated rich draft")
+                .draft
+                .format,
+            expected
+        );
+        let stored: String = upgraded
+            .connection()
+            .expect("connection")
+            .query_row(
+                "SELECT compose_format_json FROM drafts WHERE id = 'fixture-draft'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("stored compose json");
+        assert_eq!(stored, encoded);
+        assert_eq!(
+            upgraded
+                .pending_flagged_updates("fixture", "INBOX")
+                .expect("flagged queue"),
+            [(42, false, 4)]
+        );
+    }
+
+    #[test]
+    fn real_v13_and_v14_null_digest_rows_upgrade_and_persist_one_time_backfill() {
+        const CONTENT_SHA256: &str =
+            "ed7002b439e9ac845f22357d822bac1444730fbdb6016d3ec9432297b9ec9f73";
+
+        for legacy_version in [13_u32, 14_u32] {
+            let directory = TempDir::new().expect("temporary directory");
+            let path = directory
+                .path()
+                .join(format!("real-v{legacy_version}-null-digest.sqlite3"));
+            create_real_intermediate_v12_fixture(&path, "{}");
+            let connection = Connection::open(&path).expect("legacy attachment fixture");
+            super::configure_connection(&connection).expect("legacy connection settings");
+            connection
+                .execute_batch(
+                    "CREATE TABLE outbox (
+                         id TEXT PRIMARY KEY NOT NULL,
+                         account_id TEXT NOT NULL,
+                         draft_id TEXT,
+                         recipients_json TEXT NOT NULL DEFAULT '[]',
+                         status TEXT NOT NULL,
+                         attempts INTEGER NOT NULL DEFAULT 0,
+                         last_error TEXT,
+                         created_at TEXT NOT NULL,
+                         sent_at TEXT,
+                         raw_rfc822 BLOB NOT NULL,
+                         FOREIGN KEY (account_id)
+                             REFERENCES accounts(id) ON DELETE CASCADE,
+                         FOREIGN KEY (draft_id)
+                             REFERENCES drafts(id) ON DELETE SET NULL
+                     );",
+                )
+                .expect("real pre-v13 Outbox schema");
+            super::migrate_managed_attachments_v13(&connection).expect("real v13 schema");
+            if legacy_version == 14 {
+                super::migrate_message_public_ids_v14(&connection).expect("real v14 schema");
+            }
+            let blob_id = uuid::Uuid::now_v7().to_string();
+            connection
+                .execute(
+                    "INSERT INTO managed_attachment_blobs (
+                         id, account_id, origin_draft_id, internal_name, name,
+                         mime_type, size_bytes, sha256_hex
+                     ) VALUES (
+                         ?1, 'fixture', 'fixture-draft', ?2, 'legacy.txt',
+                         'text/plain', 7, NULL
+                     )",
+                    params![blob_id, format!("{blob_id}.blob")],
+                )
+                .expect("legacy null-digest blob");
+            connection
+                .execute(
+                    "INSERT INTO draft_attachment_refs (
+                         account_id, draft_id, draft_local_version, position, blob_id
+                     ) VALUES ('fixture', 'fixture-draft', 3, 0, ?1)",
+                    params![blob_id],
+                )
+                .expect("legacy attachment reference");
+            connection
+                .pragma_update(None, "user_version", legacy_version)
+                .expect("legacy schema marker");
+            drop(connection);
+
+            let upgraded = Repository::open(&path).expect("upgrade legacy attachment schema");
+            let attachment = upgraded
+                .list_draft_attachments_at_version("fixture", "fixture-draft", 3)
+                .expect("attachment query")
+                .expect("migrated version")
+                .attachments
+                .into_iter()
+                .next()
+                .expect("legacy attachment");
+            assert_eq!(attachment.meta.id, blob_id);
+            assert_eq!(attachment.sha256_hex, None);
+            assert_eq!(
+                upgraded
+                    .connection()
+                    .expect("schema version connection")
+                    .pragma_query_value(None, "user_version", |row| row.get::<_, u32>(0))
+                    .expect("schema version"),
+                17
+            );
+
+            assert_eq!(
+                upgraded
+                    .initialize_managed_attachment_digest(
+                        "fixture",
+                        &blob_id,
+                        &attachment.internal_name,
+                        attachment.meta.size_bytes,
+                        CONTENT_SHA256,
+                    )
+                    .expect("one-time digest initialization"),
+                CONTENT_SHA256
+            );
+            drop(upgraded);
+
+            let restarted = Repository::open(&path).expect("restart upgraded repository");
+            assert_eq!(
+                restarted
+                    .list_draft_attachments_at_version("fixture", "fixture-draft", 3)
+                    .expect("restarted attachment query")
+                    .expect("restarted version")
+                    .attachments[0]
+                    .sha256_hex
+                    .as_deref(),
+                Some(CONTENT_SHA256)
+            );
+            assert!(
+                restarted
+                    .initialize_managed_attachment_digest(
+                        "fixture",
+                        &blob_id,
+                        &attachment.internal_name,
+                        attachment.meta.size_bytes,
+                        &"11".repeat(32),
+                    )
+                    .is_err()
+            );
+            assert!(
+                restarted
+                    .connection()
+                    .expect("immutability connection")
+                    .execute(
+                        "UPDATE managed_attachment_blobs
+                         SET name = 'rewritten.txt'
+                         WHERE account_id = 'fixture' AND id = ?1",
+                        params![blob_id],
+                    )
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn digest_backfill_cas_is_account_scoped_and_rejects_concurrent_disagreement() {
+        let (_directory, repository, account) = setup();
+        let other = secondary_account(&account);
+        repository
+            .initialize_account(&other)
+            .expect("secondary account");
+        let draft = draft_record(&account.account_id, "digest-cas-draft", "Digest CAS", 1, 0);
+        repository.save_draft_record(&draft).expect("primary draft");
+        let attachment = new_attachment("digest-cas.txt", None);
+        repository
+            .add_draft_attachments_if_local_version(
+                &account.account_id,
+                &draft.draft.id,
+                draft.local_version,
+                std::slice::from_ref(&attachment),
+                "2026-07-28T08:00:00Z",
+            )
+            .expect("add attachment")
+            .expect("current draft");
+        clear_attachment_digest_as_legacy_fixture(
+            &repository,
+            &account.account_id,
+            &attachment.imported.id,
+        );
+
+        assert!(
+            repository
+                .initialize_managed_attachment_digest(
+                    &other.account_id,
+                    &attachment.imported.id,
+                    &attachment.imported.internal_name,
+                    attachment.imported.size_bytes,
+                    &"11".repeat(32),
+                )
+                .is_err()
+        );
+        let missing_blob_id = uuid::Uuid::now_v7().to_string();
+        assert!(
+            repository
+                .initialize_managed_attachment_digest(
+                    &account.account_id,
+                    &missing_blob_id,
+                    &format!("{missing_blob_id}.blob"),
+                    attachment.imported.size_bytes,
+                    &"11".repeat(32),
+                )
+                .is_err()
+        );
+
+        let barrier = Arc::new(Barrier::new(3));
+        let attempts = ["11".repeat(32), "22".repeat(32)]
+            .into_iter()
+            .map(|digest| {
+                let repository = repository.clone();
+                let barrier = Arc::clone(&barrier);
+                let account_id = account.account_id.clone();
+                let blob_id = attachment.imported.id.clone();
+                let internal_name = attachment.imported.internal_name.clone();
+                let size_bytes = attachment.imported.size_bytes;
+                thread::spawn(move || {
+                    barrier.wait();
+                    repository.initialize_managed_attachment_digest(
+                        &account_id,
+                        &blob_id,
+                        &internal_name,
+                        size_bytes,
+                        &digest,
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        barrier.wait();
+        let results = attempts
+            .into_iter()
+            .map(|attempt| attempt.join().expect("digest CAS thread"))
+            .collect::<Vec<_>>();
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        assert_eq!(results.iter().filter(|result| result.is_err()).count(), 1);
+
+        let stored: String = repository
+            .connection()
+            .expect("digest query connection")
+            .query_row(
+                "SELECT sha256_hex
+                 FROM managed_attachment_blobs
+                 WHERE account_id = ?1 AND id = ?2",
+                params![account.account_id, attachment.imported.id],
+                |row| row.get(0),
+            )
+            .expect("stored digest");
+        assert!(
+            results
+                .iter()
+                .filter_map(|result| result.as_ref().ok())
+                .any(|winner| winner == &stored)
+        );
+    }
+
+    #[test]
+    fn managed_attachments_are_account_version_and_outbox_scoped() {
+        let (_directory, repository, account) = setup();
+        let other = secondary_account(&account);
+        repository
+            .initialize_account(&other)
+            .expect("secondary account");
+        let base = draft_record(&account.account_id, "attachment-draft", "Attachments", 1, 0);
+        repository
+            .save_draft_record(&base)
+            .expect("attachment draft");
+        let other_draft = draft_record(&other.account_id, "other-attachment-draft", "Other", 1, 0);
+        repository
+            .save_draft_record(&other_draft)
+            .expect("other draft");
+
+        let first = new_attachment("first.txt", None);
+        let second = new_attachment("second.bin", Some("source-part-2"));
+        let added = repository
+            .add_draft_attachments_if_local_version(
+                &account.account_id,
+                &base.draft.id,
+                1,
+                &[first.clone(), second.clone()],
+                "2026-07-28T01:00:00Z",
+            )
+            .expect("attachment add")
+            .expect("exact version");
+        assert_eq!(added.local_version, 2);
+        assert_eq!(added.attachments.len(), 2);
+        assert_eq!(
+            added.attachments[1].meta.source_attachment_id.as_deref(),
+            Some("source-part-2")
+        );
+        assert!(
+            repository
+                .list_draft_attachments_at_version(
+                    &other.account_id,
+                    &base.draft.id,
+                    added.local_version,
+                )
+                .expect("account isolation")
+                .is_none()
+        );
+
+        assert!(
+            repository
+                .remove_draft_attachment_if_local_version(
+                    &account.account_id,
+                    &base.draft.id,
+                    &first.imported.id,
+                    1,
+                    "2026-07-28T01:01:00Z",
+                )
+                .expect("stale remove")
+                .is_none()
+        );
+        assert_eq!(
+            repository
+                .list_draft_attachments_at_version(&account.account_id, &base.draft.id, 2,)
+                .unwrap()
+                .unwrap()
+                .attachments
+                .len(),
+            2
+        );
+        let removed = repository
+            .remove_draft_attachment_if_local_version(
+                &account.account_id,
+                &base.draft.id,
+                &first.imported.id,
+                2,
+                "2026-07-28T01:02:00Z",
+            )
+            .expect("remove")
+            .expect("current version");
+        assert_eq!(removed.local_version, 3);
+        assert_eq!(removed.attachments.len(), 1);
+        assert_eq!(removed.attachments[0].meta.id, second.imported.id);
+
+        let expected = repository
+            .get_draft_record(&base.draft.id)
+            .expect("current draft");
+        let mut replacement = expected.clone();
+        replacement.local_version += 1;
+        replacement.draft.local_version = replacement.local_version;
+        replacement.revision += 1;
+        replacement.draft.subject = "Body edit keeps attachments".to_owned();
+        replacement.draft.updated_at = "2026-07-28T01:03:00Z".to_owned();
+        assert!(
+            repository
+                .replace_draft_if_unchanged(&expected, &replacement, None)
+                .expect("body CAS")
+        );
+        assert_eq!(
+            repository
+                .list_draft_attachments_at_version(
+                    &account.account_id,
+                    &base.draft.id,
+                    replacement.local_version,
+                )
+                .unwrap()
+                .unwrap()
+                .attachments
+                .len(),
+            1
+        );
+        assert_eq!(
+            repository
+                .list_draft_attachments_at_version(&account.account_id, &base.draft.id, 2,)
+                .unwrap()
+                .unwrap()
+                .attachments
+                .len(),
+            2,
+            "body and remove edits must not rewrite the version-two set"
+        );
+        assert_eq!(
+            repository
+                .draft_version_snapshot(
+                    &account.account_id,
+                    &base.draft.id,
+                    replacement.local_version,
+                )
+                .unwrap()
+                .unwrap()
+                .request
+                .subject,
+            "Body edit keeps attachments"
+        );
+        let reopened = Repository::open(&repository.path).expect("restart repository");
+        assert_eq!(
+            reopened
+                .list_draft_attachments_at_version(&account.account_id, &base.draft.id, 2,)
+                .unwrap()
+                .unwrap()
+                .attachments
+                .len(),
+            2
+        );
+        assert_eq!(
+            reopened
+                .draft_version_snapshot(
+                    &account.account_id,
+                    &base.draft.id,
+                    replacement.local_version,
+                )
+                .unwrap()
+                .unwrap()
+                .request,
+            replacement.draft.compose_request()
+        );
+        drop(reopened);
+
+        let forward_context = ForwardContext {
+            source_message_id: "message-opaque".to_owned(),
+            original_subject: "Original".to_owned(),
+            from: Some(MailAddress {
+                name: Some("Alice".to_owned()),
+                email: "alice@example.com".to_owned(),
+            }),
+            to: vec![MailAddress {
+                name: None,
+                email: "receiver@example.com".to_owned(),
+            }],
+            cc: Vec::new(),
+            sent_at: Some("2026-07-27T01:00:00Z".to_owned()),
+            quoted_text: "quoted".to_owned(),
+            quoted_html: Some("<p>quoted</p>".to_owned()),
+            quoted_render_mode: Some(ForwardQuotedRenderMode::NativeHtml),
+            source_attachments: vec![AttachmentMeta {
+                id: "source-part-2".to_owned(),
+                original_name: Some("second.bin".to_owned()),
+                safe_display_name: "second.bin".to_owned(),
+                mime_type: "application/octet-stream".to_owned(),
+                size_bytes: second.imported.size_bytes,
+                disposition: AttachmentDisposition::Attachment,
+            }],
+        };
+        assert!(
+            repository
+                .save_forward_context_if_absent(
+                    &account.account_id,
+                    &base.draft.id,
+                    &forward_context,
+                )
+                .expect("forward context")
+        );
+        assert!(
+            !repository
+                .save_forward_context_if_absent(
+                    &account.account_id,
+                    &base.draft.id,
+                    &forward_context,
+                )
+                .expect("idempotent forward context")
+        );
+
+        let conflict = draft_record(&account.account_id, "attachment-conflict", "Conflict", 1, 0);
+        assert!(
+            repository
+                .insert_draft_if_absent(&conflict)
+                .expect("insert conflict")
+        );
+        assert!(
+            repository
+                .clone_draft_attachments_to_conflict(
+                    &account.account_id,
+                    &base.draft.id,
+                    replacement.local_version,
+                    &conflict.draft.id,
+                    conflict.local_version,
+                )
+                .expect("clone exact set")
+        );
+        assert_eq!(
+            repository
+                .forward_context(&account.account_id, &conflict.draft.id)
+                .expect("conflict forward context"),
+            Some(forward_context)
+        );
+
+        let outbox = linked_outbox(
+            &repository
+                .get_draft_record(&base.draft.id)
+                .expect("outbox draft"),
+            "attachment-outbox",
+            OutboxStatus::Queued,
+            0,
+        );
+        repository
+            .enqueue_outbox(&outbox)
+            .expect("bind Outbox attachments");
+        assert_eq!(
+            repository
+                .list_outbox_attachments(&account.account_id, &outbox.id)
+                .expect("Outbox attachment set")
+                .len(),
+            1
+        );
+
+        let current = repository
+            .get_draft_record(&base.draft.id)
+            .expect("draft before final remove");
+        repository
+            .remove_draft_attachment_if_local_version(
+                &account.account_id,
+                &base.draft.id,
+                &second.imported.id,
+                current.local_version,
+                "2026-07-28T01:04:00Z",
+            )
+            .expect("remove current attachment")
+            .expect("current remove");
+        assert_eq!(
+            repository
+                .list_outbox_attachments(&account.account_id, &outbox.id)
+                .expect("immutable Outbox set")
+                .len(),
+            1
+        );
+        assert!(
+            !repository
+                .list_orphaned_managed_attachments(&account.account_id)
+                .expect("historical snapshot refs")
+                .iter()
+                .any(|orphan| orphan.id == first.imported.id)
+        );
+        repository
+            .tombstone_draft(&base.draft.id, "2026-07-28T01:05:00Z")
+            .expect("terminal draft releases every historical snapshot ref");
+        assert!(
+            repository
+                .list_orphaned_managed_attachments(&account.account_id)
+                .expect("orphan list after terminal release")
+                .iter()
+                .any(|orphan| orphan.id == first.imported.id)
+        );
+        assert!(
+            !repository
+                .list_orphaned_managed_attachments(&account.account_id)
+                .expect("Outbox protection")
+                .iter()
+                .any(|orphan| orphan.id == second.imported.id)
+        );
+        assert!(
+            repository
+                .take_orphaned_managed_attachment(&other.account_id, &first.imported.id)
+                .expect("other account cleanup")
+                .is_none()
+        );
+        assert_eq!(
+            repository
+                .take_orphaned_managed_attachment(&account.account_id, &first.imported.id)
+                .expect("take orphan")
+                .expect("unreferenced blob")
+                .internal_name,
+            first.imported.internal_name
+        );
+
+        let connection = repository.connection().expect("constraint inspection");
+        let attachment_foreign_keys = {
+            let mut statement = connection
+                .prepare("PRAGMA foreign_key_list(draft_attachment_refs)")
+                .unwrap();
+            statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, String>(6)?,
+                    ))
+                })
+                .unwrap()
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .unwrap()
+        };
+        assert!(attachment_foreign_keys.iter().any(|(table, on_update, _)| {
+            table == "draft_version_snapshots" && on_update == "NO ACTION"
+        }));
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT sha256_hex FROM managed_attachment_blobs
+                     WHERE account_id = ?1 AND id = ?2",
+                    params![account.account_id, second.imported.id],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .unwrap()
+                .as_deref(),
+            Some(second.imported.sha256_hex.as_str())
+        );
+        assert!(
+            connection
+                .execute(
+                    "UPDATE draft_version_snapshots SET subject = 'rewritten'
+                     WHERE account_id = ?1 AND draft_id = ?2",
+                    params![account.account_id, base.draft.id],
+                )
+                .is_err()
+        );
+        assert!(
+            connection
+                .execute(
+                    "INSERT INTO draft_attachment_refs (
+                         account_id, draft_id, draft_local_version, position, blob_id
+                     ) VALUES (?1, ?2, ?3, 9, ?4)",
+                    params![
+                        other.account_id,
+                        other_draft.draft.id,
+                        super::u64_to_i64(other_draft.local_version),
+                        second.imported.id,
+                    ],
+                )
+                .is_err()
+        );
+        assert!(
+            connection
+                .execute(
+                    "UPDATE managed_attachment_blobs SET name = 'changed.bin'
+                     WHERE account_id = ?1 AND id = ?2",
+                    params![account.account_id, second.imported.id],
+                )
+                .is_err()
+        );
+        assert!(
+            connection
+                .execute(
+                    "UPDATE draft_forward_contexts SET original_subject = 'changed'
+                     WHERE account_id = ?1 AND draft_id = ?2",
+                    params![account.account_id, base.draft.id],
+                )
+                .is_err()
+        );
+        connection
+            .execute(
+                "DELETE FROM accounts WHERE id = ?1",
+                params![account.account_id],
+            )
+            .expect("account cache removal cascades attachment references");
+        let remaining_blobs: u32 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM managed_attachment_blobs WHERE account_id = ?1",
+                params![account.account_id],
+                |row| row.get(0),
+            )
+            .expect("remaining account blobs");
+        assert_eq!(remaining_blobs, 0);
+    }
+
+    #[test]
+    fn v15_migrates_cascading_current_refs_into_immutable_version_snapshots() {
+        let directory = TempDir::new().expect("temporary directory");
+        let path = directory.path().join("v14-draft-versions.sqlite3");
+        let account = AccountConfig::from_163_lines([
+            "v15-migration@163.com",
+            "not-a-real-authorization-value",
+        ])
+        .expect("account");
+        let repository = Repository::open(&path).expect("repository");
+        repository
+            .initialize_account(&account)
+            .expect("account row");
+        let base = draft_record(
+            &account.account_id,
+            "v15-migrated-draft",
+            "Version one",
+            1,
+            0,
+        );
+        repository.save_draft_record(&base).expect("base draft");
+        let attachment = new_attachment("migration.txt", None);
+        repository
+            .add_draft_attachments_if_local_version(
+                &account.account_id,
+                &base.draft.id,
+                1,
+                std::slice::from_ref(&attachment),
+                "2026-07-28T02:00:00Z",
+            )
+            .expect("add attachment")
+            .expect("current version");
+        drop(repository);
+
+        let legacy = Connection::open(&path).expect("legacy v14 connection");
+        legacy
+            .execute_batch(
+                "PRAGMA foreign_keys = OFF;
+                 DROP TRIGGER IF EXISTS trg_draft_version_snapshots_immutable;
+                 DROP TABLE IF EXISTS draft_attachment_refs_v14;
+                 CREATE TABLE draft_attachment_refs_v14 (
+                     account_id TEXT NOT NULL,
+                     draft_id TEXT NOT NULL,
+                     draft_local_version INTEGER NOT NULL CHECK (draft_local_version > 0),
+                     position INTEGER NOT NULL CHECK (position >= 0),
+                     blob_id TEXT NOT NULL,
+                     source_attachment_id TEXT,
+                     PRIMARY KEY (account_id, draft_id, draft_local_version, position),
+                     UNIQUE (account_id, draft_id, draft_local_version, blob_id),
+                     FOREIGN KEY (account_id, draft_id, draft_local_version)
+                         REFERENCES drafts(account_id, id, local_version)
+                         ON UPDATE CASCADE ON DELETE CASCADE,
+                     FOREIGN KEY (account_id, blob_id)
+                         REFERENCES managed_attachment_blobs(account_id, id)
+                         ON DELETE NO ACTION DEFERRABLE INITIALLY DEFERRED
+                 );
+                 INSERT INTO draft_attachment_refs_v14
+                 SELECT account_id, draft_id, draft_local_version, position,
+                        blob_id, source_attachment_id
+                 FROM draft_attachment_refs;
+                 DROP TABLE draft_attachment_refs;
+                 ALTER TABLE draft_attachment_refs_v14 RENAME TO draft_attachment_refs;
+                 DROP TABLE draft_version_forward_context_refs;
+                 DROP TABLE draft_version_snapshots;
+                 PRAGMA user_version = 14;",
+            )
+            .expect("downgrade fixture to the real v14 relationship");
+        drop(legacy);
+
+        let upgraded = Repository::open(&path).expect("v15 upgrade");
+        let migrated = upgraded
+            .draft_version_snapshot(&account.account_id, &base.draft.id, 2)
+            .expect("snapshot query")
+            .expect("migrated current snapshot");
+        assert_eq!(migrated.request.subject, "Version one");
+        assert_eq!(
+            upgraded
+                .list_draft_attachments_at_version(&account.account_id, &base.draft.id, 2)
+                .unwrap()
+                .unwrap()
+                .attachments[0]
+                .meta
+                .id,
+            attachment.imported.id
+        );
+        let expected = upgraded.get_draft_record(&base.draft.id).unwrap();
+        let mut replacement = expected.clone();
+        replacement.local_version += 1;
+        replacement.draft.local_version = replacement.local_version;
+        replacement.revision += 1;
+        replacement.draft.subject = "Version two body".to_owned();
+        replacement.draft.body_text = "immutable second body".to_owned();
+        replacement.draft.updated_at = "2026-07-28T02:01:00Z".to_owned();
+        upgraded
+            .replace_draft_if_unchanged(&expected, &replacement, None)
+            .expect("body replacement");
+        assert_eq!(
+            upgraded
+                .list_draft_attachments_at_version(&account.account_id, &base.draft.id, 2)
+                .unwrap()
+                .unwrap()
+                .attachments
+                .len(),
+            1
+        );
+        assert_eq!(
+            upgraded
+                .list_draft_attachments_at_version(&account.account_id, &base.draft.id, 3)
+                .unwrap()
+                .unwrap()
+                .attachments
+                .len(),
+            1
+        );
+        drop(upgraded);
+
+        let reopened = Repository::open(&path).expect("restart upgraded repository");
+        assert_eq!(
+            reopened
+                .draft_version_snapshot(&account.account_id, &base.draft.id, 2)
+                .unwrap()
+                .unwrap()
+                .request
+                .body_text,
+            base.draft.body_text
+        );
+        assert_eq!(
+            reopened
+                .draft_version_snapshot(&account.account_id, &base.draft.id, 3)
+                .unwrap()
+                .unwrap()
+                .request
+                .body_text,
+            "immutable second body"
+        );
+        let foreign_targets = {
+            let connection = reopened.connection().unwrap();
+            let mut statement = connection
+                .prepare("PRAGMA foreign_key_list(draft_attachment_refs)")
+                .unwrap();
+            statement
+                .query_map([], |row| row.get::<_, String>(2))
+                .unwrap()
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .unwrap()
+        };
+        assert!(foreign_targets.contains(&"draft_version_snapshots".to_owned()));
+    }
+
+    #[test]
+    fn real_intermediate_v12_fixture_rebuilds_cascades_and_recovers_inflight() {
+        let directory = TempDir::new().expect("temporary directory");
+        let path = directory.path().join("real-intermediate-v12.sqlite3");
+        let format = ComposeFormat {
+            body_html: Some("<p>Intermediate v12</p>".to_owned()),
+            stationery: StationeryTheme::Grid,
+            send_stationery: false,
+        };
+        let encoded = serde_json::to_string(&format).expect("compose format json");
+        create_real_intermediate_v12_fixture(&path, &encoded);
+
+        let upgraded = Repository::open(&path).expect("upgrade intermediate v12 fixture");
+        let seen = upgraded
+            .system_flag_mutation_receipt("fixture", "seen-intermediate", SystemFlagKind::Seen)
+            .expect("seen receipt")
+            .expect("seen operation");
+        assert_eq!(seen.local_revision, 5);
+        assert_eq!(seen.status, MutationStatus::OutcomeUnknown);
+        let flagged = upgraded
+            .pending_system_flag_mutations("fixture", "INBOX", SystemFlagKind::Flagged)
+            .expect("pending flag queue");
+        assert_eq!(flagged.len(), 1);
+        assert_eq!(flagged[0].operation_id, "flagged-intermediate");
+        assert_eq!(flagged[0].revision, 6);
+        let action = upgraded
+            .message_action("fixture", "action-intermediate")
+            .expect("action query")
+            .expect("action");
+        assert_eq!(action.status, MutationStatus::OutcomeUnknown);
+        assert_eq!(action.remote_phase, RemoteMutationPhase::Queued);
+        assert_eq!(action.error_kind, Some(MessageMutationErrorKind::Unknown));
+        assert!(!action.source_cleanup_pending);
+        assert!(!action.destination_reconciled);
+        assert_eq!(
+            upgraded
+                .get_draft_record("fixture-draft")
+                .expect("draft")
+                .draft
+                .format,
+            format
+        );
+        let connection = upgraded.connection().expect("connection");
+        let version: u32 = connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("schema version");
+        assert_eq!(version, 17);
+        for column in ["source_cleanup_pending", "destination_reconciled"] {
+            assert!(
+                super::table_has_column(&connection, "pending_message_actions", column).unwrap()
+            );
+        }
+        for table in [
+            "managed_attachment_blobs",
+            "draft_attachment_refs",
+            "outbox_attachment_sets",
+            "outbox_attachment_refs",
+            "draft_forward_contexts",
+            "draft_forward_source_attachments",
+        ] {
+            let present: bool = connection
+                .query_row(
+                    "SELECT EXISTS(
+                         SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1
+                     )",
+                    params![table],
+                    |row| row.get(0),
+                )
+                .expect("v13 table");
+            assert!(present, "{table}");
+        }
+        let targets = {
+            let mut statement = connection
+                .prepare("PRAGMA foreign_key_list(pending_seen_updates)")
+                .expect("seen foreign keys");
+            statement
+                .query_map([], |row| row.get::<_, String>(2))
+                .expect("foreign key rows")
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .expect("foreign key targets")
+        };
+        assert_eq!(targets, ["accounts"]);
+        connection
+            .execute(
+                "DELETE FROM messages
+                 WHERE account_id = 'fixture' AND mailbox = 'INBOX' AND uid = 42",
+                [],
+            )
+            .expect("delete source after rebuild");
+        assert!(
+            upgraded
+                .system_flag_mutation_receipt("fixture", "seen-intermediate", SystemFlagKind::Seen,)
+                .expect("durable seen receipt")
+                .is_some()
+        );
+        assert!(
+            upgraded
+                .message_action("fixture", "action-intermediate")
+                .expect("durable action query")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn v12_migrates_legacy_seen_rows_to_desired_revision_without_losing_intent() {
+        let directory = TempDir::new().expect("temporary directory");
+        let path = directory.path().join("legacy-seen.sqlite3");
+        let repository = Repository::open(&path).expect("initial repository");
+        let account = AccountConfig::from_163_lines([
+            "legacy-seen@163.com",
+            "legacy-not-real-authorization-value",
+        ])
+        .expect("account");
+        repository
+            .initialize_account(&account)
+            .expect("account row");
+        initialize_mailbox(
+            &repository,
+            &account.account_id,
+            MailboxRole::Inbox,
+            "INBOX",
+            91,
+        );
+        repository
+            .upsert_message(&message(&account.account_id, false))
+            .expect("message");
+        drop(repository);
+
+        let legacy = Connection::open(&path).expect("legacy database");
+        legacy
+            .execute_batch(
+                "PRAGMA foreign_keys = OFF;
+                 DROP TABLE pending_seen_updates;
+                 CREATE TABLE pending_seen_updates (
+                     account_id TEXT NOT NULL,
+                     mailbox TEXT NOT NULL,
+                     uid INTEGER NOT NULL,
+                     created_at TEXT NOT NULL,
+                     PRIMARY KEY (account_id, mailbox, uid),
+                     FOREIGN KEY (account_id, mailbox, uid)
+                         REFERENCES messages(account_id, mailbox, uid) ON DELETE CASCADE
+                 );
+                 INSERT INTO pending_seen_updates (
+                     account_id, mailbox, uid, created_at
+                 ) VALUES (
+                     'primary', 'INBOX', 42, '2026-07-21T12:00:00Z'
+                 );
+                 PRAGMA user_version = 11;",
+            )
+            .expect("legacy seen queue");
+        drop(legacy);
+
+        let upgraded = Repository::open(&path).expect("v12 upgrade");
+        assert_eq!(
+            upgraded
+                .pending_seen_updates(&account.account_id, "INBOX")
+                .expect("migrated seen intent"),
+            [(42, true, 1)]
+        );
+        let connection = upgraded.connection().expect("connection");
+        let version: u32 = connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("schema version");
+        assert_eq!(version, 17);
+        for column in [
+            "operation_id",
+            "source_uid_validity",
+            "desired",
+            "revision",
+            "status",
+            "error_kind",
+            "updated_at",
+        ] {
+            assert!(super::table_has_column(&connection, "pending_seen_updates", column).unwrap());
+        }
+        let seen_foreign_tables = {
+            let mut statement = connection
+                .prepare("PRAGMA foreign_key_list(pending_seen_updates)")
+                .expect("seen foreign keys");
+            statement
+                .query_map([], |row| row.get::<_, String>(2))
+                .expect("foreign key rows")
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .expect("foreign key tables")
+        };
+        assert_eq!(seen_foreign_tables, ["accounts"]);
+    }
+
+    #[test]
+    fn v12_preserves_v11_compose_format_bytes_and_draft_column_order() {
+        let directory = TempDir::new().expect("temporary directory");
+        let path = directory.path().join("v11-compose.sqlite3");
+        let repository = Repository::open(&path).expect("repository");
+        let account = AccountConfig::from_163_lines([
+            "v11-compose@163.com",
+            "compose-not-real-authorization-value",
+        ])
+        .expect("account");
+        repository
+            .initialize_account(&account)
+            .expect("account row");
+        let mut record = draft_record(&account.account_id, "rich-v11", "Rich", 3, 0);
+        record.draft.format = ComposeFormat {
+            body_html: Some("<p><strong>Preserve me</strong></p>".to_owned()),
+            stationery: StationeryTheme::Lined,
+            send_stationery: true,
+        };
+        repository
+            .save_draft_record(&record)
+            .expect("v11 rich draft");
+        let before_columns = {
+            let connection = repository.connection().expect("connection");
+            connection
+                .pragma_update(None, "user_version", 11)
+                .expect("v11 marker");
+            let mut statement = connection
+                .prepare("PRAGMA table_info(drafts)")
+                .expect("draft columns");
+            statement
+                .query_map([], |row| row.get::<_, String>(1))
+                .expect("column rows")
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .expect("columns")
+        };
+        drop(repository);
+
+        let upgraded = Repository::open(&path).expect("v12 upgrade");
+        let stored = upgraded
+            .get_draft_record("rich-v11")
+            .expect("preserved rich draft");
+        assert_eq!(stored.draft.format, record.draft.format);
+        let after_columns = {
+            let connection = upgraded.connection().expect("connection");
+            let mut statement = connection
+                .prepare("PRAGMA table_info(drafts)")
+                .expect("draft columns");
+            statement
+                .query_map([], |row| row.get::<_, String>(1))
+                .expect("column rows")
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .expect("columns")
+        };
+        assert_eq!(after_columns, before_columns);
+    }
+
+    #[test]
     fn upgrades_legacy_drafts_with_synced_revision_metadata() {
         let directory = TempDir::new().expect("temporary directory");
         let path = directory.path().join("legacy.sqlite3");
@@ -3343,7 +13576,7 @@ Body' AS BLOB)
         let version: u32 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("schema version");
-        assert_eq!(version, 10);
+        assert_eq!(version, 17);
         for column in [
             "local_version",
             "has_unsupported_content",
@@ -3352,9 +13585,11 @@ Body' AS BLOB)
             "remote_uid_validity",
             "is_deleted",
             "reply_context_json",
+            "compose_format_json",
         ] {
             assert!(super::table_has_column(&connection, "drafts", column).unwrap());
         }
+        assert_eq!(record.draft.format, Default::default());
     }
 
     #[test]
@@ -3396,11 +13631,13 @@ Body' AS BLOB)
             .expect("legacy item remains readable");
         assert_eq!(upgraded.draft_revision, None);
         assert_eq!(upgraded.draft_local_version, None);
+        assert_eq!(upgraded.recipient_groups, None);
         assert_eq!(upgraded.raw_rfc822, [1, 2, 3]);
 
         let connection = repository.connection().expect("connection");
         assert!(super::table_has_column(&connection, "outbox", "draft_revision").unwrap());
         assert!(super::table_has_column(&connection, "outbox", "draft_local_version").unwrap());
+        assert!(super::table_has_column(&connection, "outbox", "recipient_groups_json").unwrap());
         let old_index: i64 = connection
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master

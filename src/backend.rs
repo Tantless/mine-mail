@@ -1,10 +1,12 @@
 use std::{
     collections::{BTreeSet, HashMap, HashSet},
-    path::Path,
+    io,
+    path::{Path, PathBuf},
     time::Duration,
 };
 
-use chrono::{SecondsFormat, Utc};
+use chrono::{DateTime, SecondsFormat, TimeDelta, Utc};
+use serde::{Deserialize, Serialize};
 use tokio::{sync::Mutex, time::Instant};
 use uuid::Uuid;
 
@@ -12,27 +14,68 @@ use crate::{
     AccountConfig, ComposeRequest, ConnectionReport, ContactActivity, ContactMessage,
     ContactMessageDirection, Draft, DraftDeleteKind, DraftSaveKind, DraftSaveOutcome, InboxMessage,
     MailAddress, MailError, MailboxRole, OutboxItem, OutboxStatus, ReplyContext, Result,
-    SyncBatchProgress, SyncReport,
-    database::{DraftRecord, MailboxState, Repository},
-    imap_client::{ImapConnection, MailboxHint, RemoteMessage},
-    mime::{
-        IncomingMetadata, build_draft_message_revision, build_outgoing_message,
-        parse_draft_message, parse_incoming_message, parse_incoming_summary_or_fallback,
-        render_message_html, restore_outbox_envelope,
+    StationeryTheme, SyncBatchProgress, SyncReport,
+    database::{
+        DraftRecord, MailboxState, ManagedDraftAttachment, NewDraftAttachment,
+        PendingMessageAction, PreparedForwardInsert, Repository,
+        managed_attachment_integrity_error,
     },
-    models::{DraftSyncReport, normalize_contact_email},
+    imap_client::{
+        CreatableMailboxRole, DeleteFinalization, ImapConnection, MailboxHint, MessageMoveMethod,
+        RemoteMailbox, RemoteMessage,
+    },
+    mailbox_mutation::{
+        PersistedFlagWork, PersistedPhaseWork, persisted_flag_work, persisted_phase_work,
+    },
+    managed_attachments::{ManagedAttachmentStore, save_extracted_file},
+    mime::{
+        AttachmentIndexError, AttachmentPartMetadata, ForwardHtmlRenderMode, ForwardSourceError,
+        IncomingMetadata, MAX_ATTACHMENT_PARTS, MAX_MANAGED_ATTACHMENT_BYTES,
+        MAX_MANAGED_ATTACHMENT_TOTAL_BYTES, ManagedMimeAttachment, MimeSourceCompleteness,
+        build_draft_message_revision, build_draft_message_revision_with_attachments,
+        build_outgoing_message, build_outgoing_message_with_attachments, extract_attachment,
+        index_message_attachments, parse_draft_message, parse_incoming_message,
+        parse_incoming_summary_or_fallback, prepare_forward_source,
+        prepare_forward_source_without_attachments, render_message_html, restore_outbox_envelope,
+        sanitize_compose_html, validate_attachment_id,
+    },
+    models::{
+        AttachmentDisposition, AttachmentMeta, AttachmentSaveErrorKind, AttachmentSaveResult,
+        AttachmentSaveStatus, DraftAttachmentMutationKind, DraftAttachmentMutationOutcome,
+        DraftDto, DraftSyncReport, ForwardContext, ForwardPreparationError,
+        ForwardPreparationErrorKind, ForwardPreparationOutcome, ForwardQuotedRenderMode,
+        ForwardWarning, MailboxCapability, MailboxCapabilityStatus,
+        MailboxCapabilityUnavailableReason, MessageActionKind, MessageMutationErrorKind,
+        MessageMutationReceipt, MessagePage, MessagePageCursor, MutationStatus, PreparedForward,
+        RemoteHistoryState, RemoteMutationPhase, SystemFlagKind, SystemFlagMutationReceipt,
+        normalize_contact_email,
+    },
     smtp_client::SmtpClient,
 };
 
 const INBOX: &str = "INBOX";
 const SUMMARY_BATCH_SIZE: usize = 10;
 const PREVIEW_BACKFILL_LIMIT: usize = 250;
+const MANAGED_ATTACHMENT_CLEANUP_GRACE: Duration = Duration::from_secs(60 * 60);
 const FLAG_BATCH_SIZE: usize = 250;
 const MAX_CACHED_MESSAGE_BYTES: u32 = 50 * 1024 * 1024;
 const MAX_REPLY_QUOTED_TEXT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_REPLY_QUOTED_HTML_BYTES: usize = 12 * 1024 * 1024;
 const MAX_LOCAL_DRAFT_CAS_RETRIES: usize = 32;
 const BODY_IMAP_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(60);
+const DEFAULT_MESSAGE_PAGE_SIZE: usize = 50;
+const MAX_MESSAGE_PAGE_SIZE: usize = 100;
+const HISTORY_FETCH_PAGE_SIZE: usize = 50;
+const PERMANENT_DELETE_PLAN_MINUTES: i64 = 5;
+const MAX_PENDING_DELETE_PLANS: usize = 64;
+
+fn normalize_owned_compose_html(mut request: ComposeRequest) -> ComposeRequest {
+    request.format.body_html = sanitize_compose_html(request.format.body_html.as_deref());
+    if request.format.stationery == StationeryTheme::None {
+        request.format.send_stationery = false;
+    }
+    request
+}
 
 fn advance_draft_sync_progress<F>(completed: &mut usize, total: usize, on_progress: &mut F)
 where
@@ -50,6 +93,18 @@ where
 struct BodyImapSession {
     connection: ImapConnection,
     last_used: Instant,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct PermanentDeletePlan {
+    pub plan_id: String,
+    pub expires_at: String,
+}
+
+#[derive(Clone, Debug)]
+struct PermanentDeletePlanState {
+    message_id: i64,
+    expires_at: DateTime<Utc>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -125,6 +180,49 @@ struct ConfirmedDraftSnapshot {
     revision: u64,
     local_version: u64,
     request: ComposeRequest,
+    attachments: Vec<ManagedMimeAttachment>,
+    forward_context: Option<ForwardContext>,
+}
+
+struct PendingManagedImports<'a> {
+    store: &'a ManagedAttachmentStore,
+    additions: Vec<NewDraftAttachment>,
+    committed: bool,
+}
+
+impl<'a> PendingManagedImports<'a> {
+    fn new(store: &'a ManagedAttachmentStore) -> Self {
+        Self {
+            store,
+            additions: Vec::new(),
+            committed: false,
+        }
+    }
+
+    fn push(&mut self, addition: NewDraftAttachment) {
+        self.additions.push(addition);
+    }
+
+    fn additions(&self) -> &[NewDraftAttachment] {
+        &self.additions
+    }
+
+    fn commit(&mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for PendingManagedImports<'_> {
+    fn drop(&mut self) {
+        if self.committed {
+            return;
+        }
+        for addition in &self.additions {
+            let _ = self
+                .store
+                .remove_internal_file(&addition.imported.internal_name);
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -149,6 +247,130 @@ enum RemoteForkPreservation {
     IdentityCollision,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ExactSourceDeleteOutcome {
+    Removed,
+    DeferredServerCleanup,
+}
+
+fn available_mailbox_capability(role: MailboxRole, mailbox: &str) -> MailboxCapability {
+    MailboxCapability {
+        role,
+        status: MailboxCapabilityStatus::Available,
+        display_name: Some(mailbox.to_owned()),
+        unavailable_reason: None,
+        retryable: false,
+    }
+}
+
+fn missing_mailbox_capability(role: MailboxRole) -> MailboxCapability {
+    match role {
+        MailboxRole::Archive | MailboxRole::Trash => MailboxCapability {
+            role,
+            status: MailboxCapabilityStatus::NeedsCreationConfirmation,
+            display_name: None,
+            unavailable_reason: None,
+            retryable: true,
+        },
+        MailboxRole::Sent | MailboxRole::Drafts => MailboxCapability {
+            role,
+            status: MailboxCapabilityStatus::Unavailable,
+            display_name: None,
+            unavailable_reason: Some(MailboxCapabilityUnavailableReason::ProviderUnsupported),
+            retryable: true,
+        },
+        MailboxRole::Inbox => available_mailbox_capability(MailboxRole::Inbox, INBOX),
+    }
+}
+
+fn failed_mailbox_creation(
+    role: MailboxRole,
+    reason: MailboxCapabilityUnavailableReason,
+    retryable: bool,
+) -> MailboxCapability {
+    MailboxCapability {
+        role,
+        status: MailboxCapabilityStatus::Unavailable,
+        display_name: None,
+        unavailable_reason: Some(reason),
+        retryable,
+    }
+}
+
+fn selectable_role_mailbox<'a>(
+    role: MailboxRole,
+    mailboxes: &'a [RemoteMailbox],
+    gmail_adapter: bool,
+) -> Option<&'a RemoteMailbox> {
+    let mut candidates = mailboxes
+        .iter()
+        .filter(|mailbox| {
+            if !mailbox.is_selectable {
+                return false;
+            }
+            match role {
+                MailboxRole::Inbox => mailbox.name.eq_ignore_ascii_case(INBOX),
+                MailboxRole::Sent => mailbox.is_sent || sent_fallback_name_matches(&mailbox.name),
+                MailboxRole::Drafts => {
+                    mailbox.is_drafts || mailbox.name.eq_ignore_ascii_case("Drafts")
+                }
+                MailboxRole::Archive => mailbox.is_archive || (gmail_adapter && mailbox.is_all),
+                MailboxRole::Trash => mailbox.is_trash,
+            }
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by_key(|mailbox| mailbox.name.to_lowercase());
+    candidates.into_iter().next()
+}
+
+fn sent_fallback_name_matches(name: &str) -> bool {
+    const FALLBACK_NAMES: &[&str] = &[
+        "Sent",
+        "Sent Messages",
+        "Sent Items",
+        "已发送",
+        "已发送邮件",
+    ];
+    let leaf = name.rsplit(['/', '.']).next().unwrap_or(name);
+    FALLBACK_NAMES
+        .iter()
+        .any(|fallback| name.eq_ignore_ascii_case(fallback) || leaf.eq_ignore_ascii_case(fallback))
+}
+
+fn discovered_mailbox_capability(
+    role: MailboxRole,
+    mailboxes: &[RemoteMailbox],
+    gmail_adapter: bool,
+) -> MailboxCapability {
+    selectable_role_mailbox(role, mailboxes, gmail_adapter)
+        .map(|mailbox| available_mailbox_capability(role, &mailbox.name))
+        .unwrap_or_else(|| missing_mailbox_capability(role))
+}
+
+fn confirmed_created_mailbox_capability(
+    role: MailboxRole,
+    mailboxes: &[RemoteMailbox],
+    gmail_adapter: bool,
+) -> MailboxCapability {
+    let discovered = discovered_mailbox_capability(role, mailboxes, gmail_adapter);
+    if discovered.status == MailboxCapabilityStatus::Available {
+        return discovered;
+    }
+    let canonical_name = match role {
+        MailboxRole::Archive => Some(CreatableMailboxRole::Archive.canonical_name()),
+        MailboxRole::Trash => Some(CreatableMailboxRole::Trash.canonical_name()),
+        _ => None,
+    };
+    canonical_name
+        .and_then(|canonical_name| {
+            mailboxes.iter().find(|mailbox| {
+                mailbox.is_selectable && mailbox.name.eq_ignore_ascii_case(canonical_name)
+            })
+        })
+        .map(|mailbox| available_mailbox_capability(role, &mailbox.name))
+        .unwrap_or(discovered)
+}
+
 /// Reusable application service for the future Tauri command layer.
 ///
 /// The React UI must call this service through narrowly scoped Tauri commands;
@@ -156,24 +378,42 @@ enum RemoteForkPreservation {
 pub struct MailBackend {
     config: AccountConfig,
     repository: Repository,
+    managed_attachments: ManagedAttachmentStore,
     general_imap_gate: Mutex<()>,
     inbox_imap_gate: Mutex<()>,
     sent_imap_gate: Mutex<()>,
     draft_imap_gate: Mutex<()>,
     body_imap: Mutex<Option<BodyImapSession>>,
+    permanent_delete_plans: Mutex<HashMap<String, PermanentDeletePlanState>>,
     smtp_gate: Mutex<()>,
 }
 
 impl MailBackend {
     pub fn open(config: AccountConfig, database_path: impl AsRef<Path>) -> Result<Self> {
+        let database_path = database_path.as_ref();
+        let database_path = if database_path.is_absolute() {
+            database_path.to_path_buf()
+        } else {
+            std::env::current_dir()?.join(database_path)
+        };
+        let product_data_root = database_path.parent().ok_or_else(|| {
+            MailError::Validation(
+                "the local mail database has no product-data directory".to_owned(),
+            )
+        })?;
+        let repository = Repository::open(&database_path)?;
+        let managed_attachments =
+            ManagedAttachmentStore::new(product_data_root, &config.account_id)?;
         Ok(Self {
             config,
-            repository: Repository::open(database_path)?,
+            repository,
+            managed_attachments,
             general_imap_gate: Mutex::new(()),
             inbox_imap_gate: Mutex::new(()),
             sent_imap_gate: Mutex::new(()),
             draft_imap_gate: Mutex::new(()),
             body_imap: Mutex::new(None),
+            permanent_delete_plans: Mutex::new(HashMap::new()),
             smtp_gate: Mutex::new(()),
         })
     }
@@ -185,7 +425,298 @@ impl MailBackend {
         // item from an older lifecycle and is safe to expose for manual retry.
         self.repository.recover_queued_as_retryable()?;
         self.repository.recover_sending_as_delivery_unknown()?;
+        self.cleanup_managed_attachments()?;
         Ok(())
+    }
+
+    /// Cleans only Rust-owned temporary or unreferenced managed files. A blob
+    /// retained by any draft, conflict copy, or immutable Outbox row remains
+    /// protected by SQLite references.
+    pub fn cleanup_managed_attachments(&self) -> Result<usize> {
+        for (draft_id, local_version) in self
+            .repository
+            .terminal_draft_attachment_versions(&self.config.account_id)?
+        {
+            self.repository.release_terminal_draft_attachments(
+                &self.config.account_id,
+                &draft_id,
+                local_version,
+            )?;
+        }
+        let mut removed = self
+            .managed_attachments
+            .cleanup_temporary_files(MANAGED_ATTACHMENT_CLEANUP_GRACE)?;
+        for orphan in self
+            .repository
+            .list_orphaned_managed_attachments(&self.config.account_id)?
+        {
+            let Some(orphan) = self
+                .repository
+                .take_orphaned_managed_attachment(&orphan.account_id, &orphan.id)?
+            else {
+                continue;
+            };
+            if self
+                .managed_attachments
+                .remove_internal_file(&orphan.internal_name)?
+            {
+                removed += 1;
+            }
+        }
+        let registered = self.repository.all_managed_attachment_internal_names()?;
+        removed += self
+            .managed_attachments
+            .cleanup_unregistered_files(&registered, MANAGED_ATTACHMENT_CLEANUP_GRACE)?;
+        Ok(removed)
+    }
+
+    /// Removes only this backend account's Rust-owned attachment directory.
+    /// Desktop account removal may call this after explicit local-data
+    /// confirmation; keeping local data must not call it.
+    pub fn delete_managed_attachment_data(&self) -> Result<bool> {
+        self.managed_attachments.delete_account_storage()
+    }
+
+    fn ensure_account_scope(&self, account_id: &str) -> Result<()> {
+        if account_id != self.config.account_id {
+            return Err(MailError::Validation(
+                "the requested account does not match this backend".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn uses_gmail_archive_adapter(&self) -> bool {
+        self.config.imap.host.eq_ignore_ascii_case("imap.gmail.com")
+    }
+
+    fn semantic_role_for_mailbox(&self, mailbox: &str) -> Result<Option<MailboxRole>> {
+        for role in [
+            MailboxRole::Inbox,
+            MailboxRole::Sent,
+            MailboxRole::Drafts,
+            MailboxRole::Archive,
+            MailboxRole::Trash,
+        ] {
+            let mapped = match self
+                .repository
+                .mailbox_for_semantic_role(&self.config.account_id, role)
+            {
+                Ok(mapped) => mapped,
+                Err(MailError::NotFound { .. }) => continue,
+                Err(error) => return Err(error),
+            };
+            let matches = if role == MailboxRole::Inbox {
+                mapped.eq_ignore_ascii_case(mailbox)
+            } else {
+                mapped == mailbox
+            };
+            if matches {
+                return Ok(Some(role));
+            }
+        }
+        Ok(None)
+    }
+
+    fn ensure_role_available(&self, role: MailboxRole) -> Result<()> {
+        let capability = self
+            .repository
+            .mailbox_capability(&self.config.account_id, role)?;
+        if capability
+            .as_ref()
+            .is_some_and(|capability| capability.status == MailboxCapabilityStatus::Available)
+        {
+            Ok(())
+        } else {
+            Err(MailError::Validation(
+                "the requested mailbox role is unavailable".to_owned(),
+            ))
+        }
+    }
+
+    /// Returns the last persisted account-scoped role discovery immediately;
+    /// this method never opens the network.
+    pub fn get_mailbox_capabilities(&self, account_id: &str) -> Result<Vec<MailboxCapability>> {
+        self.ensure_account_scope(account_id)?;
+        self.repository.mailbox_capabilities(account_id)
+    }
+
+    pub fn mailbox_capabilities(&self, account_id: &str) -> Result<Vec<MailboxCapability>> {
+        self.get_mailbox_capabilities(account_id)
+    }
+
+    /// Reports whether a semantic mailbox has completed at least one local
+    /// summary synchronization. Role discovery alone creates the mailbox row,
+    /// so row existence is not sufficient to opt Archive/Trash into periodic
+    /// reconciliation.
+    pub fn mailbox_role_initialized(&self, account_id: &str, role: MailboxRole) -> Result<bool> {
+        self.ensure_account_scope(account_id)?;
+        let mailbox = self
+            .repository
+            .mailbox_for_semantic_role(account_id, role)?;
+        Ok(self
+            .repository
+            .mailbox_state(account_id, &mailbox)?
+            .and_then(|state| state.last_synced_at)
+            .is_some())
+    }
+
+    /// Returns whether this account has durable message-mutation work,
+    /// including confirmed source-cleanup tombstones. The scheduler uses this
+    /// to keep optional destination mailboxes participating until convergence.
+    pub fn has_message_mutation_activity(&self, account_id: &str) -> Result<bool> {
+        self.ensure_account_scope(account_id)?;
+        Ok(!self
+            .repository
+            .pending_message_actions(account_id)?
+            .is_empty()
+            || !self
+                .repository
+                .message_actions_requiring_reconciliation(account_id)?
+                .is_empty()
+            || !self
+                .repository
+                .confirmed_source_cleanup_tombstones(account_id)?
+                .is_empty())
+    }
+
+    /// Performs one authoritative LIST and persists only semantic role
+    /// mappings. Archive and Trash never use ordinary-name guesses.
+    pub async fn discover_mailbox_roles(&self, account_id: &str) -> Result<Vec<MailboxCapability>> {
+        self.ensure_account_scope(account_id)?;
+        let _guard = self.general_imap_gate.lock().await;
+        let mut connection = ImapConnection::connect(&self.config)
+            .await
+            .map_err(|_| privacy_safe_imap_error("mailbox discovery"))?;
+        let mailboxes = connection
+            .list_mailboxes()
+            .await
+            .map_err(|_| privacy_safe_imap_error("mailbox discovery"))?;
+        let gmail_adapter = self.uses_gmail_archive_adapter();
+        let mut capabilities = Vec::with_capacity(5);
+        for role in [
+            MailboxRole::Inbox,
+            MailboxRole::Sent,
+            MailboxRole::Drafts,
+            MailboxRole::Archive,
+            MailboxRole::Trash,
+        ] {
+            let capability = discovered_mailbox_capability(role, &mailboxes, gmail_adapter);
+            self.repository
+                .set_mailbox_capability(account_id, &capability)?;
+            capabilities.push(capability);
+        }
+        let _ = connection.logout().await;
+        Ok(capabilities)
+    }
+
+    /// Creates only the fixed Archive or Trash fallback after the caller's
+    /// confirmation. LIST both before and after CREATE makes this idempotent
+    /// and prevents an ordinary same-named folder from becoming a role.
+    pub async fn create_mailbox_role(
+        &self,
+        account_id: &str,
+        role: MailboxRole,
+    ) -> Result<MailboxCapability> {
+        self.ensure_account_scope(account_id)?;
+        let creatable = match role {
+            MailboxRole::Archive => CreatableMailboxRole::Archive,
+            MailboxRole::Trash => CreatableMailboxRole::Trash,
+            _ => {
+                return Err(MailError::Validation(
+                    "only Archive or Trash can be created by Mine Mail".to_owned(),
+                ));
+            }
+        };
+        let _guard = self.general_imap_gate.lock().await;
+        let mut connection = match ImapConnection::connect(&self.config).await {
+            Ok(connection) => connection,
+            Err(_) => {
+                let capability = failed_mailbox_creation(
+                    role,
+                    MailboxCapabilityUnavailableReason::CreateFailed,
+                    true,
+                );
+                self.repository
+                    .set_mailbox_capability(account_id, &capability)?;
+                return Ok(capability);
+            }
+        };
+        let gmail_adapter = self.uses_gmail_archive_adapter();
+        let before = match connection.list_mailboxes().await {
+            Ok(mailboxes) => mailboxes,
+            Err(_) => {
+                let capability = failed_mailbox_creation(
+                    role,
+                    MailboxCapabilityUnavailableReason::CreateFailed,
+                    true,
+                );
+                self.repository
+                    .set_mailbox_capability(account_id, &capability)?;
+                let _ = connection.logout().await;
+                return Ok(capability);
+            }
+        };
+        let existing = discovered_mailbox_capability(role, &before, gmail_adapter);
+        if existing.status == MailboxCapabilityStatus::Available {
+            self.repository
+                .set_mailbox_capability(account_id, &existing)?;
+            let _ = connection.logout().await;
+            return Ok(existing);
+        }
+
+        let create_succeeded = connection.create_mailbox_role(creatable).await.is_ok();
+        let after = connection.list_mailboxes().await;
+        let capability = match after {
+            Ok(mailboxes) => {
+                let discovered =
+                    confirmed_created_mailbox_capability(role, &mailboxes, gmail_adapter);
+                if discovered.status == MailboxCapabilityStatus::Available {
+                    discovered
+                } else if create_succeeded {
+                    failed_mailbox_creation(
+                        role,
+                        MailboxCapabilityUnavailableReason::CreatedMailboxNotSelectable,
+                        false,
+                    )
+                } else {
+                    failed_mailbox_creation(
+                        role,
+                        MailboxCapabilityUnavailableReason::CreateFailed,
+                        true,
+                    )
+                }
+            }
+            Err(_) => failed_mailbox_creation(
+                role,
+                MailboxCapabilityUnavailableReason::CreateFailed,
+                true,
+            ),
+        };
+        self.repository
+            .set_mailbox_capability(account_id, &capability)?;
+        let _ = connection.logout().await;
+        Ok(capability)
+    }
+
+    /// Persists the same typed role-creation failure when the desktop cannot
+    /// obtain a network-ready backend for the selected account.
+    pub fn record_mailbox_role_creation_unavailable(
+        &self,
+        account_id: &str,
+        role: MailboxRole,
+    ) -> Result<MailboxCapability> {
+        self.ensure_account_scope(account_id)?;
+        if !matches!(role, MailboxRole::Archive | MailboxRole::Trash) {
+            return Err(MailError::Validation(
+                "only Archive or Trash can record a role-creation failure".to_owned(),
+            ));
+        }
+        let capability =
+            failed_mailbox_creation(role, MailboxCapabilityUnavailableReason::CreateFailed, true);
+        self.repository
+            .set_mailbox_capability(account_id, &capability)?;
+        Ok(capability)
     }
 
     pub async fn connect_inbox_monitor(&self) -> Result<InboxMonitor> {
@@ -256,6 +787,9 @@ impl MailBackend {
     {
         self.validate_sync_limit(initial_limit)?;
 
+        let _ = self
+            .flush_pending_message_mutations(&self.config.account_id)
+            .await;
         let _guard = self.inbox_imap_gate.lock().await;
         let mut connection = ImapConnection::connect(&self.config).await?;
         let report = self
@@ -282,6 +816,9 @@ impl MailBackend {
     {
         self.validate_sync_limit(initial_limit)?;
 
+        let _ = self
+            .flush_pending_message_mutations(&self.config.account_id)
+            .await;
         let _guard = self.sent_imap_gate.lock().await;
         let mut connection = ImapConnection::connect(&self.config).await?;
         let mailbox = connection.discover_sent_mailbox().await?;
@@ -293,6 +830,55 @@ impl MailBackend {
         self.repository
             .assign_mailbox_role(&self.config.account_id, "sent", &mailbox)?;
         Ok(report)
+    }
+
+    /// Synchronizes one semantic role while preserving the per-account backend
+    /// boundary. Archive and Trash require a persisted available capability;
+    /// no action is silently redirected to another folder.
+    pub async fn sync_mailbox(&self, account_id: &str, role: MailboxRole) -> Result<()> {
+        self.ensure_account_scope(account_id)?;
+        match role {
+            MailboxRole::Inbox => {
+                self.sync_inbox(DEFAULT_MESSAGE_PAGE_SIZE).await?;
+            }
+            MailboxRole::Sent => {
+                self.sync_sent(DEFAULT_MESSAGE_PAGE_SIZE).await?;
+            }
+            MailboxRole::Drafts => {
+                self.sync_drafts(None).await?;
+            }
+            MailboxRole::Archive | MailboxRole::Trash => {
+                let _ = self.flush_pending_message_mutations(account_id).await;
+                let capability = self.repository.mailbox_capability(account_id, role)?;
+                if capability.as_ref().is_none_or(|capability| {
+                    capability.status != MailboxCapabilityStatus::Available
+                }) {
+                    return Err(MailError::Validation(
+                        "the requested mailbox role is unavailable".to_owned(),
+                    ));
+                }
+                let mailbox = self
+                    .repository
+                    .mailbox_for_semantic_role(account_id, role)?;
+                let _guard = self.general_imap_gate.lock().await;
+                let mut connection = ImapConnection::connect(&self.config)
+                    .await
+                    .map_err(|_| privacy_safe_imap_error("mailbox synchronization"))?;
+                let result = self
+                    .sync_selected_mailbox(
+                        &mut connection,
+                        &mailbox,
+                        DEFAULT_MESSAGE_PAGE_SIZE,
+                        &mut |_| {},
+                    )
+                    .await
+                    .map(|_| ())
+                    .map_err(|error| privacy_safe_network_error(error, "mailbox synchronization"));
+                let _ = connection.logout().await;
+                result?;
+            }
+        }
+        Ok(())
     }
 
     fn validate_sync_limit(&self, initial_limit: usize) -> Result<()> {
@@ -313,22 +899,26 @@ impl MailBackend {
         let remotes = connection.fetch_summaries(uids).await?;
         let fetched = remotes.len();
         for remote in remotes {
-            let message = parse_incoming_summary_or_fallback(
-                &remote.raw,
-                IncomingMetadata {
-                    account_id: &self.config.account_id,
-                    mailbox,
-                    uid: remote.uid,
-                    flags: remote.flags,
-                    internal_date: remote.internal_date,
-                    size_bytes: remote.size_bytes,
-                    synced_at: now(),
-                    body_fetched: false,
-                },
-            );
+            let message = self.parse_remote_summary(mailbox, remote);
             self.repository.upsert_message_summary(&message)?;
         }
         Ok(fetched)
+    }
+
+    fn parse_remote_summary(&self, mailbox: &str, remote: RemoteMessage) -> InboxMessage {
+        parse_incoming_summary_or_fallback(
+            &remote.raw,
+            IncomingMetadata {
+                account_id: &self.config.account_id,
+                mailbox,
+                uid: remote.uid,
+                flags: remote.flags,
+                internal_date: remote.internal_date,
+                size_bytes: remote.size_bytes,
+                synced_at: now(),
+                body_fetched: false,
+            },
+        )
     }
 
     async fn sync_selected_mailbox<F>(
@@ -376,9 +966,11 @@ impl MailBackend {
         // Push those durable intents before accepting a remote flag snapshot,
         // otherwise a stale server `FLAGS` response could make the message
         // appear unread again while the write is still pending.
-        let _ = self.flush_pending_seen_updates(connection, mailbox).await;
         let _ = self
-            .flush_pending_flagged_updates(connection, mailbox)
+            .flush_pending_seen_updates(connection, mailbox, snapshot.uid_validity)
+            .await;
+        let _ = self
+            .flush_pending_flagged_updates(connection, mailbox, snapshot.uid_validity)
             .await;
 
         let previous_highest_uid = if uid_validity_reset {
@@ -459,6 +1051,39 @@ impl MailBackend {
         let cached_total = self
             .repository
             .count_messages(&self.config.account_id, mailbox)?;
+        let oldest_cached_uid = self
+            .repository
+            .cached_uids(&self.config.account_id, mailbox)?
+            .into_iter()
+            .min();
+        if let Some(uid_validity) = snapshot.uid_validity.filter(|value| *value > 0) {
+            let history = self
+                .repository
+                .mailbox_history(&self.config.account_id, mailbox)?
+                .unwrap_or_default();
+            let complete = cached_total >= remote_uids.len();
+            let next_before_uid = if complete {
+                None
+            } else {
+                earlier_history_bound(history.before_uid, oldest_cached_uid)
+            };
+            let cursor_advances = match (history.before_uid, next_before_uid) {
+                (None, Some(_)) | (Some(_), None) => true,
+                (Some(current), Some(next)) => next < current,
+                (None, None) => complete,
+            };
+            if cursor_advances {
+                self.repository.advance_mailbox_history(
+                    &self.config.account_id,
+                    mailbox,
+                    uid_validity,
+                    history.before_uid,
+                    next_before_uid,
+                    complete,
+                    Some(snapshot.exists),
+                )?;
+            }
+        }
 
         Ok(SyncReport {
             mailbox: mailbox.to_owned(),
@@ -517,10 +1142,10 @@ impl MailBackend {
             .highest_uid
             .expect("full sync fallback handles a missing highest UID");
         let _ = self
-            .flush_pending_seen_updates(&mut connection, INBOX)
+            .flush_pending_seen_updates(&mut connection, INBOX, hint.uid_validity)
             .await;
         let _ = self
-            .flush_pending_flagged_updates(&mut connection, INBOX)
+            .flush_pending_flagged_updates(&mut connection, INBOX, hint.uid_validity)
             .await;
         let requested = connection.search_uids_after(previous_highest_uid).await?;
         let preview_backfill = self.repository.mailbox_preview_backfill_candidates(
@@ -609,6 +1234,158 @@ impl MailBackend {
             .list_mailbox(&self.config.account_id, &mailbox, limit, 0)
     }
 
+    /// Returns one SQLite-backed keyset page without opening IMAP.
+    pub fn list_mailbox_page(
+        &self,
+        account_id: &str,
+        role: MailboxRole,
+        cursor: Option<&MessagePageCursor>,
+        page_size: usize,
+        query: Option<&str>,
+    ) -> Result<MessagePage> {
+        self.ensure_account_scope(account_id)?;
+        let mut page = self
+            .repository
+            .list_mailbox_page(account_id, role, cursor, page_size, query)?;
+        if query.is_some_and(|query| !query.trim().is_empty()) && !page.has_more_local {
+            page.remote_history_state = RemoteHistoryState::Complete;
+            page.end_reached = true;
+            page.next_cursor = None;
+        }
+        Ok(page)
+    }
+
+    /// Loads an older local page first. Only when SQLite is exhausted does it
+    /// perform one bounded UID-window fetch and then re-read the same keyset.
+    pub async fn load_older_mailbox_page(
+        &self,
+        account_id: &str,
+        role: MailboxRole,
+        cursor: &MessagePageCursor,
+        page_size: usize,
+        query: Option<&str>,
+    ) -> Result<MessagePage> {
+        self.ensure_account_scope(account_id)?;
+        let local = self
+            .repository
+            .load_older_mailbox_page(account_id, role, cursor, page_size, query)?;
+        if local.has_more_local
+            || local.remote_history_state != RemoteHistoryState::MayHaveMore
+            || query.is_some_and(|query| !query.trim().is_empty())
+        {
+            return self.list_mailbox_page(account_id, role, Some(cursor), page_size, query);
+        }
+
+        let context = self.repository.message_page_cursor_context(cursor)?;
+        if context.account_id != account_id || context.role != role {
+            return Err(MailError::Validation(
+                "the message cursor does not match this account and mailbox role".to_owned(),
+            ));
+        }
+        let capability = self.repository.mailbox_capability(account_id, role)?;
+        if capability
+            .as_ref()
+            .is_none_or(|capability| capability.status != MailboxCapabilityStatus::Available)
+        {
+            return Ok(page_with_remote_state(
+                local,
+                RemoteHistoryState::Unavailable,
+            ));
+        }
+        let history = self
+            .repository
+            .mailbox_history(account_id, &context.mailbox)?
+            .unwrap_or_default();
+        if history.complete {
+            return Ok(page_with_remote_state(local, RemoteHistoryState::Complete));
+        }
+
+        let _guard = self.general_imap_gate.lock().await;
+        let mut connection = match ImapConnection::connect(&self.config).await {
+            Ok(connection) => connection,
+            Err(_) => {
+                return Ok(page_with_remote_state(local, RemoteHistoryState::Offline));
+            }
+        };
+        let selected = match connection
+            .select_mailbox_for_history(&context.mailbox)
+            .await
+        {
+            Ok(selected) => selected,
+            Err(_) => {
+                let _ = connection.logout().await;
+                return Ok(page_with_remote_state(local, RemoteHistoryState::Offline));
+            }
+        };
+        let Some(selected_uid_validity) = selected.uid_validity else {
+            let _ = connection.logout().await;
+            return Ok(page_with_remote_state(
+                local,
+                RemoteHistoryState::Unavailable,
+            ));
+        };
+        if context.uid_validity != Some(selected_uid_validity) {
+            let _ = connection.logout().await;
+            return Err(MailError::Validation(
+                "the mailbox epoch changed; synchronize before loading more messages".to_owned(),
+            ));
+        }
+        // The unsigned client cursor is never trusted to choose a server UID
+        // bound. Only SQLite's account/mailbox history state may advance it.
+        let before_uid = earlier_history_bound(history.before_uid, selected.uid_next);
+        let Some(before_uid) = before_uid else {
+            if selected.exists > 0 {
+                let _ = connection.logout().await;
+                return Ok(page_with_remote_state(
+                    local,
+                    RemoteHistoryState::Unavailable,
+                ));
+            }
+            self.repository.advance_mailbox_history(
+                account_id,
+                &context.mailbox,
+                selected_uid_validity,
+                history.before_uid,
+                None,
+                true,
+                Some(selected.exists),
+            )?;
+            let _ = connection.logout().await;
+            return self
+                .repository
+                .load_older_mailbox_page(account_id, role, cursor, page_size, query);
+        };
+        let fetch_limit = normalized_message_page_size(page_size).min(HISTORY_FETCH_PAGE_SIZE);
+        let searched = match connection.search_uids_before(before_uid, fetch_limit).await {
+            Ok(searched) => searched,
+            Err(_) => {
+                let _ = connection.logout().await;
+                return Ok(page_with_remote_state(local, RemoteHistoryState::Offline));
+            }
+        };
+        if !searched.uids.is_empty() {
+            let fetched = self
+                .fetch_and_cache_summaries(&mut connection, &context.mailbox, &searched.uids)
+                .await;
+            if fetched.ok() != Some(searched.uids.len()) {
+                let _ = connection.logout().await;
+                return Ok(page_with_remote_state(local, RemoteHistoryState::Offline));
+            }
+        }
+        self.repository.advance_mailbox_history(
+            account_id,
+            &context.mailbox,
+            selected_uid_validity,
+            history.before_uid,
+            searched.next_before_uid,
+            searched.reached_uid_floor,
+            Some(selected.exists),
+        )?;
+        let _ = connection.logout().await;
+        self.repository
+            .load_older_mailbox_page(account_id, role, cursor, page_size, query)
+    }
+
     /// Derives one contact row per normalized address from all cached message
     /// headers for this account. The account's own address is excluded and a
     /// participant appearing more than once in one message is counted once.
@@ -620,7 +1397,8 @@ impl MailBackend {
         let mut order = Vec::new();
         let mut activity_by_email: HashMap<String, ContactActivity> = HashMap::new();
 
-        for message in messages {
+        for source in messages {
+            let message = source.message;
             let participants = contact_participants(&message, &own_email);
             for (email, display_name) in participants {
                 let activity = activity_by_email.entry(email.clone()).or_insert_with(|| {
@@ -671,9 +1449,10 @@ impl MailBackend {
 
         Ok(messages
             .into_iter()
-            .filter(|message| message_has_contact(message, &target_email))
+            .filter(|source| message_has_contact(&source.message, &target_email))
             .take(limit)
-            .map(|message| {
+            .map(|source| {
+                let message = source.message;
                 let direction = if message
                     .sender
                     .as_ref()
@@ -693,12 +1472,39 @@ impl MailBackend {
                     None
                 };
                 ContactMessage {
+                    public_id: source.public_id,
                     direction,
                     mailbox_role,
                     message,
                 }
             })
             .collect())
+    }
+
+    /// Returns the opaque identity of a row that Rust has already loaded for
+    /// this exact account. This is intentionally not a mailbox/UID lookup
+    /// surface: callers may only convert the cached object they already hold.
+    pub fn public_id_for_cached_message(&self, message: &InboxMessage) -> Result<String> {
+        if message.account_id != self.config.account_id || message.id <= 0 {
+            return Err(MailError::NotFound {
+                entity: "cached message",
+                id: "local-row".to_owned(),
+            });
+        }
+        self.repository
+            .message_public_id_by_local_id(&self.config.account_id, message.id)
+    }
+
+    /// Notification-specific restriction over the general cached-object
+    /// converter. Desktop notification flows may only open an Inbox row.
+    pub fn public_id_for_cached_inbox_message(&self, message: &InboxMessage) -> Result<String> {
+        if !message.mailbox.eq_ignore_ascii_case(INBOX) {
+            return Err(MailError::NotFound {
+                entity: "cached Inbox message",
+                id: "local-row".to_owned(),
+            });
+        }
+        self.public_id_for_cached_message(message)
     }
 
     pub fn cached_inbox_message(&self, uid: u32) -> Result<InboxMessage> {
@@ -728,6 +1534,146 @@ impl MailBackend {
         self.cached_mailbox_message(mailbox, uid)
     }
 
+    /// Resolves a selected semantic-mailbox row by its opaque SQLite identity.
+    ///
+    /// The concrete provider mailbox and UID stay inside Rust. This is the
+    /// reader entry point for keyset-page items, including Archive and Trash,
+    /// whose localized mailbox names must not cross into React.
+    pub fn cached_message_by_id(&self, public_id: &str) -> Result<InboxMessage> {
+        let message = self
+            .repository
+            .get_message_by_public_id(&self.config.account_id, public_id)?;
+        if !message.body_fetched {
+            return Err(MailError::NotFound {
+                entity: "cached message body",
+                id: public_id.to_owned(),
+            });
+        }
+        self.repair_cached_inline_images(message)
+    }
+
+    /// Indexes attachment metadata only from one completely cached RFC822
+    /// message. The returned IDs are opaque digests bound to that exact MIME
+    /// tree; neither MIME part numbers nor bytes cross this boundary.
+    pub fn cached_message_attachments(&self, public_id: &str) -> Result<Vec<AttachmentMeta>> {
+        let message = self
+            .repository
+            .get_message_by_public_id(&self.config.account_id, public_id)?;
+        if !message.body_fetched || message.raw_rfc822.is_empty() {
+            return Err(MailError::NotFound {
+                entity: "cached message MIME",
+                id: public_id.to_owned(),
+            });
+        }
+        index_message_attachments(&message.raw_rfc822, MimeSourceCompleteness::CompleteRfc822)
+            .map(|attachments| {
+                attachments
+                    .into_iter()
+                    .map(public_attachment_meta)
+                    .collect()
+            })
+            .map_err(|_| MailError::Mime("cached attachment indexing failed".to_owned()))
+    }
+
+    /// Hydrates one already-known message before indexing. This accepts only
+    /// the opaque local message identity; provider mailbox names, UIDs, raw
+    /// MIME, part numbers, and attachment bytes stay inside Rust.
+    pub async fn message_attachments(&self, public_id: &str) -> Result<Vec<AttachmentMeta>> {
+        self.fetch_message_by_id(public_id, false).await?;
+        self.cached_message_attachments(public_id)
+    }
+
+    /// Completes the Rust side of a platform Save As flow. `selected_destination`
+    /// is supplied only by the desktop picker and is never serialized to
+    /// React. The typed result exposes at most the final base file name.
+    pub async fn save_message_attachment_to(
+        &self,
+        public_id: &str,
+        attachment_id: &str,
+        selected_destination: Option<&Path>,
+    ) -> Result<AttachmentSaveResult> {
+        self.repository
+            .get_message_by_public_id(&self.config.account_id, public_id)?;
+        if !validate_attachment_id(attachment_id) {
+            return Err(MailError::Validation(
+                "the attachment identifier is invalid".to_owned(),
+            ));
+        }
+        let Some(selected_destination) = selected_destination else {
+            return Ok(AttachmentSaveResult {
+                status: AttachmentSaveStatus::Canceled,
+                file_name: None,
+                error_kind: None,
+                retryable: false,
+            });
+        };
+
+        let message = match self.fetch_message_by_id(public_id, false).await {
+            Ok(message) => message,
+            Err(_) => {
+                return Ok(attachment_save_error(
+                    AttachmentSaveErrorKind::MessageUnavailable,
+                    true,
+                ));
+            }
+        };
+        let metadata = match index_message_attachments(
+            &message.raw_rfc822,
+            MimeSourceCompleteness::CompleteRfc822,
+        ) {
+            Ok(metadata) => metadata,
+            Err(_) => {
+                return Ok(attachment_save_error(
+                    AttachmentSaveErrorKind::MessageUnavailable,
+                    true,
+                ));
+            }
+        };
+        let Some(metadata) = metadata
+            .into_iter()
+            .find(|metadata| metadata.id == attachment_id)
+        else {
+            return Ok(attachment_save_error(
+                AttachmentSaveErrorKind::AttachmentNotFound,
+                false,
+            ));
+        };
+        let bytes = match extract_attachment(&message.raw_rfc822, attachment_id) {
+            Ok(bytes) => bytes,
+            Err(AttachmentIndexError::AttachmentNotFound)
+            | Err(AttachmentIndexError::InvalidPartToken) => {
+                return Ok(attachment_save_error(
+                    AttachmentSaveErrorKind::AttachmentNotFound,
+                    false,
+                ));
+            }
+            Err(_) => {
+                return Ok(attachment_save_error(
+                    AttachmentSaveErrorKind::MessageUnavailable,
+                    true,
+                ));
+            }
+        };
+        if bytes.len() as u64 != metadata.size_bytes {
+            return Ok(attachment_save_error(
+                AttachmentSaveErrorKind::MessageUnavailable,
+                true,
+            ));
+        }
+        match save_extracted_file(selected_destination, &metadata.safe_display_name, &bytes) {
+            Ok(file_name) => Ok(AttachmentSaveResult {
+                status: AttachmentSaveStatus::Saved,
+                file_name: Some(file_name),
+                error_kind: None,
+                retryable: false,
+            }),
+            Err(error) => Ok(attachment_save_error(
+                attachment_save_io_error(&error),
+                true,
+            )),
+        }
+    }
+
     /// Records the user's read action in SQLite without waiting for IMAP. The
     /// pending row is retried by foreground marking and normal Inbox sync.
     pub fn mark_inbox_message_read(&self, uid: u32) -> Result<bool> {
@@ -738,6 +1684,928 @@ impl MailBackend {
         }
         self.repository
             .mark_message_seen_pending(&self.config.account_id, INBOX, uid)
+    }
+
+    /// Queues the desired read state entirely in SQLite and returns the durable
+    /// operation identity used by the independent network worker.
+    pub fn set_message_seen(
+        &self,
+        public_id: &str,
+        desired: bool,
+    ) -> Result<SystemFlagMutationReceipt> {
+        self.queue_message_system_flag(public_id, SystemFlagKind::Seen, desired)
+    }
+
+    /// Queues a star/unstar intent by the same opaque local message identity
+    /// used by semantic mailbox pages. React never supplies a provider mailbox
+    /// name or UID.
+    pub fn set_message_starred_by_id(
+        &self,
+        public_id: &str,
+        desired: bool,
+    ) -> Result<SystemFlagMutationReceipt> {
+        self.queue_message_system_flag(public_id, SystemFlagKind::Flagged, desired)
+    }
+
+    fn queue_message_system_flag(
+        &self,
+        public_id: &str,
+        flag: SystemFlagKind,
+        desired: bool,
+    ) -> Result<SystemFlagMutationReceipt> {
+        let message = self
+            .repository
+            .get_message_by_public_id(&self.config.account_id, public_id)?;
+        let role = self
+            .semantic_role_for_mailbox(&message.mailbox)?
+            .ok_or_else(|| {
+                MailError::Validation(
+                    "the message mailbox has no available semantic role".to_owned(),
+                )
+            })?;
+        if role == MailboxRole::Drafts {
+            return Err(MailError::Validation(
+                "read state is unavailable for Drafts".to_owned(),
+            ));
+        }
+        self.ensure_role_available(role)?;
+        self.repository
+            .queue_system_flag_mutation(
+                &self.config.account_id,
+                &message.mailbox,
+                message.uid,
+                flag,
+                desired,
+            )
+            .map(|(_, mutation)| SystemFlagMutationReceipt {
+                operation_id: mutation.operation_id,
+                local_revision: mutation.revision,
+                status: mutation.status,
+                source_role: mutation.source_role,
+                flag: mutation.flag,
+                desired: mutation.desired,
+            })
+    }
+
+    /// Flushes pending read/unread intents for one available semantic mailbox.
+    /// UIDVALIDITY is checked before any UID STORE and a mismatch retains the
+    /// queue for the data-layer recovery migration.
+    pub async fn flush_pending_seen_mutations(
+        &self,
+        account_id: &str,
+        role: MailboxRole,
+    ) -> Result<usize> {
+        self.flush_pending_system_flag_mutations(account_id, role, SystemFlagKind::Seen)
+            .await
+    }
+
+    pub async fn flush_pending_flagged_mutations(
+        &self,
+        account_id: &str,
+        role: MailboxRole,
+    ) -> Result<usize> {
+        self.flush_pending_system_flag_mutations(account_id, role, SystemFlagKind::Flagged)
+            .await
+    }
+
+    async fn flush_pending_system_flag_mutations(
+        &self,
+        account_id: &str,
+        role: MailboxRole,
+        flag: SystemFlagKind,
+    ) -> Result<usize> {
+        self.ensure_account_scope(account_id)?;
+        if role == MailboxRole::Drafts {
+            return Err(MailError::Validation(
+                "system flags are unavailable for Drafts".to_owned(),
+            ));
+        }
+        let mailbox = self
+            .repository
+            .mailbox_for_semantic_role(account_id, role)?;
+        let _guard = self.general_imap_gate.lock().await;
+        let mut connection = ImapConnection::connect(&self.config)
+            .await
+            .map_err(|_| privacy_safe_imap_error("system-flag synchronization"))?;
+        let selected_uid_validity = match flag {
+            SystemFlagKind::Seen => connection.select_mailbox_for_seen_update(&mailbox).await,
+            SystemFlagKind::Flagged => connection.select_mailbox_for_flagged_update(&mailbox).await,
+        }
+        .map_err(|_| privacy_safe_imap_error("system-flag synchronization"))?;
+        let local_uid_validity = self
+            .repository
+            .mailbox_state(account_id, &mailbox)?
+            .and_then(|state| state.uid_validity);
+        if classify_inbox_uid_scope(local_uid_validity, selected_uid_validity)
+            != InboxUidScope::Current
+        {
+            let _ = connection.logout().await;
+            return Err(MailError::Validation(
+                "the mailbox epoch changed; synchronize before updating message state".to_owned(),
+            ));
+        }
+        let result = match flag {
+            SystemFlagKind::Seen => {
+                self.flush_pending_seen_updates(&mut connection, &mailbox, selected_uid_validity)
+                    .await
+            }
+            SystemFlagKind::Flagged => {
+                self.flush_pending_flagged_updates(&mut connection, &mailbox, selected_uid_validity)
+                    .await
+            }
+        };
+        let _ = connection.logout().await;
+        result
+    }
+
+    fn queue_remote_message_action(
+        &self,
+        message_id: i64,
+        kind: MessageActionKind,
+        destination_role: Option<MailboxRole>,
+    ) -> Result<MessageMutationReceipt> {
+        let message = self.repository.get_message(message_id)?;
+        if message.account_id != self.config.account_id {
+            return Err(MailError::NotFound {
+                entity: "message",
+                id: message_id.to_string(),
+            });
+        }
+        let source_role = self
+            .semantic_role_for_mailbox(&message.mailbox)?
+            .ok_or_else(|| {
+                MailError::Validation(
+                    "the message mailbox has no available semantic role".to_owned(),
+                )
+            })?;
+        let source_is_valid = match kind {
+            MessageActionKind::Archive => {
+                matches!(source_role, MailboxRole::Inbox | MailboxRole::Sent)
+            }
+            MessageActionKind::MoveToTrash => matches!(
+                source_role,
+                MailboxRole::Inbox | MailboxRole::Sent | MailboxRole::Archive
+            ),
+            MessageActionKind::PermanentDelete => source_role == MailboxRole::Trash,
+        };
+        if !source_is_valid {
+            return Err(MailError::Validation(
+                "the message action is unavailable in this mailbox".to_owned(),
+            ));
+        }
+        self.ensure_role_available(source_role)?;
+        if let Some(destination_role) = destination_role {
+            let capability = self
+                .repository
+                .mailbox_capability(&self.config.account_id, destination_role)?;
+            if capability
+                .as_ref()
+                .is_none_or(|capability| capability.status != MailboxCapabilityStatus::Available)
+            {
+                return Err(MailError::Validation(
+                    "the destination mailbox capability is unavailable".to_owned(),
+                ));
+            }
+        }
+        self.repository.queue_message_action_for_account(
+            &self.config.account_id,
+            message_id,
+            source_role,
+            kind,
+            destination_role,
+        )
+    }
+
+    /// Persists the Archive overlay and returns without waiting for IMAP.
+    pub fn archive_message(&self, public_id: &str) -> Result<MessageMutationReceipt> {
+        let message = self
+            .repository
+            .get_message_by_public_id(&self.config.account_id, public_id)?;
+        self.queue_remote_message_action(
+            message.id,
+            MessageActionKind::Archive,
+            Some(MailboxRole::Archive),
+        )
+    }
+
+    /// Persists the Trash overlay and returns without waiting for IMAP.
+    pub fn move_message_to_trash(&self, public_id: &str) -> Result<MessageMutationReceipt> {
+        let message = self
+            .repository
+            .get_message_by_public_id(&self.config.account_id, public_id)?;
+        self.queue_remote_message_action(
+            message.id,
+            MessageActionKind::MoveToTrash,
+            Some(MailboxRole::Trash),
+        )
+    }
+
+    /// Creates a short-lived, single-use confirmation plan bound to one cached
+    /// Trash message. No remote or local deletion is queued yet.
+    pub async fn prepare_permanent_delete(&self, public_id: &str) -> Result<PermanentDeletePlan> {
+        let message = self
+            .repository
+            .get_message_by_public_id(&self.config.account_id, public_id)?;
+        if self.semantic_role_for_mailbox(&message.mailbox)? != Some(MailboxRole::Trash) {
+            return Err(MailError::NotFound {
+                entity: "Trash message",
+                id: public_id.to_owned(),
+            });
+        }
+        self.ensure_role_available(MailboxRole::Trash)?;
+        let expires_at = Utc::now() + TimeDelta::minutes(PERMANENT_DELETE_PLAN_MINUTES);
+        let plan_id = Uuid::now_v7().to_string();
+        let mut plans = self.permanent_delete_plans.lock().await;
+        let now = Utc::now();
+        plans.retain(|_, plan| plan.expires_at > now);
+        if plans.len() >= MAX_PENDING_DELETE_PLANS {
+            if let Some(oldest_id) = plans
+                .iter()
+                .min_by_key(|(_, plan)| plan.expires_at)
+                .map(|(plan_id, _)| plan_id.clone())
+            {
+                plans.remove(&oldest_id);
+            }
+        }
+        plans.insert(
+            plan_id.clone(),
+            PermanentDeletePlanState {
+                message_id: message.id,
+                expires_at,
+            },
+        );
+        Ok(PermanentDeletePlan {
+            plan_id,
+            expires_at: expires_at.to_rfc3339_opts(SecondsFormat::Millis, true),
+        })
+    }
+
+    /// Consumes one confirmation plan and queues the exact permanent-delete
+    /// intent. Network execution remains a separate scheduler operation.
+    pub async fn confirm_permanent_delete(&self, plan_id: &str) -> Result<MessageMutationReceipt> {
+        if plan_id.trim().is_empty() || plan_id.len() > 128 {
+            return Err(MailError::Validation(
+                "the permanent-delete plan is invalid".to_owned(),
+            ));
+        }
+        let plan = self
+            .permanent_delete_plans
+            .lock()
+            .await
+            .remove(plan_id)
+            .filter(|plan| plan.expires_at > Utc::now())
+            .ok_or_else(|| MailError::NotFound {
+                entity: "permanent-delete plan",
+                id: "expired-or-consumed".to_owned(),
+            })?;
+        self.queue_remote_message_action(plan.message_id, MessageActionKind::PermanentDelete, None)
+    }
+
+    /// Reconciles interrupted actions and then executes only freshly claimed
+    /// account-scoped intents. Every mutating IMAP command is preceded by a
+    /// persisted phase transition; an uncertain transfer is never sent again.
+    pub async fn flush_pending_message_mutations(&self, account_id: &str) -> Result<usize> {
+        self.ensure_account_scope(account_id)?;
+        let recoverable = self
+            .repository
+            .message_actions_requiring_reconciliation(account_id)?;
+        let pending = self.repository.pending_message_actions(account_id)?;
+        let cleanup_tombstones = self
+            .repository
+            .confirmed_source_cleanup_tombstones(account_id)?;
+        if recoverable.is_empty() && pending.is_empty() && cleanup_tombstones.is_empty() {
+            return Ok(0);
+        }
+
+        let _guard = self.general_imap_gate.lock().await;
+        let mut connection = ImapConnection::connect(&self.config)
+            .await
+            .map_err(|_| privacy_safe_imap_error("message mutation synchronization"))?;
+        let result = async {
+            let mut confirmed = 0;
+            for action in recoverable {
+                if self
+                    .reconcile_remote_message_action(&mut connection, &action)
+                    .await?
+                {
+                    confirmed += 1;
+                }
+            }
+
+            // Reconciliation may safely requeue an action whose durable phase
+            // proves that no mutating command had started.
+            for action in self.repository.pending_message_actions(account_id)? {
+                if self
+                    .execute_pending_message_action(&mut connection, &action)
+                    .await?
+                {
+                    confirmed += 1;
+                }
+            }
+
+            // A confirmed COPY fallback on a server without UIDPLUS can leave
+            // only the exact source UID marked `\Deleted`. These rows are
+            // tombstones, never retryable transfer work. Retire them only after
+            // the destination has converged and a same-epoch FLAGS lookup
+            // proves the source UID no longer exists.
+            for action in self
+                .repository
+                .confirmed_source_cleanup_tombstones(account_id)?
+            {
+                self.reconcile_confirmed_source_cleanup(&mut connection, &action)
+                    .await?;
+            }
+            Ok(confirmed)
+        }
+        .await;
+        let _ = connection.logout().await;
+        result
+            .map_err(|error| privacy_safe_network_error(error, "message mutation synchronization"))
+    }
+
+    async fn execute_pending_message_action(
+        &self,
+        connection: &mut ImapConnection,
+        action: &PendingMessageAction,
+    ) -> Result<bool> {
+        let destination = match action
+            .destination_role
+            .map(|role| {
+                self.repository
+                    .mailbox_for_semantic_role(&action.account_id, role)
+            })
+            .transpose()
+        {
+            Ok(destination) => destination,
+            Err(error) => {
+                let Some(claimed) = self.repository.claim_message_action(
+                    &action.account_id,
+                    &action.operation_id,
+                    action.revision,
+                )?
+                else {
+                    return Ok(false);
+                };
+                self.repository.finalize_message_action(
+                    &claimed.account_id,
+                    &claimed.operation_id,
+                    claimed.revision,
+                    MutationStatus::NeedsAttention,
+                    Some(MessageMutationErrorKind::MailboxUnavailable),
+                )?;
+                return match error {
+                    MailError::NotFound { .. } | MailError::Validation(_) => Ok(false),
+                    other => Err(other),
+                };
+            }
+        };
+
+        let selected_uid_validity = self
+            .select_source_for_message_action(connection, action)
+            .await?;
+        if selected_uid_validity != Some(action.source_uid_validity) {
+            if let Some(claimed) = self.repository.claim_message_action(
+                &action.account_id,
+                &action.operation_id,
+                action.revision,
+            )? {
+                self.repository.finalize_message_action(
+                    &claimed.account_id,
+                    &claimed.operation_id,
+                    claimed.revision,
+                    MutationStatus::NeedsAttention,
+                    Some(MessageMutationErrorKind::UidValidityChanged),
+                )?;
+            }
+            return Ok(false);
+        }
+        let source_flags = connection.fetch_flags(&[action.source_uid]).await?;
+        if source_flags
+            .iter()
+            .all(|(remote_uid, _)| *remote_uid != action.source_uid)
+        {
+            if let Some(claimed) = self.repository.claim_message_action(
+                &action.account_id,
+                &action.operation_id,
+                action.revision,
+            )? {
+                self.repository.finalize_message_action(
+                    &claimed.account_id,
+                    &claimed.operation_id,
+                    claimed.revision,
+                    MutationStatus::NeedsAttention,
+                    Some(MessageMutationErrorKind::SourceMissing),
+                )?;
+            }
+            return Ok(false);
+        }
+
+        let Some(claimed) = self.repository.claim_message_action(
+            &action.account_id,
+            &action.operation_id,
+            action.revision,
+        )?
+        else {
+            return Ok(false);
+        };
+        match persisted_phase_work(claimed.kind, claimed.status, claimed.remote_phase) {
+            PersistedPhaseWork::Transfer => {
+                let destination = destination.as_deref().ok_or_else(|| {
+                    MailError::Validation(
+                        "a transfer action has no available destination mailbox".to_owned(),
+                    )
+                })?;
+                self.execute_claimed_transfer(connection, &claimed, destination)
+                    .await
+            }
+            PersistedPhaseWork::SourceDelete => {
+                self.execute_claimed_source_delete(
+                    connection,
+                    &claimed,
+                    RemoteMutationPhase::Queued,
+                    None,
+                )
+                .await
+            }
+            // This state should normally be recovered through the
+            // reconciliation query. Conservatively retain a cleanup tombstone
+            // if an older database exposes it as fresh pending work.
+            PersistedPhaseWork::Finalize => self.confirm_claimed_message_action(&claimed, true),
+            PersistedPhaseWork::Reconcile | PersistedPhaseWork::Done => Ok(false),
+            PersistedPhaseWork::Stop { status, error_kind } => {
+                self.repository.finalize_message_action(
+                    &claimed.account_id,
+                    &claimed.operation_id,
+                    claimed.revision,
+                    status,
+                    Some(error_kind),
+                )?;
+                Ok(false)
+            }
+        }
+    }
+
+    async fn select_source_for_message_action(
+        &self,
+        connection: &mut ImapConnection,
+        action: &PendingMessageAction,
+    ) -> Result<Option<u32>> {
+        let requires_deleted_flag = action.kind == MessageActionKind::PermanentDelete
+            || connection.message_move_method() == MessageMoveMethod::UidCopyThenDelete
+            || matches!(
+                action.remote_phase,
+                RemoteMutationPhase::TransferAcknowledged
+                    | RemoteMutationPhase::SourceDeleteStarted
+            );
+        if requires_deleted_flag {
+            connection
+                .select_mailbox_for_deleted_update(&action.source_mailbox)
+                .await
+        } else {
+            connection
+                .select_mailbox_for_history(&action.source_mailbox)
+                .await
+                .map(|selected| selected.uid_validity)
+        }
+    }
+
+    async fn execute_claimed_transfer(
+        &self,
+        connection: &mut ImapConnection,
+        action: &PendingMessageAction,
+        destination: &str,
+    ) -> Result<bool> {
+        if !self.repository.advance_message_action_remote_phase(
+            &action.account_id,
+            &action.operation_id,
+            action.revision,
+            RemoteMutationPhase::Queued,
+            RemoteMutationPhase::TransferStarted,
+        )? {
+            return Ok(false);
+        }
+
+        let transfer = match connection.message_move_method() {
+            MessageMoveMethod::UidMove => {
+                connection
+                    .move_uids(&[action.source_uid], destination)
+                    .await
+            }
+            MessageMoveMethod::UidCopyThenDelete => {
+                connection
+                    .copy_uids(&[action.source_uid], destination)
+                    .await
+            }
+        };
+        if let Err(error) = transfer {
+            return self.stop_claimed_after_remote_error(action, &error);
+        }
+
+        match connection.message_move_method() {
+            MessageMoveMethod::UidMove => {
+                if !self.repository.advance_message_action_remote_phase(
+                    &action.account_id,
+                    &action.operation_id,
+                    action.revision,
+                    RemoteMutationPhase::TransferStarted,
+                    RemoteMutationPhase::SourceDeleteAcknowledged,
+                )? {
+                    return Ok(false);
+                }
+                let confirmed = self.confirm_claimed_message_action(action, false)?;
+                if confirmed {
+                    self.converge_confirmed_move(connection, action, destination)
+                        .await?;
+                }
+                Ok(confirmed)
+            }
+            MessageMoveMethod::UidCopyThenDelete => {
+                if !self.repository.advance_message_action_remote_phase(
+                    &action.account_id,
+                    &action.operation_id,
+                    action.revision,
+                    RemoteMutationPhase::TransferStarted,
+                    RemoteMutationPhase::TransferAcknowledged,
+                )? {
+                    return Ok(false);
+                }
+                self.execute_claimed_source_delete(
+                    connection,
+                    action,
+                    RemoteMutationPhase::TransferAcknowledged,
+                    Some(destination),
+                )
+                .await
+            }
+        }
+    }
+
+    async fn execute_claimed_source_delete(
+        &self,
+        connection: &mut ImapConnection,
+        action: &PendingMessageAction,
+        expected_phase: RemoteMutationPhase,
+        convergence_destination: Option<&str>,
+    ) -> Result<bool> {
+        if !self.repository.advance_message_action_remote_phase(
+            &action.account_id,
+            &action.operation_id,
+            action.revision,
+            expected_phase,
+            RemoteMutationPhase::SourceDeleteStarted,
+        )? {
+            return Ok(false);
+        }
+        let deletion = match self
+            .delete_exact_source_uid(connection, action.source_uid)
+            .await
+        {
+            Ok(deletion) => deletion,
+            Err(error) => return self.stop_claimed_after_remote_error(action, &error),
+        };
+        if !self.repository.advance_message_action_remote_phase(
+            &action.account_id,
+            &action.operation_id,
+            action.revision,
+            RemoteMutationPhase::SourceDeleteStarted,
+            RemoteMutationPhase::SourceDeleteAcknowledged,
+        )? {
+            return Ok(false);
+        }
+        let source_cleanup_pending = deletion == ExactSourceDeleteOutcome::DeferredServerCleanup;
+        let confirmed = self.confirm_claimed_message_action(action, source_cleanup_pending)?;
+        if confirmed {
+            if let Some(destination) = convergence_destination {
+                // A COPY fallback may have to leave the exact source UID marked
+                // `\Deleted` on servers without UIDPLUS. Destination
+                // reconciliation is still safe and necessary: the strong
+                // identity check can retire the local move projection without
+                // issuing a global EXPUNGE.
+                self.converge_confirmed_move(connection, action, destination)
+                    .await?;
+            } else if action.kind == MessageActionKind::PermanentDelete
+                && deletion == ExactSourceDeleteOutcome::Removed
+            {
+                self.repository
+                    .purge_confirmed_message_action_after_convergence(
+                        &action.account_id,
+                        &action.operation_id,
+                        action.revision,
+                    )?;
+            }
+        }
+        Ok(confirmed)
+    }
+
+    async fn delete_exact_source_uid(
+        &self,
+        connection: &mut ImapConnection,
+        source_uid: u32,
+    ) -> Result<ExactSourceDeleteOutcome> {
+        connection.mark_deleted_flags(&[source_uid]).await?;
+        if connection.delete_finalization() == DeleteFinalization::UidExpunge {
+            connection.expunge_deleted_uids(&[source_uid]).await?;
+            if connection
+                .fetch_flags(&[source_uid])
+                .await?
+                .iter()
+                .any(|(remote_uid, _)| *remote_uid == source_uid)
+            {
+                return Err(MailError::Imap(
+                    "UID-scoped deletion was not confirmed".to_owned(),
+                ));
+            }
+            Ok(ExactSourceDeleteOutcome::Removed)
+        } else {
+            Ok(ExactSourceDeleteOutcome::DeferredServerCleanup)
+        }
+    }
+
+    async fn converge_confirmed_move(
+        &self,
+        connection: &mut ImapConnection,
+        action: &PendingMessageAction,
+        destination: &str,
+    ) -> Result<()> {
+        match self
+            .sync_selected_mailbox(
+                connection,
+                destination,
+                DEFAULT_MESSAGE_PAGE_SIZE,
+                &mut |_| {},
+            )
+            .await
+        {
+            Ok(_) => {
+                self.repository
+                    .purge_confirmed_message_action_if_destination_unique(
+                        &action.account_id,
+                        &action.operation_id,
+                    )?;
+                Ok(())
+            }
+            Err(MailError::Imap(_) | MailError::Timeout { .. }) => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn confirm_claimed_message_action(
+        &self,
+        action: &PendingMessageAction,
+        source_cleanup_pending: bool,
+    ) -> Result<bool> {
+        self.repository.finalize_message_action_confirmed(
+            &action.account_id,
+            &action.operation_id,
+            action.revision,
+            source_cleanup_pending,
+        )
+    }
+
+    async fn reconcile_confirmed_source_cleanup(
+        &self,
+        connection: &mut ImapConnection,
+        action: &PendingMessageAction,
+    ) -> Result<bool> {
+        if action.status != MutationStatus::Confirmed || !action.source_cleanup_pending {
+            return Ok(false);
+        }
+
+        if let Some(destination_role) = action.destination_role {
+            let Ok(destination) = self
+                .repository
+                .mailbox_for_semantic_role(&action.account_id, destination_role)
+            else {
+                return Ok(false);
+            };
+            self.converge_confirmed_move(connection, action, &destination)
+                .await?;
+        }
+
+        let selected = connection
+            .select_mailbox_for_history(&action.source_mailbox)
+            .await?;
+        let Some(selected_uid_validity) = selected.uid_validity else {
+            return Ok(false);
+        };
+        if selected_uid_validity != action.source_uid_validity {
+            return Ok(false);
+        }
+        let source_exists = connection
+            .fetch_flags(&[action.source_uid])
+            .await?
+            .iter()
+            .any(|(remote_uid, _)| *remote_uid == action.source_uid);
+        if source_exists {
+            return Ok(false);
+        }
+
+        self.repository
+            .purge_confirmed_source_cleanup_if_remote_absent(
+                &action.account_id,
+                &action.operation_id,
+                action.revision,
+                selected_uid_validity,
+                action.source_uid,
+            )
+    }
+
+    fn stop_claimed_after_remote_error(
+        &self,
+        action: &PendingMessageAction,
+        error: &MailError,
+    ) -> Result<bool> {
+        self.repository.finalize_message_action(
+            &action.account_id,
+            &action.operation_id,
+            action.revision,
+            MutationStatus::OutcomeUnknown,
+            Some(message_mutation_error_kind(error)),
+        )?;
+        Ok(false)
+    }
+
+    async fn reconcile_remote_message_action(
+        &self,
+        connection: &mut ImapConnection,
+        action: &PendingMessageAction,
+    ) -> Result<bool> {
+        if action.remote_phase == RemoteMutationPhase::SourceDeleteAcknowledged {
+            let selected = connection
+                .select_mailbox_for_history(&action.source_mailbox)
+                .await?;
+            if selected.uid_validity != Some(action.source_uid_validity) {
+                self.repository.reconcile_message_action(
+                    &action.account_id,
+                    &action.operation_id,
+                    action.revision,
+                    MutationStatus::NeedsAttention,
+                    Some(MessageMutationErrorKind::UidValidityChanged),
+                )?;
+                return Ok(false);
+            }
+            let source_flags = connection.fetch_flags(&[action.source_uid]).await?;
+            let source = source_flags
+                .iter()
+                .find(|(remote_uid, _)| *remote_uid == action.source_uid);
+            if source.is_some_and(|(_, flags)| {
+                !flags
+                    .iter()
+                    .any(|flag| flag.eq_ignore_ascii_case("\\Deleted"))
+            }) {
+                self.repository.reconcile_message_action(
+                    &action.account_id,
+                    &action.operation_id,
+                    action.revision,
+                    MutationStatus::NeedsAttention,
+                    Some(MessageMutationErrorKind::AmbiguousRemoteState),
+                )?;
+                return Ok(false);
+            }
+            let source_cleanup_pending = source.is_some();
+            let confirmed = self.repository.reconcile_message_action_confirmed(
+                &action.account_id,
+                &action.operation_id,
+                action.revision,
+                source_cleanup_pending,
+            )?;
+            if confirmed {
+                if let Some(destination_role) = action.destination_role {
+                    if let Ok(destination) = self
+                        .repository
+                        .mailbox_for_semantic_role(&action.account_id, destination_role)
+                    {
+                        self.converge_confirmed_move(connection, action, &destination)
+                            .await?;
+                    }
+                } else if !source_cleanup_pending {
+                    self.repository
+                        .purge_confirmed_message_action_after_convergence(
+                            &action.account_id,
+                            &action.operation_id,
+                            action.revision,
+                        )?;
+                }
+            }
+            return Ok(confirmed);
+        }
+
+        let selected_uid_validity = self
+            .select_source_for_message_action(connection, action)
+            .await?;
+        if selected_uid_validity != Some(action.source_uid_validity) {
+            self.repository.reconcile_message_action(
+                &action.account_id,
+                &action.operation_id,
+                action.revision,
+                MutationStatus::NeedsAttention,
+                Some(MessageMutationErrorKind::UidValidityChanged),
+            )?;
+            return Ok(false);
+        }
+        let source_exists = connection
+            .fetch_flags(&[action.source_uid])
+            .await?
+            .iter()
+            .any(|(remote_uid, _)| *remote_uid == action.source_uid);
+
+        match action.remote_phase {
+            RemoteMutationPhase::Queued if source_exists => {
+                self.repository.reconcile_message_action(
+                    &action.account_id,
+                    &action.operation_id,
+                    action.revision,
+                    MutationStatus::Pending,
+                    None,
+                )?;
+                Ok(false)
+            }
+            RemoteMutationPhase::Queued if action.kind == MessageActionKind::PermanentDelete => {
+                let confirmed = self.repository.reconcile_message_action_confirmed(
+                    &action.account_id,
+                    &action.operation_id,
+                    action.revision,
+                    false,
+                )?;
+                if confirmed {
+                    self.repository
+                        .purge_confirmed_message_action_after_convergence(
+                            &action.account_id,
+                            &action.operation_id,
+                            action.revision,
+                        )?;
+                }
+                Ok(confirmed)
+            }
+            RemoteMutationPhase::TransferAcknowledged
+            | RemoteMutationPhase::SourceDeleteStarted => {
+                let deletion = if source_exists {
+                    match self
+                        .delete_exact_source_uid(connection, action.source_uid)
+                        .await
+                    {
+                        Ok(outcome) => outcome,
+                        Err(_) => return Ok(false),
+                    }
+                } else {
+                    ExactSourceDeleteOutcome::Removed
+                };
+                let source_cleanup_pending =
+                    deletion == ExactSourceDeleteOutcome::DeferredServerCleanup;
+                let confirmed = self.repository.reconcile_message_action_confirmed(
+                    &action.account_id,
+                    &action.operation_id,
+                    action.revision,
+                    source_cleanup_pending,
+                )?;
+                if confirmed {
+                    if let Some(destination_role) = action.destination_role {
+                        if let Ok(destination) = self
+                            .repository
+                            .mailbox_for_semantic_role(&action.account_id, destination_role)
+                        {
+                            self.converge_confirmed_move(connection, action, &destination)
+                                .await?;
+                        }
+                    } else if action.kind == MessageActionKind::PermanentDelete
+                        && !source_cleanup_pending
+                    {
+                        self.repository
+                            .purge_confirmed_message_action_after_convergence(
+                                &action.account_id,
+                                &action.operation_id,
+                                action.revision,
+                            )?;
+                    }
+                }
+                Ok(confirmed)
+            }
+            RemoteMutationPhase::TransferStarted => {
+                // The existing IMAP adapter cannot authoritatively search the
+                // destination by the complete strong identity triple. Neither
+                // a present nor missing source is permission to repeat MOVE or
+                // COPY, so this action remains explicitly uncertain.
+                self.repository.reconcile_message_action(
+                    &action.account_id,
+                    &action.operation_id,
+                    action.revision,
+                    MutationStatus::OutcomeUnknown,
+                    Some(MessageMutationErrorKind::AmbiguousRemoteState),
+                )?;
+                Ok(false)
+            }
+            RemoteMutationPhase::Queued => {
+                self.repository.reconcile_message_action(
+                    &action.account_id,
+                    &action.operation_id,
+                    action.revision,
+                    MutationStatus::NeedsAttention,
+                    Some(MessageMutationErrorKind::SourceMissing),
+                )?;
+                Ok(false)
+            }
+            RemoteMutationPhase::SourceDeleteAcknowledged => unreachable!(),
+        }
     }
 
     /// Optimistically stars or unstars one cached remote message. The exact
@@ -761,34 +2629,8 @@ impl MailBackend {
     /// Pushes every pending Inbox read action through UID STORE and clears a
     /// write-behind row only after a FLAGS fetch confirms `\Seen` persisted.
     pub async fn sync_pending_inbox_read_flags(&self) -> Result<usize> {
-        let _guard = self.inbox_imap_gate.lock().await;
-        let mut connection = ImapConnection::connect(&self.config).await?;
-        let selected_uid_validity = connection.select_mailbox_for_seen_update(INBOX).await?;
-        let local_uid_validity = self
-            .repository
-            .mailbox_state(&self.config.account_id, INBOX)?
-            .and_then(|state| state.uid_validity);
-        match classify_inbox_uid_scope(local_uid_validity, selected_uid_validity) {
-            InboxUidScope::Current => {}
-            InboxUidScope::NeedsSync => {
-                return Err(MailError::Validation(
-                    "Inbox must be synchronized before updating message flags".to_owned(),
-                ));
-            }
-            InboxUidScope::Changed => {
-                self.repository
-                    .reset_mailbox(&self.config.account_id, INBOX)?;
-                return Err(MailError::Validation(
-                    "Inbox UIDVALIDITY changed; synchronize before updating message flags"
-                        .to_owned(),
-                ));
-            }
-        }
-        let result = self
-            .flush_pending_seen_updates(&mut connection, INBOX)
-            .await;
-        let _ = connection.logout().await;
-        result
+        self.flush_pending_seen_mutations(&self.config.account_id, MailboxRole::Inbox)
+            .await
     }
 
     /// Pushes pending star/unstar actions for one cached mailbox. Server
@@ -835,7 +2677,7 @@ impl MailBackend {
             }
         }
         let result = self
-            .flush_pending_flagged_updates(&mut connection, mailbox)
+            .flush_pending_flagged_updates(&mut connection, mailbox, selected_uid_validity)
             .await;
         let _ = connection.logout().await;
         result
@@ -845,61 +2687,190 @@ impl MailBackend {
         &self,
         connection: &mut ImapConnection,
         mailbox: &str,
+        selected_uid_validity: Option<u32>,
     ) -> Result<usize> {
-        let pending = self
-            .repository
-            .pending_seen_uids(&self.config.account_id, mailbox)?;
-        let mut completed = 0;
-        for batch in pending.chunks(FLAG_BATCH_SIZE) {
-            let confirmed = connection.add_seen_flags(batch).await?;
-            for (uid, flags) in confirmed {
-                self.repository.complete_pending_seen(
-                    &self.config.account_id,
-                    mailbox,
-                    uid,
-                    &flags,
-                )?;
-                completed += 1;
-            }
-        }
-        Ok(completed)
+        self.flush_pending_system_flag_updates(
+            connection,
+            mailbox,
+            selected_uid_validity,
+            SystemFlagKind::Seen,
+        )
+        .await
     }
 
     async fn flush_pending_flagged_updates(
         &self,
         connection: &mut ImapConnection,
         mailbox: &str,
+        selected_uid_validity: Option<u32>,
     ) -> Result<usize> {
-        let pending = self
-            .repository
-            .pending_flagged_updates(&self.config.account_id, mailbox)?;
+        self.flush_pending_system_flag_updates(
+            connection,
+            mailbox,
+            selected_uid_validity,
+            SystemFlagKind::Flagged,
+        )
+        .await
+    }
+
+    async fn flush_pending_system_flag_updates(
+        &self,
+        connection: &mut ImapConnection,
+        mailbox: &str,
+        selected_uid_validity: Option<u32>,
+        flag: SystemFlagKind,
+    ) -> Result<usize> {
+        let Some(selected_uid_validity) = selected_uid_validity else {
+            return Ok(0);
+        };
         let mut completed = 0;
-        for desired in [true, false] {
-            let desired_updates: Vec<(u32, u64)> = pending
-                .iter()
-                .filter_map(|(uid, pending_desired, revision)| {
-                    (*pending_desired == desired).then_some((*uid, *revision))
-                })
-                .collect();
-            for batch in desired_updates.chunks(FLAG_BATCH_SIZE) {
-                let uids: Vec<u32> = batch.iter().map(|(uid, _)| *uid).collect();
-                let confirmed = connection.set_flagged_flags(&uids, desired).await?;
-                let revisions: HashMap<u32, u64> = batch.iter().copied().collect();
-                for (uid, flags) in confirmed {
-                    let Some(revision) = revisions.get(&uid).copied() else {
-                        continue;
-                    };
-                    if self.repository.complete_pending_flagged(
-                        &self.config.account_id,
-                        mailbox,
-                        uid,
-                        desired,
-                        revision,
-                        &flags,
-                    )? {
-                        completed += 1;
-                    }
+        for mutation in self
+            .repository
+            .system_flag_mutations_requiring_reconciliation(
+                &self.config.account_id,
+                mailbox,
+                flag,
+            )?
+        {
+            if persisted_flag_work(mutation.status) != PersistedFlagWork::Reconcile
+                || mutation.source_uid_validity != selected_uid_validity
+            {
+                continue;
+            }
+            let Some((_, server_flags)) = connection
+                .fetch_flags(&[mutation.source_uid])
+                .await?
+                .into_iter()
+                .find(|(uid, _)| *uid == mutation.source_uid)
+            else {
+                continue;
+            };
+            let server_matches = system_flag_is_set(&server_flags, flag) == mutation.desired;
+            if server_matches {
+                if self.repository.reconcile_system_flag_mutation_confirmed(
+                    &mutation.account_id,
+                    &mutation.operation_id,
+                    flag,
+                    mutation.revision,
+                    &server_flags,
+                )? {
+                    completed += 1;
                 }
+            } else {
+                self.repository
+                    .requeue_system_flag_mutation_after_reconcile(
+                        &mutation.account_id,
+                        &mutation.operation_id,
+                        flag,
+                        mutation.revision,
+                    )?;
+            }
+        }
+
+        for mutation in
+            self.repository
+                .pending_system_flag_mutations(&self.config.account_id, mailbox, flag)?
+        {
+            if persisted_flag_work(mutation.status) != PersistedFlagWork::Execute {
+                continue;
+            }
+            let current_flags = connection
+                .fetch_flags(&[mutation.source_uid])
+                .await?
+                .into_iter()
+                .find(|(uid, _)| *uid == mutation.source_uid);
+            let Some(claimed) = self.repository.claim_system_flag_mutation(
+                &mutation.account_id,
+                &mutation.operation_id,
+                flag,
+                mutation.revision,
+            )?
+            else {
+                continue;
+            };
+            if claimed.source_uid_validity != selected_uid_validity {
+                self.repository.finalize_system_flag_mutation_failure(
+                    &claimed.account_id,
+                    &claimed.operation_id,
+                    flag,
+                    claimed.revision,
+                    MutationStatus::NeedsAttention,
+                    MessageMutationErrorKind::UidValidityChanged,
+                )?;
+                continue;
+            }
+            let Some((_, current_flags)) = current_flags else {
+                self.repository.finalize_system_flag_mutation_failure(
+                    &claimed.account_id,
+                    &claimed.operation_id,
+                    flag,
+                    claimed.revision,
+                    MutationStatus::NeedsAttention,
+                    MessageMutationErrorKind::SourceMissing,
+                )?;
+                continue;
+            };
+            if system_flag_is_set(&current_flags, flag) == claimed.desired {
+                if self.repository.finalize_system_flag_mutation_confirmed(
+                    &claimed.account_id,
+                    &claimed.operation_id,
+                    flag,
+                    claimed.revision,
+                    &current_flags,
+                )? {
+                    completed += 1;
+                }
+                continue;
+            }
+
+            let remote_result = match flag {
+                SystemFlagKind::Seen => {
+                    connection
+                        .set_seen_flags(&[claimed.source_uid], claimed.desired)
+                        .await
+                }
+                SystemFlagKind::Flagged => {
+                    connection
+                        .set_flagged_flags(&[claimed.source_uid], claimed.desired)
+                        .await
+                }
+            };
+            let confirmed = match remote_result {
+                Ok(confirmed) => confirmed,
+                Err(error) => {
+                    self.repository.finalize_system_flag_mutation_failure(
+                        &claimed.account_id,
+                        &claimed.operation_id,
+                        flag,
+                        claimed.revision,
+                        MutationStatus::OutcomeUnknown,
+                        message_mutation_error_kind(&error),
+                    )?;
+                    continue;
+                }
+            };
+            let Some((_, server_flags)) = confirmed
+                .into_iter()
+                .find(|(uid, _)| *uid == claimed.source_uid)
+            else {
+                self.repository.finalize_system_flag_mutation_failure(
+                    &claimed.account_id,
+                    &claimed.operation_id,
+                    flag,
+                    claimed.revision,
+                    MutationStatus::OutcomeUnknown,
+                    MessageMutationErrorKind::Unknown,
+                )?;
+                continue;
+            };
+            if self.repository.finalize_system_flag_mutation_confirmed(
+                &claimed.account_id,
+                &claimed.operation_id,
+                flag,
+                claimed.revision,
+                &server_flags,
+            )? {
+                completed += 1;
             }
         }
         Ok(completed)
@@ -1007,14 +2978,10 @@ impl MailBackend {
     /// Creates a reply request from one fully cached local message. React gets
     /// only the narrow editable request and immutable quote metadata; raw
     /// RFC822 never crosses the desktop boundary.
-    pub fn prepare_reply(&self, message_row_id: i64) -> Result<ComposeRequest> {
-        let message = self.repository.get_message(message_row_id)?;
-        if message.account_id != self.config.account_id {
-            return Err(MailError::NotFound {
-                entity: "message",
-                id: message_row_id.to_string(),
-            });
-        }
+    pub fn prepare_reply(&self, public_id: &str) -> Result<ComposeRequest> {
+        let message = self
+            .repository
+            .get_message_by_public_id(&self.config.account_id, public_id)?;
         if !message.body_fetched {
             return Err(MailError::Validation(
                 "wait for the complete message body before replying".to_owned(),
@@ -1024,12 +2991,9 @@ impl MailBackend {
             .body_text
             .clone()
             .filter(|body| !body.trim().is_empty())
-            .unwrap_or_else(|| message.preview.clone());
-        if quoted_text.trim().is_empty() {
-            return Err(MailError::Validation(
-                "this message has no readable text to quote".to_owned(),
-            ));
-        }
+            .ok_or_else(|| {
+                MailError::Validation("this message has no readable text to quote".to_owned())
+            })?;
         if quoted_text.len() > MAX_REPLY_QUOTED_TEXT_BYTES {
             return Err(MailError::Validation(
                 "this message is too large to include as quoted reply text".to_owned(),
@@ -1066,6 +3030,7 @@ impl MailBackend {
             bcc: Vec::new(),
             subject,
             body_text: String::new(),
+            format: Default::default(),
             reply_context: Some(ReplyContext {
                 parent_message_id: message.message_id.clone(),
                 references,
@@ -1077,6 +3042,258 @@ impl MailBackend {
                 quoted_html,
             }),
         })
+    }
+
+    /// Prepares a forward from one fully hydrated, immutable source snapshot.
+    /// Expected hydration/extraction/staging failures stay typed; no list
+    /// preview or partially staged attachment set is ever returned.
+    pub async fn prepare_forward(
+        &self,
+        public_id: &str,
+        include_attachments: bool,
+    ) -> Result<ForwardPreparationOutcome> {
+        let cached = match self
+            .repository
+            .get_message_by_public_id(&self.config.account_id, public_id)
+        {
+            Ok(message) => message,
+            Err(MailError::NotFound { .. }) => {
+                return Ok(forward_error(
+                    ForwardPreparationErrorKind::MessageUnavailable,
+                    Vec::new(),
+                    false,
+                ));
+            }
+            Err(error) => return Err(error),
+        };
+        let message = if cached.body_fetched && !cached.raw_rfc822.is_empty() {
+            cached
+        } else {
+            match self.fetch_message_by_id(public_id, false).await {
+                Ok(message) if !message.raw_rfc822.is_empty() => message,
+                Ok(_) | Err(_) => {
+                    return Ok(forward_error(
+                        ForwardPreparationErrorKind::BodyUnavailable,
+                        Vec::new(),
+                        false,
+                    ));
+                }
+            }
+        };
+        let source_result = if include_attachments {
+            prepare_forward_source(&message.raw_rfc822, MimeSourceCompleteness::CompleteRfc822)
+        } else {
+            prepare_forward_source_without_attachments(
+                &message.raw_rfc822,
+                MimeSourceCompleteness::CompleteRfc822,
+            )
+        };
+        let source = match source_result {
+            Ok(source) => source,
+            Err(ForwardSourceError::AttachmentIndex(_)) => {
+                let body_only_retry_succeeds = include_attachments
+                    && prepare_forward_source_without_attachments(
+                        &message.raw_rfc822,
+                        MimeSourceCompleteness::CompleteRfc822,
+                    )
+                    .is_ok();
+                return Ok(forward_error(
+                    ForwardPreparationErrorKind::AttachmentUnavailable,
+                    Vec::new(),
+                    body_only_retry_succeeds,
+                ));
+            }
+            Err(ForwardSourceError::NonAuthoritativeSource)
+            | Err(ForwardSourceError::MessageCouldNotBeParsed)
+            | Err(ForwardSourceError::BodyTooLarge)
+            | Err(ForwardSourceError::HeaderMetadataTooLarge) => {
+                return Ok(forward_error(
+                    ForwardPreparationErrorKind::BodyUnavailable,
+                    Vec::new(),
+                    false,
+                ));
+            }
+        };
+
+        let source_attachments = source
+            .ordinary_attachments
+            .iter()
+            .cloned()
+            .map(public_attachment_meta)
+            .collect::<Vec<_>>();
+        let context = ForwardContext {
+            source_message_id: public_id.to_owned(),
+            original_subject: source.original_subject.clone(),
+            from: source.from,
+            to: source.to,
+            cc: source.cc,
+            sent_at: source.sent_at,
+            quoted_text: source.quoted_text,
+            quoted_html: source.quoted_html,
+            quoted_render_mode: source.quoted_render_mode.map(|mode| match mode {
+                ForwardHtmlRenderMode::NativeSemanticHtml => ForwardQuotedRenderMode::NativeHtml,
+            }),
+            source_attachments,
+        };
+        let mut warnings = Vec::new();
+        if source.html_downgraded {
+            warnings.push(ForwardWarning::HtmlDowngraded);
+        }
+        if source.has_inline_resources {
+            warnings.push(ForwardWarning::InlineResourcesNotForwarded);
+        }
+
+        let mut pending = if include_attachments {
+            match self.stage_forward_attachments(
+                &message.raw_rfc822,
+                &source.ordinary_attachments,
+                MAX_MANAGED_ATTACHMENT_TOTAL_BYTES,
+            ) {
+                Ok(pending) => pending,
+                Err(error) => return Ok(ForwardPreparationOutcome::Error { error }),
+            }
+        } else {
+            warnings.push(ForwardWarning::AttachmentsOmittedByUser);
+            PendingManagedImports::new(&self.managed_attachments)
+        };
+
+        let request = ComposeRequest {
+            to: Vec::new(),
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: forward_subject(&context.original_subject),
+            body_text: String::new(),
+            format: Default::default(),
+            reply_context: None,
+        };
+        for _ in 0..MAX_LOCAL_DRAFT_CAS_RETRIES {
+            let timestamp = now();
+            let draft_id = Uuid::now_v7().to_string();
+            let mime_attachments = self.read_pending_mime_attachments(pending.additions())?;
+            let raw_rfc822 = build_draft_message_revision_with_attachments(
+                &self.config.email,
+                &request,
+                &draft_id,
+                1,
+                Some(&context),
+                mime_attachments,
+            )?;
+            let record = DraftRecord {
+                draft: Draft {
+                    id: draft_id.clone(),
+                    local_version: 1,
+                    has_unsupported_content: false,
+                    account_id: self.config.account_id.clone(),
+                    to: Vec::new(),
+                    cc: Vec::new(),
+                    bcc: Vec::new(),
+                    subject: request.subject.clone(),
+                    body_text: String::new(),
+                    format: Default::default(),
+                    reply_context: None,
+                    status: "local".to_owned(),
+                    remote_mailbox: None,
+                    remote_uid: None,
+                    created_at: timestamp.clone(),
+                    updated_at: timestamp,
+                    raw_rfc822,
+                },
+                local_version: 1,
+                revision: 1,
+                synced_revision: 0,
+                remote_uid_validity: None,
+                is_deleted: false,
+            };
+            match self
+                .repository
+                .insert_prepared_forward_if_source_unchanged(
+                    message.id,
+                    &message.raw_rfc822,
+                    &record,
+                    &context,
+                    pending.additions(),
+                )? {
+                PreparedForwardInsert::Inserted => {
+                    pending.commit();
+                    return Ok(ForwardPreparationOutcome::Prepared {
+                        prepared: PreparedForward {
+                            draft: self.draft_dto(&draft_id)?,
+                            warnings,
+                        },
+                    });
+                }
+                PreparedForwardInsert::SourceChanged => {
+                    return Ok(forward_error(
+                        ForwardPreparationErrorKind::SourceChanged,
+                        Vec::new(),
+                        false,
+                    ));
+                }
+                PreparedForwardInsert::IdCollision => continue,
+            }
+        }
+        Err(MailError::Validation(
+            "could not allocate a unique forward draft id".to_owned(),
+        ))
+    }
+
+    fn stage_forward_attachments<'a>(
+        &'a self,
+        raw_rfc822: &[u8],
+        attachments: &[AttachmentPartMetadata],
+        maximum_total_bytes: u64,
+    ) -> std::result::Result<PendingManagedImports<'a>, ForwardPreparationError> {
+        let maximum_total_bytes = maximum_total_bytes.min(MAX_MANAGED_ATTACHMENT_TOTAL_BYTES);
+        let mut pending = PendingManagedImports::new(&self.managed_attachments);
+        let mut total_bytes = 0u64;
+        for metadata in attachments {
+            if metadata.size_bytes > MAX_MANAGED_ATTACHMENT_BYTES {
+                return Err(forward_preparation_error(
+                    ForwardPreparationErrorKind::AttachmentStageFailed,
+                    vec![metadata.id.clone()],
+                    true,
+                ));
+            }
+            total_bytes = match total_bytes.checked_add(metadata.size_bytes) {
+                Some(total) if total <= maximum_total_bytes => total,
+                _ => {
+                    return Err(forward_preparation_error(
+                        ForwardPreparationErrorKind::AttachmentStageFailed,
+                        vec![metadata.id.clone()],
+                        true,
+                    ));
+                }
+            };
+            let bytes = match extract_attachment(raw_rfc822, &metadata.id) {
+                Ok(bytes) if bytes.len() as u64 == metadata.size_bytes => bytes,
+                Ok(_) | Err(_) => {
+                    return Err(forward_preparation_error(
+                        ForwardPreparationErrorKind::AttachmentUnavailable,
+                        vec![metadata.id.clone()],
+                        true,
+                    ));
+                }
+            };
+            let imported = match self.managed_attachments.import_bytes(
+                &bytes,
+                &metadata.safe_display_name,
+                &metadata.mime_type,
+            ) {
+                Ok(imported) => imported,
+                Err(_) => {
+                    return Err(forward_preparation_error(
+                        ForwardPreparationErrorKind::AttachmentStageFailed,
+                        vec![metadata.id.clone()],
+                        true,
+                    ));
+                }
+            };
+            pending.push(NewDraftAttachment {
+                imported,
+                source_attachment_id: Some(metadata.id.clone()),
+            });
+        }
+        Ok(pending)
     }
 
     fn cached_mailbox_message(&self, mailbox: &str, uid: u32) -> Result<InboxMessage> {
@@ -1185,6 +3402,16 @@ impl MailBackend {
             .repository
             .mailbox_for_role(&self.config.account_id, "sent")?;
         self.fetch_mailbox_message(&mailbox, uid, force).await
+    }
+
+    /// Hydrates a keyset-page item without accepting an arbitrary mailbox name
+    /// or UID from the desktop UI.
+    pub async fn fetch_message_by_id(&self, public_id: &str, force: bool) -> Result<InboxMessage> {
+        let message = self
+            .repository
+            .get_message_by_public_id(&self.config.account_id, public_id)?;
+        self.fetch_mailbox_message(&message.mailbox, message.uid, force)
+            .await
     }
 
     /// Hydrates only a message already discovered in the local contact index,
@@ -1327,6 +3554,565 @@ impl MailBackend {
         }
     }
 
+    /// Starts the approved empty stable compose draft (v1, no attachments).
+    /// If the editor already has input, the desktop must persist that input
+    /// through `save_draft_optimistic` before opening the first attachment
+    /// picker; merging this DTO must never replace newer editor state.
+    pub fn create_compose_draft(&self) -> Result<DraftDto> {
+        let draft = self.insert_local_draft(
+            &ComposeRequest {
+                to: Vec::new(),
+                cc: Vec::new(),
+                bcc: Vec::new(),
+                subject: String::new(),
+                body_text: String::new(),
+                format: Default::default(),
+                reply_context: None,
+            },
+            "local",
+        )?;
+        self.draft_dto(&draft.id)
+    }
+
+    pub fn draft_dto(&self, draft_id: &str) -> Result<DraftDto> {
+        let draft = self.repository.get_draft(draft_id)?;
+        if draft.account_id != self.config.account_id {
+            return Err(MailError::NotFound {
+                entity: "draft",
+                id: draft_id.to_owned(),
+            });
+        }
+        let attachments = self
+            .repository
+            .list_draft_attachments_at_version(
+                &self.config.account_id,
+                draft_id,
+                draft.local_version,
+            )?
+            .ok_or_else(|| MailError::NotFound {
+                entity: "draft version",
+                id: draft_id.to_owned(),
+            })?
+            .attachments
+            .into_iter()
+            .map(|attachment| attachment.meta)
+            .collect();
+        let forward_context = self.repository.forward_context_at_version(
+            &self.config.account_id,
+            draft_id,
+            draft.local_version,
+        )?;
+        Ok(DraftDto {
+            draft,
+            attachments,
+            forward_context,
+        })
+    }
+
+    /// Imports platform-selected paths into immutable storage and advances one
+    /// exact draft version. The paths are Rust-only picker results.
+    pub fn add_draft_attachments(
+        &self,
+        draft_id: &str,
+        expected_local_version: u64,
+        selected_files: &[PathBuf],
+    ) -> Result<DraftAttachmentMutationOutcome> {
+        if selected_files.is_empty() {
+            return Ok(DraftAttachmentMutationOutcome {
+                kind: DraftAttachmentMutationKind::Canceled,
+                draft: self.draft_dto(draft_id)?,
+                canonical: None,
+            });
+        }
+        if selected_files.len() > MAX_ATTACHMENT_PARTS {
+            return Err(MailError::Validation(
+                "too many managed attachments are selected".to_owned(),
+            ));
+        }
+        let mut selected_sizes = Vec::with_capacity(selected_files.len());
+        for path in selected_files {
+            let metadata = std::fs::metadata(path)?;
+            selected_sizes.push(metadata.len());
+        }
+
+        let initial = self.repository.get_draft_record(draft_id)?;
+        if initial.draft.account_id != self.config.account_id {
+            return Err(MailError::NotFound {
+                entity: "draft",
+                id: draft_id.to_owned(),
+            });
+        }
+        let expected_snapshot = self
+            .repository
+            .draft_version_snapshot(&self.config.account_id, draft_id, expected_local_version)?
+            .ok_or_else(|| {
+                MailError::Validation(
+                    "the exact stale draft content snapshot is unavailable".to_owned(),
+                )
+            })?;
+        if expected_snapshot.has_unsupported_content {
+            return Err(MailError::Validation(
+                "this draft contains unsupported MIME content and is read-only".to_owned(),
+            ));
+        }
+        let expected_attachments = self
+            .repository
+            .list_draft_attachments_at_version(
+                &self.config.account_id,
+                draft_id,
+                expected_local_version,
+            )?
+            .ok_or_else(|| {
+                MailError::Validation(
+                    "the exact stale draft attachment snapshot is unavailable".to_owned(),
+                )
+            })?;
+        validate_managed_attachment_inventory(
+            expected_attachments
+                .attachments
+                .len()
+                .checked_add(selected_sizes.len())
+                .ok_or_else(|| {
+                    MailError::Validation("managed attachment count overflowed".to_owned())
+                })?,
+            expected_attachments
+                .attachments
+                .iter()
+                .map(|attachment| attachment.meta.size_bytes)
+                .chain(selected_sizes.iter().copied()),
+        )?;
+
+        let mut pending = PendingManagedImports::new(&self.managed_attachments);
+        for path in selected_files {
+            let imported = self.managed_attachments.import_file(path)?;
+            pending.push(NewDraftAttachment {
+                imported,
+                source_attachment_id: None,
+            });
+        }
+
+        if !initial.is_deleted
+            && initial.draft.status != "sent"
+            && initial.local_version == expected_local_version
+        {
+            let mut mime_attachments =
+                self.read_managed_mime_attachments(&expected_attachments.attachments)?;
+            mime_attachments.extend(self.read_pending_mime_attachments(pending.additions())?);
+            let forward_context = self.repository.forward_context_at_version(
+                &self.config.account_id,
+                &initial.draft.id,
+                expected_local_version,
+            )?;
+            let next_revision = initial
+                .revision
+                .checked_add(1)
+                .ok_or_else(|| MailError::Validation("draft revision limit reached".to_owned()))?;
+            let raw_rfc822 = build_draft_message_revision_with_attachments(
+                &self.config.email,
+                &expected_snapshot.request,
+                &initial.draft.id,
+                next_revision,
+                forward_context.as_ref(),
+                mime_attachments,
+            )?;
+            if self
+                .repository
+                .add_draft_attachments_and_raw_if_local_version(
+                    &self.config.account_id,
+                    &initial.draft.id,
+                    expected_local_version,
+                    pending.additions(),
+                    &now(),
+                    &raw_rfc822,
+                )?
+                .is_some()
+            {
+                pending.commit();
+                return Ok(DraftAttachmentMutationOutcome {
+                    kind: DraftAttachmentMutationKind::Saved,
+                    draft: self.draft_dto(draft_id)?,
+                    canonical: None,
+                });
+            }
+        }
+
+        // A stale add is data-creating, so preserve the newly copied bytes in
+        // a conflict branch while leaving the latest canonical row unchanged.
+        for _ in 0..MAX_LOCAL_DRAFT_CAS_RETRIES {
+            let source = self.repository.get_draft_record(draft_id)?;
+            if source.draft.account_id != self.config.account_id {
+                return Err(MailError::NotFound {
+                    entity: "draft",
+                    id: draft_id.to_owned(),
+                });
+            }
+            let mut mime_attachments =
+                self.read_managed_mime_attachments(&expected_attachments.attachments)?;
+            mime_attachments.extend(self.read_pending_mime_attachments(pending.additions())?);
+            let context = self.repository.forward_context_at_version(
+                &self.config.account_id,
+                &source.draft.id,
+                expected_local_version,
+            )?;
+            let timestamp = now();
+            let conflict_id = Uuid::now_v7().to_string();
+            let request = expected_snapshot.request.clone();
+            let conflict = DraftRecord {
+                draft: Draft {
+                    id: conflict_id.clone(),
+                    local_version: 1,
+                    has_unsupported_content: false,
+                    account_id: self.config.account_id.clone(),
+                    to: request.to.clone(),
+                    cc: request.cc.clone(),
+                    bcc: request.bcc.clone(),
+                    subject: conflict_subject(&request.subject),
+                    body_text: request.body_text.clone(),
+                    format: request.format.clone(),
+                    reply_context: request.reply_context.clone(),
+                    status: "conflict".to_owned(),
+                    remote_mailbox: None,
+                    remote_uid: None,
+                    created_at: timestamp.clone(),
+                    updated_at: timestamp,
+                    raw_rfc822: Vec::new(),
+                },
+                local_version: 1,
+                revision: 1,
+                synced_revision: 0,
+                remote_uid_validity: None,
+                is_deleted: false,
+            };
+            let mut conflict = conflict;
+            conflict.draft.raw_rfc822 = build_draft_message_revision_with_attachments(
+                &self.config.email,
+                &conflict.draft.compose_request(),
+                &conflict_id,
+                1,
+                context.as_ref(),
+                mime_attachments,
+            )?;
+            if self
+                .repository
+                .insert_attachment_conflict_if_source_unchanged(
+                    &source,
+                    expected_local_version,
+                    &conflict,
+                    pending.additions(),
+                )?
+            {
+                pending.commit();
+                let canonical = (!source.is_deleted)
+                    .then(|| self.draft_dto(&source.draft.id))
+                    .transpose()?;
+                return Ok(DraftAttachmentMutationOutcome {
+                    kind: DraftAttachmentMutationKind::ConflictCopy,
+                    draft: self.draft_dto(&conflict_id)?,
+                    canonical,
+                });
+            }
+        }
+        Err(MailError::Validation(
+            "draft changed too frequently; add the attachments again".to_owned(),
+        ))
+    }
+
+    pub fn remove_draft_attachment(
+        &self,
+        draft_id: &str,
+        attachment_id: &str,
+        expected_local_version: u64,
+    ) -> Result<DraftAttachmentMutationOutcome> {
+        let record = self.repository.get_draft_record(draft_id)?;
+        if record.draft.account_id != self.config.account_id {
+            return Err(MailError::NotFound {
+                entity: "draft",
+                id: draft_id.to_owned(),
+            });
+        }
+        if record.local_version != expected_local_version
+            || record.is_deleted
+            || record.draft.status == "sent"
+        {
+            return Ok(DraftAttachmentMutationOutcome {
+                kind: DraftAttachmentMutationKind::Stale,
+                draft: self.draft_dto(draft_id)?,
+                canonical: None,
+            });
+        }
+        if record.draft.has_unsupported_content {
+            return Err(MailError::Validation(
+                "this draft contains unsupported MIME content and is read-only".to_owned(),
+            ));
+        }
+        let mut existing = self.managed_draft_attachments(&record)?;
+        let Some(remove_at) = existing
+            .iter()
+            .position(|attachment| attachment.meta.id == attachment_id)
+        else {
+            return Err(MailError::NotFound {
+                entity: "draft attachment",
+                id: attachment_id.to_owned(),
+            });
+        };
+        existing.remove(remove_at);
+        let mime_attachments = self.read_managed_mime_attachments(&existing)?;
+        let context = self.repository.forward_context_at_version(
+            &self.config.account_id,
+            draft_id,
+            expected_local_version,
+        )?;
+        let next_revision = record
+            .revision
+            .checked_add(1)
+            .ok_or_else(|| MailError::Validation("draft revision limit reached".to_owned()))?;
+        let raw_rfc822 = build_draft_message_revision_with_attachments(
+            &self.config.email,
+            &record.draft.compose_request(),
+            draft_id,
+            next_revision,
+            context.as_ref(),
+            mime_attachments,
+        )?;
+        let Some(_) = self
+            .repository
+            .remove_draft_attachment_and_raw_if_local_version(
+                &self.config.account_id,
+                draft_id,
+                attachment_id,
+                expected_local_version,
+                &now(),
+                &raw_rfc822,
+            )?
+        else {
+            return Ok(DraftAttachmentMutationOutcome {
+                kind: DraftAttachmentMutationKind::Stale,
+                draft: self.draft_dto(draft_id)?,
+                canonical: None,
+            });
+        };
+        let draft = self.draft_dto(draft_id)?;
+        self.cleanup_managed_attachments()?;
+        Ok(DraftAttachmentMutationOutcome {
+            kind: DraftAttachmentMutationKind::Saved,
+            draft,
+            canonical: None,
+        })
+    }
+
+    fn managed_draft_attachments(
+        &self,
+        record: &DraftRecord,
+    ) -> Result<Vec<ManagedDraftAttachment>> {
+        self.repository
+            .list_draft_attachments_at_version(
+                &self.config.account_id,
+                &record.draft.id,
+                record.local_version,
+            )?
+            .map(|snapshot| snapshot.attachments)
+            .ok_or_else(|| MailError::NotFound {
+                entity: "draft attachment version",
+                id: record.draft.id.clone(),
+            })
+    }
+
+    fn read_managed_mime_attachments(
+        &self,
+        attachments: &[ManagedDraftAttachment],
+    ) -> Result<Vec<ManagedMimeAttachment>> {
+        validate_managed_attachment_inventory(
+            attachments.len(),
+            attachments
+                .iter()
+                .map(|attachment| attachment.meta.size_bytes),
+        )?;
+        attachments
+            .iter()
+            .map(|attachment| {
+                if attachment.disposition != AttachmentDisposition::Attachment
+                    || attachment.transfer_encoding != "base64"
+                {
+                    return Err(MailError::Validation(
+                        "the managed attachment encoding is unsupported".to_owned(),
+                    ));
+                }
+                let bytes = match attachment.sha256_hex.as_deref() {
+                    Some(expected_sha256_hex) => self
+                        .managed_attachments
+                        .read_internal_file(
+                            &attachment.internal_name,
+                            attachment.meta.size_bytes,
+                            expected_sha256_hex,
+                        )
+                        .map_err(|_| managed_attachment_integrity_error())?,
+                    None => {
+                        let (bytes, computed_sha256_hex) = self
+                            .managed_attachments
+                            .read_internal_file_for_digest_backfill(
+                                &attachment.internal_name,
+                                attachment.meta.size_bytes,
+                            )
+                            .map_err(|_| managed_attachment_integrity_error())?;
+                        self.repository.initialize_managed_attachment_digest(
+                            &self.config.account_id,
+                            &attachment.meta.id,
+                            &attachment.internal_name,
+                            attachment.meta.size_bytes,
+                            &computed_sha256_hex,
+                        )?;
+                        bytes
+                    }
+                };
+                Ok(ManagedMimeAttachment {
+                    name: attachment.meta.name.clone(),
+                    mime_type: attachment.meta.mime_type.clone(),
+                    size_bytes: attachment.meta.size_bytes,
+                    bytes,
+                })
+            })
+            .collect()
+    }
+
+    fn read_pending_mime_attachments(
+        &self,
+        additions: &[NewDraftAttachment],
+    ) -> Result<Vec<ManagedMimeAttachment>> {
+        validate_managed_attachment_inventory(
+            additions.len(),
+            additions
+                .iter()
+                .map(|addition| addition.imported.size_bytes),
+        )?;
+        additions
+            .iter()
+            .map(|addition| {
+                let imported = &addition.imported;
+                let bytes = self.managed_attachments.read_internal_file(
+                    &imported.internal_name,
+                    imported.size_bytes,
+                    &imported.sha256_hex,
+                )?;
+                Ok(ManagedMimeAttachment {
+                    name: imported.name.clone(),
+                    mime_type: imported.mime_type.clone(),
+                    size_bytes: imported.size_bytes,
+                    bytes,
+                })
+            })
+            .collect()
+    }
+
+    fn build_draft_raw_for_snapshot(
+        &self,
+        record: &DraftRecord,
+        request: &ComposeRequest,
+        draft_id: &str,
+        revision: u64,
+    ) -> Result<Vec<u8>> {
+        let attachments = self.managed_draft_attachments(record)?;
+        let mime_attachments = self.read_managed_mime_attachments(&attachments)?;
+        let context = self.repository.forward_context_at_version(
+            &self.config.account_id,
+            &record.draft.id,
+            record.local_version,
+        )?;
+        build_draft_message_revision_with_attachments(
+            &self.config.email,
+            request,
+            draft_id,
+            revision,
+            context.as_ref(),
+            mime_attachments,
+        )
+    }
+
+    fn insert_body_conflict_copy(
+        &self,
+        initial_source: &DraftRecord,
+        attachment_source_local_version: u64,
+        request: &ComposeRequest,
+    ) -> Result<Draft> {
+        let attachment_snapshot = self
+            .repository
+            .list_draft_attachments_at_version(
+                &self.config.account_id,
+                &initial_source.draft.id,
+                attachment_source_local_version,
+            )?
+            .ok_or_else(|| {
+                MailError::Validation(
+                    "the exact stale draft attachment snapshot is unavailable".to_owned(),
+                )
+            })?;
+        let context = self.repository.forward_context_at_version(
+            &self.config.account_id,
+            &initial_source.draft.id,
+            attachment_source_local_version,
+        )?;
+        let mut source = initial_source.clone();
+        for _ in 0..MAX_LOCAL_DRAFT_CAS_RETRIES {
+            let mime_attachments =
+                self.read_managed_mime_attachments(&attachment_snapshot.attachments)?;
+            let timestamp = now();
+            let id = Uuid::now_v7().to_string();
+            let mut conflict_request = request.clone();
+            conflict_request.subject = conflict_subject(&request.subject);
+            let raw_rfc822 = build_draft_message_revision_with_attachments(
+                &self.config.email,
+                &conflict_request,
+                &id,
+                1,
+                context.as_ref(),
+                mime_attachments,
+            )?;
+            let conflict = DraftRecord {
+                draft: Draft {
+                    id: id.clone(),
+                    local_version: 1,
+                    has_unsupported_content: false,
+                    account_id: self.config.account_id.clone(),
+                    to: conflict_request.to.clone(),
+                    cc: conflict_request.cc.clone(),
+                    bcc: conflict_request.bcc.clone(),
+                    subject: conflict_request.subject.clone(),
+                    body_text: conflict_request.body_text.clone(),
+                    format: conflict_request.format.clone(),
+                    reply_context: conflict_request.reply_context.clone(),
+                    status: "conflict".to_owned(),
+                    remote_mailbox: None,
+                    remote_uid: None,
+                    created_at: timestamp.clone(),
+                    updated_at: timestamp,
+                    raw_rfc822,
+                },
+                local_version: 1,
+                revision: 1,
+                synced_revision: 0,
+                remote_uid_validity: None,
+                is_deleted: false,
+            };
+            if self
+                .repository
+                .insert_attachment_conflict_if_source_unchanged(
+                    &source,
+                    attachment_source_local_version,
+                    &conflict,
+                    &[],
+                )?
+            {
+                return Ok(conflict.draft);
+            }
+            source = self.repository.get_draft_record(&source.draft.id)?;
+            if source.draft.account_id != self.config.account_id || source.is_deleted {
+                break;
+            }
+        }
+        Err(MailError::Validation(
+            "draft changed too frequently; save the conflict copy again".to_owned(),
+        ))
+    }
+
     pub fn save_draft(&self, request: ComposeRequest) -> Result<Draft> {
         self.upsert_draft(None, request)
     }
@@ -1335,6 +4121,7 @@ impl MailBackend {
     /// identity. Updates increment the private draft revision used by the IMAP
     /// reconciliation algorithm.
     pub fn upsert_draft(&self, draft_id: Option<&str>, request: ComposeRequest) -> Result<Draft> {
+        let request = normalize_owned_compose_html(request);
         validate_draft_recipients(&request)?;
         match draft_id {
             None => return self.insert_local_draft(&request, "local"),
@@ -1373,12 +4160,13 @@ impl MailBackend {
                     replacement.draft.bcc = request.bcc.clone();
                     replacement.draft.subject = request.subject.clone();
                     replacement.draft.body_text = request.body_text.clone();
+                    replacement.draft.format = request.format.clone();
                     replacement.draft.reply_context = request.reply_context.clone();
                     replacement.draft.status = "local".to_owned();
                     replacement.draft.updated_at = now();
                     replacement.is_deleted = false;
-                    replacement.draft.raw_rfc822 = build_draft_message_revision(
-                        &self.config.email,
+                    replacement.draft.raw_rfc822 = self.build_draft_raw_for_snapshot(
+                        &expected,
                         &request,
                         id,
                         replacement.revision,
@@ -1408,6 +4196,7 @@ impl MailBackend {
         expected_local_version: Option<u64>,
         request: ComposeRequest,
     ) -> Result<DraftSaveOutcome> {
+        let request = normalize_owned_compose_html(request);
         validate_draft_recipients(&request)?;
         match (draft_id, expected_local_version) {
             (None, None) => {
@@ -1464,12 +4253,13 @@ impl MailBackend {
                     replacement.draft.bcc = request.bcc.clone();
                     replacement.draft.subject = request.subject.clone();
                     replacement.draft.body_text = request.body_text.clone();
+                    replacement.draft.format = request.format.clone();
                     replacement.draft.reply_context = request.reply_context.clone();
                     replacement.draft.status = "local".to_owned();
                     replacement.draft.updated_at = now();
                     replacement.is_deleted = false;
-                    replacement.draft.raw_rfc822 = build_draft_message_revision(
-                        &self.config.email,
+                    replacement.draft.raw_rfc822 = self.build_draft_raw_for_snapshot(
+                        expected,
                         &request,
                         id,
                         replacement.revision,
@@ -1487,16 +4277,17 @@ impl MailBackend {
                     }
                 }
 
-                let canonical = match self.repository.get_draft_record(id) {
+                let canonical_record = match self.repository.get_draft_record(id) {
                     Ok(record)
                         if record.draft.account_id == self.config.account_id
                             && !record.is_deleted =>
                     {
-                        Some(record.draft)
+                        Some(record)
                     }
                     Ok(_) | Err(MailError::NotFound { .. }) => None,
                     Err(error) => return Err(error),
                 };
+                let canonical = canonical_record.as_ref().map(|record| record.draft.clone());
 
                 // If a stale client happens to contain the exact canonical
                 // content, adopting the newer token is lossless and avoids an
@@ -1512,7 +4303,12 @@ impl MailBackend {
                     });
                 }
 
-                let draft = self.insert_local_draft(&request, "conflict")?;
+                let draft = match canonical_record.as_ref() {
+                    Some(source) => {
+                        self.insert_body_conflict_copy(source, expected_local_version, &request)?
+                    }
+                    None => self.insert_local_draft(&request, "conflict")?,
+                };
                 Ok(DraftSaveOutcome {
                     kind: DraftSaveKind::ConflictCopy,
                     draft,
@@ -1539,6 +4335,7 @@ impl MailBackend {
                     bcc: request.bcc.clone(),
                     subject: request.subject.clone(),
                     body_text: request.body_text.clone(),
+                    format: request.format.clone(),
                     reply_context: request.reply_context.clone(),
                     status: status.to_owned(),
                     remote_mailbox: None,
@@ -1572,12 +4369,23 @@ impl MailBackend {
     /// propagated safely on the next `sync_drafts` call.
     pub fn delete_draft(&self, draft_id: &str) -> Result<()> {
         let draft = self.repository.get_draft(draft_id)?;
+        if draft.account_id != self.config.account_id {
+            return Err(MailError::NotFound {
+                entity: "draft",
+                id: draft_id.to_owned(),
+            });
+        }
         if draft.status == "sent" {
             return Err(MailError::Validation(
                 "a sent draft cannot be deleted as an active draft".to_owned(),
             ));
         }
-        self.repository.tombstone_draft(draft_id, &now())
+        self.repository.tombstone_draft(draft_id, &now())?;
+        // The tombstone and reference release are committed before file
+        // cleanup. A cleanup failure cannot make a discarded draft visible
+        // again, and startup retries orphan cleanup conservatively.
+        let _ = self.cleanup_managed_attachments();
+        Ok(())
     }
 
     /// Tombstone only the exact local draft version visible to the editor.
@@ -1593,6 +4401,9 @@ impl MailBackend {
             expected_local_version,
             &now(),
         )?;
+        if deleted {
+            let _ = self.cleanup_managed_attachments();
+        }
         Ok(if deleted {
             DraftDeleteKind::Deleted
         } else {
@@ -1899,6 +4710,7 @@ impl MailBackend {
         }
 
         let _ = connection.logout().await;
+        let _ = self.cleanup_managed_attachments();
         report.local_total = self.repository.list_drafts(&self.config.account_id)?.len();
         Ok(report)
     }
@@ -1975,6 +4787,7 @@ impl MailBackend {
                 bcc: remote.request.bcc.clone(),
                 subject: remote.request.subject.clone(),
                 body_text: remote.request.body_text.clone(),
+                format: remote.request.format.clone(),
                 reply_context: remote.request.reply_context.clone(),
                 status: "conflict".to_owned(),
                 remote_mailbox: None,
@@ -2017,6 +4830,7 @@ impl MailBackend {
                 bcc: remote.request.bcc.clone(),
                 subject: remote.request.subject.clone(),
                 body_text: remote.request.body_text.clone(),
+                format: remote.request.format.clone(),
                 reply_context: remote.request.reply_context.clone(),
                 status: "synced".to_owned(),
                 remote_mailbox: Some(mailbox.to_owned()),
@@ -2037,11 +4851,8 @@ impl MailBackend {
         let id = Uuid::now_v7().to_string();
         let timestamp = now();
         let mut request = local.draft.compose_request();
-        request.subject = if request.subject.is_empty() {
-            "本地冲突副本".to_owned()
-        } else {
-            format!("{}（本地冲突副本）", request.subject)
-        };
+        request.subject = conflict_subject(&request.subject);
+        let raw_rfc822 = self.build_draft_raw_for_snapshot(local, &request, &id, 1)?;
         Ok(DraftRecord {
             draft: Draft {
                 id: id.clone(),
@@ -2053,13 +4864,14 @@ impl MailBackend {
                 bcc: request.bcc.clone(),
                 subject: request.subject.clone(),
                 body_text: request.body_text.clone(),
+                format: request.format.clone(),
                 reply_context: request.reply_context.clone(),
                 status: "conflict".to_owned(),
                 remote_mailbox: None,
                 remote_uid: None,
                 created_at: timestamp.clone(),
                 updated_at: timestamp,
-                raw_rfc822: build_draft_message_revision(&self.config.email, &request, &id, 1)?,
+                raw_rfc822,
             },
             local_version: 1,
             revision: 1,
@@ -2070,7 +4882,7 @@ impl MailBackend {
     }
 
     pub async fn send_compose(&self, request: ComposeRequest) -> Result<OutboxItem> {
-        self.send_request(request, None).await
+        self.send_request(request, None, Vec::new(), None).await
     }
 
     pub async fn send_draft(
@@ -2084,6 +4896,8 @@ impl MailBackend {
         self.send_request(
             snapshot.request,
             Some((snapshot.id, snapshot.revision, snapshot.local_version)),
+            snapshot.attachments,
+            snapshot.forward_context,
         )
         .await
     }
@@ -2123,11 +4937,20 @@ impl MailBackend {
         }
         let request = record.draft.compose_request();
         require_exact_recipient_confirmation(&request, confirmed_recipients)?;
+        let managed_attachments = self.managed_draft_attachments(&record)?;
+        let attachments = self.read_managed_mime_attachments(&managed_attachments)?;
+        let forward_context = self.repository.forward_context_at_version(
+            &self.config.account_id,
+            &record.draft.id,
+            record.local_version,
+        )?;
         Ok(ConfirmedDraftSnapshot {
             id: record.draft.id,
             revision: record.revision,
             local_version: record.local_version,
             request,
+            attachments,
+            forward_context,
         })
     }
 
@@ -2169,6 +4992,7 @@ impl MailBackend {
         match client.send_raw(&envelope, &claimed.raw_rfc822).await {
             Ok(()) => {
                 self.repository.finalize_outbox_sent(outbox_id)?;
+                let _ = self.cleanup_managed_attachments();
             }
             Err(failure) => {
                 self.repository.update_outbox_status(
@@ -2182,10 +5006,87 @@ impl MailBackend {
         self.repository.get_outbox(outbox_id)
     }
 
+    /// Records the user's externally verified "already delivered" decision for
+    /// one exact ambiguous attempt generation. This performs no network work.
+    /// Replaying the decision after the transition is safely rejected.
+    pub fn confirm_delivery_unknown(
+        &self,
+        outbox_id: &str,
+        expected_attempts: u32,
+    ) -> Result<OutboxItem> {
+        let item = self.repository.confirm_delivery_unknown_as_sent(
+            outbox_id,
+            &self.config.account_id,
+            expected_attempts,
+        )?;
+        let _ = self.cleanup_managed_attachments();
+        Ok(item)
+    }
+
+    /// Performs one explicitly user-approved duplicate-risk retry of the exact
+    /// immutable RFC822 bytes and SMTP envelope persisted in Outbox.
+    ///
+    /// The attempt generation is checked both before and inside the claiming
+    /// transaction. A stale/double-submitted decision cannot become a second
+    /// retry, including when the first retry also ends in `delivery_unknown`.
+    pub async fn retry_delivery_unknown_once(
+        &self,
+        outbox_id: &str,
+        expected_attempts: u32,
+        acknowledge_duplicate_risk: bool,
+    ) -> Result<OutboxItem> {
+        if !acknowledge_duplicate_risk {
+            return Err(MailError::Validation(
+                "retrying an unknown delivery requires explicit acknowledgement of duplicate risk"
+                    .to_owned(),
+            ));
+        }
+
+        let _guard = self.smtp_gate.lock().await;
+        let snapshot = self.repository.get_outbox(outbox_id)?;
+        validate_delivery_unknown_attempt(&snapshot, &self.config.account_id, expected_attempts)?;
+        let envelope = restore_outbox_envelope(&snapshot.raw_rfc822, &snapshot.recipients)?;
+        let client = SmtpClient::new(&self.config)?;
+
+        // The IMMEDIATE transaction repeats account, state, and generation
+        // checks before changing the item to `sending`.
+        let claimed = self.repository.claim_delivery_unknown_retry(
+            outbox_id,
+            &self.config.account_id,
+            expected_attempts,
+        )?;
+        match client.send_raw(&envelope, &claimed.raw_rfc822).await {
+            Ok(()) => {
+                self.repository.finalize_claimed_outbox_sent(
+                    outbox_id,
+                    &self.config.account_id,
+                    claimed.attempts,
+                )?;
+                let _ = self.cleanup_managed_attachments();
+            }
+            Err(failure) => {
+                // Reuse the ordinary SMTP classifier. An unprovable result
+                // returns to `delivery_unknown` at the incremented generation
+                // and is never scheduled automatically.
+                self.repository.complete_claimed_outbox_failure(
+                    outbox_id,
+                    &self.config.account_id,
+                    claimed.attempts,
+                    failure.status,
+                    &failure.safe_reason,
+                )?;
+            }
+        }
+
+        self.repository.get_outbox(outbox_id)
+    }
+
     async fn send_request(
         &self,
         request: ComposeRequest,
         draft_snapshot: Option<(String, u64, u64)>,
+        attachments: Vec<ManagedMimeAttachment>,
+        forward_context: Option<ForwardContext>,
     ) -> Result<OutboxItem> {
         // Acquire the lifecycle gate before creating an Outbox row. A second
         // send waits outside SQLite, so it cannot leave a live queued row that
@@ -2207,7 +5108,17 @@ impl MailBackend {
             )));
         }
 
-        let outgoing = build_outgoing_message(&self.config.email, &request)?;
+        let outgoing = if attachments.is_empty() && forward_context.is_none() {
+            build_outgoing_message(&self.config.email, &request)?
+        } else {
+            build_outgoing_message_with_attachments(
+                &self.config.email,
+                &request,
+                forward_context.as_ref(),
+                attachments,
+            )?
+        };
+        let envelope = outgoing.envelope;
         let outbox_id = Uuid::now_v7().to_string();
         let queued = OutboxItem {
             id: outbox_id.clone(),
@@ -2218,12 +5129,13 @@ impl MailBackend {
                 .as_ref()
                 .map(|(_, _, local_version)| *local_version),
             recipients: outgoing.recipients,
+            recipient_groups: Some(crate::OutboxRecipientGroups::from(&request)),
             status: OutboxStatus::Queued,
             attempts: 0,
             last_error: None,
             created_at: now(),
             sent_at: None,
-            raw_rfc822: outgoing.raw_rfc822.clone(),
+            raw_rfc822: outgoing.raw_rfc822,
         };
 
         let client = match SmtpClient::new(&self.config) {
@@ -2240,12 +5152,11 @@ impl MailBackend {
         // INSERT queued + conditional queued->sending happen in one database
         // transaction. No other connection can recover this active item.
         let claimed = self.repository.enqueue_and_claim_outbox(&queued)?;
-        match client
-            .send_raw(&outgoing.envelope, &claimed.raw_rfc822)
-            .await
-        {
+        drop(queued);
+        match client.send_raw(&envelope, &claimed.raw_rfc822).await {
             Ok(()) => {
                 self.repository.finalize_outbox_sent(&outbox_id)?;
+                let _ = self.cleanup_managed_attachments();
             }
             Err(failure) => {
                 self.repository.update_outbox_status(
@@ -2258,6 +5169,182 @@ impl MailBackend {
 
         self.repository.get_outbox(&outbox_id)
     }
+}
+
+fn public_attachment_meta(metadata: AttachmentPartMetadata) -> AttachmentMeta {
+    AttachmentMeta {
+        id: metadata.id,
+        original_name: metadata.original_name,
+        safe_display_name: metadata.safe_display_name,
+        mime_type: metadata.mime_type,
+        size_bytes: metadata.size_bytes,
+        disposition: match metadata.disposition {
+            crate::mime::AttachmentDisposition::Attachment => AttachmentDisposition::Attachment,
+            crate::mime::AttachmentDisposition::Inline => AttachmentDisposition::Inline,
+        },
+    }
+}
+
+fn attachment_save_error(
+    error_kind: AttachmentSaveErrorKind,
+    retryable: bool,
+) -> AttachmentSaveResult {
+    AttachmentSaveResult {
+        status: AttachmentSaveStatus::Error,
+        file_name: None,
+        error_kind: Some(error_kind),
+        retryable,
+    }
+}
+
+fn attachment_save_io_error(error: &io::Error) -> AttachmentSaveErrorKind {
+    match error.kind() {
+        io::ErrorKind::PermissionDenied => AttachmentSaveErrorKind::PermissionDenied,
+        io::ErrorKind::StorageFull => AttachmentSaveErrorKind::DiskFull,
+        _ => AttachmentSaveErrorKind::WriteFailed,
+    }
+}
+
+fn conflict_subject(subject: &str) -> String {
+    if subject.trim().is_empty() {
+        "本地冲突副本".to_owned()
+    } else {
+        format!("{subject}（本地冲突副本）")
+    }
+}
+
+fn forward_subject(subject: &str) -> String {
+    let subject = subject.trim();
+    if subject
+        .get(..4)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("fwd:"))
+    {
+        subject.to_owned()
+    } else if subject.is_empty() {
+        "Fwd:".to_owned()
+    } else {
+        format!("Fwd: {subject}")
+    }
+}
+
+fn forward_error(
+    kind: ForwardPreparationErrorKind,
+    failed_attachment_ids: Vec<String>,
+    retry_without_attachments_allowed: bool,
+) -> ForwardPreparationOutcome {
+    ForwardPreparationOutcome::Error {
+        error: forward_preparation_error(
+            kind,
+            failed_attachment_ids,
+            retry_without_attachments_allowed,
+        ),
+    }
+}
+
+fn forward_preparation_error(
+    kind: ForwardPreparationErrorKind,
+    failed_attachment_ids: Vec<String>,
+    retry_without_attachments_allowed: bool,
+) -> ForwardPreparationError {
+    ForwardPreparationError {
+        kind,
+        failed_attachment_ids,
+        retry_without_attachments_allowed,
+    }
+}
+
+fn privacy_safe_imap_error(operation: &'static str) -> MailError {
+    MailError::Imap(format!("{operation} failed"))
+}
+
+fn privacy_safe_network_error(error: MailError, operation: &'static str) -> MailError {
+    match error {
+        MailError::Imap(_) | MailError::Timeout { .. } => privacy_safe_imap_error(operation),
+        other => other,
+    }
+}
+
+fn message_mutation_error_kind(error: &MailError) -> MessageMutationErrorKind {
+    match error {
+        MailError::Timeout { .. } | MailError::Io(_) => {
+            MessageMutationErrorKind::NetworkUnavailable
+        }
+        MailError::Validation(_) => MessageMutationErrorKind::Unsupported,
+        MailError::Imap(_) => MessageMutationErrorKind::Unknown,
+        _ => MessageMutationErrorKind::Unknown,
+    }
+}
+
+fn system_flag_is_set(flags: &[String], flag: SystemFlagKind) -> bool {
+    let target = match flag {
+        SystemFlagKind::Seen => "\\Seen",
+        SystemFlagKind::Flagged => "\\Flagged",
+    };
+    flags.iter().any(|value| value.eq_ignore_ascii_case(target))
+}
+
+fn normalized_message_page_size(page_size: usize) -> usize {
+    if page_size == 0 {
+        DEFAULT_MESSAGE_PAGE_SIZE
+    } else {
+        page_size.min(MAX_MESSAGE_PAGE_SIZE)
+    }
+}
+
+fn earlier_history_bound(
+    persisted_before_uid: Option<u32>,
+    selected_uid_next: Option<u32>,
+) -> Option<u32> {
+    [persisted_before_uid, selected_uid_next]
+        .into_iter()
+        .flatten()
+        .min()
+}
+
+fn page_with_remote_state(mut page: MessagePage, state: RemoteHistoryState) -> MessagePage {
+    page.remote_history_state = state;
+    page.end_reached = !page.has_more_local && state == RemoteHistoryState::Complete;
+    if page.end_reached || state == RemoteHistoryState::Unavailable {
+        page.next_cursor = None;
+    }
+    page
+}
+
+fn validate_managed_attachment_inventory(
+    expected_count: usize,
+    sizes: impl IntoIterator<Item = u64>,
+) -> Result<()> {
+    if expected_count > MAX_ATTACHMENT_PARTS {
+        return Err(MailError::Validation(
+            "too many managed attachments are selected".to_owned(),
+        ));
+    }
+    let mut actual_count = 0usize;
+    let mut total_bytes = 0u64;
+    for size_bytes in sizes {
+        actual_count = actual_count.checked_add(1).ok_or_else(|| {
+            MailError::Validation("managed attachment count overflowed".to_owned())
+        })?;
+        if size_bytes > MAX_MANAGED_ATTACHMENT_BYTES {
+            return Err(MailError::Validation(
+                "a managed attachment exceeds the configured byte limit".to_owned(),
+            ));
+        }
+        total_bytes = total_bytes.checked_add(size_bytes).ok_or_else(|| {
+            MailError::Validation("managed attachment byte total overflowed".to_owned())
+        })?;
+        if total_bytes > MAX_MANAGED_ATTACHMENT_TOTAL_BYTES {
+            return Err(MailError::Validation(
+                "the combined managed attachment set is too large".to_owned(),
+            ));
+        }
+    }
+    if actual_count != expected_count {
+        return Err(MailError::Validation(
+            "the managed attachment inventory changed during validation".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 fn message_activity_at(message: &InboxMessage) -> Option<String> {
@@ -2327,6 +5414,26 @@ fn validate_manual_retry(item: &OutboxItem, account_id: &str) -> Result<()> {
             "outbox item '{}' has status '{}'; only retryable items can be retried",
             item.id,
             item.status.as_str()
+        )));
+    }
+    Ok(())
+}
+
+fn validate_delivery_unknown_attempt(
+    item: &OutboxItem,
+    account_id: &str,
+    expected_attempts: u32,
+) -> Result<()> {
+    if item.account_id != account_id {
+        return Err(MailError::NotFound {
+            entity: "outbox item",
+            id: item.id.clone(),
+        });
+    }
+    if item.status != OutboxStatus::DeliveryUnknown || item.attempts != expected_attempts {
+        return Err(MailError::Validation(format!(
+            "outbox item '{}' is no longer the reviewed delivery-unknown attempt; refresh before deciding again",
+            item.id
         )));
     }
     Ok(())
@@ -2495,6 +5602,7 @@ fn remote_draft_candidate(
                 bcc: Vec::new(),
                 subject: String::new(),
                 body_text: String::new(),
+                format: Default::default(),
                 reply_context: None,
             },
             true,
@@ -2558,6 +5666,8 @@ fn now() -> String {
 #[cfg(test)]
 mod tests {
     use std::{
+        fs, io,
+        path::{Path, PathBuf},
         sync::{Arc, Barrier},
         thread,
     };
@@ -2567,15 +5677,27 @@ mod tests {
     use super::{
         DraftReconciliation, INBOX, InboxUidScope, MailBackend, RemoteDraftCandidate,
         RemoteForkPreservation, advance_draft_sync_progress, classify_draft_reconciliation,
-        classify_inbox_uid_scope, draft_record_matches_remote, mailbox_hint_changed,
-        remote_candidates_equivalent, remote_draft_candidate, validate_manual_retry,
+        classify_inbox_uid_scope, confirmed_created_mailbox_capability,
+        discovered_mailbox_capability, draft_record_matches_remote, earlier_history_bound,
+        mailbox_hint_changed, normalized_message_page_size, remote_candidates_equivalent,
+        remote_draft_candidate, validate_delivery_unknown_attempt, validate_manual_retry,
     };
     use crate::{
-        AccountConfig, ComposeRequest, ContactMessageDirection, Draft, DraftDeleteKind,
-        DraftSaveKind, InboxMessage, MailAddress, MailError, MailboxRole, OutboxItem, OutboxStatus,
-        database::{DraftRecord, Repository},
-        imap_client::{MailboxHint, RemoteMessage},
-        mime::parse_draft_message,
+        AccountConfig, ComposeFormat, ComposeRequest, ContactMessageDirection, Draft,
+        DraftDeleteKind, DraftSaveKind, InboxMessage, MailAddress, MailError, MailboxRole,
+        OutboxItem, OutboxStatus, ServerConfig, SmtpSecurity, StationeryTheme,
+        database::{DraftRecord, MailboxState, Repository},
+        imap_client::{MailboxHint, RemoteMailbox, RemoteMessage},
+        mime::{
+            MimeSourceCompleteness, build_outgoing_message_with_attachments,
+            index_message_attachments, outbox_body_text, parse_draft_message,
+            prepare_forward_source,
+        },
+        models::{
+            AttachmentSaveStatus, DraftAttachmentMutationKind, ForwardPreparationErrorKind,
+            ForwardPreparationOutcome, ForwardWarning, MailboxCapability, MailboxCapabilityStatus,
+            MailboxCapabilityUnavailableReason, MutationStatus, SystemFlagKind,
+        },
     };
 
     fn compose(subject: &str, body_text: &str) -> ComposeRequest {
@@ -2585,7 +5707,118 @@ mod tests {
             bcc: Vec::new(),
             subject: subject.to_owned(),
             body_text: body_text.to_owned(),
+            format: Default::default(),
             reply_context: None,
+        }
+    }
+
+    fn scoped_account_config(account_id: &str, email: &str) -> AccountConfig {
+        AccountConfig::new(
+            account_id,
+            email,
+            "not-a-real-secret",
+            ServerConfig {
+                host: "imap.example.com".to_owned(),
+                port: 993,
+            },
+            ServerConfig {
+                host: "smtp.example.com".to_owned(),
+                port: 465,
+            },
+            SmtpSecurity::ImplicitTls,
+        )
+        .expect("scoped account config")
+    }
+
+    fn managed_blob_path(product_data_root: &Path, internal_name: &str) -> PathBuf {
+        let account_directories = fs::read_dir(product_data_root.join("managed-attachments"))
+            .expect("managed attachment root")
+            .map(|entry| entry.expect("managed account entry").path())
+            .filter(|path| path.is_dir())
+            .collect::<Vec<_>>();
+        assert_eq!(account_directories.len(), 1);
+        account_directories[0].join(internal_name)
+    }
+
+    fn downgrade_managed_digest_fixture(
+        database_path: &Path,
+        account_id: &str,
+        blob_id: &str,
+        legacy_version: u32,
+    ) {
+        let connection = rusqlite::Connection::open(database_path).expect("legacy database");
+        connection
+            .execute_batch(
+                "DROP TRIGGER IF EXISTS trg_managed_attachment_blobs_immutable;
+                 DROP TRIGGER IF EXISTS trg_managed_attachment_digest_once;",
+            )
+            .expect("disable current attachment guards");
+        assert_eq!(
+            connection
+                .execute(
+                    "UPDATE managed_attachment_blobs
+                     SET sha256_hex = NULL
+                     WHERE account_id = ?1 AND id = ?2",
+                    rusqlite::params![account_id, blob_id],
+                )
+                .expect("legacy null digest"),
+            1
+        );
+        connection
+            .execute_batch(
+                "CREATE TRIGGER trg_managed_attachment_blobs_immutable
+                 BEFORE UPDATE ON managed_attachment_blobs
+                 BEGIN
+                     SELECT RAISE(ABORT, 'managed attachment blobs are immutable');
+                 END;",
+            )
+            .expect("legacy immutable trigger");
+        connection
+            .pragma_update(None, "user_version", legacy_version)
+            .expect("legacy schema marker");
+    }
+
+    fn stored_managed_digest(
+        database_path: &Path,
+        account_id: &str,
+        blob_id: &str,
+    ) -> Option<String> {
+        rusqlite::Connection::open(database_path)
+            .expect("digest query database")
+            .query_row(
+                "SELECT sha256_hex
+                 FROM managed_attachment_blobs
+                 WHERE account_id = ?1 AND id = ?2",
+                rusqlite::params![account_id, blob_id],
+                |row| row.get(0),
+            )
+            .expect("stored managed digest")
+    }
+
+    #[cfg(unix)]
+    fn create_file_link(target: &Path, link: &Path) -> io::Result<()> {
+        std::os::unix::fs::symlink(target, link)
+    }
+
+    #[cfg(windows)]
+    fn create_file_link(target: &Path, link: &Path) -> io::Result<()> {
+        std::os::windows::fs::symlink_file(target, link)
+    }
+
+    fn create_file_link_or_skip(target: &Path, link: &Path) -> bool {
+        match create_file_link(target, link) {
+            Ok(()) => true,
+            #[cfg(windows)]
+            Err(error)
+                if error.raw_os_error() == Some(1314)
+                    || matches!(
+                        error.kind(),
+                        io::ErrorKind::PermissionDenied | io::ErrorKind::Unsupported
+                    ) =>
+            {
+                false
+            }
+            Err(error) => panic!("create test reparse link: {error}"),
         }
     }
 
@@ -2600,6 +5833,349 @@ mod tests {
         }
 
         assert_eq!(updates, vec![(10, 25), (20, 25), (25, 25)]);
+    }
+
+    fn remote_mailbox(
+        name: &str,
+        is_archive: bool,
+        is_trash: bool,
+        is_selectable: bool,
+    ) -> RemoteMailbox {
+        RemoteMailbox {
+            name: name.to_owned(),
+            is_all: false,
+            is_drafts: false,
+            is_sent: false,
+            is_archive,
+            is_trash,
+            is_selectable,
+        }
+    }
+
+    #[test]
+    fn discovery_never_guesses_an_ordinary_archive_name() {
+        let mailboxes = [remote_mailbox("Archive", false, false, true)];
+        let capability = discovered_mailbox_capability(MailboxRole::Archive, &mailboxes, false);
+
+        assert_eq!(
+            capability.status,
+            MailboxCapabilityStatus::NeedsCreationConfirmation
+        );
+        assert_eq!(capability.display_name, None);
+    }
+
+    #[test]
+    fn confirmed_create_accepts_only_the_exact_selectable_canonical_name() {
+        let ordinary = [remote_mailbox("Archive", false, false, true)];
+        let confirmed =
+            confirmed_created_mailbox_capability(MailboxRole::Archive, &ordinary, false);
+        assert_eq!(confirmed.status, MailboxCapabilityStatus::Available);
+        assert_eq!(confirmed.display_name.as_deref(), Some("Archive"));
+
+        let non_selectable = [remote_mailbox("Trash", false, false, false)];
+        assert_ne!(
+            confirmed_created_mailbox_capability(MailboxRole::Trash, &non_selectable, false).status,
+            MailboxCapabilityStatus::Available
+        );
+    }
+
+    #[test]
+    fn role_creation_network_failure_is_typed_persisted_and_role_bounded() {
+        let directory = tempdir().expect("tempdir");
+        let config =
+            AccountConfig::from_163_lines(["demo@163.com", "not-a-real-secret"]).expect("config");
+        let backend = MailBackend::open(config, directory.path().join("mail.db")).expect("backend");
+        backend.initialize().expect("initialize");
+
+        let returned = backend
+            .record_mailbox_role_creation_unavailable(
+                &backend.config.account_id,
+                MailboxRole::Archive,
+            )
+            .expect("typed failure");
+        assert_eq!(returned.status, MailboxCapabilityStatus::Unavailable);
+        assert_eq!(
+            returned.unavailable_reason,
+            Some(MailboxCapabilityUnavailableReason::CreateFailed)
+        );
+        assert!(returned.retryable);
+        assert_eq!(
+            backend
+                .repository
+                .mailbox_capability(&backend.config.account_id, MailboxRole::Archive)
+                .expect("persisted capability"),
+            Some(returned)
+        );
+
+        assert!(matches!(
+            backend.record_mailbox_role_creation_unavailable(
+                &backend.config.account_id,
+                MailboxRole::Inbox,
+            ),
+            Err(MailError::Validation(_))
+        ));
+    }
+
+    #[test]
+    fn gmail_all_mail_adapter_is_provider_scoped() {
+        let mut localized_all_mail = remote_mailbox("[Gmail]/所有邮件", false, false, true);
+        localized_all_mail.is_all = true;
+        let all_mail = [localized_all_mail];
+        assert_eq!(
+            discovered_mailbox_capability(MailboxRole::Archive, &all_mail, true).status,
+            MailboxCapabilityStatus::Available
+        );
+        assert_eq!(
+            discovered_mailbox_capability(MailboxRole::Archive, &all_mail, false).status,
+            MailboxCapabilityStatus::NeedsCreationConfirmation
+        );
+    }
+
+    #[test]
+    fn history_bounds_only_move_toward_older_uids_and_page_sizes_are_bounded() {
+        assert_eq!(earlier_history_bound(Some(700), Some(1_100)), Some(700));
+        assert_eq!(earlier_history_bound(None, Some(51)), Some(51));
+        assert_eq!(normalized_message_page_size(0), 50);
+        assert_eq!(normalized_message_page_size(100), 100);
+        assert_eq!(normalized_message_page_size(500), 100);
+    }
+
+    #[test]
+    fn discovered_optional_role_is_not_initialized_until_summary_sync_completes() {
+        let directory = tempdir().expect("tempdir");
+        let config =
+            AccountConfig::from_163_lines(["demo@163.com", "not-a-real-secret"]).expect("config");
+        let backend = MailBackend::open(config, directory.path().join("mail.db")).expect("backend");
+        backend.initialize().expect("initialize");
+        backend
+            .repository
+            .set_mailbox_capability(
+                &backend.config.account_id,
+                &MailboxCapability {
+                    role: MailboxRole::Archive,
+                    status: MailboxCapabilityStatus::Available,
+                    display_name: Some("Archive".to_owned()),
+                    unavailable_reason: None,
+                    retryable: false,
+                },
+            )
+            .expect("persist discovered role");
+
+        assert!(
+            !backend
+                .mailbox_role_initialized(&backend.config.account_id, MailboxRole::Archive)
+                .expect("role state")
+        );
+
+        backend
+            .repository
+            .upsert_mailbox_state(&MailboxState {
+                account_id: backend.config.account_id.clone(),
+                mailbox: "Archive".to_owned(),
+                uid_validity: Some(77),
+                uid_next: Some(1),
+                highest_uid: None,
+                highest_modseq: None,
+                last_synced_at: Some("2026-07-28T00:00:00Z".to_owned()),
+            })
+            .expect("complete bounded summary sync");
+        assert!(
+            backend
+                .mailbox_role_initialized(&backend.config.account_id, MailboxRole::Archive)
+                .expect("role state")
+        );
+    }
+
+    #[test]
+    fn read_state_returns_a_durable_receipt_and_updates_sqlite_immediately() {
+        let directory = tempdir().expect("tempdir");
+        let config =
+            AccountConfig::from_163_lines(["demo@163.com", "not-a-real-secret"]).expect("config");
+        let backend = MailBackend::open(config, directory.path().join("mail.db")).expect("backend");
+        backend.initialize().expect("initialize");
+        backend
+            .repository
+            .upsert_mailbox_state(&MailboxState {
+                account_id: backend.config.account_id.clone(),
+                mailbox: INBOX.to_owned(),
+                uid_validity: Some(77),
+                uid_next: Some(2),
+                highest_uid: Some(1),
+                highest_modseq: None,
+                last_synced_at: None,
+            })
+            .unwrap();
+        let mut message = cached_message(
+            &backend.config.account_id,
+            1,
+            "<read-state@example.com>",
+            "read state",
+            "sender@example.com",
+            "demo@163.com",
+        );
+        message.flags.push("\\Seen".to_owned());
+        let message_id = backend.repository.upsert_message(&message).unwrap();
+        let public_id = public_message_id(&backend, MailboxRole::Inbox, message_id);
+
+        let receipt = backend
+            .set_message_seen(&public_id, false)
+            .expect("queue unread");
+        assert_eq!(receipt.status, MutationStatus::Pending);
+        assert_eq!(receipt.flag, SystemFlagKind::Seen);
+        assert!(!receipt.desired);
+        assert!(
+            !backend
+                .repository
+                .get_message(message_id)
+                .unwrap()
+                .flags
+                .iter()
+                .any(|flag| flag.eq_ignore_ascii_case("\\Seen"))
+        );
+
+        let repeated = backend
+            .set_message_seen(&public_id, false)
+            .expect("repeat same desired state");
+        assert_eq!(repeated.operation_id, receipt.operation_id);
+        assert_eq!(repeated.local_revision, receipt.local_revision);
+    }
+
+    #[test]
+    fn archive_is_an_immediate_source_hide_and_destination_projection() {
+        let directory = tempdir().expect("tempdir");
+        let config =
+            AccountConfig::from_163_lines(["demo@163.com", "not-a-real-secret"]).expect("config");
+        let backend = MailBackend::open(config, directory.path().join("mail.db")).expect("backend");
+        backend.initialize().expect("initialize");
+        backend
+            .repository
+            .upsert_mailbox_state(&MailboxState {
+                account_id: backend.config.account_id.clone(),
+                mailbox: INBOX.to_owned(),
+                uid_validity: Some(77),
+                uid_next: Some(2),
+                highest_uid: Some(1),
+                highest_modseq: None,
+                last_synced_at: None,
+            })
+            .unwrap();
+        backend
+            .repository
+            .set_mailbox_capability(
+                &backend.config.account_id,
+                &MailboxCapability {
+                    role: MailboxRole::Archive,
+                    status: MailboxCapabilityStatus::Available,
+                    display_name: Some("Archive".to_owned()),
+                    unavailable_reason: None,
+                    retryable: false,
+                },
+            )
+            .unwrap();
+        let message = cached_message(
+            &backend.config.account_id,
+            1,
+            "<archive@example.com>",
+            "archive",
+            "sender@example.com",
+            "demo@163.com",
+        );
+        let message_id = backend.repository.upsert_message(&message).unwrap();
+        let public_id = public_message_id(&backend, MailboxRole::Inbox, message_id);
+
+        let receipt = backend.archive_message(&public_id).expect("queue archive");
+        assert_eq!(receipt.status, MutationStatus::Pending);
+        assert!(
+            backend
+                .list_mailbox_page(
+                    &backend.config.account_id,
+                    MailboxRole::Inbox,
+                    None,
+                    50,
+                    None,
+                )
+                .unwrap()
+                .items
+                .is_empty()
+        );
+        let archive = backend
+            .list_mailbox_page(
+                &backend.config.account_id,
+                MailboxRole::Archive,
+                None,
+                50,
+                None,
+            )
+            .unwrap();
+        assert_eq!(archive.items.len(), 1);
+        assert_eq!(
+            archive.items[0]
+                .pending_mutation
+                .as_ref()
+                .map(|pending| pending.operation_id.as_str()),
+            Some(receipt.operation_id.as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn permanent_delete_requires_a_live_single_use_trash_plan() {
+        let directory = tempdir().expect("tempdir");
+        let config =
+            AccountConfig::from_163_lines(["demo@163.com", "not-a-real-secret"]).expect("config");
+        let backend = MailBackend::open(config, directory.path().join("mail.db")).expect("backend");
+        backend.initialize().expect("initialize");
+        backend
+            .repository
+            .set_mailbox_capability(
+                &backend.config.account_id,
+                &MailboxCapability {
+                    role: MailboxRole::Trash,
+                    status: MailboxCapabilityStatus::Available,
+                    display_name: Some("Trash".to_owned()),
+                    unavailable_reason: None,
+                    retryable: false,
+                },
+            )
+            .unwrap();
+        backend
+            .repository
+            .upsert_mailbox_state(&MailboxState {
+                account_id: backend.config.account_id.clone(),
+                mailbox: "Trash".to_owned(),
+                uid_validity: Some(88),
+                uid_next: Some(3),
+                highest_uid: Some(2),
+                highest_modseq: None,
+                last_synced_at: None,
+            })
+            .unwrap();
+        let mut message = cached_message(
+            &backend.config.account_id,
+            2,
+            "<delete@example.com>",
+            "delete",
+            "sender@example.com",
+            "demo@163.com",
+        );
+        message.mailbox = "Trash".to_owned();
+        let message_id = backend.repository.upsert_message(&message).unwrap();
+        let public_id = public_message_id(&backend, MailboxRole::Trash, message_id);
+
+        let plan = backend
+            .prepare_permanent_delete(&public_id)
+            .await
+            .expect("prepare plan");
+        let receipt = backend
+            .confirm_permanent_delete(&plan.plan_id)
+            .await
+            .expect("consume plan");
+        assert_eq!(receipt.status, MutationStatus::Pending);
+        assert!(
+            backend
+                .confirm_permanent_delete(&plan.plan_id)
+                .await
+                .is_err()
+        );
     }
 
     fn cached_message(
@@ -2628,6 +6204,7 @@ mod tests {
                 email: recipient.to_owned(),
             }],
             cc: Vec::new(),
+            bcc: Vec::new(),
             sent_at: Some(format!("2026-07-20T01:45:5{uid}Z")),
             internal_date: None,
             flags: Vec::new(),
@@ -2640,6 +6217,1313 @@ mod tests {
             raw_rfc822: Vec::new(),
             synced_at: "2026-07-20T02:00:00Z".to_owned(),
         }
+    }
+
+    fn public_message_id(backend: &MailBackend, role: MailboxRole, row_id: i64) -> String {
+        backend
+            .list_mailbox_page(&backend.config.account_id, role, None, 100, None)
+            .expect("message page")
+            .items
+            .into_iter()
+            .find(|item| item.message.id == row_id)
+            .expect("public message identity")
+            .public_id
+    }
+
+    fn cache_complete_raw_message(backend: &MailBackend, uid: u32, raw_rfc822: Vec<u8>) -> String {
+        backend
+            .repository
+            .upsert_mailbox_state(&MailboxState {
+                account_id: backend.config.account_id.clone(),
+                mailbox: INBOX.to_owned(),
+                uid_validity: Some(77),
+                uid_next: Some(uid.saturating_add(1)),
+                highest_uid: Some(uid),
+                highest_modseq: None,
+                last_synced_at: Some("2026-07-28T00:00:00Z".to_owned()),
+            })
+            .expect("mailbox state");
+        let mut message = cached_message(
+            &backend.config.account_id,
+            uid,
+            &format!("<attachment-{uid}@example.com>"),
+            "attachment source",
+            "sender@example.com",
+            &backend.config.email,
+        );
+        message.size_bytes = u32::try_from(raw_rfc822.len()).expect("bounded test fixture");
+        message.raw_rfc822 = raw_rfc822;
+        let row_id = backend
+            .repository
+            .upsert_message(&message)
+            .expect("cached message");
+        public_message_id(backend, MailboxRole::Inbox, row_id)
+    }
+
+    fn one_attachment_message() -> Vec<u8> {
+        b"From: Sender <sender@example.com>\r\n\
+          To: demo@163.com\r\n\
+          Subject: Attachment source\r\n\
+          MIME-Version: 1.0\r\n\
+          Content-Type: multipart/mixed; boundary=outer\r\n\
+          \r\n\
+          --outer\r\n\
+          Content-Type: text/plain; charset=utf-8\r\n\
+          \r\n\
+          Complete body first line.\r\nComplete body last line.\r\n\
+          --outer\r\n\
+          Content-Type: application/octet-stream\r\n\
+          Content-Disposition: attachment; filename=report.bin\r\n\
+          Content-Transfer-Encoding: base64\r\n\
+          \r\n\
+          AQIDBA==\r\n\
+          --outer--\r\n"
+            .to_vec()
+    }
+
+    fn two_attachment_message() -> Vec<u8> {
+        b"From: sender@example.com\r\n\
+          To: demo@163.com\r\n\
+          Subject: Two attachments\r\n\
+          MIME-Version: 1.0\r\n\
+          Content-Type: multipart/mixed; boundary=outer\r\n\
+          \r\n\
+          --outer\r\n\
+          Content-Type: text/plain\r\n\
+          \r\n\
+          Complete body.\r\n\
+          --outer\r\n\
+          Content-Type: application/octet-stream\r\n\
+          Content-Disposition: attachment; filename=first.bin\r\n\
+          Content-Transfer-Encoding: base64\r\n\
+          \r\n\
+          AQID\r\n\
+          --outer\r\n\
+          Content-Type: application/octet-stream\r\n\
+          Content-Disposition: attachment; filename=second.bin\r\n\
+          Content-Transfer-Encoding: base64\r\n\
+          \r\n\
+          BAUG\r\n\
+          --outer--\r\n"
+            .to_vec()
+    }
+
+    fn broken_attachment_message() -> Vec<u8> {
+        b"From: Original <sender@example.com>\r\n\
+          To: demo@163.com\r\n\
+          Bcc: hidden@example.com\r\n\
+          Subject: Broken attachment\r\n\
+          MIME-Version: 1.0\r\n\
+          Content-Type: multipart/mixed; boundary=outer\r\n\
+          \r\n\
+          --outer\r\n\
+          Content-Type: text/plain; charset=utf-8\r\n\
+          \r\n\
+          Complete body survives.\r\n\
+          --outer\r\n\
+          Content-Type: application/octet-stream\r\n\
+          Content-Disposition: attachment; filename=broken.bin\r\n\
+          Content-Transfer-Encoding: base64\r\n\
+          \r\n\
+          this is not base64 !!!\r\n\
+          --outer--\r\n"
+            .to_vec()
+    }
+
+    #[test]
+    fn opaque_message_identity_is_rejected_by_a_different_account_backend() {
+        let directory = tempdir().expect("tempdir");
+        let first_config = scoped_account_config("stable-first", "first@example.com");
+        let second_config = scoped_account_config("stable-second", "second@example.com");
+        let first = MailBackend::open(first_config, directory.path().join("first.db"))
+            .expect("first backend");
+        let second = MailBackend::open(second_config, directory.path().join("second.db"))
+            .expect("second backend");
+        first.initialize().expect("first initialize");
+        second.initialize().expect("second initialize");
+        let first_public_id = cache_complete_raw_message(&first, 1, one_attachment_message());
+        cache_complete_raw_message(&second, 1, one_attachment_message());
+
+        assert!(matches!(
+            second.cached_message_by_id(&first_public_id),
+            Err(MailError::NotFound { .. })
+        ));
+    }
+
+    #[test]
+    fn cached_object_public_id_conversion_is_account_scoped_despite_rowid_collision() {
+        let directory = tempdir().expect("tempdir");
+        let first = MailBackend::open(
+            scoped_account_config("stable-first", "first@example.com"),
+            directory.path().join("first.db"),
+        )
+        .expect("first backend");
+        let second = MailBackend::open(
+            scoped_account_config("stable-second", "second@example.com"),
+            directory.path().join("second.db"),
+        )
+        .expect("second backend");
+        first.initialize().expect("first initialize");
+        second.initialize().expect("second initialize");
+        let first_public_id = cache_complete_raw_message(&first, 1, one_attachment_message());
+        let second_public_id = cache_complete_raw_message(&second, 1, one_attachment_message());
+        let first_message = first
+            .cached_message_by_id(&first_public_id)
+            .expect("first cached message");
+        let second_message = second
+            .cached_message_by_id(&second_public_id)
+            .expect("second cached message");
+        assert_eq!(first_message.id, second_message.id);
+
+        assert_eq!(
+            first
+                .public_id_for_cached_message(&first_message)
+                .expect("general cached-object conversion"),
+            first_public_id
+        );
+        assert_eq!(
+            first
+                .public_id_for_cached_inbox_message(&first_message)
+                .expect("Inbox notification conversion"),
+            first_public_id
+        );
+        assert!(matches!(
+            first.public_id_for_cached_message(&second_message),
+            Err(MailError::NotFound { .. })
+        ));
+        assert!(matches!(
+            first.public_id_for_cached_inbox_message(&second_message),
+            Err(MailError::NotFound { .. })
+        ));
+
+        let mut archived = first_message;
+        archived.id = 0;
+        archived.mailbox = "Archive".to_owned();
+        archived.uid = 2;
+        archived.message_id = Some("archived@example.com".to_owned());
+        let archived_row_id = first.repository.upsert_message(&archived).unwrap();
+        let archived = first.repository.get_message(archived_row_id).unwrap();
+        let archived_public_id = first
+            .repository
+            .message_public_id_by_local_id(&first.config.account_id, archived_row_id)
+            .unwrap();
+        assert_eq!(
+            first.public_id_for_cached_message(&archived).unwrap(),
+            archived_public_id
+        );
+        assert!(first.public_id_for_cached_inbox_message(&archived).is_err());
+    }
+
+    #[test]
+    fn account_attachment_cleanup_is_physically_isolated_in_a_shared_parent() {
+        let directory = tempdir().expect("tempdir");
+        let selected_directory = tempdir().expect("selected files");
+        let first_selected = selected_directory.path().join("first.txt");
+        let second_selected = selected_directory.path().join("second.txt");
+        fs::write(&first_selected, b"first account bytes").unwrap();
+        fs::write(&second_selected, b"second account bytes").unwrap();
+        let first_database = directory.path().join("first.db");
+        let second_database = directory.path().join("second.db");
+        let first = MailBackend::open(
+            scoped_account_config("stable-first", "first@example.com"),
+            &first_database,
+        )
+        .expect("first backend");
+        let second = MailBackend::open(
+            scoped_account_config("stable-second", "second@example.com"),
+            &second_database,
+        )
+        .expect("second backend");
+        first.initialize().unwrap();
+        second.initialize().unwrap();
+        let first_draft = first.save_draft(compose("first", "body")).unwrap();
+        let second_draft = second.save_draft(compose("second", "body")).unwrap();
+        let first_attached = first
+            .add_draft_attachments(
+                &first_draft.id,
+                first_draft.local_version,
+                &[first_selected],
+            )
+            .unwrap();
+        let second_attached = second
+            .add_draft_attachments(
+                &second_draft.id,
+                second_draft.local_version,
+                &[second_selected],
+            )
+            .unwrap();
+        assert_eq!(
+            first
+                .managed_attachments
+                .list_internal_names()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            second
+                .managed_attachments
+                .list_internal_names()
+                .unwrap()
+                .len(),
+            1
+        );
+
+        first.cleanup_managed_attachments().unwrap();
+        assert_eq!(
+            second
+                .managed_attachments
+                .list_internal_names()
+                .unwrap()
+                .len(),
+            1
+        );
+        let restarted_second = MailBackend::open(
+            scoped_account_config("stable-second", "second@example.com"),
+            &second_database,
+        )
+        .expect("second restart");
+        restarted_second.initialize().unwrap();
+        assert_eq!(
+            first
+                .managed_attachments
+                .list_internal_names()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            restarted_second
+                .confirmed_draft_snapshot(
+                    &second_draft.id,
+                    second_attached.draft.draft.local_version,
+                    &["receiver@example.com".to_owned()],
+                )
+                .unwrap()
+                .attachments[0]
+                .bytes,
+            b"second account bytes"
+        );
+        assert_eq!(
+            first
+                .confirmed_draft_snapshot(
+                    &first_draft.id,
+                    first_attached.draft.draft.local_version,
+                    &["receiver@example.com".to_owned()],
+                )
+                .unwrap()
+                .attachments[0]
+                .bytes,
+            b"first account bytes"
+        );
+    }
+
+    #[test]
+    fn legacy_null_digest_is_backfilled_before_send_and_reused_after_restart() {
+        let directory = tempdir().expect("tempdir");
+        let selected_directory = tempdir().expect("selected file");
+        let selected = selected_directory.path().join("legacy.txt");
+        let original_bytes = b"legacy attachment bytes";
+        fs::write(&selected, original_bytes).expect("selected attachment");
+        let database_path = directory.path().join("mail.db");
+        let backend = MailBackend::open(
+            scoped_account_config("legacy-digest", "legacy@example.com"),
+            &database_path,
+        )
+        .expect("backend");
+        backend.initialize().expect("initialize");
+        let draft = backend
+            .save_draft(compose("legacy digest", "body"))
+            .expect("draft");
+        let attached = backend
+            .add_draft_attachments(&draft.id, draft.local_version, &[selected])
+            .expect("attachment")
+            .draft;
+        let attachment = backend
+            .repository
+            .list_draft_attachments_at_version(
+                &backend.config.account_id,
+                &draft.id,
+                attached.draft.local_version,
+            )
+            .expect("attachment query")
+            .expect("exact version")
+            .attachments
+            .into_iter()
+            .next()
+            .expect("managed attachment");
+        let blob_path = managed_blob_path(directory.path(), &attachment.internal_name);
+        downgrade_managed_digest_fixture(
+            &database_path,
+            &backend.config.account_id,
+            &attachment.meta.id,
+            14,
+        );
+        drop(backend);
+
+        let upgraded = MailBackend::open(
+            scoped_account_config("legacy-digest", "legacy@example.com"),
+            &database_path,
+        )
+        .expect("upgrade backend");
+        upgraded.initialize().expect("upgrade initialize");
+        assert_eq!(
+            upgraded
+                .confirmed_draft_snapshot(
+                    &draft.id,
+                    attached.draft.local_version,
+                    &["receiver@example.com".to_owned()],
+                )
+                .expect("safe legacy attachment backfill")
+                .attachments[0]
+                .bytes,
+            original_bytes
+        );
+        let persisted_digest = stored_managed_digest(
+            &database_path,
+            &upgraded.config.account_id,
+            &attachment.meta.id,
+        )
+        .expect("backfilled digest");
+        assert_eq!(persisted_digest.len(), 64);
+        drop(upgraded);
+
+        let restarted = MailBackend::open(
+            scoped_account_config("legacy-digest", "legacy@example.com"),
+            &database_path,
+        )
+        .expect("restart backend");
+        restarted.initialize().expect("restart initialize");
+        assert_eq!(
+            restarted
+                .confirmed_draft_snapshot(
+                    &draft.id,
+                    attached.draft.local_version,
+                    &["receiver@example.com".to_owned()],
+                )
+                .expect("persisted digest read")
+                .attachments[0]
+                .bytes,
+            original_bytes
+        );
+        drop(restarted);
+
+        fs::write(&blob_path, vec![b'x'; original_bytes.len()])
+            .expect("equal-length local replacement");
+        let tampered = MailBackend::open(
+            scoped_account_config("legacy-digest", "legacy@example.com"),
+            &database_path,
+        )
+        .expect("tampered restart");
+        tampered.initialize().expect("tampered initialize");
+        assert!(matches!(
+            tampered.confirmed_draft_snapshot(
+                &draft.id,
+                attached.draft.local_version,
+                &["receiver@example.com".to_owned()],
+            ),
+            Err(MailError::Validation(message))
+                if message.contains("immutable content check")
+        ));
+        assert_eq!(
+            stored_managed_digest(
+                &database_path,
+                &tampered.config.account_id,
+                &attachment.meta.id,
+            )
+            .as_deref(),
+            Some(persisted_digest.as_str())
+        );
+    }
+
+    #[test]
+    fn null_digest_missing_blob_is_rejected_without_database_backfill() {
+        let directory = tempdir().expect("tempdir");
+        let selected_directory = tempdir().expect("selected file");
+        let selected = selected_directory.path().join("missing.txt");
+        fs::write(&selected, b"missing after migration").expect("selected attachment");
+        let database_path = directory.path().join("mail.db");
+        let backend = MailBackend::open(
+            scoped_account_config("missing-digest", "missing@example.com"),
+            &database_path,
+        )
+        .expect("backend");
+        backend.initialize().expect("initialize");
+        let draft = backend
+            .save_draft(compose("missing", "body"))
+            .expect("draft");
+        let attached = backend
+            .add_draft_attachments(&draft.id, draft.local_version, &[selected])
+            .expect("attachment")
+            .draft;
+        let attachment = backend
+            .repository
+            .list_draft_attachments_at_version(
+                &backend.config.account_id,
+                &draft.id,
+                attached.draft.local_version,
+            )
+            .unwrap()
+            .unwrap()
+            .attachments[0]
+            .clone();
+        let blob_path = managed_blob_path(directory.path(), &attachment.internal_name);
+        downgrade_managed_digest_fixture(
+            &database_path,
+            &backend.config.account_id,
+            &attachment.meta.id,
+            14,
+        );
+        fs::remove_file(blob_path).expect("remove legacy blob");
+        drop(backend);
+
+        let restarted = MailBackend::open(
+            scoped_account_config("missing-digest", "missing@example.com"),
+            &database_path,
+        )
+        .expect("restart backend");
+        assert!(matches!(
+            restarted.confirmed_draft_snapshot(
+                &draft.id,
+                attached.draft.local_version,
+                &["receiver@example.com".to_owned()],
+            ),
+            Err(MailError::Validation(message))
+                if message.contains("immutable content check")
+        ));
+        assert_eq!(
+            stored_managed_digest(
+                &database_path,
+                &restarted.config.account_id,
+                &attachment.meta.id,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn null_digest_reparse_blob_is_rejected_without_reading_external_target() {
+        let directory = tempdir().expect("tempdir");
+        let selected_directory = tempdir().expect("selected file");
+        let selected = selected_directory.path().join("linked.txt");
+        let bytes = b"linked legacy bytes";
+        fs::write(&selected, bytes).expect("selected attachment");
+        let database_path = directory.path().join("mail.db");
+        let backend = MailBackend::open(
+            scoped_account_config("linked-digest", "linked@example.com"),
+            &database_path,
+        )
+        .expect("backend");
+        backend.initialize().expect("initialize");
+        let draft = backend
+            .save_draft(compose("linked", "body"))
+            .expect("draft");
+        let attached = backend
+            .add_draft_attachments(&draft.id, draft.local_version, &[selected])
+            .expect("attachment")
+            .draft;
+        let attachment = backend
+            .repository
+            .list_draft_attachments_at_version(
+                &backend.config.account_id,
+                &draft.id,
+                attached.draft.local_version,
+            )
+            .unwrap()
+            .unwrap()
+            .attachments[0]
+            .clone();
+        let blob_path = managed_blob_path(directory.path(), &attachment.internal_name);
+        let external_directory = tempdir().expect("external directory");
+        let external = external_directory.path().join("external.bin");
+        fs::write(&external, bytes).expect("external target");
+        downgrade_managed_digest_fixture(
+            &database_path,
+            &backend.config.account_id,
+            &attachment.meta.id,
+            14,
+        );
+        fs::remove_file(&blob_path).expect("remove managed blob");
+        if !create_file_link_or_skip(&external, &blob_path) {
+            return;
+        }
+        drop(backend);
+
+        let restarted = MailBackend::open(
+            scoped_account_config("linked-digest", "linked@example.com"),
+            &database_path,
+        )
+        .expect("restart backend");
+        assert!(matches!(
+            restarted.confirmed_draft_snapshot(
+                &draft.id,
+                attached.draft.local_version,
+                &["receiver@example.com".to_owned()],
+            ),
+            Err(MailError::Validation(message))
+                if message.contains("immutable content check")
+        ));
+        assert_eq!(fs::read(&external).expect("external target remains"), bytes);
+        assert_eq!(
+            stored_managed_digest(
+                &database_path,
+                &restarted.config.account_id,
+                &attachment.meta.id,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn deleting_managed_data_removes_only_the_selected_account_directory() {
+        let directory = tempdir().expect("tempdir");
+        let first = MailBackend::open(
+            scoped_account_config("stable-first", "first@example.com"),
+            directory.path().join("first.db"),
+        )
+        .unwrap();
+        let second = MailBackend::open(
+            scoped_account_config("stable-second", "second@example.com"),
+            directory.path().join("second.db"),
+        )
+        .unwrap();
+        first.initialize().unwrap();
+        second.initialize().unwrap();
+        first
+            .managed_attachments
+            .import_bytes(b"first", "first.bin", "application/octet-stream")
+            .unwrap();
+        second
+            .managed_attachments
+            .import_bytes(b"second", "second.bin", "application/octet-stream")
+            .unwrap();
+
+        assert!(first.delete_managed_attachment_data().unwrap());
+        assert_eq!(
+            second
+                .managed_attachments
+                .list_internal_names()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn attachment_save_as_cancels_and_never_overwrites_an_existing_file() {
+        let directory = tempdir().expect("tempdir");
+        let config =
+            AccountConfig::from_163_lines(["demo@163.com", "not-a-real-secret"]).expect("config");
+        let backend = MailBackend::open(config, directory.path().join("mail.db")).expect("backend");
+        backend.initialize().expect("initialize");
+        let public_id = cache_complete_raw_message(&backend, 1, one_attachment_message());
+        let metadata = backend
+            .cached_message_attachments(&public_id)
+            .expect("attachment metadata");
+        assert_eq!(metadata.len(), 1);
+
+        let canceled = backend
+            .save_message_attachment_to(&public_id, &metadata[0].id, None)
+            .await
+            .expect("cancel");
+        assert_eq!(canceled.status, AttachmentSaveStatus::Canceled);
+        assert_eq!(canceled.file_name, None);
+
+        let destination_directory = tempdir().expect("destination");
+        let requested = destination_directory.path().join("report.bin");
+        fs::write(&requested, b"existing").expect("existing destination");
+        let saved = backend
+            .save_message_attachment_to(&public_id, &metadata[0].id, Some(&requested))
+            .await
+            .expect("save result");
+        assert_eq!(saved.status, AttachmentSaveStatus::Saved);
+        assert_eq!(saved.file_name.as_deref(), Some("report (1).bin"));
+        assert_eq!(fs::read(&requested).unwrap(), b"existing");
+        assert_eq!(
+            fs::read(destination_directory.path().join(saved.file_name.unwrap())).unwrap(),
+            [1, 2, 3, 4]
+        );
+    }
+
+    #[test]
+    fn forward_staging_limit_rolls_back_prior_blobs_before_any_outbox_item() {
+        let directory = tempdir().expect("tempdir");
+        let config =
+            AccountConfig::from_163_lines(["demo@163.com", "not-a-real-secret"]).expect("config");
+        let backend = MailBackend::open(config, directory.path().join("mail.db")).expect("backend");
+        backend.initialize().expect("initialize");
+        let raw = two_attachment_message();
+        let source = prepare_forward_source(&raw, MimeSourceCompleteness::CompleteRfc822)
+            .expect("forward source");
+        assert_eq!(source.ordinary_attachments.len(), 2);
+
+        let failure = match backend.stage_forward_attachments(&raw, &source.ordinary_attachments, 3)
+        {
+            Ok(_) => panic!("second attachment should exceed the injected total"),
+            Err(error) => error,
+        };
+        assert_eq!(
+            failure.kind,
+            ForwardPreparationErrorKind::AttachmentStageFailed
+        );
+        assert_eq!(
+            failure.failed_attachment_ids,
+            [source.ordinary_attachments[1].id.clone()]
+        );
+        assert!(failure.retry_without_attachments_allowed);
+        assert!(
+            backend
+                .managed_attachments
+                .list_internal_names()
+                .unwrap()
+                .is_empty()
+        );
+        assert!(backend.list_outbox().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn malformed_attachment_can_retry_as_a_complete_body_only_forward() {
+        let directory = tempdir().expect("tempdir");
+        let config =
+            AccountConfig::from_163_lines(["demo@163.com", "not-a-real-secret"]).expect("config");
+        let backend = MailBackend::open(config, directory.path().join("mail.db")).expect("backend");
+        backend.initialize().expect("initialize");
+        let public_id = cache_complete_raw_message(&backend, 1, broken_attachment_message());
+
+        let default = backend
+            .prepare_forward(&public_id, true)
+            .await
+            .expect("typed default outcome");
+        match default {
+            ForwardPreparationOutcome::Error { error } => {
+                assert_eq!(
+                    error.kind,
+                    ForwardPreparationErrorKind::AttachmentUnavailable
+                );
+                assert!(error.retry_without_attachments_allowed);
+            }
+            other => panic!("expected attachment error, got {other:?}"),
+        }
+        assert!(backend.list_drafts().unwrap().is_empty());
+        assert!(
+            backend
+                .managed_attachments
+                .list_internal_names()
+                .unwrap()
+                .is_empty()
+        );
+
+        let body_only = backend
+            .prepare_forward(&public_id, false)
+            .await
+            .expect("body-only retry");
+        let prepared = match body_only {
+            ForwardPreparationOutcome::Prepared { prepared } => prepared,
+            other => panic!("expected prepared forward, got {other:?}"),
+        };
+        assert!(
+            prepared
+                .warnings
+                .contains(&ForwardWarning::AttachmentsOmittedByUser)
+        );
+        assert!(prepared.draft.attachments.is_empty());
+        let context = prepared
+            .draft
+            .forward_context
+            .as_ref()
+            .expect("immutable forward context");
+        assert_eq!(context.quoted_text.trim(), "Complete body survives.");
+        assert!(context.source_attachments.is_empty());
+        assert!(
+            context
+                .from
+                .iter()
+                .chain(context.to.iter())
+                .chain(context.cc.iter())
+                .all(|address| address.email != "hidden@example.com")
+        );
+        let raw = &backend
+            .repository
+            .get_draft_record(&prepared.draft.draft.id)
+            .expect("persisted forward")
+            .draft
+            .raw_rfc822;
+        assert!(
+            outbox_body_text(raw)
+                .as_deref()
+                .is_some_and(|body| body.contains("Complete body survives."))
+        );
+        assert!(!String::from_utf8_lossy(raw).contains("hidden@example.com"));
+    }
+
+    #[tokio::test]
+    async fn explicit_body_only_forward_always_reports_the_omission_choice() {
+        let directory = tempdir().expect("tempdir");
+        let config =
+            AccountConfig::from_163_lines(["demo@163.com", "not-a-real-secret"]).expect("config");
+        let backend = MailBackend::open(config, directory.path().join("mail.db")).expect("backend");
+        backend.initialize().expect("initialize");
+        let raw = b"From: sender@example.com\r\n\
+                    To: demo@163.com\r\n\
+                    Subject: Plain source\r\n\
+                    Content-Type: text/plain; charset=utf-8\r\n\
+                    \r\n\
+                    Complete plain body."
+            .to_vec();
+        let public_id = cache_complete_raw_message(&backend, 1, raw);
+
+        let prepared = match backend.prepare_forward(&public_id, false).await.unwrap() {
+            ForwardPreparationOutcome::Prepared { prepared } => prepared,
+            other => panic!("expected prepared forward, got {other:?}"),
+        };
+        assert!(
+            prepared
+                .warnings
+                .contains(&ForwardWarning::AttachmentsOmittedByUser)
+        );
+    }
+
+    #[test]
+    fn first_attachment_preserves_input_saved_before_the_picker_opens() {
+        let directory = tempdir().expect("tempdir");
+        let selected_directory = tempdir().expect("selected file");
+        let selected = selected_directory.path().join("note.txt");
+        fs::write(&selected, b"attachment").unwrap();
+        let config =
+            AccountConfig::from_163_lines(["demo@163.com", "not-a-real-secret"]).expect("config");
+        let backend = MailBackend::open(config, directory.path().join("mail.db")).expect("backend");
+        backend.initialize().expect("initialize");
+        let mut request = compose("unsaved subject", "unsaved complete body");
+        request.cc = vec!["copy@example.com".to_owned()];
+        request.bcc = vec!["hidden@example.com".to_owned()];
+
+        let stable = backend.create_compose_draft().expect("empty stable draft");
+        assert_eq!(stable.draft.local_version, 1);
+        let saved_input = backend
+            .save_draft_optimistic(
+                Some(&stable.draft.id),
+                Some(stable.draft.local_version),
+                request.clone(),
+            )
+            .expect("persist current editor before picker");
+        assert_eq!(saved_input.kind, DraftSaveKind::Saved);
+        assert_eq!(saved_input.draft.compose_request(), request);
+        let attached = backend
+            .add_draft_attachments(
+                &stable.draft.id,
+                saved_input.draft.local_version,
+                &[selected],
+            )
+            .expect("first attachment");
+
+        assert_eq!(attached.kind, DraftAttachmentMutationKind::Saved);
+        assert_eq!(attached.draft.draft.compose_request(), request);
+        assert_eq!(attached.draft.attachments.len(), 1);
+        let persisted = backend
+            .repository
+            .get_draft_record(&stable.draft.id)
+            .expect("persisted exact draft");
+        assert_eq!(persisted.draft.compose_request(), request);
+        assert!(
+            outbox_body_text(&persisted.draft.raw_rfc822)
+                .as_deref()
+                .is_some_and(|body| body == "unsaved complete body")
+        );
+    }
+
+    #[test]
+    fn stale_attachment_add_creates_an_exact_conflict_set_without_mutating_canonical() {
+        let directory = tempdir().expect("tempdir");
+        let selected_directory = tempdir().expect("selected files");
+        let first = selected_directory.path().join("first.txt");
+        let second = selected_directory.path().join("second.txt");
+        fs::write(&first, b"first attachment").unwrap();
+        fs::write(&second, b"second attachment").unwrap();
+        let config =
+            AccountConfig::from_163_lines(["demo@163.com", "not-a-real-secret"]).expect("config");
+        let backend = MailBackend::open(config, directory.path().join("mail.db")).expect("backend");
+        backend.initialize().unwrap();
+        let draft = backend.save_draft(compose("base", "base body")).unwrap();
+        let first_version = backend
+            .add_draft_attachments(&draft.id, draft.local_version, &[first])
+            .unwrap()
+            .draft;
+        let canonical = backend
+            .save_draft_optimistic(
+                Some(&draft.id),
+                Some(first_version.draft.local_version),
+                compose("canonical", "newer body"),
+            )
+            .unwrap()
+            .draft;
+
+        let conflict = backend
+            .add_draft_attachments(&draft.id, first_version.draft.local_version, &[second])
+            .expect("stale add preserves bytes");
+
+        assert_eq!(conflict.kind, DraftAttachmentMutationKind::ConflictCopy);
+        assert_eq!(conflict.draft.attachments.len(), 2);
+        assert_eq!(
+            conflict
+                .canonical
+                .as_ref()
+                .map(|draft| draft.draft.local_version),
+            Some(canonical.local_version)
+        );
+        assert_eq!(
+            backend.draft_dto(&draft.id).unwrap().attachments.len(),
+            1,
+            "canonical keeps only its exact attachment set"
+        );
+        let conflict_raw = backend
+            .repository
+            .get_draft_record(&conflict.draft.draft.id)
+            .unwrap()
+            .draft
+            .raw_rfc822;
+        assert_eq!(
+            index_message_attachments(&conflict_raw, MimeSourceCompleteness::CompleteRfc822,)
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            backend
+                .managed_attachments
+                .list_internal_names()
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn stale_body_and_attachment_branches_use_the_exact_historical_snapshot() {
+        let directory = tempdir().expect("tempdir");
+        let selected_directory = tempdir().expect("selected files");
+        let attachment_a = selected_directory.path().join("A.txt");
+        let attachment_b = selected_directory.path().join("B.txt");
+        let attachment_c = selected_directory.path().join("C.txt");
+        fs::write(&attachment_a, b"attachment A").unwrap();
+        fs::write(&attachment_b, b"attachment B").unwrap();
+        fs::write(&attachment_c, b"attachment C").unwrap();
+        let config =
+            AccountConfig::from_163_lines(["demo@163.com", "not-a-real-secret"]).expect("config");
+        let backend = MailBackend::open(config, directory.path().join("mail.db")).expect("backend");
+        backend.initialize().expect("initialize");
+
+        let created = backend
+            .save_draft(compose("version one", "body one"))
+            .expect("create version one");
+        let version_with_a = backend
+            .add_draft_attachments(
+                &created.id,
+                created.local_version,
+                std::slice::from_ref(&attachment_a),
+            )
+            .expect("version one attachment A")
+            .draft;
+        assert_eq!(
+            version_with_a
+                .attachments
+                .iter()
+                .map(|attachment| attachment.name.as_str())
+                .collect::<Vec<_>>(),
+            ["A.txt"]
+        );
+        let historical_version = version_with_a.draft.local_version;
+
+        let without_a = backend
+            .remove_draft_attachment(
+                &created.id,
+                &version_with_a.attachments[0].id,
+                historical_version,
+            )
+            .expect("remove A from canonical")
+            .draft;
+        let with_b = backend
+            .add_draft_attachments(
+                &created.id,
+                without_a.draft.local_version,
+                std::slice::from_ref(&attachment_b),
+            )
+            .expect("canonical attachment B")
+            .draft;
+        let canonical = backend
+            .save_draft_optimistic(
+                Some(&created.id),
+                Some(with_b.draft.local_version),
+                compose("version two", "body two"),
+            )
+            .expect("canonical body two")
+            .draft;
+
+        let stale_body = backend
+            .save_draft_optimistic(
+                Some(&created.id),
+                Some(historical_version),
+                compose("offline body edit", "caller body"),
+            )
+            .expect("stale body conflict");
+        assert_eq!(stale_body.kind, DraftSaveKind::ConflictCopy);
+        assert_eq!(stale_body.draft.body_text, "caller body");
+        let stale_body_dto = backend
+            .draft_dto(&stale_body.draft.id)
+            .expect("stale body DTO");
+        assert_eq!(
+            stale_body_dto
+                .attachments
+                .iter()
+                .map(|attachment| attachment.name.as_str())
+                .collect::<Vec<_>>(),
+            ["A.txt"]
+        );
+
+        let stale_add = backend
+            .add_draft_attachments(
+                &created.id,
+                historical_version,
+                std::slice::from_ref(&attachment_c),
+            )
+            .expect("stale attachment conflict");
+        assert_eq!(stale_add.kind, DraftAttachmentMutationKind::ConflictCopy);
+        assert_eq!(stale_add.draft.draft.body_text, "body one");
+        assert_eq!(
+            stale_add
+                .draft
+                .attachments
+                .iter()
+                .map(|attachment| attachment.name.as_str())
+                .collect::<Vec<_>>(),
+            ["A.txt", "C.txt"]
+        );
+
+        let persisted_canonical = backend.draft_dto(&created.id).expect("canonical DTO");
+        assert_eq!(
+            persisted_canonical.draft.local_version,
+            canonical.local_version
+        );
+        assert_eq!(persisted_canonical.draft.body_text, "body two");
+        assert_eq!(
+            persisted_canonical
+                .attachments
+                .iter()
+                .map(|attachment| attachment.name.as_str())
+                .collect::<Vec<_>>(),
+            ["B.txt"]
+        );
+        let canonical_raw = backend
+            .repository
+            .get_draft_record(&created.id)
+            .expect("canonical record")
+            .draft
+            .raw_rfc822;
+        assert_eq!(
+            outbox_body_text(&canonical_raw).as_deref(),
+            Some("body two")
+        );
+        assert_eq!(
+            index_message_attachments(&canonical_raw, MimeSourceCompleteness::CompleteRfc822)
+                .unwrap()
+                .iter()
+                .map(|attachment| attachment.safe_display_name.as_str())
+                .collect::<Vec<_>>(),
+            ["B.txt"]
+        );
+    }
+
+    #[test]
+    fn exact_attachment_remove_rebuilds_mime_and_retains_the_historical_snapshot() {
+        let directory = tempdir().expect("tempdir");
+        let selected_directory = tempdir().expect("selected files");
+        let first = selected_directory.path().join("first.txt");
+        let second = selected_directory.path().join("second.txt");
+        fs::write(&first, b"first attachment").unwrap();
+        fs::write(&second, b"second attachment").unwrap();
+        let config =
+            AccountConfig::from_163_lines(["demo@163.com", "not-a-real-secret"]).expect("config");
+        let backend = MailBackend::open(config, directory.path().join("mail.db")).expect("backend");
+        backend.initialize().unwrap();
+        let draft = backend.save_draft(compose("draft", "body")).unwrap();
+        let attached = backend
+            .add_draft_attachments(&draft.id, draft.local_version, &[first, second])
+            .unwrap()
+            .draft;
+        let removed = backend
+            .remove_draft_attachment(
+                &draft.id,
+                &attached.attachments[0].id,
+                attached.draft.local_version,
+            )
+            .unwrap();
+
+        assert_eq!(removed.kind, DraftAttachmentMutationKind::Saved);
+        assert_eq!(removed.draft.attachments.len(), 1);
+        let persisted = backend.repository.get_draft_record(&draft.id).unwrap();
+        assert_eq!(
+            index_message_attachments(
+                &persisted.draft.raw_rfc822,
+                MimeSourceCompleteness::CompleteRfc822,
+            )
+            .unwrap()
+            .len(),
+            1
+        );
+        assert_eq!(
+            backend
+                .managed_attachments
+                .list_internal_names()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            backend
+                .repository
+                .list_draft_attachments_at_version(
+                    &backend.config.account_id,
+                    &draft.id,
+                    attached.draft.local_version,
+                )
+                .unwrap()
+                .unwrap()
+                .attachments
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn unsupported_draft_rejects_attachment_remove_before_any_state_change() {
+        let directory = tempdir().expect("tempdir");
+        let database_path = directory.path().join("mail.db");
+        let selected_directory = tempdir().expect("selected file");
+        let selected = selected_directory.path().join("read-only.txt");
+        fs::write(&selected, b"immutable attachment").unwrap();
+        let config =
+            AccountConfig::from_163_lines(["demo@163.com", "not-a-real-secret"]).expect("config");
+        let backend = MailBackend::open(config, &database_path).expect("backend");
+        backend.initialize().expect("initialize");
+        let draft = backend.save_draft(compose("read only", "body")).unwrap();
+        let attached = backend
+            .add_draft_attachments(
+                &draft.id,
+                draft.local_version,
+                std::slice::from_ref(&selected),
+            )
+            .unwrap()
+            .draft;
+        rusqlite::Connection::open(&database_path)
+            .unwrap()
+            .execute(
+                "UPDATE drafts SET has_unsupported_content = 1 WHERE id = ?1",
+                rusqlite::params![draft.id],
+            )
+            .unwrap();
+        let before = backend.repository.get_draft_record(&draft.id).unwrap();
+        let refs_before = backend
+            .repository
+            .list_draft_attachments_at_version(
+                &backend.config.account_id,
+                &draft.id,
+                before.local_version,
+            )
+            .unwrap()
+            .unwrap();
+
+        assert!(matches!(
+            backend.remove_draft_attachment(
+                &draft.id,
+                &attached.attachments[0].id,
+                attached.draft.local_version,
+            ),
+            Err(MailError::Validation(_))
+        ));
+
+        let after = backend.repository.get_draft_record(&draft.id).unwrap();
+        let refs_after = backend
+            .repository
+            .list_draft_attachments_at_version(
+                &backend.config.account_id,
+                &draft.id,
+                after.local_version,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(after.local_version, before.local_version);
+        assert_eq!(after.revision, before.revision);
+        assert_eq!(after.draft.raw_rfc822, before.draft.raw_rfc822);
+        assert_eq!(refs_after, refs_before);
+    }
+
+    #[test]
+    fn discarding_a_draft_releases_its_managed_blob() {
+        let directory = tempdir().expect("tempdir");
+        let selected_directory = tempdir().expect("selected file");
+        let selected = selected_directory.path().join("note.txt");
+        fs::write(&selected, b"discard me").unwrap();
+        let config =
+            AccountConfig::from_163_lines(["demo@163.com", "not-a-real-secret"]).expect("config");
+        let backend = MailBackend::open(config, directory.path().join("mail.db")).expect("backend");
+        backend.initialize().expect("initialize");
+        let draft = backend.save_draft(compose("draft", "body")).unwrap();
+        let attached = backend
+            .add_draft_attachments(&draft.id, draft.local_version, &[selected])
+            .unwrap();
+        assert_eq!(attached.kind, DraftAttachmentMutationKind::Saved);
+        assert_eq!(
+            backend
+                .managed_attachments
+                .list_internal_names()
+                .unwrap()
+                .len(),
+            1
+        );
+
+        backend.delete_draft(&draft.id).expect("discard draft");
+
+        assert!(backend.list_drafts().unwrap().is_empty());
+        assert!(
+            backend
+                .managed_attachments
+                .list_internal_names()
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            backend
+                .repository
+                .list_orphaned_managed_attachments(&backend.config.account_id)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn stale_discard_preserves_the_newer_draft_attachment_version() {
+        let directory = tempdir().expect("tempdir");
+        let selected_directory = tempdir().expect("selected file");
+        let selected = selected_directory.path().join("note.txt");
+        fs::write(&selected, b"keep me").unwrap();
+        let config =
+            AccountConfig::from_163_lines(["demo@163.com", "not-a-real-secret"]).expect("config");
+        let backend = MailBackend::open(config, directory.path().join("mail.db")).expect("backend");
+        backend.initialize().expect("initialize");
+        let draft = backend.save_draft(compose("draft", "body")).unwrap();
+        let attached = backend
+            .add_draft_attachments(&draft.id, draft.local_version, &[selected])
+            .unwrap();
+        let attached_version = attached.draft.draft.local_version;
+        let newer = backend
+            .save_draft_optimistic(
+                Some(&draft.id),
+                Some(attached_version),
+                compose("newer", "newer body"),
+            )
+            .unwrap();
+        assert_eq!(newer.kind, DraftSaveKind::Saved);
+
+        assert_eq!(
+            backend
+                .delete_draft_optimistic(&draft.id, attached_version)
+                .unwrap(),
+            DraftDeleteKind::Stale
+        );
+        assert_eq!(backend.draft_dto(&draft.id).unwrap().attachments.len(), 1);
+        assert_eq!(
+            backend
+                .managed_attachments
+                .list_internal_names()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn sent_draft_releases_its_ref_while_outbox_keeps_the_exact_blob() {
+        let directory = tempdir().expect("tempdir");
+        let selected_directory = tempdir().expect("selected file");
+        let selected = selected_directory.path().join("note.txt");
+        fs::write(&selected, b"exact send bytes").unwrap();
+        let config =
+            AccountConfig::from_163_lines(["demo@163.com", "not-a-real-secret"]).expect("config");
+        let backend = MailBackend::open(config, directory.path().join("mail.db")).expect("backend");
+        backend.initialize().expect("initialize");
+        let draft = backend.save_draft(compose("draft", "body")).unwrap();
+        let attached = backend
+            .add_draft_attachments(&draft.id, draft.local_version, &[selected])
+            .unwrap()
+            .draft;
+        let snapshot = backend
+            .confirmed_draft_snapshot(
+                &draft.id,
+                attached.draft.local_version,
+                &["receiver@example.com".to_owned()],
+            )
+            .expect("confirmed exact draft");
+        let outgoing = build_outgoing_message_with_attachments(
+            &backend.config.email,
+            &snapshot.request,
+            snapshot.forward_context.as_ref(),
+            snapshot.attachments,
+        )
+        .expect("exact outgoing MIME");
+        let outbox = OutboxItem {
+            id: "attachment-outbox".to_owned(),
+            account_id: backend.config.account_id.clone(),
+            draft_id: Some(snapshot.id.clone()),
+            draft_revision: Some(snapshot.revision),
+            draft_local_version: Some(snapshot.local_version),
+            recipients: outgoing.recipients,
+            recipient_groups: Some(crate::OutboxRecipientGroups::from(&snapshot.request)),
+            status: OutboxStatus::Retryable,
+            attempts: 0,
+            last_error: Some("synthetic offline state".to_owned()),
+            created_at: "2026-07-28T00:00:00Z".to_owned(),
+            sent_at: None,
+            raw_rfc822: outgoing.raw_rfc822,
+        };
+        backend
+            .repository
+            .enqueue_new_outbox(&outbox)
+            .expect("persist exact Outbox");
+        assert_eq!(
+            backend
+                .repository
+                .list_outbox_attachments(&backend.config.account_id, &outbox.id)
+                .unwrap()
+                .len(),
+            1
+        );
+
+        backend
+            .repository
+            .finalize_outbox_sent(&outbox.id)
+            .expect("mark sent");
+        backend.cleanup_managed_attachments().expect("cleanup");
+
+        assert_eq!(
+            backend.repository.get_draft(&draft.id).unwrap().status,
+            "sent"
+        );
+        assert!(backend.draft_dto(&draft.id).unwrap().attachments.is_empty());
+        assert_eq!(
+            backend
+                .repository
+                .list_outbox_attachments(&backend.config.account_id, &outbox.id)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            backend
+                .managed_attachments
+                .list_internal_names()
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     fn local_record(
@@ -2659,6 +7543,7 @@ mod tests {
                 bcc: Vec::new(),
                 subject: subject.to_owned(),
                 body_text: "body".to_owned(),
+                format: Default::default(),
                 reply_context: None,
                 status: "local".to_owned(),
                 remote_mailbox: Some("Drafts".to_owned()),
@@ -2703,11 +7588,28 @@ mod tests {
                 bcc: Vec::new(),
                 subject: "unfinished".to_owned(),
                 body_text: "local text".to_owned(),
+                format: ComposeFormat {
+                    body_html: Some(
+                        "<div onclick=\"bad()\"><strong>local text</strong><script>bad()</script></div>"
+                            .to_owned(),
+                    ),
+                    stationery: StationeryTheme::None,
+                    send_stationery: true,
+                },
                 reply_context: None,
             })
             .expect("save draft");
 
         assert_eq!(saved.status, "local");
+        let html = saved
+            .format
+            .body_html
+            .as_deref()
+            .expect("safe authored HTML");
+        assert!(html.contains("<strong>local text</strong>"));
+        assert!(!html.contains("onclick"));
+        assert!(!html.contains("script"));
+        assert!(!saved.format.send_stationery);
         assert_eq!(backend.list_drafts().expect("drafts").len(), 1);
     }
 
@@ -2731,6 +7633,10 @@ mod tests {
         incoming.cc.push(MailAddress {
             name: Some("Duplicate copy".to_owned()),
             email: "friend@example.com".to_owned(),
+        });
+        incoming.bcc.push(MailAddress {
+            name: Some("Must Stay Hidden".to_owned()),
+            email: "blind-contact@example.com".to_owned(),
         });
 
         let mut outgoing = cached_message(
@@ -2767,6 +7673,12 @@ mod tests {
         assert_eq!(activity[0].display_name.as_deref(), Some("Latest Friend"));
         assert_eq!(activity[0].message_count, 2);
         assert_eq!(activity[0].last_subject, "Newest subject");
+        assert!(
+            backend
+                .list_contact_messages("blind-contact@example.com", 10)
+                .expect("Bcc-excluded contact lookup")
+                .is_empty()
+        );
 
         let messages = backend
             .list_contact_messages(" FRIEND@example.com ", 10)
@@ -2777,6 +7689,11 @@ mod tests {
         assert_eq!(messages[1].direction, ContactMessageDirection::Outgoing);
         assert_eq!(messages[1].mailbox_role, Some(MailboxRole::Sent));
         assert_eq!(messages[1].message.mailbox, "&XfJT0ZAB-");
+        assert_ne!(messages[0].public_id, messages[1].public_id);
+        assert!(messages.iter().all(|item| {
+            uuid::Uuid::parse_str(&item.public_id)
+                .is_ok_and(|id| id.get_version() == Some(uuid::Version::Random))
+        }));
         assert!(messages.iter().all(|item| item.message.body_text.is_none()));
         assert!(messages.iter().all(|item| item.message.body_html.is_none()));
         assert!(
@@ -2943,6 +7860,10 @@ mod tests {
                 email: "demo@163.com".to_owned(),
             }],
             cc: Vec::new(),
+            bcc: vec![MailAddress {
+                name: Some("Hidden Recipient".to_owned()),
+                email: "hidden@example.com".to_owned(),
+            }],
             sent_at: Some("2026-07-17T09:54:29+08:00".to_owned()),
             internal_date: None,
             flags: Vec::new(),
@@ -2962,10 +7883,13 @@ mod tests {
             .repository
             .upsert_message(&message)
             .expect("cache message");
+        let public_id = public_message_id(&backend, MailboxRole::Inbox, row_id);
 
-        let reply = backend.prepare_reply(row_id).expect("prepare reply");
+        let reply = backend.prepare_reply(&public_id).expect("prepare reply");
 
         assert_eq!(reply.to, ["sender@example.com"]);
+        assert!(reply.cc.is_empty());
+        assert!(reply.bcc.is_empty());
         assert_eq!(reply.subject, "Re: Earlier note");
         assert!(reply.body_text.is_empty());
         let saved = backend
@@ -2989,6 +7913,12 @@ mod tests {
         assert_eq!(context.references, ["root@example.com"]);
         assert_eq!(context.subject, "Earlier note");
         assert_eq!(context.quoted_text, "Complete original body");
+        assert!(
+            context
+                .recipients
+                .iter()
+                .all(|recipient| recipient.email != "hidden@example.com")
+        );
         assert!(
             context
                 .quoted_html
@@ -3052,6 +7982,7 @@ mod tests {
             sender: None,
             to: Vec::new(),
             cc: Vec::new(),
+            bcc: Vec::new(),
             sent_at: None,
             internal_date: None,
             flags: Vec::new(),
@@ -3307,7 +8238,7 @@ mod tests {
         assert_ne!(stale.draft.id, created.draft.id);
         assert_eq!(stale.draft.local_version, 1);
         assert_eq!(stale.draft.status, "conflict");
-        assert_eq!(stale.draft.subject, "local stale edit");
+        assert_eq!(stale.draft.subject, "local stale edit（本地冲突副本）");
         assert_eq!(
             stale.canonical.as_ref().map(|draft| draft.local_version),
             Some(canonical.draft.local_version)
@@ -3559,6 +8490,7 @@ mod tests {
             draft_revision: Some(1),
             draft_local_version: Some(draft.local_version),
             recipients: vec!["receiver@example.com".to_owned()],
+            recipient_groups: None,
             status: OutboxStatus::Queued,
             attempts: 0,
             last_error: None,
@@ -3796,6 +8728,7 @@ mod tests {
             draft_revision: None,
             draft_local_version: None,
             recipients: vec!["receiver@example.com".to_owned()],
+            recipient_groups: None,
             status: OutboxStatus::Retryable,
             attempts: 1,
             last_error: Some("temporary failure".to_owned()),
@@ -3826,5 +8759,94 @@ mod tests {
             validate_manual_retry(&base, "another-account"),
             Err(MailError::NotFound { .. })
         ));
+    }
+
+    #[test]
+    fn delivery_unknown_decision_is_bound_to_status_account_and_attempt_generation() {
+        let base = OutboxItem {
+            id: "ambiguous-outbox".to_owned(),
+            account_id: "primary".to_owned(),
+            draft_id: None,
+            draft_revision: None,
+            draft_local_version: None,
+            recipients: vec!["receiver@example.com".to_owned()],
+            recipient_groups: None,
+            status: OutboxStatus::DeliveryUnknown,
+            attempts: 3,
+            last_error: Some("delivery state is unknown".to_owned()),
+            created_at: "2026-07-14T06:00:00Z".to_owned(),
+            sent_at: None,
+            raw_rfc822: b"persisted bytes".to_vec(),
+        };
+        assert!(validate_delivery_unknown_attempt(&base, "primary", 3).is_ok());
+        assert!(matches!(
+            validate_delivery_unknown_attempt(&base, "another-account", 3),
+            Err(MailError::NotFound { .. })
+        ));
+        assert!(matches!(
+            validate_delivery_unknown_attempt(&base, "primary", 2),
+            Err(MailError::Validation(_))
+        ));
+        for status in [
+            OutboxStatus::Queued,
+            OutboxStatus::Sending,
+            OutboxStatus::Sent,
+            OutboxStatus::Retryable,
+            OutboxStatus::Rejected,
+        ] {
+            assert!(matches!(
+                validate_delivery_unknown_attempt(
+                    &OutboxItem {
+                        status,
+                        ..base.clone()
+                    },
+                    "primary",
+                    3
+                ),
+                Err(MailError::Validation(_))
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn delivery_unknown_retry_requires_duplicate_risk_ack_before_any_state_change() {
+        let directory = tempdir().expect("tempdir");
+        let config =
+            AccountConfig::from_163_lines(["demo@163.com", "not-a-real-secret"]).expect("config");
+        let backend = MailBackend::open(config, directory.path().join("mail.db")).expect("backend");
+        backend.initialize().expect("initialize");
+        let unknown = OutboxItem {
+            id: "ambiguous-no-ack".to_owned(),
+            account_id: backend.config.account_id.clone(),
+            draft_id: None,
+            draft_revision: None,
+            draft_local_version: None,
+            recipients: vec!["receiver@example.com".to_owned()],
+            recipient_groups: None,
+            status: OutboxStatus::DeliveryUnknown,
+            attempts: 1,
+            last_error: Some("delivery state is unknown".to_owned()),
+            created_at: "2026-07-14T06:00:00Z".to_owned(),
+            sent_at: None,
+            raw_rfc822:
+                b"From: demo@163.com\r\nTo: receiver@example.com\r\n\r\nExact persisted body"
+                    .to_vec(),
+        };
+        backend
+            .repository
+            .enqueue_outbox(&unknown)
+            .expect("unknown Outbox");
+
+        assert!(matches!(
+            backend
+                .retry_delivery_unknown_once(&unknown.id, 1, false)
+                .await,
+            Err(MailError::Validation(_))
+        ));
+        assert_eq!(
+            backend.repository.get_outbox(&unknown.id).unwrap(),
+            unknown,
+            "missing acknowledgement must not claim or rebuild the immutable attempt"
+        );
     }
 }

@@ -87,13 +87,302 @@ pub enum ContactMessageDirection {
 pub enum MailboxRole {
     Inbox,
     Sent,
+    Drafts,
+    Archive,
+    Trash,
 }
 
-/// One body-free cached message summary involving a contact. Direction is
-/// derived from the configured account identity rather than provider-specific
-/// mailbox names, which are not portable across IMAP servers.
+impl MailboxRole {
+    pub(crate) const ALL: [Self; 5] = [
+        Self::Inbox,
+        Self::Sent,
+        Self::Drafts,
+        Self::Archive,
+        Self::Trash,
+    ];
+
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Inbox => "inbox",
+            Self::Sent => "sent",
+            Self::Drafts => "drafts",
+            Self::Archive => "archive",
+            Self::Trash => "trash",
+        }
+    }
+
+    pub(crate) fn from_str(value: &str) -> Option<Self> {
+        match value {
+            "inbox" => Some(Self::Inbox),
+            "sent" => Some(Self::Sent),
+            "drafts" => Some(Self::Drafts),
+            "archive" => Some(Self::Archive),
+            "trash" => Some(Self::Trash),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MailboxCapabilityStatus {
+    DiscoveryPending,
+    Available,
+    NeedsCreationConfirmation,
+    Unavailable,
+}
+
+impl MailboxCapabilityStatus {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::DiscoveryPending => "discovery_pending",
+            Self::Available => "available",
+            Self::NeedsCreationConfirmation => "needs_creation_confirmation",
+            Self::Unavailable => "unavailable",
+        }
+    }
+
+    pub(crate) fn from_str(value: &str) -> Option<Self> {
+        match value {
+            "discovery_pending" => Some(Self::DiscoveryPending),
+            "available" => Some(Self::Available),
+            "needs_creation_confirmation" => Some(Self::NeedsCreationConfirmation),
+            "unavailable" => Some(Self::Unavailable),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MailboxCapabilityUnavailableReason {
+    CreateNotSupported,
+    CreateFailed,
+    CreatedMailboxNotSelectable,
+    ProviderUnsupported,
+}
+
+impl MailboxCapabilityUnavailableReason {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::CreateNotSupported => "create_not_supported",
+            Self::CreateFailed => "create_failed",
+            Self::CreatedMailboxNotSelectable => "created_mailbox_not_selectable",
+            Self::ProviderUnsupported => "provider_unsupported",
+        }
+    }
+
+    pub(crate) fn from_str(value: &str) -> Option<Self> {
+        match value {
+            "create_not_supported" => Some(Self::CreateNotSupported),
+            "create_failed" => Some(Self::CreateFailed),
+            "created_mailbox_not_selectable" => Some(Self::CreatedMailboxNotSelectable),
+            "provider_unsupported" => Some(Self::ProviderUnsupported),
+            _ => None,
+        }
+    }
+}
+
+/// Account-scoped availability of one semantic mailbox role. Provider mailbox
+/// names remain in Rust and SQLite; React receives only this bounded status.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct MailboxCapability {
+    pub role: MailboxRole,
+    pub status: MailboxCapabilityStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unavailable_reason: Option<MailboxCapabilityUnavailableReason>,
+    pub retryable: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RemoteHistoryState {
+    #[default]
+    NotChecked,
+    MayHaveMore,
+    Offline,
+    Complete,
+    Unavailable,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MutationStatus {
+    Pending,
+    InFlight,
+    Confirmed,
+    NeedsAttention,
+    OutcomeUnknown,
+}
+
+impl MutationStatus {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::InFlight => "in_flight",
+            Self::Confirmed => "confirmed",
+            Self::NeedsAttention => "needs_attention",
+            Self::OutcomeUnknown => "outcome_unknown",
+        }
+    }
+
+    pub(crate) fn from_str(value: &str) -> Option<Self> {
+        match value {
+            "pending" => Some(Self::Pending),
+            "in_flight" => Some(Self::InFlight),
+            "confirmed" => Some(Self::Confirmed),
+            "needs_attention" => Some(Self::NeedsAttention),
+            "outcome_unknown" => Some(Self::OutcomeUnknown),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SystemFlagKind {
+    Seen,
+    Flagged,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RemoteMutationPhase {
+    #[default]
+    Queued,
+    TransferStarted,
+    TransferAcknowledged,
+    SourceDeleteStarted,
+    SourceDeleteAcknowledged,
+}
+
+impl RemoteMutationPhase {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::TransferStarted => "transfer_started",
+            Self::TransferAcknowledged => "transfer_acknowledged",
+            Self::SourceDeleteStarted => "source_delete_started",
+            Self::SourceDeleteAcknowledged => "source_delete_acknowledged",
+        }
+    }
+
+    pub(crate) fn from_str(value: &str) -> Option<Self> {
+        match value {
+            "queued" => Some(Self::Queued),
+            "transfer_started" => Some(Self::TransferStarted),
+            "transfer_acknowledged" => Some(Self::TransferAcknowledged),
+            "source_delete_started" => Some(Self::SourceDeleteStarted),
+            "source_delete_acknowledged" => Some(Self::SourceDeleteAcknowledged),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageActionKind {
+    Archive,
+    MoveToTrash,
+    PermanentDelete,
+}
+
+impl MessageActionKind {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Archive => "archive",
+            Self::MoveToTrash => "move_to_trash",
+            Self::PermanentDelete => "permanent_delete",
+        }
+    }
+
+    pub(crate) fn from_str(value: &str) -> Option<Self> {
+        match value {
+            "archive" => Some(Self::Archive),
+            "move_to_trash" => Some(Self::MoveToTrash),
+            "permanent_delete" => Some(Self::PermanentDelete),
+            _ => None,
+        }
+    }
+}
+
+/// Privacy-safe reason attached to a mutation requiring recovery. It contains
+/// no mailbox address, subject, body, path, or server response text.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageMutationErrorKind {
+    UidValidityChanged,
+    SourceMissing,
+    AmbiguousRemoteState,
+    NetworkUnavailable,
+    MailboxUnavailable,
+    PermissionDenied,
+    ServerRejected,
+    Unsupported,
+    Unknown,
+}
+
+impl MessageMutationErrorKind {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::UidValidityChanged => "uid_validity_changed",
+            Self::SourceMissing => "source_missing",
+            Self::AmbiguousRemoteState => "ambiguous_remote_state",
+            Self::NetworkUnavailable => "network_unavailable",
+            Self::MailboxUnavailable => "mailbox_unavailable",
+            Self::PermissionDenied => "permission_denied",
+            Self::ServerRejected => "server_rejected",
+            Self::Unsupported => "unsupported",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    pub(crate) fn from_str(value: &str) -> Option<Self> {
+        match value {
+            "uid_validity_changed" => Some(Self::UidValidityChanged),
+            "source_missing" => Some(Self::SourceMissing),
+            "ambiguous_remote_state" => Some(Self::AmbiguousRemoteState),
+            "network_unavailable" => Some(Self::NetworkUnavailable),
+            "mailbox_unavailable" => Some(Self::MailboxUnavailable),
+            "permission_denied" => Some(Self::PermissionDenied),
+            "server_rejected" => Some(Self::ServerRejected),
+            "unsupported" => Some(Self::Unsupported),
+            "unknown" => Some(Self::Unknown),
+            _ => None,
+        }
+    }
+}
+
+/// Opaque keyset cursor. Desktop and React callers must return this string
+/// unchanged and must not derive mailbox names, UIDs, or search behavior from it.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct MessagePageCursor(String);
+
+impl MessagePageCursor {
+    pub(crate) fn new(encoded: String) -> Self {
+        Self(encoded)
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Rust-only contact-history aggregate. IPC layers must map this value into an
+/// explicit body-free DTO keyed by `public_id`; deriving serde here would make
+/// it too easy to leak the nested row ID, account ID, mailbox, or UID.
+///
+/// Direction is derived from the configured account identity rather than
+/// provider-specific mailbox names, which are not portable across IMAP
+/// servers.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ContactMessage {
+    /// Opaque, account-scoped identity for opening this cached message without
+    /// exposing an IMAP mailbox/UID tuple as an application capability.
+    pub public_id: String,
     pub direction: ContactMessageDirection,
     pub mailbox_role: Option<MailboxRole>,
     pub message: InboxMessage,
@@ -109,7 +398,51 @@ pub struct ComposeRequest {
     pub subject: String,
     pub body_text: String,
     #[serde(default)]
+    pub format: ComposeFormat,
+    #[serde(default)]
     pub reply_context: Option<ReplyContext>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StationeryTheme {
+    #[default]
+    None,
+    Lined,
+    Grid,
+}
+
+impl StationeryTheme {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Lined => "lined",
+            Self::Grid => "grid",
+        }
+    }
+
+    pub(crate) fn from_str(value: &str) -> Self {
+        match value {
+            "lined" => Self::Lined,
+            "grid" => Self::Grid,
+            _ => Self::None,
+        }
+    }
+}
+
+/// Mine Mail-authored rich composition data.
+///
+/// The plain-text body remains authoritative for interoperability, previews,
+/// notifications, and clients that do not render HTML. `body_html` is a
+/// bounded, sanitized fragment containing only editor-owned formatting.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+pub struct ComposeFormat {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body_html: Option<String>,
+    #[serde(default)]
+    pub stationery: StationeryTheme,
+    #[serde(default)]
+    pub send_stationery: bool,
 }
 
 /// Immutable context captured when a reply composer is created. The editable
@@ -152,6 +485,16 @@ impl ComposeRequest {
                 "recipient addresses cannot be blank".to_owned(),
             ));
         }
+        if self
+            .format
+            .body_html
+            .as_ref()
+            .is_some_and(|html| html.len() > 512 * 1024)
+        {
+            return Err(MailError::Validation(
+                "formatted message body is too large".to_owned(),
+            ));
+        }
         Ok(())
     }
 
@@ -175,6 +518,11 @@ pub struct InboxMessage {
     pub sender: Option<MailAddress>,
     pub to: Vec<MailAddress>,
     pub cc: Vec<MailAddress>,
+    /// Addresses from an actual RFC822 `Bcc` header, when one was present in
+    /// the cached message. This is never inferred from the account identity or
+    /// transport envelope.
+    #[serde(default)]
+    pub bcc: Vec<MailAddress>,
     pub sent_at: Option<String>,
     pub internal_date: Option<String>,
     pub flags: Vec<String>,
@@ -189,25 +537,267 @@ pub struct InboxMessage {
     pub synced_at: String,
 }
 
+/// A message shown in one semantic mailbox. Pending moves retain the real
+/// source mailbox and UID in `message`; `displayed_role` and
+/// `pending_mutation` make the unconfirmed destination projection explicit.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct MessagePageItem {
+    /// Account-bound, restart-stable identity exposed to the desktop UI.
+    /// SQLite row IDs, provider mailbox names, and IMAP UIDs remain Rust-only.
+    pub public_id: String,
+    #[serde(flatten)]
+    pub message: InboxMessage,
+    pub displayed_role: MailboxRole,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_mutation: Option<PendingMessageProjection>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct PendingMessageProjection {
+    pub operation_id: String,
+    pub local_revision: u64,
+    pub status: MutationStatus,
+    pub kind: MessageActionKind,
+    pub source_role: MailboxRole,
+    pub destination_role: MailboxRole,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_kind: Option<MessageMutationErrorKind>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct MessagePage {
+    pub items: Vec<MessagePageItem>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<MessagePageCursor>,
+    pub has_more_local: bool,
+    pub remote_history_state: RemoteHistoryState,
+    pub end_reached: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct MessageMutationReceipt {
+    pub operation_id: String,
+    pub local_revision: u64,
+    pub status: MutationStatus,
+    pub source_role: MailboxRole,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination_role: Option<MailboxRole>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct SystemFlagMutationReceipt {
+    pub operation_id: String,
+    pub local_revision: u64,
+    pub status: MutationStatus,
+    pub source_role: MailboxRole,
+    pub flag: SystemFlagKind,
+    pub desired: bool,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttachmentDisposition {
+    Attachment,
+    Inline,
+}
+
+/// Bounded metadata for one attachment indexed from a completely cached
+/// message. `id` is opaque to React and is never a MIME part number or path.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct AttachmentMeta {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_name: Option<String>,
+    pub safe_display_name: String,
+    pub mime_type: String,
+    pub size_bytes: u64,
+    pub disposition: AttachmentDisposition,
+}
+
+/// Bounded metadata for one immutable blob associated with an exact draft
+/// version. A forwarded ordinary attachment retains only its opaque source ID.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct DraftAttachmentMeta {
+    pub id: String,
+    pub name: String,
+    pub mime_type: String,
+    pub size_bytes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_attachment_id: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ForwardQuotedRenderMode {
+    Plain,
+    NativeHtml,
+    IsolatedHtml,
+}
+
+/// Immutable source snapshot captured when a forward draft is prepared.
+/// Authored body text and the mutable staged attachment set live outside this
+/// value so later edits cannot replace the original message inventory.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct ForwardContext {
+    pub source_message_id: String,
+    pub original_subject: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<MailAddress>,
+    #[serde(default)]
+    pub to: Vec<MailAddress>,
+    #[serde(default)]
+    pub cc: Vec<MailAddress>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sent_at: Option<String>,
+    pub quoted_text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quoted_html: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quoted_render_mode: Option<ForwardQuotedRenderMode>,
+    #[serde(default)]
+    pub source_attachments: Vec<AttachmentMeta>,
+}
+
+/// Rust-only compose aggregate. IPC layers must explicitly map these fields
+/// into a safe boundary DTO rather than serializing or flattening the nested
+/// `Draft`, which also contains account and provider positioning data.
+///
+/// ```compile_fail
+/// fn require_serialize<T: serde::Serialize>() {}
+/// require_serialize::<mine_mail::DraftDto>();
+/// ```
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DraftDto {
+    pub draft: Draft,
+    pub attachments: Vec<DraftAttachmentMeta>,
+    pub forward_context: Option<ForwardContext>,
+}
+
+impl From<Draft> for DraftDto {
+    fn from(draft: Draft) -> Self {
+        Self {
+            draft,
+            attachments: Vec::new(),
+            forward_context: None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DraftAttachmentMutationKind {
+    Saved,
+    ConflictCopy,
+    Stale,
+    Canceled,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DraftAttachmentMutationOutcome {
+    pub kind: DraftAttachmentMutationKind,
+    pub draft: DraftDto,
+    pub canonical: Option<DraftDto>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttachmentSaveStatus {
+    Saved,
+    Canceled,
+    Error,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttachmentSaveErrorKind {
+    MessageUnavailable,
+    AttachmentNotFound,
+    PermissionDenied,
+    DiskFull,
+    WriteFailed,
+}
+
+/// Typed Save As result. `file_name` is always a final base name and must
+/// never contain a directory or complete local path.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct AttachmentSaveResult {
+    pub status: AttachmentSaveStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_kind: Option<AttachmentSaveErrorKind>,
+    pub retryable: bool,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ForwardWarning {
+    HtmlDowngraded,
+    InlineResourcesNotForwarded,
+    AttachmentsOmittedByUser,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PreparedForward {
+    pub draft: DraftDto,
+    pub warnings: Vec<ForwardWarning>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ForwardPreparationErrorKind {
+    MessageUnavailable,
+    BodyUnavailable,
+    AttachmentUnavailable,
+    AttachmentStageFailed,
+    SourceChanged,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct ForwardPreparationError {
+    pub kind: ForwardPreparationErrorKind,
+    #[serde(default)]
+    pub failed_attachment_ids: Vec<String>,
+    pub retry_without_attachments_allowed: bool,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ForwardPreparationOutcomeKind {
+    Prepared,
+    Error,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ForwardPreparationOutcome {
+    Prepared { prepared: PreparedForward },
+    Error { error: ForwardPreparationError },
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub struct Draft {
     pub id: String,
     /// Monotonic SQLite row token used for optimistic editor saves. It is
     /// intentionally independent from the IMAP `X-Mine-Mail-Draft-Revision`.
     pub local_version: u64,
-    /// True when the original MIME contains content the MVP plain-text editor
-    /// cannot round-trip safely (HTML, multipart, inline data, attachments, or
-    /// an unparseable body). Such drafts are exposed read-only.
+    /// True when the original MIME is not a Mine Mail-owned restricted rich
+    /// draft and contains content the editor cannot round-trip safely (HTML,
+    /// multipart, inline data, attachments, or an unparseable body). Such drafts
+    /// are exposed read-only.
     pub has_unsupported_content: bool,
+    #[serde(skip_serializing, skip_deserializing, default)]
     pub account_id: String,
     pub to: Vec<String>,
     pub cc: Vec<String>,
     pub bcc: Vec<String>,
     pub subject: String,
     pub body_text: String,
+    pub format: ComposeFormat,
     pub reply_context: Option<ReplyContext>,
     pub status: String,
+    #[serde(skip_serializing, skip_deserializing, default)]
     pub remote_mailbox: Option<String>,
+    #[serde(skip_serializing, skip_deserializing, default)]
     pub remote_uid: Option<u32>,
     pub created_at: String,
     pub updated_at: String,
@@ -247,6 +837,7 @@ impl Draft {
             bcc: self.bcc.clone(),
             subject: self.subject.clone(),
             body_text: self.body_text.clone(),
+            format: self.format.clone(),
             reply_context: self.reply_context.clone(),
         }
     }
@@ -261,6 +852,18 @@ pub enum OutboxStatus {
     Retryable,
     Rejected,
     DeliveryUnknown,
+}
+
+/// The two explicit user decisions available for an ambiguous SMTP outcome.
+///
+/// A retry is deliberately named as a single attempt. If that attempt also
+/// ends in `delivery_unknown`, the caller must load the new attempt generation
+/// and make another explicit decision.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeliveryUnknownDecision {
+    ConfirmDelivered,
+    RetryOnce,
 }
 
 impl OutboxStatus {
@@ -290,6 +893,26 @@ impl OutboxStatus {
     }
 }
 
+/// Exact authored recipient grouping captured for a newly created immutable
+/// Outbox item. Legacy Outbox rows use `None`; their flat SMTP envelope cannot
+/// safely reconstruct whether an address originally appeared in To, Cc, or Bcc.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct OutboxRecipientGroups {
+    pub to: Vec<String>,
+    pub cc: Vec<String>,
+    pub bcc: Vec<String>,
+}
+
+impl From<&ComposeRequest> for OutboxRecipientGroups {
+    fn from(request: &ComposeRequest) -> Self {
+        Self {
+            to: request.to.clone(),
+            cc: request.cc.clone(),
+            bcc: request.bcc.clone(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub struct OutboxItem {
     pub id: String,
@@ -301,6 +924,8 @@ pub struct OutboxItem {
     /// the protocol revision, external draft content cannot reuse this token.
     pub draft_local_version: Option<u64>,
     pub recipients: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recipient_groups: Option<OutboxRecipientGroups>,
     pub status: OutboxStatus,
     pub attempts: u32,
     pub last_error: Option<String>,
@@ -364,7 +989,13 @@ pub struct DraftSyncReport {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_contact_email;
+    use super::{
+        AttachmentSaveErrorKind, AttachmentSaveResult, AttachmentSaveStatus, Draft,
+        DraftAttachmentMutationKind, DraftDto, ForwardPreparationError,
+        ForwardPreparationErrorKind, ForwardWarning, MailboxCapabilityStatus,
+        MailboxCapabilityUnavailableReason, MailboxRole, MessageActionKind,
+        MessageMutationErrorKind, MutationStatus, RemoteHistoryState, normalize_contact_email,
+    };
 
     #[test]
     fn contact_email_normalization_is_case_insensitive_and_rejects_invalid_keys() {
@@ -386,5 +1017,107 @@ mod tests {
                 "{invalid} should be rejected"
             );
         }
+    }
+
+    #[test]
+    fn mailbox_history_and_mutation_enums_use_the_product_contract_values() {
+        for (value, expected) in [
+            (
+                serde_json::to_string(&MailboxRole::Drafts).unwrap(),
+                "\"drafts\"",
+            ),
+            (
+                serde_json::to_string(&MailboxCapabilityStatus::NeedsCreationConfirmation).unwrap(),
+                "\"needs_creation_confirmation\"",
+            ),
+            (
+                serde_json::to_string(
+                    &MailboxCapabilityUnavailableReason::CreatedMailboxNotSelectable,
+                )
+                .unwrap(),
+                "\"created_mailbox_not_selectable\"",
+            ),
+            (
+                serde_json::to_string(&RemoteHistoryState::MayHaveMore).unwrap(),
+                "\"may_have_more\"",
+            ),
+            (
+                serde_json::to_string(&MutationStatus::OutcomeUnknown).unwrap(),
+                "\"outcome_unknown\"",
+            ),
+            (
+                serde_json::to_string(&MessageActionKind::MoveToTrash).unwrap(),
+                "\"move_to_trash\"",
+            ),
+            (
+                serde_json::to_string(&MessageMutationErrorKind::UidValidityChanged).unwrap(),
+                "\"uid_validity_changed\"",
+            ),
+        ] {
+            assert_eq!(value, expected);
+        }
+    }
+
+    #[test]
+    fn attachment_and_forward_dtos_use_the_product_contract_values() {
+        assert_eq!(
+            serde_json::to_string(&DraftAttachmentMutationKind::ConflictCopy).unwrap(),
+            "\"conflict_copy\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ForwardWarning::InlineResourcesNotForwarded).unwrap(),
+            "\"inline_resources_not_forwarded\""
+        );
+        let canceled = serde_json::to_value(AttachmentSaveResult {
+            status: AttachmentSaveStatus::Canceled,
+            file_name: None,
+            error_kind: None,
+            retryable: false,
+        })
+        .unwrap();
+        assert_eq!(canceled["status"], "canceled");
+        assert!(canceled.get("file_name").is_none());
+        assert!(canceled.get("error_kind").is_none());
+
+        let error = serde_json::to_value(ForwardPreparationError {
+            kind: ForwardPreparationErrorKind::AttachmentStageFailed,
+            failed_attachment_ids: vec!["opaque-part".to_owned()],
+            retry_without_attachments_allowed: true,
+        })
+        .unwrap();
+        assert_eq!(error["kind"], "attachment_stage_failed");
+        assert_eq!(error["failed_attachment_ids"][0], "opaque-part");
+        assert_eq!(
+            serde_json::to_string(&AttachmentSaveErrorKind::PermissionDenied).unwrap(),
+            "\"permission_denied\""
+        );
+    }
+
+    #[test]
+    fn draft_dto_retains_internal_state_only_for_explicit_boundary_mapping() {
+        let dto = DraftDto::from(Draft {
+            id: "draft-safe-boundary".to_owned(),
+            local_version: 3,
+            has_unsupported_content: false,
+            account_id: "private-account".to_owned(),
+            to: vec!["receiver@example.com".to_owned()],
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: "Subject".to_owned(),
+            body_text: "Body".to_owned(),
+            format: Default::default(),
+            reply_context: None,
+            status: "local".to_owned(),
+            remote_mailbox: Some("Provider/Drafts".to_owned()),
+            remote_uid: Some(42),
+            created_at: "2026-07-28T00:00:00Z".to_owned(),
+            updated_at: "2026-07-28T00:00:01Z".to_owned(),
+            raw_rfc822: b"private RFC822".to_vec(),
+        });
+
+        assert_eq!(dto.draft.account_id, "private-account");
+        assert_eq!(dto.draft.remote_mailbox.as_deref(), Some("Provider/Drafts"));
+        assert_eq!(dto.draft.remote_uid, Some(42));
+        assert_eq!(dto.draft.raw_rfc822, b"private RFC822");
     }
 }

@@ -1,4 +1,4 @@
-# Mail Rendering and Reply-History Contract
+# Mail Rendering, Attachments, Forwarding, and Reply-History Contract
 
 Mail is untrusted input. This document defines the durable safety and experience
 boundary. `../AGENTS.md` controls architecture; `../DESIGN.md` controls the
@@ -7,13 +7,19 @@ reader's visual language.
 ## Ownership and data boundary
 
 - Rust owns MIME parsing, body selection, HTML sanitization, structural
-  classification, remote-image detection, reply segmentation, and cached-body
-  persistence.
+  classification, remote-image detection, reply segmentation, attachment
+  indexing/extraction, forward preparation, and cached-body persistence.
 - Rust may derive a list preview from a bounded, non-marking IMAP body prefix.
   The prefix is discarded after parsing and never counts as a fetched body.
 - React receives only the bounded body representation needed by the selected
   render mode. It never receives a complete raw RFC822 message.
 - Inbox/list summaries never contain full HTML or raw message source.
+- Parsed cached messages retain Bcc only from an actual RFC822 `Bcc` header.
+  Missing and legacy values stay empty; transport headers, the account identity,
+  and SMTP envelope recipients are never used to infer Bcc.
+- React receives attachment metadata and opaque attachment IDs only. Attachment
+  bytes, arbitrary local paths, managed storage paths, and raw MIME parts never
+  cross the desktop boundary.
 - Low-confidence parsing must preserve content. A classifier may choose a safer
   presentation, but it may not silently delete ambiguous authored or quoted text.
 
@@ -96,6 +102,112 @@ frontend code. An intentional threshold change must:
 - Links must use safe schemes and open through the desktop-owned path; mail HTML
   cannot execute script or navigate the application surface directly.
 
+## Attachment indexing and extraction
+
+- Attachment indexing requires a completely cached RFC822 message. A bounded
+  summary prefix may advertise neither attachment bytes nor authoritative
+  attachment metadata.
+- Each ordinary attachment receives an opaque stable part ID tied to the cached
+  message and MIME tree. File name alone and display order are not identities.
+- The bounded metadata is original name when present, safe display name, declared
+  or detected MIME type, exact decoded byte size, and disposition. Unknown types
+  remain generic files; they are never presented as PDF merely because no icon is
+  known.
+- Inline resources remain distinct from ordinary named attachments. Rendering an
+  inline resource does not automatically make it downloadable or forward it as a
+  separate ordinary attachment.
+- Saving resolves exactly one message and part ID in Rust, reparses the cached
+  MIME, and streams only that decoded part to a platform-selected destination.
+  React never supplies a source path or receives the bytes.
+- Safe output names remove separators and control characters, reject platform
+  reserved names, trim unsafe trailing dots/spaces, enforce a bounded length, and
+  fall back to `attachment.bin`. The final path must remain inside the directory
+  selected by the platform Save As flow.
+- Existing files are never overwritten. Resolve collisions with a numeric suffix
+  before the extension. Write a newly created temporary sibling and finalize it
+  only after complete extraction; cancellation or failure removes partial output.
+- If the full message is absent, the save path first requests normal body/MIME
+  hydration. Failure leaves the reader and every other attachment unchanged and
+  may be retried.
+
+## Authored rich text and stationery
+
+- The compose editor maintains one plain authored body and an optional
+  Mine Mail-owned restricted HTML fragment. The plain body remains authoritative
+  for previews, notifications, accessibility fallback, and clients that do not
+  render HTML.
+- React constrains editor output, but Rust sanitizes it again before persistence
+  or MIME construction. The authored allowlist covers basic text semantics,
+  bounded font face/size, alignment, lists, and safe HTTP(S)/mailto links. It
+  accepts no scripts, event handlers, forms, images, remote resources, arbitrary
+  CSS, or sender-controlled layout hooks.
+- A formatted message is `multipart/alternative` with complete plain and HTML
+  bodies. A plain message stays `text/plain` unless a reply context or explicitly
+  sent stationery requires an HTML alternative.
+- **仅编辑** persists the selected lined/grid paper for the local editor while
+  leaving the outgoing body undecorated. **随信发送** wraps the sanitized authored
+  fragment in Mine Mail-generated inline stationery styles so common mail clients
+  can render it without external assets. The plain alternative never contains
+  paper decoration.
+- Mine Mail draft headers and authored-boundary markers identify restricted rich
+  content that the editor can round-trip. Parsing restores only the marked,
+  re-sanitized authored fragment; stationery wrappers and immutable reply history
+  do not become editable text. Missing or malformed ownership markers make an
+  HTML draft unsupported and read-only.
+
+## Managed outgoing attachments
+
+- Selecting an outgoing file is a Rust-owned import, not a durable reference to
+  the user's original path. Rust copies it into the product-data directory under
+  account- and draft-scoped management before returning bounded metadata.
+- Managed blobs are immutable and addressed through opaque IDs. Draft attachment
+  associations carry the same optimistic `local_version` semantics as body and
+  recipient edits; conflict copies preserve their exact associations.
+- Older local rows that predate persisted SHA-256 metadata have one narrow lazy
+  upgrade path: Rust reads at most the stored size plus one from the validated
+  direct regular blob in the active account scope, computes SHA-256, and performs
+  a one-time SQLite compare-and-set against the same account, blob ID, internal
+  name, size, and still-`NULL` digest. The bytes are usable only after that bind
+  succeeds. Missing, linked/reparse, changed, or concurrently disagreeing blobs
+  fail integrity validation; ordinary reads always require and verify a persisted
+  digest.
+- Add, remove, discard, account-cache removal, and orphan cleanup operate on
+  references. A blob still referenced by a draft, conflict copy, or immutable
+  Outbox MIME cannot be removed.
+- MIME construction reads only the attachment set bound to the confirmed draft
+  version and preserves the safe file name, MIME type, disposition, transfer
+  encoding, and complete bytes. A newer draft version cannot change a persisted
+  Outbox message.
+- Mine Mail-authored plain drafts with managed ordinary attachments are editable.
+  External HTML, multipart, inline-resource, or attachment-bearing drafts remain
+  read-only until every MIME part can be round-tripped without loss.
+
+## Forward preparation
+
+- Forward preparation is a Rust operation over one fully hydrated cached message.
+  It never substitutes a list preview for a complete body and never asks React to
+  reconstruct sender content.
+- Rust captures original subject, From, To, Cc, and time as immutable structured
+  metadata. It does not infer Bcc. The user's new authored text stays separate.
+- After RFC encoded-word decoding, Rust applies one bounded identity-display
+  normalization to Subject, From, To, and Cc for both the plain and safe HTML
+  alternatives. Header line breaks and other control characters collapse to
+  ordinary spacing, Unicode bidirectional/direction controls are removed, and
+  display names are quoted while the actual address stays explicit. Oversized
+  display text is visibly truncated instead of discarding the complete forward;
+  missing fields remain missing and no replacement identity is invented.
+- The plain alternative always contains a trustworthy complete textual fallback.
+  An HTML alternative may be retained only after the same sanitization and
+  structural classification used by the reader; raw sender HTML never enters the
+  compose state.
+- Ordinary named attachments are included by default through managed opaque
+  references. If any requested attachment cannot be extracted or staged, forward
+  preparation fails as a whole. Omitting attachments requires a second explicit
+  preparation request; no attachment is silently dropped.
+- Rust assembles final identity headers, quoted body alternatives, and attachments
+  when saving or sending the exact draft version. React renders the immutable
+  context but does not concatenate it into the editable body.
+
 ## Reply segmentation
 
 - Parse replies in Rust into ordered authored and quoted segments.
@@ -131,3 +243,6 @@ For a rendering-boundary change, run at minimum:
 
 Add focused regression cases using synthetic mail fixtures. Do not commit real
 messages, raw personal RFC822, remote credentials, or screenshot-only evidence.
+Attachment cases must cover malicious and colliding names, unknown types, decoded
+sizes, multi-attachment identity, cancellation, partial-write cleanup, stale draft
+versions, and forward preparation with and without requested attachments.
