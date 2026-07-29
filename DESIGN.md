@@ -268,6 +268,8 @@ family. Preserve the relative hierarchy when tuning optical values.
 - Mail search uses the established search shell and identifies its bounded local
   scope as **搜索已同步邮件**. Search and folder tabs must not imply access to
   uncached server history.
+- The Starred workspace presents its aggregate directly without **全部 / 未读**
+  tabs. Its status row retains only the current visible-message count.
 - Archive and Trash paint cached summaries before synchronization. Their sidebar
   entries stay visually neutral and never expose discovery, capability, or
   pending-queue status. Opening an available Archive shows cached mail

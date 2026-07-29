@@ -61,7 +61,7 @@ describe("MailList folder contracts", () => {
 
   it.each([
     ["inbox", "收件箱", "INBOX", "同步收件箱", ["全部", "未读", "收藏"]],
-    ["starred", "已收藏", "STARRED", "同步已收藏邮件", ["全部", "未读"]],
+    ["starred", "已收藏", "STARRED", "同步已收藏邮件", []],
     ["sent", "已发送", "SENT", "同步已发送", ["全部", "收藏"]],
     ["drafts", "草稿", "DRAFTS", "同步草稿", []],
     ["outbox", "发件队列", "OUTBOX", "刷新发件队列", []],

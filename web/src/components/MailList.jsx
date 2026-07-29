@@ -37,10 +37,7 @@ const folderConfigurations = {
     eyebrow: "STARRED",
     syncLabel: "同步已收藏邮件",
     syncingLabel: "正在同步已收藏邮件",
-    tabs: [
-      { id: "all", label: "全部" },
-      { id: "unread", label: "未读" },
-    ],
+    tabs: [],
     supportsSeen: true,
     supportsStar: true,
   },

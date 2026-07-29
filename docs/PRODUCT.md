@@ -152,6 +152,8 @@ must be updated here when an intentional product change lands.
 - Remote Inbox and Sent messages synchronize `\Flagged` in both directions.
 - A queued local mutation remains until the server confirms the requested final
   flag state. A transient failure cannot silently discard it.
+- The **已收藏** workspace shows the complete starred aggregate without
+  **全部 / 未读** filter tabs.
 - Contact **收藏** is a separate local organization feature and must not be
   implemented with IMAP `\Flagged`.
 
