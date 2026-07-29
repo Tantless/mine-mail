@@ -704,10 +704,10 @@ describe("Mine Mail desktop state bridge", () => {
       ),
     );
     await userEvent.click(screen.getByRole("button", { name: /草稿/ }));
-    expect(
-      await screen.findByText("正在同步草稿，已加载 10/20 封"),
-    ).toBeTruthy();
     expect(await screen.findByText("Progress draft")).toBeTruthy();
+    expect(
+      screen.queryByText("正在同步草稿，已加载 10/20 封"),
+    ).toBeNull();
   });
 
   it("keeps scheduled synchronization failures silent but reports an explicit tray refresh", async () => {
@@ -1105,6 +1105,42 @@ describe("Mine Mail desktop state bridge", () => {
     });
   });
 
+  it("marks an opened message unread without reusing the pending mark-read state", async () => {
+    const unread = summary(16, "Mark unread again");
+    desktop.fixtures.inboxPageSource.mockResolvedValue([unread]);
+    desktop.fixtures.inboxMessageSource.mockResolvedValue({
+      ...unread,
+      body_text: "Unread toggle body",
+      body_fetched: true,
+    });
+    const user = userEvent.setup();
+    render(<App />);
+
+    const subject = (await screen.findAllByText("Mark unread again")).find(
+      (candidate) => candidate.closest(".mail-row"),
+    );
+    const row = subject?.closest(".mail-row");
+    expect(row).toBeTruthy();
+    await user.click(row);
+    await waitFor(() =>
+      expect(desktop.mailApi.setMessageSeen).toHaveBeenCalledWith("16", true),
+    );
+
+    const markUnread = await screen.findByRole("button", {
+      name: "标记为未读",
+    });
+    expect(markUnread.disabled).toBe(false);
+    expect(
+      screen.queryByText(/标记为未读.*正在处理|正在标记为未读/),
+    ).toBeNull();
+
+    await user.click(markUnread);
+    await waitFor(() =>
+      expect(desktop.mailApi.setMessageSeen).toHaveBeenCalledWith("16", false),
+    );
+    expect(row?.dataset.unread).toBe("true");
+  });
+
   it("toggles an Inbox star without opening the message and persists both states", async () => {
     Object.defineProperty(window, "innerWidth", {
       configurable: true,
@@ -1227,7 +1263,7 @@ describe("Mine Mail desktop state bridge", () => {
     ).toBe(true);
   });
 
-  it("keeps a missing Archive neutral and requests setup inside its workspace", async () => {
+  it("keeps a missing Archive workspace visually quiet", async () => {
     desktop.mailApi.getMailboxCapabilities.mockResolvedValue([
       { role: "inbox", status: "available", retryable: false },
       { role: "sent", status: "available", retryable: false },
@@ -1257,44 +1293,12 @@ describe("Mine Mail desktop state bridge", () => {
     expect(
       await screen.findByRole("heading", { name: "归档" }),
     ).toBeTruthy();
-    expect(screen.getByText("尚未设置归档文件夹")).toBeTruthy();
+    expect(screen.queryByText("尚未设置归档文件夹")).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "设置归档文件夹" }),
+    ).toBeNull();
     expect(desktop.mailApi.createMailboxRole).not.toHaveBeenCalled();
     expect(screen.queryByRole("alertdialog")).toBeNull();
-
-    const setupArchive = screen.getByRole("button", {
-      name: "设置归档文件夹",
-    });
-    await user.click(setupArchive);
-    let dialog = await screen.findByRole("alertdialog", {
-      name: "设置归档文件夹？",
-    });
-    await user.click(within(dialog).getByRole("button", { name: "取消" }));
-    expect(desktop.mailApi.createMailboxRole).not.toHaveBeenCalled();
-    expect(document.activeElement).toBe(setupArchive);
-
-    await user.click(setupArchive);
-    dialog = await screen.findByRole("alertdialog", {
-      name: "设置归档文件夹？",
-    });
-    await user.click(
-      within(dialog).getByRole("button", { name: "创建归档文件夹" }),
-    );
-
-    await waitFor(() =>
-      expect(desktop.mailApi.createMailboxRole).toHaveBeenCalledWith(
-        "desktop-account",
-        "archive",
-      ),
-    );
-    expect(
-      await screen.findByRole("heading", { name: "归档" }),
-    ).toBeTruthy();
-    expect(
-      desktop.mailApi.listMailboxPage.mock.calls.some(
-        ([accountId, role]) =>
-          accountId === "desktop-account" && role === "archive",
-      ),
-    ).toBe(true);
   });
 
   it("creates a missing Archive from the first message action and continues that action", async () => {
@@ -1374,13 +1378,17 @@ describe("Mine Mail desktop state bridge", () => {
     desktop.mailApi.loadOlderMailboxPage.mockResolvedValue(
       mailboxPage([older], "inbox"),
     );
-    const user = userEvent.setup();
     render(<App />);
 
     expect(await screen.findByText("Newest local page")).toBeTruthy();
-    await user.click(
-      await screen.findByRole("button", { name: "加载更早邮件" }),
-    );
+    const list = screen.getByLabelText("收件箱邮件列表");
+    const scrollSurface = list.querySelector(".message-list");
+    Object.defineProperties(scrollSurface, {
+      scrollHeight: { configurable: true, value: 800 },
+      clientHeight: { configurable: true, value: 400 },
+      scrollTop: { configurable: true, value: 350 },
+    });
+    fireEvent.scroll(scrollSurface);
 
     await waitFor(() =>
       expect(desktop.mailApi.loadOlderMailboxPage).toHaveBeenCalledWith(
@@ -1393,7 +1401,10 @@ describe("Mine Mail desktop state bridge", () => {
     );
     expect(await screen.findByText("Older local page")).toBeTruthy();
     expect(screen.getByText("Newest local page")).toBeTruthy();
-    expect(await screen.findByText("已显示全部邮件")).toBeTruthy();
+    expect(await screen.findByText("已加载 1 封")).toBeTruthy();
+    expect(
+      screen.queryByRole("button", { name: /加载更早邮件/ }),
+    ).toBeNull();
   });
 
   it("keeps cached rows visible while backend mailbox search is pending", async () => {

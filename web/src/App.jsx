@@ -1112,12 +1112,6 @@ export function App() {
         mergeRemoteMessage(message, withSeenFlag, accountId);
         void mailApi
           .setMessageSeen(messageId, true)
-          .then((receipt) => {
-            setMessageActionStates((current) => ({
-              ...current,
-              [`${accountId}:${messageId}:seen`]: mutationActionState(receipt),
-            }));
-          })
           .catch((error) => {
             mergeRemoteMessage(
               message,
@@ -3493,29 +3487,6 @@ export function App() {
     remoteSearch,
   ]);
 
-  const activeMailboxInitialized = useMemo(() => {
-    const normalizedQuery = normalizedMailboxQuery(query);
-    const searchIsActive =
-      normalizedQuery &&
-      remoteSearch?.accountId === activeAccountId &&
-      remoteSearch?.folder === activeFolder &&
-      remoteSearch?.query === normalizedQuery;
-    if (searchIsActive) return true;
-    if (
-      paginatedMailboxRoles.includes(activeFolder) ||
-      activeFolder === "starred"
-    ) {
-      return Boolean(activePagination?.initialized);
-    }
-    return true;
-  }, [
-    activeAccountId,
-    activeFolder,
-    activePagination,
-    query,
-    remoteSearch,
-  ]);
-
   const canLoadOlder = useMemo(() => {
     if (!activePagination) return false;
     if (activePagination.endReached) return false;
@@ -3600,13 +3571,9 @@ export function App() {
         cursor,
         append: true,
       });
-    } catch (error) {
-      if (!searchQuery) {
-        showToast(
-          describeError(error, "更早邮件暂时无法加载"),
-          "error",
-        );
-      }
+    } catch {
+      // The page state retains the failure for diagnostics. The list owns the
+      // bounded two-second feedback after an automatic pagination attempt.
     }
   }, [
     activeFolder,
@@ -3616,7 +3583,6 @@ export function App() {
     loadRemoteSearch,
     query,
     remoteSearch,
-    showToast,
   ]);
 
   const folderCounts = useMemo(
@@ -3626,52 +3592,6 @@ export function App() {
     }),
     [messages, outbox],
   );
-
-  const pendingCounts = useMemo(() => {
-    const counts = {};
-    const seenOperations = new Set();
-    const countState = (state, fallbackRole = null) => {
-      if (
-        !state ||
-        !["pending", "in_flight", "outcome_unknown", "needs_attention"].includes(
-          state.status,
-        )
-      ) {
-        return;
-      }
-      const operationId =
-        state.operation_id ?? state.operationId ?? null;
-      if (operationId && seenOperations.has(operationId)) return;
-      if (operationId) seenOperations.add(operationId);
-      const role =
-        state.destination_role ??
-        state.destinationRole ??
-        state.source_role ??
-        state.sourceRole ??
-        fallbackRole;
-      if (role) counts[role] = (counts[role] || 0) + 1;
-    };
-    for (const message of [
-      ...messages,
-      ...sentMessages,
-      ...archiveMessages,
-      ...trashMessages,
-    ]) {
-      countState(message.pending_mutation, messageRole(message));
-    }
-    for (const [key, state] of Object.entries(messageActionStates)) {
-      if (!key.startsWith(`${activeAccountId}:`)) continue;
-      countState(state);
-    }
-    return counts;
-  }, [
-    activeAccountId,
-    archiveMessages,
-    messageActionStates,
-    messages,
-    sentMessages,
-    trashMessages,
-  ]);
 
   const beginMailboxSetup = useCallback((role, pendingMessage = null) => {
     if (!["archive", "trash"].includes(role)) return;
@@ -3996,29 +3916,14 @@ export function App() {
       (current) => withSystemFlag(current, "\\Seen", false),
       accountId,
     );
-    setMessageActionState(accountId, messageId, "seen", {
-      status: "in_flight",
-    });
     try {
-      const receipt = await mailApi.setMessageSeen(messageId, false);
-      setMessageActionState(
-        accountId,
-        messageId,
-        "seen",
-        mutationActionState(receipt),
-      );
-    } catch (error) {
+      await mailApi.setMessageSeen(messageId, false);
+    } catch {
       mergeRemoteMessage(message, withSeenFlag, accountId);
-      setMessageActionState(accountId, messageId, "seen", {
-        status: "error",
-        retryable: true,
-        error,
-      });
     }
   }, [
     mergeRemoteMessage,
     selectedMessage,
-    setMessageActionState,
   ]);
 
   const handlePreparePermanentDelete = useCallback(async () => {
@@ -5607,7 +5512,6 @@ export function App() {
       onMarkUnread={
         selectedIsMailboxMessage ? () => void handleMarkUnread() : null
       }
-      markUnreadState={actionStateFor("seen")}
       onRetryDelivery={() =>
         selectedMessage?.outbox &&
         void handleRetryOutbox(selectedMessage.outbox)
@@ -5732,7 +5636,6 @@ export function App() {
             setIsSettingsOpen(true);
           }}
           mailboxCapabilities={mailboxCapabilities}
-          pendingCounts={pendingCounts}
           onMailboxSetup={beginMailboxSetup}
           onMailboxCapabilityRetry={(role) =>
             void handleMailboxCapabilityRetry(role)
@@ -5867,11 +5770,6 @@ export function App() {
               displayNameForEmail={contactRemarkForEmail}
               referenceJump={referenceJump}
               mailboxCapability={activeMailboxCapability}
-              isInitialized={activeMailboxInitialized}
-              onMailboxSetup={beginMailboxSetup}
-              onMailboxCapabilityRetry={(role) =>
-                void handleMailboxCapabilityRetry(role)
-              }
               loadMoreState={loadMoreState}
               onLoadMore={
                 canLoadOlder &&
@@ -5881,8 +5779,6 @@ export function App() {
                   ? () => void handleLoadMore()
                   : null
               }
-              loadMoreFailureReason={activePagination?.loadMoreError}
-              endReached={Boolean(activePagination?.endReached)}
             />
             {messageReader}
           </>

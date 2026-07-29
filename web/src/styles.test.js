@@ -271,33 +271,24 @@ describe("release-state semantic styling", () => {
     ).toMatch(/overflow-wrap:\s*anywhere/);
   });
 
-  it("distinguishes pagination, capability and pending-folder states", () => {
-    for (const state of [
-      "loading",
-      "retry",
-      "offline",
-      "unavailable",
-      "complete",
-    ]) {
-      expect(
-        declarationsFor(
-          `\\.mail-load-progress\\[data-pagination-state="${state}"\\]`,
-        ),
-      ).toBeDefined();
-    }
+  it("keeps automatic pagination compact and removes persistent folder state chrome", () => {
+    expect(declarationsFor("\\.mail-pagination-notice")).toMatch(
+      /min-height:\s*22px/,
+    );
     expect(
       declarationsFor(
-        '\\.empty-list\\[data-empty-state="capability"\\]',
+        '\\.mail-pagination-notice\\[data-state="loading"\\]',
       ),
-    ).toMatch(/background:\s*var\(--state-warning-surface\)/);
+    ).toMatch(/color:\s*var\(--color-primary\)/);
     expect(
       declarationsFor(
-        '\\.folder-nav__item\\[data-capability-status="needs_creation_confirmation"\\]',
+        '\\.mail-pagination-notice\\[data-state="error"\\]',
       ),
-    ).toMatch(/var\(--color-warning\)/);
-    expect(
-      declarationsFor('\\.folder-nav__item\\[data-pending-count\\]'),
-    ).toBeDefined();
+    ).toMatch(/color:\s*var\(--color-danger\)/);
+    expect(styles).not.toMatch(/mail-load-progress|empty-list/);
+    expect(styles).not.toMatch(
+      /folder-nav__capability|data-capability-status|data-pending-count/,
+    );
   });
 });
 

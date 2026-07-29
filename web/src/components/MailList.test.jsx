@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MailList } from "./MailList.jsx";
@@ -60,16 +60,16 @@ describe("MailList folder contracts", () => {
   afterEach(cleanup);
 
   it.each([
-    ["inbox", "收件箱", "INBOX", "同步收件箱", ["全部", "未读", "收藏"], "收件箱里还没有邮件"],
-    ["starred", "已收藏", "STARRED", "同步已收藏邮件", ["全部", "未读"], "还没有收藏邮件"],
-    ["sent", "已发送", "SENT", "同步已发送", ["全部", "收藏"], "还没有已发送邮件"],
-    ["drafts", "草稿", "DRAFTS", "同步草稿", [], "还没有草稿"],
-    ["outbox", "发件队列", "OUTBOX", "刷新发件队列", [], "发件队列为空"],
-    ["archive", "归档", "ARCHIVE", "同步归档", ["全部", "未读", "收藏"], "归档里还没有邮件"],
-    ["trash", "垃圾箱", "TRASH", "同步垃圾箱", ["全部", "未读"], "垃圾箱里还没有邮件"],
+    ["inbox", "收件箱", "INBOX", "同步收件箱", ["全部", "未读", "收藏"]],
+    ["starred", "已收藏", "STARRED", "同步已收藏邮件", ["全部", "未读"]],
+    ["sent", "已发送", "SENT", "同步已发送", ["全部", "收藏"]],
+    ["drafts", "草稿", "DRAFTS", "同步草稿", []],
+    ["outbox", "发件队列", "OUTBOX", "刷新发件队列", []],
+    ["archive", "归档", "ARCHIVE", "同步归档", ["全部", "未读", "收藏"]],
+    ["trash", "垃圾箱", "TRASH", "同步垃圾箱", ["全部", "未读"]],
   ])(
-    "uses %s-specific heading, filters, sync copy, and true empty copy",
-    (folderRole, title, eyebrow, syncLabel, filters, emptyTitle) => {
+    "uses %s-specific heading, filters, and sync copy",
+    (folderRole, title, eyebrow, syncLabel, filters) => {
       const { container } = renderMailList({ folderRole });
 
       expect(screen.getByRole("heading", { name: title })).toBeTruthy();
@@ -80,7 +80,7 @@ describe("MailList folder contracts", () => {
           (tab) => tab.textContent,
         ),
       ).toEqual(filters);
-      expect(screen.getByText(emptyTitle)).toBeTruthy();
+      expect(container.querySelector(".empty-list")).toBeNull();
     },
   );
 
@@ -211,264 +211,111 @@ describe("MailList controlled controls", () => {
 describe("MailList state distinctions", () => {
   afterEach(cleanup);
 
-  it.each([
-    ["search_empty", "没有匹配的已同步邮件"],
-    ["filter_empty", "当前筛选下没有邮件"],
-    ["initial_sync", "正在同步收件箱…"],
-    ["not_synced", "收件箱尚未同步"],
-    ["offline_history_exhausted", "已显示全部本地邮件"],
-    ["loading_older", "正在加载更早邮件…"],
-    ["retryable_failure", "部分邮件暂时没有加载完成"],
-    ["confirmed_end", "已确认没有更多邮件"],
-    ["true_empty", "收件箱里还没有邮件"],
-  ])("renders the %s state without reusing generic search copy", (emptyState, copy) => {
-    renderMailList({ emptyState });
-    expect(screen.getByText(copy)).toBeTruthy();
-  });
-
-  it("derives search and filter empty states from the controlled values", () => {
-    const { rerenderMailList } = renderMailList({ query: "不存在" });
-    expect(screen.getByText("没有匹配的已同步邮件")).toBeTruthy();
-
-    rerenderMailList({ query: "", filter: "unread" });
-    expect(screen.getByText("当前筛选下没有邮件")).toBeTruthy();
-  });
-
-  it.each([
-    ["inbox", "收件箱尚未同步", "使用“同步收件箱”获取邮件"],
-    ["starred", "收藏来源尚未同步", "使用“同步已收藏邮件”获取邮件"],
-    ["sent", "已发送尚未同步", "使用“同步已发送”获取邮件"],
-    ["drafts", "草稿尚未同步", "使用“同步草稿”读取已保存草稿"],
-    ["outbox", "发件队列尚未读取", "使用“刷新发件队列”读取待处理邮件"],
-    ["archive", "归档尚未同步", "使用“同步归档”获取邮件"],
-    ["trash", "垃圾箱尚未同步", "使用“同步垃圾箱”获取邮件"],
-  ])(
-    "uses an actionable not-synced state for %s",
-    (folderRole, title, detail) => {
-      renderMailList({ folderRole, isInitialized: false });
-      expect(screen.getByText(title)).toBeTruthy();
-      expect(screen.getByText(detail)).toBeTruthy();
-    },
-  );
-
-  it("does not let search or filter copy hide loading, failure, or an unsynchronized source", () => {
-    const { rerenderMailList } = renderMailList({
-      query: "项目",
-      loadState: { phase: "loading", completed: 0, total: null },
-      isInitialized: false,
-    });
-    expect(screen.getByText("正在读取收件箱本地邮件…")).toBeTruthy();
-    expect(screen.queryByText("没有匹配的已同步邮件")).toBeNull();
-
-    rerenderMailList({
-      query: "项目",
-      loadState: { phase: "error", completed: 0, total: null },
-      isInitialized: false,
-    });
-    expect(screen.getByText("部分邮件暂时没有加载完成")).toBeTruthy();
-
-    rerenderMailList({
-      query: "项目",
-      filter: "unread",
-      loadState: { phase: "ready", completed: 0, total: null },
-      isInitialized: false,
-    });
-    expect(screen.getByText("收件箱尚未同步")).toBeTruthy();
-    expect(screen.queryByText("当前筛选下没有邮件")).toBeNull();
-  });
-
-  it("only recommends controls that are actually rendered and usable", () => {
-    const { rerenderMailList } = renderMailList({
-      query: "不存在",
-      onLoadMore: null,
-      onSync: null,
-    });
-    expect(screen.getByText("换个关键词后重试")).toBeTruthy();
-    expect(screen.queryByText(/加载更多|同步更多/)).toBeNull();
-
-    rerenderMailList({
-      query: "",
-      filter: "unread",
-      onFilterChange: null,
-      onSync: null,
-    });
-    expect(screen.getByText("这个筛选条件下暂时没有邮件")).toBeTruthy();
-    expect(screen.queryByText("切换上方筛选条件查看其他邮件")).toBeNull();
-  });
-
-  it("announces count, progress, empty, and failure changes with matching urgency", () => {
+  it("keeps empty, loading, failure, search, and capability states visually quiet", () => {
     const { container, rerenderMailList } = renderMailList({
-      messages: [firstMessage],
-      loadState: { phase: "syncing", completed: 1, total: 3 },
+      loadState: { phase: "loading", completed: 0, total: null },
     });
-    const count = screen.getByRole("status", {
-      name: "收件箱当前显示 1 封邮件",
-    });
-    expect(count.getAttribute("aria-live")).toBe("polite");
-    expect(count.getAttribute("aria-atomic")).toBe("true");
-    const progress = container.querySelector(".mail-load-progress");
-    expect(progress.getAttribute("role")).toBe("status");
-    expect(progress.getAttribute("aria-live")).toBe("polite");
+    expect(container.querySelector(".empty-list")).toBeNull();
+    expect(container.querySelector(".mail-loading-state")).toBeNull();
 
     rerenderMailList({
-      messages: [],
+      query: "不存在",
       loadState: { phase: "error", completed: 0, total: null },
     });
-    const failure = container.querySelector(
-      '[data-empty-state="retryable_failure"]',
-    );
-    expect(failure.getAttribute("role")).toBe("alert");
-    expect(failure.getAttribute("aria-live")).toBe("assertive");
+    expect(screen.queryByText("没有匹配的已同步邮件")).toBeNull();
+    expect(screen.queryByText("部分邮件暂时没有加载完成")).toBeNull();
 
     rerenderMailList({
-      messages: [],
-      loadState: { phase: "ready", completed: 0, total: null },
-      query: "不存在",
-    });
-    const searchEmpty = container.querySelector(
-      '[data-empty-state="search_empty"]',
-    );
-    expect(searchEmpty.getAttribute("role")).toBe("status");
-    expect(searchEmpty.getAttribute("aria-live")).toBe("polite");
-  });
-
-  it("offers quiet Archive setup inside the workspace", async () => {
-    const user = userEvent.setup();
-    const onMailboxSetup = vi.fn();
-    renderMailList({
       folderRole: "archive",
+      query: "",
       mailboxCapability: {
         role: "archive",
         status: "needs_creation_confirmation",
         retryable: true,
       },
-      onMailboxSetup,
     });
-
-    expect(screen.getByText("尚未设置归档文件夹")).toBeTruthy();
-    expect(
-      screen.getByText(
-        "你可以在第一次归档邮件时完成设置，也可以现在进行设置。",
-      ),
-    ).toBeTruthy();
-    expect(screen.queryByText("归档里还没有邮件")).toBeNull();
-    await user.click(screen.getByRole("button", { name: "设置归档文件夹" }));
-    expect(onMailboxSetup).toHaveBeenCalledWith("archive");
-  });
-
-  it("shows a precise unavailable reason without inventing a retry action", () => {
-    renderMailList({
-      folderRole: "trash",
-      mailboxCapability: {
-        role: "trash",
-        status: "unavailable",
-        unavailable_reason: "provider_unsupported",
-        retryable: false,
-      },
-    });
-
-    expect(screen.getByText("垃圾箱当前不可用")).toBeTruthy();
-    expect(screen.getByText("当前邮箱服务不支持此功能")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: /重新确认/ })).toBeNull();
+    expect(screen.queryByText("尚未设置归档文件夹")).toBeNull();
+    expect(container.querySelector(".empty-list")).toBeNull();
   });
 });
 
 describe("MailList pagination and semantics", () => {
-  afterEach(cleanup);
+  afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
+  });
 
-  it("exposes controlled load-more states and only claims the end when confirmed", async () => {
-    const user = userEvent.setup();
+  it("loads automatically near the bottom and keeps completion feedback for two seconds", () => {
+    vi.useFakeTimers();
     const onLoadMore = vi.fn();
-    const { rerenderMailList } = renderMailList({
+    const { container, rerenderMailList } = renderMailList({
       messages: [firstMessage],
       onLoadMore,
       loadMoreState: "idle",
     });
+    const surface = container.querySelector(".message-list");
+    Object.defineProperties(surface, {
+      scrollHeight: { configurable: true, value: 800 },
+      clientHeight: { configurable: true, value: 400 },
+      scrollTop: { configurable: true, value: 350 },
+    });
 
-    await user.click(screen.getByRole("button", { name: "加载更早邮件" }));
+    fireEvent.scroll(surface);
     expect(onLoadMore).toHaveBeenCalledOnce();
+    fireEvent.scroll(surface);
+    expect(onLoadMore).toHaveBeenCalledOnce();
+    expect(
+      screen.queryByRole("button", { name: /加载更早邮件/ }),
+    ).toBeNull();
 
     rerenderMailList({ loadMoreState: "loading" });
-    expect(screen.getByText("正在加载更早邮件…")).toBeTruthy();
-
-    rerenderMailList({ loadMoreState: "retry" });
-    const retry = screen
-      .getByRole("button", { name: "重试加载更早邮件" })
-      .closest(".mail-load-progress");
-    expect(retry.getAttribute("role")).toBe("alert");
-    expect(retry.getAttribute("aria-live")).toBe("assertive");
-    await user.click(
-      screen.getByRole("button", { name: "重试加载更早邮件" }),
-    );
-    expect(onLoadMore).toHaveBeenCalledTimes(2);
-
-    rerenderMailList({ loadMoreState: "offline" });
-    expect(
-      screen.getByText("连接网络后可继续加载更早邮件"),
-    ).toBeTruthy();
-
+    expect(screen.getByText("正在加载…")).toBeTruthy();
     rerenderMailList({
-      loadMoreState: "complete",
-      endReached: false,
+      messages: [firstMessage, secondMessage],
+      loadMoreState: "idle",
     });
-    expect(screen.queryByText("已显示全部邮件")).toBeNull();
+    expect(screen.getByText("已加载 1 封")).toBeTruthy();
 
-    rerenderMailList({
-      loadMoreState: "complete",
-      endReached: true,
+    act(() => {
+      vi.advanceTimersByTime(2_000);
     });
-    expect(screen.getByText("已显示全部邮件")).toBeTruthy();
+    expect(screen.queryByText("已加载 1 封")).toBeNull();
+    vi.useRealTimers();
   });
 
-  it("maps every backend remote history state without inventing an end state", () => {
-    const onLoadMore = vi.fn();
+  it("shows a compact two-second failure only after a loading attempt", () => {
+    vi.useFakeTimers();
     const { rerenderMailList } = renderMailList({
       messages: [firstMessage],
-      onLoadMore,
-      loadMoreState: { remote_history_state: "not_checked" },
+      loadMoreState: "idle",
     });
 
-    expect(
-      screen.getByRole("button", { name: "加载更早邮件" }),
-    ).toBeTruthy();
+    rerenderMailList({ loadMoreState: "loading" });
+    expect(screen.getByText("正在加载…")).toBeTruthy();
+    rerenderMailList({ loadMoreState: "retry" });
+    const failure = screen.getByRole("alert");
+    expect(failure.textContent).toBe("加载失败");
+    expect(failure.className).toBe("mail-pagination-notice");
 
-    rerenderMailList({
-      loadMoreState: { remote_history_state: "may_have_more" },
+    act(() => {
+      vi.advanceTimersByTime(2_000);
     });
-    expect(
-      screen.getByRole("button", { name: "加载更早邮件" }),
-    ).toBeTruthy();
+    expect(screen.queryByText("加载失败")).toBeNull();
+    vi.useRealTimers();
+  });
 
-    rerenderMailList({
-      loadMoreState: {
-        phase: "idle",
-        remote_history_state: "offline",
-      },
+  it("does not render persistent offline, unavailable, or confirmed-end copy", () => {
+    const { rerenderMailList } = renderMailList({
+      messages: [firstMessage],
+      loadMoreState: "offline",
     });
-    expect(
-      screen.getByText("连接网络后可继续加载更早邮件"),
-    ).toBeTruthy();
+    expect(screen.queryByText(/连接网络|已显示全部|加载更早/)).toBeNull();
 
-    rerenderMailList({
-      loadMoreState: { remote_history_state: "complete" },
-      endReached: false,
-    });
-    expect(screen.queryByText("已显示全部邮件")).toBeNull();
+    rerenderMailList({ loadMoreState: "unavailable" });
+    expect(screen.queryByText(/无法提供|已显示全部|加载更早/)).toBeNull();
 
-    rerenderMailList({
-      loadMoreState: { remote_history_state: "complete" },
-      endReached: true,
-    });
-    expect(screen.getByText("已显示全部邮件")).toBeTruthy();
-
-    rerenderMailList({
-      loadMoreState: { remote_history_state: "unavailable" },
-      endReached: false,
-    });
-    expect(
-      screen.getByText("此文件夹无法提供更多历史邮件"),
-    ).toBeTruthy();
-    expect(screen.queryByText("已显示全部邮件")).toBeNull();
+    rerenderMailList({ loadMoreState: "complete" });
+    expect(screen.queryByText(/已显示全部|加载更早/)).toBeNull();
   });
 
   it("uses a normal list with native row buttons instead of a partial listbox", async () => {

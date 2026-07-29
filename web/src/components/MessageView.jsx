@@ -471,7 +471,6 @@ export function MessageView({
   onPermanentDelete,
   permanentDeleteState,
   onMarkUnread,
-  markUnreadState,
   onSaveAttachment,
   attachmentSaveStates = {},
   onRetryDelivery,
@@ -582,7 +581,6 @@ export function MessageView({
       MOVE_TO_TRASH_ROLES.has(role) ? moveToTrashState : undefined,
     ],
     ["永久删除", role === "trash" ? permanentDeleteState : undefined],
-    ["标记为未读", remoteMailbox ? markUnreadState : undefined],
   ];
   for (const [label, state] of feedbackCandidates) {
     if (state === undefined) continue;
@@ -632,7 +630,6 @@ export function MessageView({
             <MessageToolbarAction
               label="标记为未读"
               onAction={onMarkUnread}
-              state={markUnreadState}
               icon={<EnvelopeOpen aria-hidden="true" size={19} />}
             />
           ) : null}

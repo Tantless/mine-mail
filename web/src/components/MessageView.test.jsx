@@ -226,7 +226,7 @@ describe("MessageView role-specific actions", () => {
     expect(screen.queryByRole("button", { name: "转发" })).toBeNull();
   });
 
-  it("announces pending, needs-attention, unknown, and retryable failure states", async () => {
+  it("keeps unread synchronization out of the reader while retaining actionable Archive and Trash feedback", async () => {
     const user = userEvent.setup();
     const retryMove = vi.fn();
 
@@ -256,8 +256,11 @@ describe("MessageView role-specific actions", () => {
     expect(pendingArchive.disabled).toBe(true);
     expect(pendingArchive.getAttribute("aria-busy")).toBe("true");
     expect(
-      screen.getByText("标记为未读结果待确认：正在核对服务器状态"),
-    ).toBeTruthy();
+      screen.queryByText("标记为未读结果待确认：正在核对服务器状态"),
+    ).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "标记为未读" }).disabled,
+    ).toBe(false);
 
     const retryButton = screen.getByRole("button", {
       name: "重试移到垃圾箱：网络连接中断",
@@ -285,7 +288,7 @@ describe("MessageView role-specific actions", () => {
     ).toBeTruthy();
   });
 
-  it("blocks a needs-attention action and exposes its next step", () => {
+  it("does not let a stale mark-read state disable the mark-unread action", () => {
     render(
       <MessageView
         message={messageFixture()}
@@ -298,15 +301,13 @@ describe("MessageView role-specific actions", () => {
       />,
     );
 
-    const button = screen.getByRole("button", {
-      name: "标记为未读需要处理：邮箱标识已变化，请先重新同步",
-    });
-    expect(button.disabled).toBe(true);
+    const button = screen.getByRole("button", { name: "标记为未读" });
+    expect(button.disabled).toBe(false);
     expect(
-      screen.getByText(
+      screen.queryByText(
         "标记为未读需要处理：邮箱标识已变化，请先重新同步",
       ),
-    ).toBeTruthy();
+    ).toBeNull();
   });
 });
 

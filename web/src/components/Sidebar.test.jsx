@@ -326,16 +326,12 @@ describe("Sidebar account switcher", () => {
     const onFolderChange = vi.fn();
     renderSidebar(1, { onFolderChange });
 
-    const archive = screen.getByRole("button", {
-      name: "归档，正在确认归档文件夹是否可用",
-    });
-    const trash = screen.getByRole("button", {
-      name: "垃圾箱，正在确认垃圾箱是否可用",
-    });
+    const archive = screen.getByRole("button", { name: "归档" });
+    const trash = screen.getByRole("button", { name: "垃圾箱" });
     expect(archive.disabled).toBe(true);
     expect(trash.disabled).toBe(true);
-    expect(archive.textContent).toContain("确认中");
-    expect(trash.textContent).toContain("确认中");
+    expect(archive.textContent).toBe("归档");
+    expect(trash.textContent).toBe("垃圾箱");
     expect(onFolderChange).not.toHaveBeenCalled();
   });
 
@@ -408,7 +404,7 @@ describe("Sidebar account switcher", () => {
     expect(onMailboxSetup).not.toHaveBeenCalled();
   });
 
-  it("shows discovery as a non-navigable state when no retry is available", () => {
+  it("keeps discovery non-navigable without exposing its state", () => {
     renderSidebar(1, {
       mailboxCapabilities: {
         archive: {
@@ -420,14 +416,12 @@ describe("Sidebar account switcher", () => {
       },
     });
 
-    const archive = screen.getByRole("button", {
-      name: "归档，正在确认归档文件夹是否可用",
-    });
+    const archive = screen.getByRole("button", { name: "归档" });
     expect(archive.disabled).toBe(true);
-    expect(archive.textContent).toContain("确认中");
+    expect(archive.textContent).toBe("归档");
   });
 
-  it("explains an unavailable mailbox role and exposes retry only when controlled", async () => {
+  it("keeps unavailable roles neutral while retaining a controlled retry action", async () => {
     const user = userEvent.setup();
     const onMailboxCapabilityRetry = vi.fn();
     renderSidebar(1, {
@@ -448,22 +442,19 @@ describe("Sidebar account switcher", () => {
       },
     });
 
-    const archive = screen.getByRole("button", {
-      name: "归档，当前邮箱服务不支持此功能",
-    });
+    const archive = screen.getByRole("button", { name: "归档" });
     expect(archive.disabled).toBe(true);
-    expect(archive.textContent).toContain("服务不支持");
+    expect(archive.textContent).toBe("归档");
 
-    const trashRetry = screen.getByRole("button", {
-      name: "重新确认垃圾箱，邮箱创建失败",
-    });
+    const trashRetry = screen.getByRole("button", { name: "重新确认垃圾箱" });
     expect(trashRetry.disabled).toBe(false);
+    expect(trashRetry.textContent).toBe("垃圾箱");
     await user.click(trashRetry);
     expect(onMailboxCapabilityRetry).toHaveBeenCalledWith("trash");
   });
 
-  it("reports pending Archive work without adding a forbidden numeric badge", () => {
-    const { rerenderSidebar } = renderSidebar(1, {
+  it("does not expose pending Archive work in the sidebar", () => {
+    renderSidebar(1, {
       pendingCounts: { archive: 3 },
       mailboxCapabilities: {
         archive: { role: "archive", status: "available", retryable: false },
@@ -471,27 +462,12 @@ describe("Sidebar account switcher", () => {
       },
     });
 
-    const archive = screen.getByRole("button", {
-      name: "归档，3 项操作待同步",
-    });
-    expect(archive.dataset.pendingCount).toBe("3");
-    expect(archive.textContent).toContain("待同步");
+    const archive = screen.getByRole("button", { name: "归档" });
+    expect(archive.dataset.pendingCount).toBeUndefined();
+    expect(archive.textContent).not.toContain("待同步");
     expect(archive.querySelector(".folder-nav__count")).toBeNull();
-
-    const live = document.querySelector(
-      '.folder-nav .sr-only[role="status"]',
-    );
-    expect(live.textContent).toBe("待同步操作：归档 3 项");
-    expect(live.getAttribute("aria-live")).toBe("polite");
-    expect(live.getAttribute("aria-atomic")).toBe("true");
-
-    rerenderSidebar({
-      pendingCounts: {},
-      mailboxCapabilities: {
-        archive: { role: "archive", status: "available", retryable: false },
-        trash: { role: "trash", status: "available", retryable: false },
-      },
-    });
-    expect(live.textContent).toBe("文件夹操作已全部同步");
+    expect(
+      document.querySelector('.folder-nav .sr-only[role="status"]'),
+    ).toBeNull();
   });
 });

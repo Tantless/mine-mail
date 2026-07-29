@@ -47,38 +47,12 @@ const drawerFocusableSelector = [
 
 const capabilityCopy = {
   archive: {
-    label: "归档",
     mailbox: "归档文件夹",
   },
   trash: {
-    label: "垃圾箱",
     mailbox: "垃圾箱",
   },
 };
-
-const unavailableReasonCopy = {
-  create_not_supported: {
-    short: "不支持创建",
-    detail: "服务器不支持创建所需邮箱",
-  },
-  create_failed: {
-    short: "创建失败",
-    detail: "邮箱创建失败",
-  },
-  created_mailbox_not_selectable: {
-    short: "无法打开",
-    detail: "已创建的邮箱无法打开",
-  },
-  provider_unsupported: {
-    short: "服务不支持",
-    detail: "当前邮箱服务不支持此功能",
-  },
-};
-
-function normalizedPendingCount(value) {
-  const count = Number(value);
-  return Number.isFinite(count) && count > 0 ? Math.floor(count) : 0;
-}
 
 function mailboxCapabilityFor(mailboxCapabilities, role) {
   if (!capabilityFolderRoles.has(role)) return null;
@@ -110,8 +84,6 @@ function capabilityStateFor(role, capability) {
   if (capability.status === "needs_creation_confirmation") {
     if (role === "archive") return null;
     return {
-      short: "需设置",
-      detail: `需要创建${copy.mailbox}后才能使用`,
       actionLabel: `设置${copy.mailbox}`,
       action: "setup",
     };
@@ -119,20 +91,12 @@ function capabilityStateFor(role, capability) {
 
   if (capability.status === "discovery_pending") {
     return {
-      short: "确认中",
-      detail: `正在确认${copy.mailbox}是否可用`,
       actionLabel: `重新确认${copy.mailbox}`,
       action: capability.retryable ? "retry" : null,
     };
   }
 
-  const reason =
-    unavailableReasonCopy[capability.unavailable_reason] || {
-      short: "不可用",
-      detail: `${copy.label}当前不可用`,
-    };
   return {
-    ...reason,
     actionLabel: `重新确认${copy.mailbox}`,
     action: capability.retryable ? "retry" : null,
   };
@@ -184,7 +148,6 @@ export function Sidebar({
   onAddAccount,
   onOpenSettings,
   mailboxCapabilities = null,
-  pendingCounts = {},
   onMailboxSetup = null,
   onMailboxCapabilityRetry = null,
   isDrawerOpen = false,
@@ -209,16 +172,6 @@ export function Sidebar({
   const emptySlots = Math.max(0, maxAccounts - accounts.length);
   const hasAvailableAccountSlot = emptySlots > 0;
   const activeAccountId = accountStatus?.activeAccountId || accountStatus?.accountId;
-  const pendingFolderSummary = folders
-    .map((folder) => {
-      const count = normalizedPendingCount(pendingCounts[folder.id]);
-      return count ? `${folder.label} ${count} 项` : null;
-    })
-    .filter(Boolean);
-  const pendingAnnouncement = pendingFolderSummary.length
-    ? `待同步操作：${pendingFolderSummary.join("，")}`
-    : "文件夹操作已全部同步";
-
   const measureFolderSelection = useCallback(() => {
     const navigation = folderNavRef.current;
     const selectedButton = isSettingsOpen
@@ -281,7 +234,6 @@ export function Sidebar({
     });
     return () => window.cancelAnimationFrame(frame);
   }, [folderSelection, folderSelectionMotionReady]);
-
   useLayoutEffect(() => {
     const wasOpen = themeWasOpenRef.current;
     themeWasOpenRef.current = isThemeMenuOpen;
@@ -427,14 +379,6 @@ export function Sidebar({
                 "--folder-selection-height": `${folderSelection?.height || 0}px`,
               }}
             />
-            <span
-              className="sr-only"
-              role="status"
-              aria-live="polite"
-              aria-atomic="true"
-            >
-              {pendingAnnouncement}
-            </span>
             {folders.map((folder) => {
               const FolderIcon = folder.icon;
               const selected = !isSettingsOpen && folder.id === activeFolder;
@@ -445,9 +389,6 @@ export function Sidebar({
               const capabilityState = capabilityStateFor(
                 folder.id,
                 capability,
-              );
-              const pendingCount = normalizedPendingCount(
-                pendingCounts[folder.id],
               );
               const capabilityAction =
                 capabilityState?.action === "setup" &&
@@ -461,21 +402,9 @@ export function Sidebar({
                 !capabilityState && typeof onFolderChange === "function"
                   ? () => onFolderChange(folder.id)
                   : capabilityAction;
-              const stateDetail = capabilityState?.detail;
-              const pendingDetail = pendingCount
-                ? `${pendingCount} 项操作待同步`
-                : null;
-              const accessibleLabel = [
-                capabilityAction
-                  ? capabilityState.actionLabel
-                  : folder.label,
-                stateDetail,
-                pendingDetail,
-              ]
-                .filter(Boolean)
-                .join("，");
-              const visibleStatus =
-                capabilityState?.short || (pendingCount ? "待同步" : null);
+              const accessibleLabel = capabilityAction
+                ? capabilityState.actionLabel
+                : folder.label;
               return (
                 <button
                   ref={(button) => {
@@ -489,28 +418,15 @@ export function Sidebar({
                   type="button"
                   className="folder-nav__item"
                   data-selected={selected}
-                  data-capability-status={
-                    capabilityState ? capability?.status : undefined
-                  }
-                  data-pending-count={pendingCount || undefined}
                   onClick={folderAction || undefined}
                   disabled={!folderAction}
-                  aria-label={accessibleLabel || folder.label}
+                  aria-label={accessibleLabel}
                   aria-current={selected ? "page" : undefined}
-                  title={[stateDetail, pendingDetail].filter(Boolean).join("；") || undefined}
                 >
                   <FolderIcon size={19} weight={selected ? "fill" : "regular"} />
                   <span>{folder.label}</span>
                   {foldersWithCounts.has(folder.id) && counts[folder.id] ? (
                     <span className="folder-nav__count">{counts[folder.id]}</span>
-                  ) : null}
-                  {visibleStatus ? (
-                    <span
-                      className="folder-nav__capability"
-                      aria-hidden="true"
-                    >
-                      {visibleStatus}
-                    </span>
                   ) : null}
                 </button>
               );

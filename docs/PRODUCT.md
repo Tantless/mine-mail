@@ -120,10 +120,11 @@ must be updated here when an intentional product change lands.
   before-UID position, and search fingerprint; it cannot be reused for another
   account, folder, epoch, or query.
 - A page distinguishes more SQLite history, more possible server history, an
-  unavailable offline history request, and a confirmed end. Mine Mail shows an
-  end state only after both SQLite and the server confirm there is no older UID.
-  If local history is exhausted while offline, the UI says that connecting is
-  required to continue rather than claiming that the folder has ended.
+  unavailable offline history request, and a confirmed end. Approaching the
+  bottom automatically requests the next page of at most 50 messages. Loading
+  uses one compact bottom line; completion with the appended count or failure is
+  shown for two seconds and then removed. There is no manual load-more control or
+  persistent end/empty-state explanation.
 - New arrivals and background refreshes are merged by exact mailbox and UID
   without invalidating an older keyset cursor, duplicating rows, changing the
   current selection, or moving the visible scroll position. A UIDVALIDITY change
@@ -165,11 +166,10 @@ must be updated here when an intentional product change lands.
   mailbox as Archive.
 - Archive remains a neutral folder entry while discovery is pending or creation
   has not been approved; absence of an optional Archive target is not a warning
-  or account-health problem. Opening Archive first paints any cached summaries
-  for a persisted available role. A role that is still being discovered shows a
-  quiet non-authoritative state, and a confirmed missing role opens the Archive
-  workspace with an optional setup action instead of opening a creation dialog
-  from the sidebar.
+  or account-health problem. Sidebar entries never expose capability discovery
+  or queued-mutation status. Opening Archive first paints any cached summaries
+  for a persisted available role; discovery, missing-role, empty, and failure
+  states do not render explanatory cards in the list workspace.
 - If no archive target exists, the first message Archive action uses a Mine Mail
   confirmation to offer creation of the fixed `Archive` mailbox. Accepting that
   confirmation creates and verifies the role, then continues the exact Archive
@@ -187,7 +187,10 @@ must be updated here when an intentional product change lands.
   versioned lifecycle.
 - Mark read and mark unread set the desired final state of the IMAP `\Seen`
   system flag. They are available for selectable remote mailboxes that permit
-  persistent `\Seen` updates; Draft and Outbox do not expose them.
+  persistent `\Seen` updates; Draft and Outbox do not expose them. Mark unread
+  updates the local row immediately and continues synchronization silently. The
+  reader does not show its pending state, and a pending automatic mark-read
+  operation never disables or relabels the mark-unread action.
 - Star, read/unread, Archive, move-to-Trash, and permanent-delete actions update
   SQLite and persist an account-scoped mutation before network work. Moving a
   message removes it from the source view immediately and presents it in the

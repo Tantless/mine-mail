@@ -221,13 +221,12 @@ family. Preserve the relative hierarchy when tuning optical values.
 - Background refreshes preserve the visible rows and selection. Loading must not
   flash usable local content away.
 - Pending Archive, Trash, read/unread, or delete mutations keep the row layout
-  stable and use one compact semantic status treatment. A failed or ambiguous
-  mutation explains the next action without restoring a stale remote snapshot
-  over a newer local intent.
-- Folder lists distinguish true empty, search empty, filter empty, initial
-  synchronization, offline history exhaustion, retryable failure, loading older
-  mail, and confirmed end states. Do not reuse “no search results” for an
-  unavailable or not-yet-synchronized data source.
+  stable. Background queue state never appears as a sidebar badge. Archive and
+  Trash may use compact reader feedback when the user must act; read/unread
+  remains visually implicit after the local row state updates.
+- Folder lists retain true-empty, search, filter, synchronization, offline,
+  retry, and confirmed-end distinctions in their state model without rendering
+  large explanatory cards. An empty list stays visually quiet.
 
 ### Menus, tooltips, and scrolling
 
@@ -248,20 +247,20 @@ family. Preserve the relative hierarchy when tuning optical values.
 
 - The message list paints cached summaries immediately. Selecting a message keeps
   list position stable and hydrates the body silently.
-- Inbox, Sent, Archive, and Trash append 50-message keyset pages. The bottom
-  continuation affordance has distinct idle, loading, retry, offline-unavailable,
-  and confirmed-end states; appending or receiving mail preserves selection and
-  scroll position.
+- Inbox, Sent, Archive, and Trash append 50-message keyset pages automatically
+  when the list approaches its bottom. There is no manual load-more button or
+  persistent end card. A compact bottom line remains visible while loading, then
+  shows the loaded count or failure for two seconds before disappearing;
+  appending or receiving mail preserves selection and scroll position.
 - Mail search uses the established search shell and identifies its bounded local
   scope as **搜索已同步邮件**. Search and folder tabs must not imply access to
   uncached server history.
-- Archive and Trash paint cached summaries before synchronization. Archive stays
-  visually neutral in the sidebar while discovery is pending or its optional
-  server folder has not been created; these states never use warning color,
-  urgent status copy, or an automatic dialog. Opening an available Archive shows
-  cached mail immediately. Opening a confirmed-missing Archive shows a quiet
-  workspace explanation with an optional setup action instead of a generic empty
-  list. Trash retains its distinct safety contract.
+- Archive and Trash paint cached summaries before synchronization. Their sidebar
+  entries stay visually neutral and never expose discovery, capability, or
+  pending-queue status. Opening an available Archive shows cached mail
+  immediately. A missing or unavailable role leaves the list visually quiet;
+  Archive setup remains available from the first explicit Archive action, while
+  Trash retains its distinct safety contract.
 - The reader has one outer scrollbar. Native text/semantic HTML uses Mine Mail
   typography; complex sender HTML remains sanitized and isolated. See
   `docs/MAIL_RENDERING.md`.
@@ -288,9 +287,10 @@ family. Preserve the relative hierarchy when tuning optical values.
   Pending and failed decisions keep the authoritative Outbox item visible; a
   stale attempt refreshes the item and requires a new review.
 - Archive, Trash, read/unread, and delete actions show local completion
-  immediately, keep a reasonable adjacent message selected, and expose pending,
-  confirmed, recoverable failure, or needs-attention feedback without blanking
-  the reader.
+  immediately and keep a reasonable adjacent message selected. Archive, Trash,
+  and delete may expose actionable pending or failure feedback without blanking
+  the reader. Marking unread updates the list immediately and never adds a
+  reader-body banner or reuses the pending mark-read state as toolbar feedback.
 - A forward action enters a bounded preparation state and cannot open a composer
   from preview text. Failure leaves the current reader intact. If original
   attachments cannot be prepared, the recovery surface offers an explicit
