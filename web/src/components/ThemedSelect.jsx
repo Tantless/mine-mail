@@ -134,7 +134,7 @@ export function ThemedSelect({
       {open ? (
         <span
           id={listboxId}
-          className="themed-select__menu"
+          className="themed-select__menu vertical-scroll-surface"
           role="listbox"
           aria-label={label}
           onKeyDown={handleListKeyDown}

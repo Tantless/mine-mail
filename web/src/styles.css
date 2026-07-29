@@ -579,12 +579,14 @@ button:disabled {
  * Panel-level scroll surfaces are intentionally one-dimensional. Precision
  * touchpads emit horizontal and vertical deltas together, so a two-axis
  * `overflow: auto` surface feels like a canvas and lets the panel drift.
+ * Native containment keeps rubber-band feedback at both vertical edges, so
+ * disable it and use explicit end padding where a bottom buffer is required.
  */
 .vertical-scroll-surface {
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior-x: none;
-  overscroll-behavior-y: contain;
+  overscroll-behavior-y: none;
   touch-action: pan-y;
 }
 
@@ -1084,6 +1086,9 @@ html[data-surface="new-mail-notification"] #root {
   min-height: 0;
   flex: 1 1 auto;
   flex-direction: column;
+  margin-top: 24px;
+  padding-bottom: 14px;
+  scroll-padding-bottom: 14px;
   scrollbar-width: none;
 }
 
@@ -1261,7 +1266,7 @@ html[data-surface="new-mail-notification"] #root {
   isolation: isolate;
   display: grid;
   gap: 3px;
-  margin-top: 24px;
+  margin-top: 0;
 }
 
 .folder-nav__selection {

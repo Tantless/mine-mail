@@ -237,6 +237,11 @@ family. Preserve the relative hierarchy when tuning optical values.
   dense frosted popup family.
 - Each workspace owns one obvious vertical scroll surface. Do not create nested
   reader scrollbars or horizontal panel drift.
+- Vertical scroll surfaces stop immediately at their first item instead of
+  rubber-banding above it. When the last item needs breathing room, provide a
+  bounded content-end inset rather than symmetric native overscroll; the sidebar
+  folder region keeps its visual gap below Compose outside the scrolling content
+  and reserves scrollable buffer only after the final folder.
 - Preserve the layer order: wallpaper, app shell, contextual drawer/banner,
   compose, consequential confirmation, native titlebar controls, toast, then
   tooltip/listbox. Do not solve a local overlap with an arbitrary new z-index.

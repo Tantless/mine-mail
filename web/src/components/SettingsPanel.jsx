@@ -1378,7 +1378,7 @@ export function SettingsPanel({
               Release 的签名更新？
             </p>
             {availableUpdate.notes ? (
-              <div className="update-confirm-dialog__notes">
+              <div className="update-confirm-dialog__notes vertical-scroll-surface">
                 <small>更新说明</small>
                 <p>{availableUpdate.notes}</p>
               </div>

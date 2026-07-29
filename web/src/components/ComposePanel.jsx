@@ -939,7 +939,7 @@ export function ComposePanel({
             downgradedForwardHtml ||
             omittedInlineResources ? (
               <section
-                className="compose-attachments"
+                className="compose-attachments vertical-scroll-surface"
                 aria-labelledby="compose-attachments-title"
                 data-add-state={operationStatus(addOperation)}
               >

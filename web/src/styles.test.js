@@ -58,6 +58,20 @@ describe("brand avatar sizing policy", () => {
   });
 });
 
+describe("vertical scroll boundary policy", () => {
+  it("stops immediately at the top and keeps the sidebar buffer at the bottom", () => {
+    expect(declarationsFor("\\.vertical-scroll-surface")).toMatch(
+      /overscroll-behavior-y:\s*none/,
+    );
+
+    const sidebarPrimary = declarationsFor("\\.sidebar__primary");
+    expect(sidebarPrimary).toMatch(/margin-top:\s*24px/);
+    expect(sidebarPrimary).toMatch(/padding-bottom:\s*14px/);
+    expect(sidebarPrimary).toMatch(/scroll-padding-bottom:\s*14px/);
+    expect(declarationsFor("\\.folder-nav")).toMatch(/margin-top:\s*0/);
+  });
+});
+
 describe("embedded settings stylesheet boundary", () => {
   it("removes the retired modal shell and keeps one canonical base rule", () => {
     [
