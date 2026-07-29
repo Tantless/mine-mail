@@ -21,8 +21,8 @@ use crate::{
         managed_attachment_integrity_error,
     },
     imap_client::{
-        CreatableMailboxRole, DeleteFinalization, ImapConnection, MailboxHint, MessageMoveMethod,
-        RemoteMailbox, RemoteMessage,
+        CreatableMailboxRole, DeleteFinalization, ImapConnection, MailboxHint, MailboxMessageScope,
+        MessageMoveMethod, RemoteMailbox, RemoteMessage,
     },
     mailbox_mutation::{
         PersistedFlagWork, PersistedPhaseWork, persisted_flag_work, persisted_phase_work,
@@ -490,6 +490,14 @@ impl MailBackend {
         self.config.imap.host.eq_ignore_ascii_case("imap.gmail.com")
     }
 
+    fn mailbox_message_scope(&self, role: MailboxRole) -> MailboxMessageScope {
+        if role == MailboxRole::Archive && self.uses_gmail_archive_adapter() {
+            MailboxMessageScope::GmailArchive
+        } else {
+            MailboxMessageScope::All
+        }
+    }
+
     fn semantic_role_for_mailbox(&self, mailbox: &str) -> Result<Option<MailboxRole>> {
         for role in [
             MailboxRole::Inbox,
@@ -865,10 +873,11 @@ impl MailBackend {
                     .await
                     .map_err(|_| privacy_safe_imap_error("mailbox synchronization"))?;
                 let result = self
-                    .sync_selected_mailbox(
+                    .sync_selected_mailbox_with_scope(
                         &mut connection,
                         &mailbox,
                         DEFAULT_MESSAGE_PAGE_SIZE,
+                        self.mailbox_message_scope(role),
                         &mut |_| {},
                     )
                     .await
@@ -931,7 +940,28 @@ impl MailBackend {
     where
         F: FnMut(SyncBatchProgress) + Send,
     {
-        let snapshot = connection.select_mailbox(mailbox).await?;
+        self.sync_selected_mailbox_with_scope(
+            connection,
+            mailbox,
+            initial_limit,
+            MailboxMessageScope::All,
+            on_progress,
+        )
+        .await
+    }
+
+    async fn sync_selected_mailbox_with_scope<F>(
+        &self,
+        connection: &mut ImapConnection,
+        mailbox: &str,
+        initial_limit: usize,
+        scope: MailboxMessageScope,
+        on_progress: &mut F,
+    ) -> Result<SyncReport>
+    where
+        F: FnMut(SyncBatchProgress) + Send,
+    {
+        let snapshot = connection.select_mailbox_with_scope(mailbox, scope).await?;
 
         if snapshot.exists > 0 && snapshot.all_uids.is_empty() {
             return Err(MailError::Imap(
@@ -1317,6 +1347,7 @@ impl MailBackend {
                 return Ok(page_with_remote_state(local, RemoteHistoryState::Offline));
             }
         };
+        let scope = self.mailbox_message_scope(role);
         let Some(selected_uid_validity) = selected.uid_validity else {
             let _ = connection.logout().await;
             return Ok(page_with_remote_state(
@@ -1356,7 +1387,10 @@ impl MailBackend {
                 .load_older_mailbox_page(account_id, role, cursor, page_size, query);
         };
         let fetch_limit = normalized_message_page_size(page_size).min(HISTORY_FETCH_PAGE_SIZE);
-        let searched = match connection.search_uids_before(before_uid, fetch_limit).await {
+        let searched = match connection
+            .search_uids_before_with_scope(before_uid, fetch_limit, scope)
+            .await
+        {
             Ok(searched) => searched,
             Err(_) => {
                 let _ = connection.logout().await;
@@ -1379,7 +1413,10 @@ impl MailBackend {
             history.before_uid,
             searched.next_before_uid,
             searched.reached_uid_floor,
-            Some(selected.exists),
+            match scope {
+                MailboxMessageScope::All => Some(selected.exists),
+                MailboxMessageScope::GmailArchive => history.remote_total,
+            },
         )?;
         let _ = connection.logout().await;
         self.repository
@@ -2328,10 +2365,14 @@ impl MailBackend {
         destination: &str,
     ) -> Result<()> {
         match self
-            .sync_selected_mailbox(
+            .sync_selected_mailbox_with_scope(
                 connection,
                 destination,
                 DEFAULT_MESSAGE_PAGE_SIZE,
+                action
+                    .destination_role
+                    .map(|role| self.mailbox_message_scope(role))
+                    .unwrap_or_default(),
                 &mut |_| {},
             )
             .await
@@ -5687,7 +5728,7 @@ mod tests {
         DraftDeleteKind, DraftSaveKind, InboxMessage, MailAddress, MailError, MailboxRole,
         OutboxItem, OutboxStatus, ServerConfig, SmtpSecurity, StationeryTheme,
         database::{DraftRecord, MailboxState, Repository},
-        imap_client::{MailboxHint, RemoteMailbox, RemoteMessage},
+        imap_client::{MailboxHint, MailboxMessageScope, RemoteMailbox, RemoteMessage},
         mime::{
             MimeSourceCompleteness, build_outgoing_message_with_attachments,
             index_message_attachments, outbox_body_text, parse_draft_message,
@@ -5928,6 +5969,45 @@ mod tests {
         assert_eq!(
             discovered_mailbox_capability(MailboxRole::Archive, &all_mail, false).status,
             MailboxCapabilityStatus::NeedsCreationConfirmation
+        );
+    }
+
+    #[test]
+    fn gmail_archive_role_uses_filtered_message_scope_only_for_gmail() {
+        let directory = tempdir().expect("tempdir");
+        let gmail = AccountConfig::new_oauth2(
+            "gmail-account",
+            "gmail@example.com",
+            "oauth-token",
+            ServerConfig {
+                host: "imap.gmail.com".to_owned(),
+                port: 993,
+            },
+            ServerConfig {
+                host: "smtp.gmail.com".to_owned(),
+                port: 465,
+            },
+            SmtpSecurity::ImplicitTls,
+        )
+        .expect("gmail config");
+        let gmail_backend =
+            MailBackend::open(gmail, directory.path().join("gmail.db")).expect("gmail backend");
+        assert_eq!(
+            gmail_backend.mailbox_message_scope(MailboxRole::Archive),
+            MailboxMessageScope::GmailArchive
+        );
+        assert_eq!(
+            gmail_backend.mailbox_message_scope(MailboxRole::Inbox),
+            MailboxMessageScope::All
+        );
+
+        let custom =
+            AccountConfig::from_163_lines(["demo@163.com", "not-a-real-secret"]).expect("config");
+        let custom_backend =
+            MailBackend::open(custom, directory.path().join("custom.db")).expect("custom backend");
+        assert_eq!(
+            custom_backend.mailbox_message_scope(MailboxRole::Archive),
+            MailboxMessageScope::All
         );
     }
 

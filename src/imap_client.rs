@@ -19,6 +19,8 @@ const DRAFT_FETCH_BATCH_SIZE: usize = 10;
 const SUMMARY_PREVIEW_BYTES: usize = 32 * 1024;
 const MAX_HISTORY_PAGE_SIZE: usize = 100;
 const HISTORY_UID_SEARCH_WINDOW: u32 = 1_000;
+const GMAIL_ARCHIVE_SEARCH: &str =
+    r#"X-GM-RAW "in:archive -in:sent -in:drafts -in:spam -in:trash""#;
 
 #[derive(Clone, Debug)]
 pub(crate) struct MailboxSnapshot {
@@ -34,6 +36,35 @@ pub(crate) struct MailboxHint {
     pub exists: u32,
     pub uid_validity: Option<u32>,
     pub uid_next: Option<u32>,
+}
+
+/// Chooses the provider-side message set exposed through one selected mailbox.
+///
+/// Gmail stores archived messages in its `\All` mailbox, but that mailbox also
+/// contains Inbox, Sent, and other system-label messages. The dedicated scope
+/// keeps Gmail's provider query in Rust instead of leaking label semantics into
+/// SQLite or React.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum MailboxMessageScope {
+    #[default]
+    All,
+    GmailArchive,
+}
+
+impl MailboxMessageScope {
+    fn search_query(self) -> &'static str {
+        match self {
+            Self::All => "ALL",
+            Self::GmailArchive => GMAIL_ARCHIVE_SEARCH,
+        }
+    }
+
+    fn bounded_search_query(self, window: UidSearchWindow) -> String {
+        match self {
+            Self::All => window.query(),
+            Self::GmailArchive => format!("{} {GMAIL_ARCHIVE_SEARCH}", window.query()),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -341,17 +372,25 @@ impl ImapConnection {
             .map_err(|error| MailError::Imap(error.to_string()))
     }
 
-    pub async fn select_mailbox(&mut self, mailbox: &str) -> Result<MailboxSnapshot> {
+    pub async fn select_mailbox_with_scope(
+        &mut self,
+        mailbox: &str,
+        scope: MailboxMessageScope,
+    ) -> Result<MailboxSnapshot> {
         let selected = timeout(COMMAND_TIMEOUT, self.session.select(mailbox))
             .await
             .map_err(|_| MailError::Timeout {
                 operation: "IMAP SELECT mailbox",
             })?
             .map_err(|error| MailError::Imap(error.to_string()))?;
-        let all_uids = self.search_all_uids().await?;
+        let all_uids = self.search_uids(scope.search_query()).await?;
+        let exists = match scope {
+            MailboxMessageScope::All => selected.exists,
+            MailboxMessageScope::GmailArchive => u32::try_from(all_uids.len()).unwrap_or(u32::MAX),
+        };
 
         Ok(MailboxSnapshot {
-            exists: selected.exists,
+            exists,
             uid_validity: selected.uid_validity,
             uid_next: selected.uid_next,
             highest_modseq: selected.highest_modseq,
@@ -419,10 +458,11 @@ impl ImapConnection {
     /// Sparse mailboxes may return an empty page with another cursor. This is
     /// intentional: the bounded query prevents a single history request from
     /// turning into an unbounded server scan.
-    pub async fn search_uids_before(
+    pub async fn search_uids_before_with_scope(
         &mut self,
         before_uid: u32,
         page_size: usize,
+        scope: MailboxMessageScope,
     ) -> Result<OlderUidSearchPage> {
         validate_history_page_size(page_size)?;
         let Some(window) = older_uid_search_window(before_uid) else {
@@ -432,12 +472,15 @@ impl ImapConnection {
                 reached_uid_floor: true,
             });
         };
-        let uids = timeout(COMMAND_TIMEOUT, self.session.uid_search(window.query()))
-            .await
-            .map_err(|_| MailError::Timeout {
-                operation: "IMAP older history UID SEARCH",
-            })?
-            .map_err(|error| MailError::Imap(error.to_string()))?;
+        let uids = timeout(
+            COMMAND_TIMEOUT,
+            self.session.uid_search(scope.bounded_search_query(window)),
+        )
+        .await
+        .map_err(|_| MailError::Timeout {
+            operation: "IMAP older history UID SEARCH",
+        })?
+        .map_err(|error| MailError::Imap(error.to_string()))?;
         Ok(finish_older_uid_search(uids, window, page_size))
     }
 
@@ -604,8 +647,8 @@ impl ImapConnection {
         Ok(selected.uid_validity)
     }
 
-    async fn search_all_uids(&mut self) -> Result<Vec<u32>> {
-        let uids = timeout(COMMAND_TIMEOUT, self.session.uid_search("ALL"))
+    async fn search_uids(&mut self, query: &str) -> Result<Vec<u32>> {
+        let uids = timeout(COMMAND_TIMEOUT, self.session.uid_search(query))
             .await
             .map_err(|_| MailError::Timeout {
                 operation: "IMAP UID SEARCH",
@@ -1257,10 +1300,10 @@ mod tests {
 
     use super::{
         CreatableMailboxRole, DeleteFinalization, FixedFlagMutation, HISTORY_UID_SEARCH_WINDOW,
-        MAX_HISTORY_PAGE_SIZE, MessageMoveMethod, SUMMARY_PREVIEW_BYTES, UidSearchWindow,
-        capability_atom_matches, choose_delete_finalization, choose_message_move_method,
-        classify_remote_mailbox, compress_uid_set, ensure_flag_state, finish_older_uid_search,
-        mailbox_allows_deleted_updates, mailbox_allows_flagged_updates,
+        MAX_HISTORY_PAGE_SIZE, MailboxMessageScope, MessageMoveMethod, SUMMARY_PREVIEW_BYTES,
+        UidSearchWindow, capability_atom_matches, choose_delete_finalization,
+        choose_message_move_method, classify_remote_mailbox, compress_uid_set, ensure_flag_state,
+        finish_older_uid_search, mailbox_allows_deleted_updates, mailbox_allows_flagged_updates,
         mailbox_allows_seen_updates, older_uid_search_window, required_uid_set,
         summary_fetch_query, validate_history_page_size, validated_mailbox_name,
     };
@@ -1410,6 +1453,22 @@ mod tests {
         assert_eq!(window.query(), "UID 4001:5000");
         assert_eq!(older_uid_search_window(1), None);
         assert_eq!(older_uid_search_window(0), None);
+    }
+
+    #[test]
+    fn gmail_archive_scope_uses_the_same_provider_query_for_sync_and_history() {
+        let scope = MailboxMessageScope::GmailArchive;
+        assert_eq!(
+            scope.search_query(),
+            r#"X-GM-RAW "in:archive -in:sent -in:drafts -in:spam -in:trash""#
+        );
+        assert_eq!(
+            scope.bounded_search_query(UidSearchWindow {
+                lower: 4_001,
+                upper: 5_000,
+            }),
+            r#"UID 4001:5000 X-GM-RAW "in:archive -in:sent -in:drafts -in:spam -in:trash""#
+        );
     }
 
     #[test]

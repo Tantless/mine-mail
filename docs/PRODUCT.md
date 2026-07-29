@@ -166,6 +166,11 @@ must be updated here when an intentional product change lands.
   A provider with documented archive semantics, such as Gmail, uses its dedicated
   provider adapter. Mine Mail does not silently treat a similarly named ordinary
   mailbox as Archive.
+- Gmail uses its selectable SPECIAL-USE `\All` mailbox only as the storage
+  location for Archive actions. Archive synchronization and history pagination
+  use Gmail's `in:archive` provider query while excluding Sent, Drafts, Spam,
+  and Trash, so only dedicated archived messages appear instead of the raw
+  contents of All Mail or another semantic mailbox.
 - Archive remains a neutral folder entry while discovery is pending or creation
   has not been approved; absence of an optional Archive target is not a warning
   or account-health problem. Sidebar entries never expose capability discovery
