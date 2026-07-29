@@ -483,11 +483,13 @@ impl BackendState {
                 )
             })
             .collect();
+        let slots = BackendSlots {
+            active_account_id,
+            accounts,
+        };
+        Self::rebalance_body_cache_budgets(&slots);
         Self {
-            slots: RwLock::new(BackendSlots {
-                active_account_id,
-                accounts,
-            }),
+            slots: RwLock::new(slots),
         }
     }
 
@@ -552,6 +554,7 @@ impl BackendState {
             },
         );
         slots.active_account_id = Some(account_id);
+        Self::rebalance_body_cache_budgets(&slots);
         Ok(())
     }
 
@@ -569,7 +572,9 @@ impl BackendState {
             .accounts
             .get_mut(account_id)
             .ok_or_else(|| "The selected account is unavailable.".to_owned())?;
-        account.network = Some(Arc::new(network));
+        let network = Arc::new(network);
+        network.set_body_cache_budget_bytes(account.local.body_cache_budget_bytes());
+        account.network = Some(network);
         account.credential_available = credential_available;
         account.credential_invalid = false;
         Ok(())
@@ -609,7 +614,24 @@ impl BackendState {
             .map_err(|_| "The mail backend is temporarily unavailable.".to_owned())?;
         slots.accounts.remove(account_id);
         slots.active_account_id = active_account_id;
+        Self::rebalance_body_cache_budgets(&slots);
         Ok(())
+    }
+
+    fn rebalance_body_cache_budgets(slots: &BackendSlots) {
+        let account_count = u64::try_from(slots.accounts.len())
+            .unwrap_or(u64::MAX)
+            .max(1);
+        let per_account_budget = crate::BODY_CACHE_TOTAL_BYTES / account_count;
+        for account in slots.accounts.values() {
+            account
+                .local
+                .set_body_cache_budget_bytes(per_account_budget);
+            let _ = account.local.enforce_body_cache_budget(None);
+            if let Some(network) = &account.network {
+                network.set_body_cache_budget_bytes(per_account_budget);
+            }
+        }
     }
 
     pub(crate) fn active_account_id(&self) -> Option<String> {
@@ -2200,6 +2222,55 @@ mod tests {
             "The account managed attachments could not be deleted."
         );
         assert!(!warning.contains(directory.path().to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn body_cache_budget_is_shared_evenly_across_connected_accounts() {
+        let directory = tempdir().expect("temporary directory");
+        let metadata = [
+            AccountMetadata::preset(AccountProvider::NetEase163, "first@163.com".to_owned())
+                .expect("first account"),
+            AccountMetadata::preset(AccountProvider::Gmail, "second@gmail.com".to_owned())
+                .expect("second account"),
+            AccountMetadata::preset(AccountProvider::Gmail, "third@gmail.com".to_owned())
+                .expect("third account"),
+        ];
+        let accounts = metadata
+            .iter()
+            .map(|metadata| {
+                let database_path = account_database_path(directory.path(), metadata);
+                let backend =
+                    open_local_backend(metadata, &database_path).expect("local cache backend");
+                (metadata.account_id.clone(), backend, None, false)
+            })
+            .collect();
+        let state = BackendState::new(accounts, Some(metadata[0].account_id.clone()));
+
+        for account in &metadata {
+            assert_eq!(
+                state
+                    .local_for(&account.account_id)
+                    .expect("account cache")
+                    .body_cache_budget_bytes(),
+                crate::BODY_CACHE_TOTAL_BYTES / 3
+            );
+        }
+
+        state
+            .remove(
+                &metadata[2].account_id,
+                Some(metadata[0].account_id.clone()),
+            )
+            .expect("remove third account");
+        for account in &metadata[..2] {
+            assert_eq!(
+                state
+                    .local_for(&account.account_id)
+                    .expect("remaining account cache")
+                    .body_cache_budget_bytes(),
+                crate::BODY_CACHE_TOTAL_BYTES / 2
+            );
+        }
     }
 
     #[test]

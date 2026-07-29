@@ -1774,32 +1774,11 @@ async fn sync_sent_for(app: &AppHandle, account_id: &str) -> Result<SyncReport, 
             report: Some(SyncReportDto::from(&report)),
         },
     );
-    let prefetch_backend = backend.clone();
-    let prefetch_app = app.clone();
-    let prefetch_report = report.clone();
-    let prefetch_account_id = account_id.to_owned();
-    tauri::async_runtime::spawn(async move {
-        if let Ok(prefetched) = prefetch_backend
-            .prefetch_sent_bodies(
-                crate::INBOX_PREFETCH_LIMIT,
-                crate::INBOX_PREFETCH_TOTAL_BYTES,
-                crate::INBOX_PREFETCH_MESSAGE_BYTES,
-            )
-            .await
-            && prefetched > 0
-        {
-            let _ = prefetch_app.emit(
-                "mail:sent-updated",
-                SentUpdatedEvent {
-                    account_id: prefetch_account_id,
-                    completed: prefetch_report.fetched,
-                    total: Some(prefetch_report.fetched),
-                    is_complete: true,
-                    report: Some(SyncReportDto::from(&prefetch_report)),
-                },
-            );
-        }
-    });
+    let _ = backend.schedule_sent_body_prefetch(
+        crate::INBOX_PREFETCH_LIMIT,
+        crate::INBOX_PREFETCH_TOTAL_BYTES,
+        crate::INBOX_PREFETCH_MESSAGE_BYTES,
+    );
     diagnostics::limited_recovery(
         "account_sync_failed",
         "account_sync_recovered",
@@ -1837,32 +1816,11 @@ fn finish_inbox_sync(
             report: Some(SyncReportDto::from(&report)),
         },
     );
-    let prefetch_backend = backend.clone();
-    let prefetch_app = app.clone();
-    let prefetch_report = report.clone();
-    let prefetch_account_id = account_id.to_owned();
-    tauri::async_runtime::spawn(async move {
-        if let Ok(prefetched) = prefetch_backend
-            .prefetch_inbox_bodies(
-                crate::INBOX_PREFETCH_LIMIT,
-                crate::INBOX_PREFETCH_TOTAL_BYTES,
-                crate::INBOX_PREFETCH_MESSAGE_BYTES,
-            )
-            .await
-            && prefetched > 0
-        {
-            let _ = prefetch_app.emit(
-                "mail:inbox-updated",
-                InboxUpdatedEvent {
-                    account_id: prefetch_account_id,
-                    completed: prefetch_report.fetched,
-                    total: Some(prefetch_report.fetched),
-                    is_complete: true,
-                    report: Some(SyncReportDto::from(&prefetch_report)),
-                },
-            );
-        }
-    });
+    let _ = backend.schedule_inbox_body_prefetch(
+        crate::INBOX_PREFETCH_LIMIT,
+        crate::INBOX_PREFETCH_TOTAL_BYTES,
+        crate::INBOX_PREFETCH_MESSAGE_BYTES,
+    );
     Ok(report)
 }
 
@@ -2437,8 +2395,8 @@ mod tests {
         available_optional_mailbox_roles, consume_open_new_mail_notification, is_seen,
         notification_candidates, notification_sender, notification_sender_email,
         optional_role_participates_periodically, prioritize_active_account,
-        sanitize_notification_text,
-        should_deliver_new_mail_notification, trigger_discovers_mailbox_roles,
+        sanitize_notification_text, should_deliver_new_mail_notification,
+        trigger_discovers_mailbox_roles,
     };
 
     fn message(flags: Vec<String>) -> InboxMessage {

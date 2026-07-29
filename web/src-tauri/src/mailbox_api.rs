@@ -418,6 +418,37 @@ fn offline_page(mut page: MessagePage) -> MessagePage {
     page
 }
 
+fn schedule_page_body_prefetch(backend: &BackendState, account_id: &str, page: &MessagePage) {
+    let Ok(network) = backend.network_for(account_id) else {
+        return;
+    };
+    let candidates = page
+        .items
+        .iter()
+        .map(|item| {
+            (
+                item.public_id.clone(),
+                item.message.size_bytes,
+                item.message.body_fetched,
+            )
+        })
+        .collect();
+    network.schedule_page_body_prefetch(
+        candidates,
+        crate::PAGE_BODY_PREFETCH_TOTAL_BYTES,
+        crate::INBOX_PREFETCH_MESSAGE_BYTES,
+    );
+}
+
+fn page_with_prefetch(
+    backend: &BackendState,
+    account_id: &str,
+    page: MessagePage,
+) -> MessagePageDto {
+    schedule_page_body_prefetch(backend, account_id, &page);
+    page.into()
+}
+
 #[tauri::command]
 pub(crate) fn get_mailbox_capabilities(
     backend: State<'_, BackendState>,
@@ -467,7 +498,7 @@ pub(crate) async fn create_mailbox_role(
 }
 
 #[tauri::command]
-pub(crate) fn list_mailbox_page(
+pub(crate) async fn list_mailbox_page(
     backend: State<'_, BackendState>,
     account_id: String,
     role: MailboxRole,
@@ -480,7 +511,7 @@ pub(crate) fn list_mailbox_page(
     validate_page_size(page_size)?;
     let cursor = parse_cursor(cursor, false)?;
     let query = normalize_query(query)?;
-    backend
+    let page = backend
         .local_for(&account_id)?
         .list_mailbox_page(
             &account_id,
@@ -489,8 +520,8 @@ pub(crate) fn list_mailbox_page(
             page_size,
             query.as_deref(),
         )
-        .map(Into::into)
-        .map_err(safe_mail_error)
+        .map_err(safe_mail_error)?;
+    Ok(page_with_prefetch(&backend, &account_id, page))
 }
 
 #[tauri::command]
@@ -522,19 +553,27 @@ pub(crate) async fn load_older_mailbox_page(
         || local.remote_history_state != RemoteHistoryState::MayHaveMore
         || query.is_some()
     {
-        return Ok(local.into());
+        return Ok(page_with_prefetch(&backend, &account_id, local));
     }
 
     let _ = account.refresh_oauth_backends(&backend).await;
     let Ok(network) = backend.network_for(&account_id) else {
-        return Ok(offline_page(local).into());
+        return Ok(page_with_prefetch(
+            &backend,
+            &account_id,
+            offline_page(local),
+        ));
     };
     match network
         .load_older_mailbox_page(&account_id, role, &cursor, page_size, query.as_deref())
         .await
     {
-        Ok(page) => Ok(page.into()),
-        Err(error) if is_offline_history_error(&error) => Ok(offline_page(local).into()),
+        Ok(page) => Ok(page_with_prefetch(&backend, &account_id, page)),
+        Err(error) if is_offline_history_error(&error) => Ok(page_with_prefetch(
+            &backend,
+            &account_id,
+            offline_page(local),
+        )),
         Err(error) => Err(safe_mail_error(error)),
     }
 }
@@ -571,6 +610,7 @@ pub(crate) async fn fetch_mailbox_message(
     let (account_id, local) = active_local_backend(&backend)?;
     let _ = account.refresh_oauth_backends(&backend).await;
     if let Ok(network) = backend.network_for(&account_id) {
+        network.promote_body_prefetch_for_selection(&message_id);
         match network.fetch_message_by_id(&message_id, false).await {
             Ok(message) => {
                 return complete_mailbox_message_dto(&network, message_id, message);

@@ -342,6 +342,9 @@ impl Repository {
                  attachment_names_json TEXT NOT NULL DEFAULT '[]',
                  body_fetched INTEGER NOT NULL DEFAULT 0,
                  raw_rfc822 BLOB NOT NULL DEFAULT X'',
+                 body_cached_bytes INTEGER NOT NULL DEFAULT 0
+                     CHECK (body_cached_bytes >= 0),
+                 body_last_accessed_at TEXT,
                  synced_at TEXT NOT NULL,
                  UNIQUE (account_id, mailbox, uid),
                  FOREIGN KEY (account_id, mailbox)
@@ -565,13 +568,17 @@ impl Repository {
         migrate_immutable_draft_versions_v15(&connection)?;
         migrate_bcc_and_outbox_recipient_groups_v16(&connection)?;
         migrate_managed_attachment_digests_v17(&connection)?;
+        migrate_message_body_cache_v18(&connection)?;
         connection.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_drafts_remote_identity
                  ON drafts(account_id, remote_mailbox, remote_uid);
              CREATE INDEX IF NOT EXISTS idx_messages_preview_backfill
                  ON messages(account_id, mailbox, internal_date DESC, uid DESC)
                  WHERE preview_fetched = 0 AND body_fetched = 0;
-             PRAGMA user_version = 17;",
+             CREATE INDEX IF NOT EXISTS idx_messages_body_cache_lru
+                 ON messages(account_id, body_last_accessed_at, id)
+                 WHERE body_fetched = 1;
+             PRAGMA user_version = 18;",
         )?;
         Ok(repository)
     }
@@ -1133,10 +1140,23 @@ impl Repository {
                  account_id, mailbox, uid, message_id, in_reply_to_json, references_json, subject, sender_json,
                  to_json, cc_json, bcc_json, sent_at, internal_date, flags_json, size_bytes,
                  preview, preview_fetched, body_text, body_html, attachment_names_json, body_fetched,
-                 raw_rfc822, synced_at, public_id
+                 raw_rfc822, body_cached_bytes, body_last_accessed_at, synced_at, public_id
              ) VALUES (
                  ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
-                 ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24
+                 ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22,
+                 CASE
+                     WHEN ?21 THEN
+                         length(?22)
+                         + length(CAST(COALESCE(?18, '') AS BLOB))
+                         + length(CAST(COALESCE(?19, '') AS BLOB))
+                         + length(CAST(?20 AS BLOB))
+                     ELSE 0
+                 END,
+                 CASE
+                     WHEN ?21 THEN strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                     ELSE NULL
+                 END,
+                 ?23, ?24
              )
              ON CONFLICT(account_id, mailbox, uid) DO UPDATE SET
                  message_id = excluded.message_id,
@@ -1161,6 +1181,14 @@ impl Repository {
                  attachment_names_json = CASE WHEN excluded.body_fetched THEN excluded.attachment_names_json ELSE messages.attachment_names_json END,
                  body_fetched = MAX(messages.body_fetched, excluded.body_fetched),
                  raw_rfc822 = CASE WHEN excluded.body_fetched THEN excluded.raw_rfc822 ELSE messages.raw_rfc822 END,
+                 body_cached_bytes = CASE
+                     WHEN excluded.body_fetched THEN excluded.body_cached_bytes
+                     ELSE messages.body_cached_bytes
+                 END,
+                 body_last_accessed_at = CASE
+                     WHEN excluded.body_fetched THEN excluded.body_last_accessed_at
+                     ELSE messages.body_last_accessed_at
+                 END,
                  synced_at = excluded.synced_at",
             params![
                 message.account_id,
@@ -3117,6 +3145,106 @@ impl Repository {
         )?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(Into::into)
+    }
+
+    pub(crate) fn mailbox_body_prefetch_page_candidates(
+        &self,
+        account_id: &str,
+        mailbox: &str,
+        limit: usize,
+    ) -> Result<Vec<(String, u32)>> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT public_id, size_bytes FROM messages
+             WHERE account_id = ?1
+               AND mailbox = ?2
+               AND body_fetched = 0
+               AND size_bytes > 0
+             ORDER BY COALESCE(internal_date, sent_at, synced_at) DESC, uid DESC
+             LIMIT ?3",
+        )?;
+        let rows = statement
+            .query_map(params![account_id, mailbox, usize_to_i64(limit)], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    pub(crate) fn touch_message_body_access(&self, message_id: i64) -> Result<()> {
+        let connection = self.connection()?;
+        connection.execute(
+            "UPDATE messages
+             SET body_last_accessed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE id = ?1 AND body_fetched = 1",
+            params![message_id],
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn message_body_cache_usage_bytes(&self, account_id: &str) -> Result<u64> {
+        let connection = self.connection()?;
+        let total: i64 = connection.query_row(
+            "SELECT COALESCE(SUM(body_cached_bytes), 0)
+             FROM messages
+             WHERE account_id = ?1 AND body_fetched = 1",
+            params![account_id],
+            |row| row.get(0),
+        )?;
+        Ok(u64::try_from(total).unwrap_or(u64::MAX))
+    }
+
+    pub(crate) fn evict_message_body_cache_to_limit(
+        &self,
+        account_id: &str,
+        max_total_bytes: u64,
+        protected_message_id: Option<i64>,
+    ) -> Result<usize> {
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut total: i64 = transaction.query_row(
+            "SELECT COALESCE(SUM(body_cached_bytes), 0)
+             FROM messages
+             WHERE account_id = ?1 AND body_fetched = 1",
+            params![account_id],
+            |row| row.get(0),
+        )?;
+        let target = i64::try_from(max_total_bytes).unwrap_or(i64::MAX);
+        let mut evicted = 0usize;
+        while total > target {
+            let candidate = transaction
+                .query_row(
+                    "SELECT id, body_cached_bytes
+                     FROM messages
+                     WHERE account_id = ?1
+                       AND body_fetched = 1
+                       AND (?2 IS NULL OR id <> ?2)
+                     ORDER BY COALESCE(body_last_accessed_at, '') ASC, id ASC
+                     LIMIT 1",
+                    params![account_id, protected_message_id],
+                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+                )
+                .optional()?;
+            let Some((message_id, cached_bytes)) = candidate else {
+                break;
+            };
+            transaction.execute(
+                "UPDATE messages
+                 SET body_text = NULL,
+                     body_html = NULL,
+                     attachment_names_json = '[]',
+                     body_fetched = 0,
+                     raw_rfc822 = X'',
+                     body_cached_bytes = 0,
+                     body_last_accessed_at = NULL
+                 WHERE id = ?1",
+                params![message_id],
+            )?;
+            total = total.saturating_sub(cached_bytes.max(0));
+            evicted += 1;
+        }
+        transaction.commit()?;
+        Ok(evicted)
     }
 
     pub(crate) fn count_messages(&self, account_id: &str, mailbox: &str) -> Result<usize> {
@@ -6053,6 +6181,45 @@ fn migrate_managed_attachment_digests_v17(connection: &Connection) -> Result<()>
          END;",
     )?;
     transaction.commit()?;
+    Ok(())
+}
+
+fn migrate_message_body_cache_v18(connection: &Connection) -> Result<()> {
+    if !table_has_column(connection, "messages", "body_cached_bytes")? {
+        connection.execute_batch(
+            "ALTER TABLE messages
+                 ADD COLUMN body_cached_bytes INTEGER NOT NULL DEFAULT 0
+                 CHECK (body_cached_bytes >= 0);",
+        )?;
+    }
+    if !table_has_column(connection, "messages", "body_last_accessed_at")? {
+        connection.execute_batch(
+            "ALTER TABLE messages
+                 ADD COLUMN body_last_accessed_at TEXT;",
+        )?;
+    }
+    connection.execute_batch(
+        "UPDATE messages
+         SET body_cached_bytes =
+                 length(raw_rfc822)
+                 + length(CAST(COALESCE(body_text, '') AS BLOB))
+                 + length(CAST(COALESCE(body_html, '') AS BLOB))
+                 + length(CAST(attachment_names_json AS BLOB)),
+             body_last_accessed_at = COALESCE(
+                 body_last_accessed_at,
+                 synced_at,
+                 strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             )
+         WHERE body_fetched = 1
+           AND (
+               body_cached_bytes = 0
+               OR body_last_accessed_at IS NULL
+           );
+         UPDATE messages
+         SET body_cached_bytes = 0,
+             body_last_accessed_at = NULL
+         WHERE body_fetched = 0;",
+    )?;
     Ok(())
 }
 
@@ -11218,6 +11385,114 @@ mod tests {
     }
 
     #[test]
+    fn body_cache_lru_evicts_oldest_body_but_preserves_its_summary() {
+        let (_directory, repository, account) = setup();
+        let mut oldest = message(&account.account_id, true);
+        oldest.raw_rfc822 = vec![b'a'; 128];
+        oldest.preview = "Old preview remains".to_owned();
+        repository.upsert_message(&oldest).expect("oldest body");
+
+        let mut newest = message(&account.account_id, true);
+        newest.uid = 43;
+        newest.message_id = Some("message-43@example.com".to_owned());
+        newest.raw_rfc822 = vec![b'b'; 256];
+        repository.upsert_message(&newest).expect("newest body");
+
+        let connection = repository.connection().expect("cache timestamps");
+        connection
+            .execute(
+                "UPDATE messages
+                 SET body_last_accessed_at = CASE uid
+                     WHEN 42 THEN '2026-07-01T00:00:00.000Z'
+                     ELSE '2026-07-02T00:00:00.000Z'
+                 END
+                 WHERE account_id = ?1",
+                params![account.account_id],
+            )
+            .expect("ordered cache timestamps");
+        let newest_cached_bytes = u64::try_from(
+            connection
+                .query_row(
+                    "SELECT body_cached_bytes FROM messages
+                 WHERE account_id = ?1 AND uid = 43",
+                    params![account.account_id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .expect("newest cached bytes"),
+        )
+        .expect("non-negative newest cached bytes");
+        drop(connection);
+
+        assert_eq!(
+            repository
+                .evict_message_body_cache_to_limit(
+                    &account.account_id,
+                    newest_cached_bytes,
+                    Some(
+                        repository
+                            .get_message_by_uid(&account.account_id, "INBOX", 43)
+                            .expect("protected newest")
+                            .id,
+                    ),
+                )
+                .expect("eviction"),
+            1
+        );
+        let evicted = repository
+            .get_message_by_uid(&account.account_id, "INBOX", 42)
+            .expect("evicted summary");
+        assert!(!evicted.body_fetched);
+        assert!(evicted.raw_rfc822.is_empty());
+        assert_eq!(evicted.body_text, None);
+        assert_eq!(evicted.preview, "Old preview remains");
+        assert!(
+            repository
+                .get_message_by_uid(&account.account_id, "INBOX", 43)
+                .expect("retained body")
+                .body_fetched
+        );
+        assert!(
+            repository
+                .message_body_cache_usage_bytes(&account.account_id)
+                .expect("cache usage")
+                <= newest_cached_bytes
+        );
+    }
+
+    #[test]
+    fn touching_a_cached_body_updates_its_lru_timestamp() {
+        let (_directory, repository, account) = setup();
+        let cached = message(&account.account_id, true);
+        repository.upsert_message(&cached).expect("cached body");
+        let stored = repository
+            .get_message_by_uid(&account.account_id, "INBOX", cached.uid)
+            .expect("stored body");
+        let connection = repository.connection().expect("old timestamp");
+        connection
+            .execute(
+                "UPDATE messages
+                 SET body_last_accessed_at = '2000-01-01T00:00:00.000Z'
+                 WHERE id = ?1",
+                params![stored.id],
+            )
+            .expect("set old timestamp");
+        drop(connection);
+
+        repository
+            .touch_message_body_access(stored.id)
+            .expect("touch body");
+        let connection = repository.connection().expect("new timestamp");
+        let touched: String = connection
+            .query_row(
+                "SELECT body_last_accessed_at FROM messages WHERE id = ?1",
+                params![stored.id],
+                |row| row.get(0),
+            )
+            .expect("touched timestamp");
+        assert!(touched.as_str() > "2000-01-01T00:00:00.000Z");
+    }
+
+    #[test]
     fn mailbox_cursor_and_missing_uid_cleanup_round_trip() {
         let (_directory, repository, account) = setup();
         repository
@@ -12329,6 +12604,74 @@ mod tests {
     }
 
     #[test]
+    fn body_cache_migration_backfills_utf8_bytes_and_access_time() {
+        let connection = Connection::open_in_memory().expect("legacy database");
+        let body_text = "你好";
+        let body_html = "<p>邮件</p>";
+        let attachment_names = "[\"附件.txt\"]";
+        let raw = b"raw-message";
+        connection
+            .execute_batch(
+                "CREATE TABLE messages (
+                     id INTEGER PRIMARY KEY,
+                     body_text TEXT,
+                     body_html TEXT,
+                     attachment_names_json TEXT NOT NULL DEFAULT '[]',
+                     body_fetched INTEGER NOT NULL DEFAULT 0,
+                     raw_rfc822 BLOB NOT NULL DEFAULT X'',
+                     synced_at TEXT NOT NULL
+                 );",
+            )
+            .expect("legacy messages");
+        connection
+            .execute(
+                "INSERT INTO messages (
+                     id, body_text, body_html, attachment_names_json,
+                     body_fetched, raw_rfc822, synced_at
+                 ) VALUES (
+                     1, ?1, ?2, ?3, 1, ?4, '2026-07-01T00:00:00.000Z'
+                 ), (
+                     2, NULL, NULL, '[]', 0, X'', '2026-07-02T00:00:00.000Z'
+                 )",
+                params![body_text, body_html, attachment_names, raw],
+            )
+            .expect("legacy body rows");
+
+        super::migrate_message_body_cache_v18(&connection).expect("body cache migration");
+
+        let (cached_bytes, accessed_at): (i64, String) = connection
+            .query_row(
+                "SELECT body_cached_bytes, body_last_accessed_at
+                 FROM messages WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("migrated cached body");
+        let expected = raw.len() + body_text.len() + body_html.len() + attachment_names.len();
+        assert_eq!(cached_bytes, i64::try_from(expected).unwrap());
+        assert_eq!(accessed_at, "2026-07-01T00:00:00.000Z");
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT body_cached_bytes FROM messages WHERE id = 2",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .expect("uncached row"),
+            0
+        );
+        assert!(
+            connection
+                .query_row(
+                    "SELECT body_last_accessed_at IS NULL FROM messages WHERE id = 2",
+                    [],
+                    |row| row.get::<_, bool>(0),
+                )
+                .expect("uncached access time")
+        );
+    }
+
+    #[test]
     fn v14_migrates_existing_message_public_id_once_and_enforces_integrity() {
         let directory = TempDir::new().expect("temporary directory");
         let path = directory.path().join("real-v13-public-id.sqlite3");
@@ -12368,7 +12711,7 @@ mod tests {
         let version: u32 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("schema version");
-        assert_eq!(version, 17);
+        assert_eq!(version, 18);
         assert!(
             connection
                 .execute(
@@ -12425,7 +12768,7 @@ mod tests {
         let version: u32 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("schema version");
-        assert_eq!(version, 17);
+        assert_eq!(version, 18);
         assert!(super::table_has_column(&connection, "messages", "bcc_json").unwrap());
         let seen_targets = {
             let mut statement = connection
@@ -12572,7 +12915,7 @@ mod tests {
                     .expect("schema version connection")
                     .pragma_query_value(None, "user_version", |row| row.get::<_, u32>(0))
                     .expect("schema version"),
-                17
+                18
             );
 
             assert_eq!(
@@ -13310,7 +13653,7 @@ mod tests {
         let version: u32 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("schema version");
-        assert_eq!(version, 17);
+        assert_eq!(version, 18);
         for column in ["source_cleanup_pending", "destination_reconciled"] {
             assert!(
                 super::table_has_column(&connection, "pending_message_actions", column).unwrap()
@@ -13427,7 +13770,7 @@ mod tests {
         let version: u32 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("schema version");
-        assert_eq!(version, 17);
+        assert_eq!(version, 18);
         for column in [
             "operation_id",
             "source_uid_validity",
@@ -13576,7 +13919,7 @@ Body' AS BLOB)
         let version: u32 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("schema version");
-        assert_eq!(version, 17);
+        assert_eq!(version, 18);
         for column in [
             "local_version",
             "has_unsupported_content",

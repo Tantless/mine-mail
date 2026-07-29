@@ -112,8 +112,20 @@ must be updated here when an intentional product change lands.
   Outbox items not yet confirmed sent. Zero counts are omitted. Starred,
   Contacts, Sent, Drafts, Archive, and Trash never show numeric badges.
 - Selecting a message paints its cached preview immediately and hydrates the body
-  silently. After synchronization, Rust may prefetch a recent bounded set of
-  bounded-size bodies.
+  silently. A selected message uses a foreground fetch lane that outranks queued
+  prefetch work; queued neighbors are promoted, and an identical in-flight
+  download is shared instead of requested twice.
+- Returning a mailbox page schedules its uncached bodies as background candidates
+  in visible order. The default 50-message page may cache at most 16 MiB and skips
+  individual messages larger than 2 MiB; synchronization may additionally
+  schedule the 20 most recent bounded candidates within 8 MiB. Loading another
+  page cancels page work that has not started. These are opportunistic caches,
+  not a guarantee that every listed body is downloaded.
+- Full-body cache payloads have a 512 MiB device budget shared evenly across
+  connected accounts. Least-recently-used bodies are evicted first while their
+  list summaries and bounded previews remain available; selecting an evicted
+  message downloads it again. Drafts, Outbox state, and explicitly managed
+  attachment files are outside this eviction policy.
 - Inbox, Sent, Archive, and Trash use opaque keyset pagination. The default page
   contains 50 messages and a caller may request at most 100. A cursor is bound to
   the account, mailbox role, UIDVALIDITY epoch, stable sort position, remote

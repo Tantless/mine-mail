@@ -1,13 +1,21 @@
 use std::{
-    collections::{BTreeSet, HashMap, HashSet},
+    cmp::Ordering,
+    collections::{BTreeSet, BinaryHeap, HashMap, HashSet},
     io,
     path::{Path, PathBuf},
+    sync::{
+        Arc, Mutex as StdMutex,
+        atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering},
+    },
     time::Duration,
 };
 
 use chrono::{DateTime, SecondsFormat, TimeDelta, Utc};
 use serde::{Deserialize, Serialize};
-use tokio::{sync::Mutex, time::Instant};
+use tokio::{
+    sync::{Mutex, Semaphore},
+    time::Instant,
+};
 use uuid::Uuid;
 
 use crate::{
@@ -68,6 +76,10 @@ const MAX_MESSAGE_PAGE_SIZE: usize = 100;
 const HISTORY_FETCH_PAGE_SIZE: usize = 50;
 const PERMANENT_DELETE_PLAN_MINUTES: i64 = 5;
 const MAX_PENDING_DELETE_PLANS: usize = 64;
+const BODY_PREFETCH_PRIORITY_RECENT: u8 = 0;
+const BODY_PREFETCH_PRIORITY_PAGE: u8 = 1;
+const BODY_PREFETCH_PRIORITY_NEIGHBOR: u8 = 2;
+const BODY_PREFETCH_NEIGHBOR_RADIUS: usize = 2;
 
 fn normalize_owned_compose_html(mut request: ComposeRequest) -> ComposeRequest {
     request.format.body_html = sanitize_compose_html(request.format.body_html.as_deref());
@@ -93,6 +105,160 @@ where
 struct BodyImapSession {
     connection: ImapConnection,
     last_used: Instant,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BodyFetchLane {
+    Foreground,
+    Prefetch,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct BodyDownloadKey {
+    mailbox: String,
+    uid: u32,
+}
+
+struct BodyDownloadOwner<'a> {
+    downloads: &'a StdMutex<HashMap<BodyDownloadKey, Arc<Semaphore>>>,
+    key: BodyDownloadKey,
+    signal: Arc<Semaphore>,
+}
+
+impl Drop for BodyDownloadOwner<'_> {
+    fn drop(&mut self) {
+        let mut downloads = self
+            .downloads
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if downloads
+            .get(&self.key)
+            .is_some_and(|current| Arc::ptr_eq(current, &self.signal))
+        {
+            downloads.remove(&self.key);
+        }
+        self.signal.close();
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct BodyPrefetchJob {
+    public_id: String,
+    priority: u8,
+    sequence: u64,
+    page_generation: Option<u64>,
+}
+
+impl Ord for BodyPrefetchJob {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.priority
+            .cmp(&other.priority)
+            .then_with(|| other.sequence.cmp(&self.sequence))
+            .then_with(|| self.public_id.cmp(&other.public_id))
+    }
+}
+
+impl PartialOrd for BodyPrefetchJob {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct QueuedBodyPrefetch {
+    priority: u8,
+    sequence: u64,
+    page_generation: Option<u64>,
+}
+
+#[derive(Default)]
+struct BodyPrefetchQueue {
+    jobs: BinaryHeap<BodyPrefetchJob>,
+    queued: HashMap<String, QueuedBodyPrefetch>,
+    current_page: Vec<String>,
+}
+
+impl BodyPrefetchQueue {
+    fn cancel_page_jobs(&mut self) {
+        self.queued
+            .retain(|_, queued| queued.page_generation.is_none());
+    }
+
+    fn enqueue(
+        &mut self,
+        public_id: String,
+        priority: u8,
+        sequence: u64,
+        page_generation: Option<u64>,
+    ) -> bool {
+        if self
+            .queued
+            .get(&public_id)
+            .is_some_and(|queued| queued.priority > priority)
+        {
+            return false;
+        }
+        self.queued.insert(
+            public_id.clone(),
+            QueuedBodyPrefetch {
+                priority,
+                sequence,
+                page_generation,
+            },
+        );
+        self.jobs.push(BodyPrefetchJob {
+            public_id,
+            priority,
+            sequence,
+            page_generation,
+        });
+        true
+    }
+
+    fn pop_next(&mut self, current_page_generation: u64) -> Option<BodyPrefetchJob> {
+        while let Some(job) = self.jobs.pop() {
+            let Some(queued) = self.queued.get(&job.public_id).copied() else {
+                continue;
+            };
+            if queued.sequence != job.sequence {
+                continue;
+            }
+            if job
+                .page_generation
+                .is_some_and(|generation| generation != current_page_generation)
+            {
+                self.queued.remove(&job.public_id);
+                continue;
+            }
+            self.queued.remove(&job.public_id);
+            return Some(job);
+        }
+        None
+    }
+}
+
+fn bounded_body_prefetch_ids(
+    candidates: impl IntoIterator<Item = (String, u32)>,
+    max_total_bytes: u64,
+    max_message_bytes: u32,
+) -> Vec<String> {
+    if max_total_bytes == 0 || max_message_bytes == 0 {
+        return Vec::new();
+    }
+    let mut selected = Vec::new();
+    let mut total_bytes = 0u64;
+    for (public_id, size_bytes) in candidates {
+        if size_bytes == 0 || size_bytes > max_message_bytes {
+            continue;
+        }
+        let next_total = total_bytes.saturating_add(u64::from(size_bytes));
+        if next_total > max_total_bytes {
+            continue;
+        }
+        total_bytes = next_total;
+        selected.push(public_id);
+    }
+    selected
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -384,6 +550,13 @@ pub struct MailBackend {
     sent_imap_gate: Mutex<()>,
     draft_imap_gate: Mutex<()>,
     body_imap: Mutex<Option<BodyImapSession>>,
+    body_prefetch_imap: Mutex<Option<BodyImapSession>>,
+    body_downloads: StdMutex<HashMap<BodyDownloadKey, Arc<Semaphore>>>,
+    body_prefetch_queue: StdMutex<BodyPrefetchQueue>,
+    body_prefetch_worker_started: AtomicBool,
+    body_prefetch_page_generation: AtomicU64,
+    body_prefetch_sequence: AtomicU64,
+    body_cache_budget_bytes: AtomicU64,
     permanent_delete_plans: Mutex<HashMap<String, PermanentDeletePlanState>>,
     smtp_gate: Mutex<()>,
 }
@@ -413,6 +586,13 @@ impl MailBackend {
             sent_imap_gate: Mutex::new(()),
             draft_imap_gate: Mutex::new(()),
             body_imap: Mutex::new(None),
+            body_prefetch_imap: Mutex::new(None),
+            body_downloads: StdMutex::new(HashMap::new()),
+            body_prefetch_queue: StdMutex::new(BodyPrefetchQueue::default()),
+            body_prefetch_worker_started: AtomicBool::new(false),
+            body_prefetch_page_generation: AtomicU64::new(0),
+            body_prefetch_sequence: AtomicU64::new(0),
+            body_cache_budget_bytes: AtomicU64::new(u64::MAX),
             permanent_delete_plans: Mutex::new(HashMap::new()),
             smtp_gate: Mutex::new(()),
         })
@@ -3376,6 +3556,243 @@ impl MailBackend {
             .get_message_by_uid(&self.config.account_id, &mailbox, message.uid)
     }
 
+    pub fn set_body_cache_budget_bytes(&self, max_total_bytes: u64) {
+        self.body_cache_budget_bytes
+            .store(max_total_bytes, AtomicOrdering::Release);
+    }
+
+    pub fn body_cache_budget_bytes(&self) -> u64 {
+        self.body_cache_budget_bytes.load(AtomicOrdering::Acquire)
+    }
+
+    pub fn body_cache_usage_bytes(&self) -> Result<u64> {
+        self.repository
+            .message_body_cache_usage_bytes(&self.config.account_id)
+    }
+
+    pub fn enforce_body_cache_budget(&self, protected_message_id: Option<i64>) -> Result<usize> {
+        let max_total_bytes = self.body_cache_budget_bytes();
+        if max_total_bytes == u64::MAX {
+            return Ok(0);
+        }
+        self.repository.evict_message_body_cache_to_limit(
+            &self.config.account_id,
+            max_total_bytes,
+            protected_message_id,
+        )
+    }
+
+    pub fn schedule_page_body_prefetch(
+        self: &Arc<Self>,
+        candidates: Vec<(String, u32, bool)>,
+        max_total_bytes: u64,
+        max_message_bytes: u32,
+    ) -> usize {
+        let generation = self
+            .body_prefetch_page_generation
+            .fetch_add(1, AtomicOrdering::AcqRel)
+            .wrapping_add(1);
+        let current_page = candidates
+            .iter()
+            .map(|(public_id, _, _)| public_id.clone())
+            .collect();
+        let selected = bounded_body_prefetch_ids(
+            candidates
+                .iter()
+                .filter(|(_, _, body_fetched)| !body_fetched)
+                .map(|(public_id, size_bytes, _)| (public_id.clone(), *size_bytes)),
+            max_total_bytes,
+            max_message_bytes,
+        );
+        let mut queue = self
+            .body_prefetch_queue
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        queue.cancel_page_jobs();
+        queue.current_page = current_page;
+        let mut queued = 0usize;
+        for public_id in selected {
+            let sequence = self
+                .body_prefetch_sequence
+                .fetch_add(1, AtomicOrdering::Relaxed);
+            if queue.enqueue(
+                public_id,
+                BODY_PREFETCH_PRIORITY_PAGE,
+                sequence,
+                Some(generation),
+            ) {
+                queued += 1;
+            }
+        }
+        drop(queue);
+        if queued > 0 {
+            self.start_body_prefetch_worker();
+        }
+        queued
+    }
+
+    pub fn promote_body_prefetch_for_selection(self: &Arc<Self>, public_id: &str) {
+        let mut queue = self
+            .body_prefetch_queue
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        queue.queued.remove(public_id);
+        let Some(selected_index) = queue
+            .current_page
+            .iter()
+            .position(|candidate| candidate == public_id)
+        else {
+            return;
+        };
+        let start = selected_index.saturating_sub(BODY_PREFETCH_NEIGHBOR_RADIUS);
+        let end =
+            (selected_index + BODY_PREFETCH_NEIGHBOR_RADIUS + 1).min(queue.current_page.len());
+        let neighbors = queue.current_page[start..end]
+            .iter()
+            .filter(|candidate| candidate.as_str() != public_id)
+            .filter(|candidate| queue.queued.contains_key(candidate.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
+        let generation = self
+            .body_prefetch_page_generation
+            .load(AtomicOrdering::Acquire);
+        let mut promoted = 0usize;
+        for neighbor in neighbors {
+            let sequence = self
+                .body_prefetch_sequence
+                .fetch_add(1, AtomicOrdering::Relaxed);
+            if queue.enqueue(
+                neighbor,
+                BODY_PREFETCH_PRIORITY_NEIGHBOR,
+                sequence,
+                Some(generation),
+            ) {
+                promoted += 1;
+            }
+        }
+        drop(queue);
+        if promoted > 0 {
+            self.start_body_prefetch_worker();
+        }
+    }
+
+    pub fn schedule_inbox_body_prefetch(
+        self: &Arc<Self>,
+        limit: usize,
+        max_total_bytes: u64,
+        max_message_bytes: u32,
+    ) -> Result<usize> {
+        self.schedule_recent_mailbox_body_prefetch(INBOX, limit, max_total_bytes, max_message_bytes)
+    }
+
+    pub fn schedule_sent_body_prefetch(
+        self: &Arc<Self>,
+        limit: usize,
+        max_total_bytes: u64,
+        max_message_bytes: u32,
+    ) -> Result<usize> {
+        let mailbox = self
+            .repository
+            .mailbox_for_role(&self.config.account_id, "sent")?;
+        self.schedule_recent_mailbox_body_prefetch(
+            &mailbox,
+            limit,
+            max_total_bytes,
+            max_message_bytes,
+        )
+    }
+
+    fn schedule_recent_mailbox_body_prefetch(
+        self: &Arc<Self>,
+        mailbox: &str,
+        limit: usize,
+        max_total_bytes: u64,
+        max_message_bytes: u32,
+    ) -> Result<usize> {
+        if limit == 0 || max_total_bytes == 0 || max_message_bytes == 0 {
+            return Ok(0);
+        }
+        let candidates = self.repository.mailbox_body_prefetch_page_candidates(
+            &self.config.account_id,
+            mailbox,
+            limit,
+        )?;
+        let selected = bounded_body_prefetch_ids(candidates, max_total_bytes, max_message_bytes);
+        let mut queue = self
+            .body_prefetch_queue
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut queued = 0usize;
+        for public_id in selected {
+            let sequence = self
+                .body_prefetch_sequence
+                .fetch_add(1, AtomicOrdering::Relaxed);
+            if queue.enqueue(public_id, BODY_PREFETCH_PRIORITY_RECENT, sequence, None) {
+                queued += 1;
+            }
+        }
+        drop(queue);
+        if queued > 0 {
+            self.start_body_prefetch_worker();
+        }
+        Ok(queued)
+    }
+
+    fn start_body_prefetch_worker(self: &Arc<Self>) {
+        if self
+            .body_prefetch_worker_started
+            .compare_exchange(false, true, AtomicOrdering::AcqRel, AtomicOrdering::Acquire)
+            .is_ok()
+        {
+            let backend = Arc::clone(self);
+            if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+                runtime.spawn(async move {
+                    backend.run_body_prefetch_worker().await;
+                });
+            } else {
+                self.body_prefetch_worker_started
+                    .store(false, AtomicOrdering::Release);
+            }
+        }
+    }
+
+    async fn run_body_prefetch_worker(self: Arc<Self>) {
+        loop {
+            let generation = self
+                .body_prefetch_page_generation
+                .load(AtomicOrdering::Acquire);
+            let next = self
+                .body_prefetch_queue
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .pop_next(generation);
+            if let Some(job) = next {
+                let _ = self
+                    .fetch_message_by_id_in_lane(&job.public_id, false, BodyFetchLane::Prefetch)
+                    .await;
+                continue;
+            }
+
+            self.body_prefetch_worker_started
+                .store(false, AtomicOrdering::Release);
+            let has_more = !self
+                .body_prefetch_queue
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .queued
+                .is_empty();
+            if has_more
+                && self
+                    .body_prefetch_worker_started
+                    .compare_exchange(false, true, AtomicOrdering::AcqRel, AtomicOrdering::Acquire)
+                    .is_ok()
+            {
+                continue;
+            }
+            return;
+        }
+    }
+
     pub async fn prefetch_inbox_bodies(
         &self,
         limit: usize,
@@ -3423,7 +3840,7 @@ impl MailBackend {
                 continue;
             }
             if self
-                .fetch_mailbox_message(mailbox, uid, false)
+                .fetch_mailbox_message_in_lane(mailbox, uid, false, BodyFetchLane::Prefetch)
                 .await
                 .is_ok()
             {
@@ -3448,10 +3865,20 @@ impl MailBackend {
     /// Hydrates a keyset-page item without accepting an arbitrary mailbox name
     /// or UID from the desktop UI.
     pub async fn fetch_message_by_id(&self, public_id: &str, force: bool) -> Result<InboxMessage> {
+        self.fetch_message_by_id_in_lane(public_id, force, BodyFetchLane::Foreground)
+            .await
+    }
+
+    async fn fetch_message_by_id_in_lane(
+        &self,
+        public_id: &str,
+        force: bool,
+        lane: BodyFetchLane,
+    ) -> Result<InboxMessage> {
         let message = self
             .repository
             .get_message_by_public_id(&self.config.account_id, public_id)?;
-        self.fetch_mailbox_message(&message.mailbox, message.uid, force)
+        self.fetch_mailbox_message_in_lane(&message.mailbox, message.uid, force, lane)
             .await
     }
 
@@ -3481,6 +3908,17 @@ impl MailBackend {
         uid: u32,
         force: bool,
     ) -> Result<InboxMessage> {
+        self.fetch_mailbox_message_in_lane(mailbox, uid, force, BodyFetchLane::Foreground)
+            .await
+    }
+
+    async fn fetch_mailbox_message_in_lane(
+        &self,
+        mailbox: &str,
+        uid: u32,
+        force: bool,
+        lane: BodyFetchLane,
+    ) -> Result<InboxMessage> {
         if uid == 0 {
             return Err(MailError::Validation(
                 "message UID must be greater than zero".to_owned(),
@@ -3492,6 +3930,9 @@ impl MailBackend {
             .get_message_by_uid(&self.config.account_id, mailbox, uid)
         {
             Ok(message) if message.body_fetched && !force => {
+                if lane == BodyFetchLane::Foreground {
+                    self.repository.touch_message_body_access(message.id)?;
+                }
                 return self.repair_cached_inline_images(message);
             }
             Ok(message) if message.size_bytes > MAX_CACHED_MESSAGE_BYTES => {
@@ -3503,7 +3944,63 @@ impl MailBackend {
             Err(error) => return Err(error),
         }
 
-        let mut body_imap = self.body_imap.lock().await;
+        let key = BodyDownloadKey {
+            mailbox: mailbox.to_owned(),
+            uid,
+        };
+        loop {
+            let (owner_signal, waiter) = {
+                let mut downloads = self
+                    .body_downloads
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                if let Some(signal) = downloads.get(&key) {
+                    (None, Some(signal.clone().acquire_owned()))
+                } else {
+                    let signal = Arc::new(Semaphore::new(0));
+                    downloads.insert(key.clone(), signal.clone());
+                    (Some(signal), None)
+                }
+            };
+            if let Some(waiter) = waiter {
+                let _ = waiter.await;
+                if !force
+                    && let Ok(message) =
+                        self.repository
+                            .get_message_by_uid(&self.config.account_id, mailbox, uid)
+                    && message.body_fetched
+                {
+                    if lane == BodyFetchLane::Foreground {
+                        self.repository.touch_message_body_access(message.id)?;
+                    }
+                    return self.repair_cached_inline_images(message);
+                }
+                continue;
+            }
+
+            let _owner = BodyDownloadOwner {
+                downloads: &self.body_downloads,
+                key: key.clone(),
+                signal: owner_signal.expect("a new body download owns its signal"),
+            };
+            return self
+                .fetch_mailbox_message_owner(mailbox, uid, force, lane)
+                .await;
+        }
+    }
+
+    async fn fetch_mailbox_message_owner(
+        &self,
+        mailbox: &str,
+        uid: u32,
+        force: bool,
+        lane: BodyFetchLane,
+    ) -> Result<InboxMessage> {
+        let body_imap = match lane {
+            BodyFetchLane::Foreground => &self.body_imap,
+            BodyFetchLane::Prefetch => &self.body_prefetch_imap,
+        };
+        let mut body_imap = body_imap.lock().await;
         let connection_is_stale = match body_imap.as_mut() {
             Some(session) if session.last_used.elapsed() >= BODY_IMAP_KEEPALIVE_INTERVAL => {
                 session.connection.noop().await.is_err()
@@ -3518,14 +4015,15 @@ impl MailBackend {
             });
         }
 
-        // A foreground request may have queued behind a prefetch of the same
-        // UID. Recheck SQLite after acquiring the body-session actor.
         if !force
             && let Ok(message) =
                 self.repository
                     .get_message_by_uid(&self.config.account_id, mailbox, uid)
             && message.body_fetched
         {
+            if lane == BodyFetchLane::Foreground {
+                self.repository.touch_message_body_access(message.id)?;
+            }
             return self.repair_cached_inline_images(message);
         }
 
@@ -3579,8 +4077,11 @@ impl MailBackend {
                 },
             )?;
             self.repository.upsert_message(&message)?;
-            self.repository
-                .get_message_by_uid(&self.config.account_id, mailbox, uid)
+            let stored =
+                self.repository
+                    .get_message_by_uid(&self.config.account_id, mailbox, uid)?;
+            self.enforce_body_cache_budget(Some(stored.id))?;
+            Ok(stored)
         }
         .await;
         match result {
@@ -5716,12 +6217,15 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
+        BODY_PREFETCH_PRIORITY_NEIGHBOR, BODY_PREFETCH_PRIORITY_PAGE,
+        BODY_PREFETCH_PRIORITY_RECENT, BodyDownloadKey, BodyDownloadOwner, BodyPrefetchQueue,
         DraftReconciliation, INBOX, InboxUidScope, MailBackend, RemoteDraftCandidate,
-        RemoteForkPreservation, advance_draft_sync_progress, classify_draft_reconciliation,
-        classify_inbox_uid_scope, confirmed_created_mailbox_capability,
-        discovered_mailbox_capability, draft_record_matches_remote, earlier_history_bound,
-        mailbox_hint_changed, normalized_message_page_size, remote_candidates_equivalent,
-        remote_draft_candidate, validate_delivery_unknown_attempt, validate_manual_retry,
+        RemoteForkPreservation, advance_draft_sync_progress, bounded_body_prefetch_ids,
+        classify_draft_reconciliation, classify_inbox_uid_scope,
+        confirmed_created_mailbox_capability, discovered_mailbox_capability,
+        draft_record_matches_remote, earlier_history_bound, mailbox_hint_changed,
+        normalized_message_page_size, remote_candidates_equivalent, remote_draft_candidate,
+        validate_delivery_unknown_attempt, validate_manual_retry,
     };
     use crate::{
         AccountConfig, ComposeFormat, ComposeRequest, ContactMessageDirection, Draft,
@@ -5751,6 +6255,105 @@ mod tests {
             format: Default::default(),
             reply_context: None,
         }
+    }
+
+    #[test]
+    fn body_prefetch_budget_keeps_order_and_skips_oversized_candidates() {
+        let selected = bounded_body_prefetch_ids(
+            [
+                ("first".to_owned(), 512 * 1024),
+                ("oversized".to_owned(), 3 * 1024 * 1024),
+                ("second".to_owned(), 1536 * 1024),
+                ("over-budget".to_owned(), 1),
+            ],
+            2 * 1024 * 1024,
+            2 * 1024 * 1024,
+        );
+
+        assert_eq!(selected, vec!["first", "second"]);
+    }
+
+    #[test]
+    fn body_prefetch_queue_prioritizes_neighbors_and_drops_stale_pages() {
+        let mut queue = BodyPrefetchQueue::default();
+        assert!(queue.enqueue("recent".to_owned(), BODY_PREFETCH_PRIORITY_RECENT, 1, None,));
+        assert!(queue.enqueue("page".to_owned(), BODY_PREFETCH_PRIORITY_PAGE, 2, Some(7),));
+        assert!(queue.enqueue(
+            "neighbor".to_owned(),
+            BODY_PREFETCH_PRIORITY_NEIGHBOR,
+            3,
+            Some(7),
+        ));
+        assert!(queue.enqueue(
+            "stale".to_owned(),
+            BODY_PREFETCH_PRIORITY_NEIGHBOR,
+            4,
+            Some(6),
+        ));
+
+        assert_eq!(
+            queue.pop_next(7).map(|job| job.public_id),
+            Some("neighbor".to_owned())
+        );
+        assert_eq!(
+            queue.pop_next(7).map(|job| job.public_id),
+            Some("page".to_owned())
+        );
+        assert_eq!(
+            queue.pop_next(7).map(|job| job.public_id),
+            Some("recent".to_owned())
+        );
+        assert!(queue.pop_next(7).is_none());
+    }
+
+    #[test]
+    fn body_prefetch_queue_promotes_an_existing_page_job() {
+        let mut queue = BodyPrefetchQueue::default();
+        assert!(queue.enqueue(
+            "selected-neighbor".to_owned(),
+            BODY_PREFETCH_PRIORITY_PAGE,
+            1,
+            Some(8),
+        ));
+        assert!(queue.enqueue(
+            "selected-neighbor".to_owned(),
+            BODY_PREFETCH_PRIORITY_NEIGHBOR,
+            2,
+            Some(8),
+        ));
+
+        let promoted = queue.pop_next(8).expect("promoted job");
+        assert_eq!(promoted.public_id, "selected-neighbor");
+        assert_eq!(promoted.priority, BODY_PREFETCH_PRIORITY_NEIGHBOR);
+        assert!(queue.pop_next(8).is_none());
+    }
+
+    #[tokio::test]
+    async fn body_download_waiter_observes_completion_even_before_first_poll() {
+        let key = BodyDownloadKey {
+            mailbox: INBOX.to_owned(),
+            uid: 42,
+        };
+        let signal = Arc::new(tokio::sync::Semaphore::new(0));
+        let downloads = std::sync::Mutex::new(std::collections::HashMap::from([(
+            key.clone(),
+            signal.clone(),
+        )]));
+        let waiter = signal.clone().acquire_owned();
+
+        drop(BodyDownloadOwner {
+            downloads: &downloads,
+            key,
+            signal,
+        });
+
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), waiter)
+                .await
+                .expect("closed download signal must resolve")
+                .is_err()
+        );
+        assert!(downloads.lock().expect("download registry").is_empty());
     }
 
     fn scoped_account_config(account_id: &str, email: &str) -> AccountConfig {
