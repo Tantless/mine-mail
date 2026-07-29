@@ -334,7 +334,8 @@ must be updated here when an intentional product change lands.
   account has an independent compose session and sender identity. Returning to
   the source account restores its session as the minimized compose bar. A local
   save failure leaves the current account and editor in place instead of risking
-  cross-account or unsaved state.
+  cross-account or unsaved state. Activating **写信** while the active account's
+  session is minimized restores that session instead of creating another one.
 - Compose window geometry and its visual behavior follow `../DESIGN.md`.
 
 ## Replies and forwarding

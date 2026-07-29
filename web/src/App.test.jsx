@@ -565,6 +565,25 @@ describe("Mine Mail MVP", () => {
     expect(document.querySelector(".toast")).toBeNull();
   });
 
+  it("restores the minimized composer from the primary compose action", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findAllByText("欢迎来到 Mine Mail");
+
+    await user.click(screen.getByRole("button", { name: "写信" }));
+    await user.type(screen.getByLabelText("主题"), "继续写这封邮件");
+    const dialog = screen.getByRole("dialog", { name: "新邮件" });
+    minimizeComposer(dialog);
+
+    expect(dialog.dataset.minimized).toBe("true");
+    await user.click(screen.getByRole("button", { name: "写信" }));
+
+    expect(dialog.dataset.minimized).toBe("false");
+    expect(dialog.dataset.windowMotion).toBe("restoring");
+    expect(screen.getByLabelText("主题").value).toBe("继续写这封邮件");
+    expect(screen.getAllByRole("dialog")).toHaveLength(1);
+  });
+
   it("minimizes an untouched composer without creating an empty draft", async () => {
     const saveDraft = vi.spyOn(mailApi, "saveDraft");
     const user = userEvent.setup();

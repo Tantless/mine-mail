@@ -403,6 +403,7 @@ export function ComposePanel({
   locked = false,
   readOnly = false,
   initiallyMinimized = false,
+  restoreRequest = 0,
   networkAvailable = true,
   onClose,
   onDiscard,
@@ -444,6 +445,7 @@ export function ComposePanel({
   const minimizedGeometryRef = useRef(
     initiallyMinimized ? initialGeometryRef.current.normal : null,
   );
+  const lastRestoreRequestRef = useRef(restoreRequest);
   const dialogRef = useRef(null);
   const restoreFocusRef = useRef(
     typeof document !== "undefined" &&
@@ -600,17 +602,27 @@ export function ComposePanel({
     document.body.style.cursor = getComputedStyle(event.currentTarget).cursor;
   };
 
-  const toggleMinimized = () => {
+  const restoreComposer = useCallback(() => {
+    if (!isMinimized) return false;
     endInteraction();
-    if (isMinimized) {
-      commitGeometry(
-        constrainGeometry(minimizedGeometryRef.current || loadInitialGeometry()),
-      );
-      minimizedGeometryRef.current = null;
-      setWindowMotion("restoring");
-      setIsMinimized(false);
-      return;
-    }
+    commitGeometry(
+      constrainGeometry(minimizedGeometryRef.current || loadInitialGeometry()),
+    );
+    minimizedGeometryRef.current = null;
+    setWindowMotion("restoring");
+    setIsMinimized(false);
+    return true;
+  }, [commitGeometry, endInteraction, isMinimized]);
+
+  useEffect(() => {
+    if (lastRestoreRequestRef.current === restoreRequest) return;
+    lastRestoreRequestRef.current = restoreRequest;
+    restoreComposer();
+  }, [restoreComposer, restoreRequest]);
+
+  const toggleMinimized = () => {
+    if (restoreComposer()) return;
+    endInteraction();
     minimizedGeometryRef.current = geometryRef.current;
     commitGeometry(minimizedGeometry());
     setWindowMotion("minimizing");

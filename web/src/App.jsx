@@ -602,6 +602,7 @@ export function App() {
   const [isThemeMenuOpen, setIsThemeMenuOpen] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [composer, setComposer] = useState(null);
+  const [composeRestoreRequest, setComposeRestoreRequest] = useState(0);
   const [pendingSend, setPendingSend] = useState(null);
   const [isSending, setIsSending] = useState(false);
   const [retryingOutboxId, setRetryingOutboxId] = useState(null);
@@ -924,6 +925,14 @@ export function App() {
     },
     [commitComposer],
   );
+
+  const openOrRestoreComposer = useCallback(() => {
+    if (composerRef.current) {
+      setComposeRestoreRequest((request) => request + 1);
+      return composerRef.current;
+    }
+    return openComposer();
+  }, [openComposer]);
 
   const clearSelection = useCallback((options = {}) => {
     const navigationIntentId = options?.navigationIntentId ?? null;
@@ -5688,7 +5697,7 @@ export function App() {
               ? accountBackendUnavailable
                 ? openAccountRepair()
                 : openAccountSetup()
-              : openComposer()
+              : openOrRestoreComposer()
           }
           theme={theme}
           onThemeChange={(nextTheme) => {
@@ -5873,6 +5882,7 @@ export function App() {
           locked={composer.locked}
           readOnly={composer.readOnlyUnsupported}
           initiallyMinimized={composer.startMinimized}
+          restoreRequest={composeRestoreRequest}
           networkAvailable={networkActionsAvailable}
           onClose={() => void handleCloseComposer()}
           onDiscard={() => void handleDiscardComposer()}
