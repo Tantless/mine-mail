@@ -524,6 +524,23 @@ describe("release-state accessibility and reflow contracts", () => {
     ).toMatch(/background:\s*transparent/);
   });
 
+  it("insets an adjacent mail hover surface without moving rows", () => {
+    expect(declarationsFor("\\.mail-row::before")).toMatch(
+      /inset:\s*2px 0[\s\S]*background:\s*transparent/,
+    );
+    expect(declarationsFor("\\.mail-row:hover::before")).toMatch(
+      /background:\s*var\(--row-hover-surface\)/,
+    );
+    expect(declarationsFor("\\.mail-row:hover")).toMatch(
+      /background:\s*transparent/,
+    );
+    expect(
+      declarationsFor('\\.mail-row\\[data-selected="true"\\]::before'),
+    ).toMatch(
+      /background:\s*transparent/,
+    );
+  });
+
   it("moves theme-owned account and settings selection surfaces", () => {
     expect(declarationsFor("\\.account-switcher")).toMatch(
       /position:\s*relative[\s\S]*isolation:\s*isolate/,

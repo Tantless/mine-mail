@@ -2059,9 +2059,20 @@ html[data-surface="new-mail-notification"] #root {
   border-bottom-color: var(--color-divider);
   border-radius: 0;
   color: var(--color-text);
-  transition: background var(--motion-fast), border-color var(--motion-fast), border-radius var(--motion-fast);
+  transition: border-color var(--motion-fast), border-radius var(--motion-fast);
   animation: row-in 240ms ease-out both;
   animation-delay: calc(var(--row-index) * 22ms);
+}
+
+.mail-row::before {
+  position: absolute;
+  inset: 2px 0;
+  z-index: -1;
+  border-radius: var(--row-radius);
+  background: transparent;
+  content: "";
+  pointer-events: none;
+  transition: background var(--motion-fast);
 }
 
 .mail-row__visual {
@@ -2088,8 +2099,12 @@ html[data-surface="new-mail-notification"] #root {
 .mail-row:has(.mail-row__open:focus-visible) {
   border-color: var(--color-primary);
   border-radius: var(--row-radius);
-  background: var(--row-hover-surface);
+  background: transparent;
   box-shadow: var(--focus-ring);
+}
+
+.mail-row:has(.mail-row__open:focus-visible)::before {
+  background: var(--row-hover-surface);
 }
 
 .mail-row:focus-visible {
@@ -2101,6 +2116,10 @@ html[data-surface="new-mail-notification"] #root {
 .mail-row:hover {
   border-bottom-color: transparent;
   border-radius: var(--row-radius);
+  background: transparent;
+}
+
+.mail-row:hover::before {
   background: var(--row-hover-surface);
 }
 
@@ -2109,6 +2128,10 @@ html[data-surface="new-mail-notification"] #root {
   border-radius: var(--row-radius);
   background: transparent;
   box-shadow: none;
+}
+
+.mail-row[data-selected="true"]::before {
+  background: transparent;
 }
 
 .mail-row__avatar {
