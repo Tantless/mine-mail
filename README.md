@@ -1,137 +1,93 @@
 # Mine Mail
 
-> 一个本地优先、专注邮件本身的跨平台桌面邮箱客户端。
+## 项目简介
 
-Mine Mail 使用 **Tauri 2 + React 19 + Rust + SQLite** 构建。项目希望在保留 IMAP/SMTP 邮件核心能力的同时，提供更轻、更快、更安静，也更适合个性化主题的桌面体验。
+Mine Mail 是一个本地优先、专注阅读体验的跨平台桌面邮箱客户端，使用
+Tauri 2、React 19、Rust 与 SQLite 构建。
 
-> [!IMPORTANT]
-> Mine Mail 目前是开发预览版（MVP），尚未提供经过签名的公开安装包，也未达到生产环境所需的完整兼容性与安全审计标准。当前实机开发和验收平台为 Windows 11；macOS 与 Linux 是目标平台，但仍需要真实设备验证。
+- 启动时优先读取本地缓存，再由 Rust 在后台同步邮箱。
+- 支持 163 邮箱、Gmail OAuth 2.0 和自定义 IMAP/SMTP 账户，最多连接 3 个账户。
+- 提供邮件搜索、草稿与发件队列、纯文本/安全 HTML 阅读、桌面通知和四套主题。
+- 凭据保存在操作系统凭据存储中；邮件内容按不可信输入处理并在 Rust 中清理。
 
-开发协作先阅读 [`AGENTS.md`](AGENTS.md)。视觉与交互以
-[`DESIGN.md`](DESIGN.md) 为唯一规范；详细产品、邮件渲染和发行文档见
-[`docs/`](docs/README.md)。
+Mine Mail 目前仍是开发预览版。主要开发与验收环境为 Windows 11；macOS 和
+Linux 是目标平台，但仍需更多真实设备验证。
 
+## 四主题截图
 
-## 当前进度
+以下截图均由无网络演示模式中的同一组 mock 数据生成，不包含真实邮箱信息。
 
-### 已实现
+<table>
+  <tr>
+    <td width="50%">
+      <strong>Daylight · 日间</strong><br>
+      <img src="docs/assets/readme/daylight.webp" alt="Mine Mail 日间主题 mock 数据截图">
+    </td>
+    <td width="50%">
+      <strong>Night · 夜间</strong><br>
+      <img src="docs/assets/readme/night.webp" alt="Mine Mail 夜间主题 mock 数据截图">
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <strong>Dusk · 黄昏</strong><br>
+      <img src="docs/assets/readme/dusk.webp" alt="Mine Mail 黄昏主题 mock 数据截图">
+    </td>
+    <td width="50%">
+      <strong>Forest · 森林</strong><br>
+      <img src="docs/assets/readme/forest.webp" alt="Mine Mail 森林主题 mock 数据截图">
+    </td>
+  </tr>
+</table>
 
-- 163 邮箱 IMAP 增量同步与 SMTP 发信。
-- Gmail OAuth 2.0、XOAUTH2 IMAP/SMTP 与令牌刷新。
-- 自定义 IMAP/SMTP 账户；最多连接 3 个账户并逐账户同步。
-- SQLite 本地缓存，启动时先显示本地邮件，再在 Rust 后台同步。
-- 收件箱摘要、按需正文获取、最近正文预取与本地搜索。
-- 纯文本阅读，以及经过清理和隔离的 HTML 邮件阅读。
-- 简单 HTML 使用主题化原生阅读器；复杂发件人排版使用无脚本隔离 iframe。
-- 远程图片自动加载、询问或阻止策略。
-- 常见回复格式识别；正文和引用历史分离为同级可折叠卡片。
-- 本地草稿、每 5 分钟远端同步、远端草稿导入与版本冲突保护。
-- 本地 Outbox、完整收件人确认、SMTP 投递状态与人工安全重试。
-- 写信、回复、转发、Cc/Bcc、可拖动和缩放的玻璃拟态写信面板。
-- Daylight、Night、Dusk、Forest 四套主题和本地自定义头像。
-- IMAP IDLE 实时推送；不支持 IDLE 的服务器使用持久连接轻量探测。
-- 1/3/5 分钟完整校准、托盘运行、可选开机启动。
-- 可配置的新邮件声音，以及主题化的桌面右下角通知卡片。
+## 普通用户安装向导
 
-### 仍在开发
+1. 打开 [Mine Mail 最新版本](https://github.com/Tantless/mine-mail/releases/latest)，
+   阅读发行说明并下载与你的系统匹配的安装包：
 
-- Outlook OAuth 2.0 / Modern Auth。
-- 多账户统一收件箱。
-- 更早邮件的分页回填。
-- 富文本写信、内嵌图片和完整附件收发流程。
-- 已读、归档、垃圾箱以及移动/删除等服务器操作的完整闭环。
-- macOS/Linux 实机适配、签名、公证和发行包验收。
+   - Windows x64：`Mine-Mail_<版本号>_x64-setup.exe`
+   - macOS Apple Silicon：文件名包含 `aarch64` 的 `.dmg`
+   - macOS Intel：文件名包含 `x64` 的 `.dmg`
+   - Linux x64：`.AppImage` 或 `.deb`
 
-## 架构
+2. 退出正在运行的旧版本，然后运行安装包。Windows 安装向导支持选择安装目录；
+   macOS 将 Mine Mail 拖入“应用程序”，Linux 按所选包格式完成安装。
+3. 启动 Mine Mail，进入“设置 → 邮箱账户 → 添加邮箱”：
 
-```text
-React UI
-   │
-   │ narrow Tauri commands / desktop events
-   ▼
-Tauri desktop runtime
-   ├─ tray / notifications / autostart
-   ├─ per-account IDLE / lightweight monitor
-   ├─ reconciliation scheduler
-   └─ OS credential store
-   │
-   ▼
-Rust MailBackend
-   ├─ IMAP synchronization
-   ├─ SMTP + Outbox
-   ├─ MIME / safe HTML processing
-   ├─ bidirectional draft synchronization
-   └─ SQLite repositories
-```
+   - 163 邮箱使用邮箱地址和客户端授权密码，不要填写网页登录密码。
+   - Gmail 通过浏览器完成 Google OAuth 授权。
+   - 其他邮箱选择自定义账户，并填写服务商提供的 IMAP/SMTP 地址、端口和 TLS
+     配置。
 
-Rust 与 SQLite 是邮件状态的事实来源。React 只通过窄范围 Tauri command 读取本地状态和发起用户操作，不直接访问 IMAP、SMTP、凭据或数据库。
+4. 首次同步完成前请保持应用运行。之后 Mine Mail 会先显示本地缓存，再在后台同步。
 
-收件箱采用“推送优先、校准兜底”：运行时根据服务器实际公布的 IMAP 能力选择策略。支持标准 `IDLE` 的服务器由长连接即时唤醒；163 等不公布 `IDLE` 的服务器复用认证连接，在前台约每 15 秒、后台约每 30 秒读取邮箱计数。只有检测到变化才拉取新 UID 并提交 SQLite；用户选择的 1/3/5 分钟间隔用于完整校准删除、旗标和异常状态。启动、手动刷新和托盘刷新仍立即执行同步。
+当前预览版尚未完成所有平台的签名、公证和兼容性验收。如果 Release 页面没有你的
+平台安装包，或系统提示无法验证开发者，请不要从第三方站点下载安装文件。
 
-项目没有另一套可连接真实邮箱的 Web 运行时。Vite 页面只用于前端构建、自动化测试和可选的无网络 UI 演示。
+## 开发者开发指引
 
-## 仓库结构
+开始前安装 [Git](https://git-scm.com/)、[Node.js 24 LTS](https://nodejs.org/)、
+[Rustup](https://rustup.rs/) 以及当前系统所需的
+[Tauri 2 系统依赖](https://v2.tauri.app/start/prerequisites/)。仓库通过
+`rust-toolchain.toml` 固定使用 Rust 1.97.0。
 
-```text
-mine-mail/
-├─ src/                       # 独立 Rust 邮件核心与 CLI
-├─ web/
-│  ├─ src/                   # React UI
-│  ├─ src-tauri/             # Tauri 桌面 runtime
-│  └─ package.json            # React/Tauri 开发命令
-├─ docs/                      # 产品、邮件渲染与发行文档
-├─ DESIGN.md                 # 唯一视觉与交互规范
-├─ Cargo.toml                # Rust 邮件核心
-├─ rust-toolchain.toml       # 项目 Rust 工具链
-└─ AGENTS.md                 # Agent 路由、架构与安全约束
-```
-
-## 快速开始
-
-### 1. 安装开发环境
-
-需要准备：
-
-- [Git](https://git-scm.com/)
-- [Node.js 24 LTS](https://nodejs.org/)
-- [Rustup](https://rust-lang.org/tools/install/)
-- 当前操作系统对应的 [Tauri 2 系统依赖](https://v2.tauri.app/start/prerequisites/)
-
-Windows 需要 Microsoft C++ Build Tools 和 Microsoft Edge WebView2；macOS 需要 Xcode Command Line Tools；Linux 所需的 WebKitGTK、编译工具和系统库随发行版而异，请以 Tauri 官方依赖清单为准。
-
-本仓库固定使用 Rust 1.97，并包含 `rustfmt` 和 `clippy`。首次开发前建议显式安装：
-
-```powershell
-rustup toolchain install 1.97.0 --profile minimal
-rustup component add rustfmt clippy --toolchain 1.97.0
-```
-
-### 2. 克隆并安装前端依赖
+克隆仓库并安装前端依赖：
 
 ```powershell
 git clone https://github.com/Tantless/mine-mail.git
-cd mine-mail
-cd web
+cd mine-mail\web
 npm ci
+cd ..
 ```
 
-使用 `npm ci` 可以严格按照 `package-lock.json` 安装依赖。首次安装与首次 Rust 编译需要联网。
-
-### 3. 启动桌面开发版
-
-在 `web` 目录运行：
+启动完整 Tauri 桌面开发版：
 
 ```powershell
+cd web
 npm run tauri:dev
 ```
 
-Tauri 会启动 Vite、编译 Rust 桌面 runtime 并打开 Mine Mail。第一次编译可能需要较长时间，并产生数 GB 的 Cargo 构建缓存；后续增量构建会明显更快。
-
-桌面应用不会读取仓库内的凭据或笔记文件。首次进入后从账户设置添加 163、Gmail 或自定义 IMAP/SMTP 账户。
-
-### 4. 只开发 React 界面（可选）
-
-该模式不连接真实邮箱，只提供演示数据：
+只开发 React 界面时，可以启用不连接真实邮箱的 mock 演示模式：
 
 ```powershell
 cd web
@@ -139,192 +95,40 @@ $env:VITE_MINE_MAIL_DEMO = "1"
 npm run dev
 ```
 
-打开终端中显示的本地地址即可。需要验证托盘、通知、密钥环、窗口和真实邮件功能时，必须使用 `npm run tauri:dev`。
+在 Bash 中使用：
 
-## 邮箱联调
-
-### 163 邮箱
-
-推荐直接从应用的账户设置添加 163 邮箱，填写邮箱地址和客户端授权密码。不要使用网页登录密码。
-
-### Gmail
-
-仓库不包含 Google OAuth client secret。没有本地 OAuth JSON 时项目仍然可以编译和开发，但 Gmail 登录入口不可用。
-
-有权使用 Mine Mail Google Cloud 项目的协作者，可将 Desktop app OAuth JSON 保存为：
-
-```text
-web/src-tauri/google-oauth-client.json
+```bash
+cd web
+VITE_MINE_MAIL_DEMO=1 npm run dev
 ```
 
-该文件已被 `.gitignore` 排除，严禁提交、粘贴到 issue 或写入日志。当前构建脚本会校验它是否匹配项目内置的 OAuth client ID；普通 fork 如需使用自己的 Google Cloud 项目，需要同步调整 OAuth 构建配置。
-
-Google Cloud 项目处于 Testing 状态时，还需要把测试邮箱加入 OAuth consent screen 的测试用户列表。
-
-### Outlook 与自定义服务器
-
-Outlook 目前只展示能力说明，不允许使用不安全的传统账号密码配置；正式接入需要完成 Microsoft OAuth 2.0 / Modern Auth。
-
-自定义账户可以填写 IMAP/SMTP 主机、端口和 TLS 模式。服务器兼容性尚未经过完整矩阵测试。
-
-## 常用开发命令
-
-### React
+提交改动前运行适用的检查：
 
 ```powershell
+# Rust 邮件核心（仓库根目录）
+cargo test
+
+# React
 cd web
 npm test -- --run
 npm run build
-```
 
-### Rust 邮件核心
-
-```powershell
-cargo fmt --check
-cargo test --all-targets
-cargo clippy --all-targets -- -D warnings
-```
-
-### Tauri runtime
-
-```powershell
-cd web/src-tauri
-cargo fmt --check
+# Tauri runtime
+cd src-tauri
 cargo test
-cargo clippy --all-targets -- -D warnings
 cargo check
 ```
 
-### 构建桌面安装包
+构建当前平台的桌面安装包：
 
 ```powershell
 cd web
 npm run tauri:build
 ```
 
-产物位于 `web/src-tauri/target/release/bundle/`。本地构建成功不代表安装包已经完成 Windows 签名、macOS 签名/公证或 Linux 发行版兼容验收。
-
-### 应用内更新与发布签名
-
-设置页显示的版本来自 Tauri 运行时，浏览器预览则直接读取
-`web/src-tauri/tauri.conf.json`，不再维护单独的界面版本号。稳定版通过
-`https://github.com/Tantless/mine-mail/releases/latest/download/latest.json`
-检查更新；用户确认后，Tauri updater 才会下载、验签并安装更新。
-
-首次安装仍使用品牌化 Windows setup。应用内更新使用同一构建产生的
-Tauri NSIS 更新包，以便从当前安装上下文原位升级，包括初装时选择的自定义
-目录。Windows 更新安装使用 passive 模式，安装开始时应用会自动退出。
-
-updater 公钥已经内置在 `web/src-tauri/tauri.conf.json`。对应私钥不得进入
-仓库、日志或 Release 资产；发布前必须把私钥完整内容配置为 GitHub Actions
-Secret `TAURI_SIGNING_PRIVATE_KEY`，并把私钥密码配置为
-`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`。私钥和密码必须分开安全备份；丢失
-任意一项后，已经安装的客户端都将无法验证后续更新。
-
-本地需要生成更新产物时，先通过仓库外的私钥路径配置环境变量：
-
-```powershell
-$env:TAURI_SIGNING_PRIVATE_KEY = Get-Content -Raw "C:\private\mine-mail-updater.key"
-$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = Get-Content -Raw "C:\private\mine-mail-updater.key.password"
-cd web
-npm run tauri:build
-```
-
-推送与三个项目版本一致的 `vX.Y.Z` tag 后，Release workflow 会按顺序生成
-macOS、Linux 和 Windows 签名更新产物，合并并验证 `latest.json`，验证通过
-后才公开 Release。GitHub Actions 生成的是 updater 签名；面向公开发行仍需
-补齐 Windows 代码签名和 macOS 签名/公证。
-
-## 后端 CLI
-
-根目录还提供不依赖 React 的邮件核心 CLI。真实邮箱联调必须通过 `--credentials` 显式传入仓库外的私有两行凭据文件（邮箱地址、客户端授权密码）；本地数据库默认使用 `data/mine-mail.db`：
-
-```powershell
-$credentials = "C:\private\mine-mail-credentials.txt"
-
-# 验证 IMAP/SMTP 登录
-cargo run -- --credentials $credentials check
-
-# 增量同步并读取本地摘要
-cargo run -- --credentials $credentials sync-inbox --initial-limit 50
-cargo run -- --credentials $credentials list-inbox --limit 20
-
-# 获取并缓存指定 IMAP UID 的正文
-cargo run -- --credentials $credentials fetch-message 123
-
-# 查看本地 Outbox
-cargo run -- --credentials $credentials outbox
-```
-
-CLI 的 `--body` 参数会进入终端历史，不应用于敏感正文。自动化测试不会自行向真实地址发送邮件。
-
-## 本地数据与安全边界
-
-- 邮箱授权密码和 OAuth token 保存在操作系统凭据存储中。
-- 非秘密账户元数据、邮件摘要、正文缓存、草稿和 Outbox 保存在桌面应用数据目录的 SQLite 数据库中。
-- Windows 全新安装会优先使用可写的 `<安装目录>\Data`；受保护、已占用或不可写的安装位置会回退到 `%LOCALAPPDATA%\com.minemail.desktop`。已有用户继续使用原数据目录，不会在升级时自动搬迁。
-- **设置 → 关于 Mine Mail → 本地数据存储** 会显示分类占用，并可选择空的本机目录。确认后应用重启，在 SQLite 校验成功后切换目录并清理原数据；失败时继续使用原目录。
-- `%LOCALAPPDATA%\com.minemail.desktop\storage-location.json` 只记录当前数据位置。诊断日志仍使用系统应用日志目录并遵守下述容量与保留限制。
-- 当前 SQLite 数据库未做整库加密，无法防御能够读取本机用户文件的攻击者。
-- HTML 邮件按不可信输入处理：清理危险内容、禁止脚本，并对复杂结构使用隔离 iframe。
-- 私人凭据或笔记文件、OAuth JSON、数据库、日志、构建目录和前端依赖目录均不应提交 Git。
-
-### 本地诊断日志
-
-桌面版会写入适合交给 AI 排查的 JSON Lines 诊断日志；根目录 CLI 和 React 页面不会写入这套日志，也没有向前端开放日志权限。Windows 日志目录为：
-
-```text
-%LOCALAPPDATA%\com.minemail.desktop\logs
-```
-
-macOS 与 Linux 使用 Tauri 对应的系统应用日志目录。当前文件名为 `mine-mail.log`，达到 5 MiB 后轮转，最多保留 3 个历史文件；启动时还会删除 7 天前的历史文件，并把日志总空间约束在 20 MiB 以内。日志清理或目录不可用不会阻止应用启动。
-
-日志只记录启动、存储初始化、同步/监控模式、OAuth 刷新结果、草稿版本冲突、发送与 Outbox 状态等操作事件和计数。账户、草稿和 Outbox 标识会先转换成短哈希引用。以下内容不得写入日志：密码或授权码、OAuth token/URL、邮箱地址、主题、发件人/收件人、正文/HTML、完整 RFC822、数据库内容、`account.json`、`password.txt` 和完整本地路径。
-
-Windows 上排查问题时，可以先完全退出 Mine Mail，再打开日志目录，把问题发生时段对应的 `mine-mail*.log` 提供给 AI：
-
-```powershell
-explorer "$env:LOCALAPPDATA\com.minemail.desktop\logs"
-```
-
-日志默认仅为 `info` 级别，没有常驻 `debug` 模式，也不会为 15/30 秒一次且未发现变化的邮箱探测逐次写记录；相同监控或同步错误在 60 秒内会被合并，以控制磁盘写入和重复噪音。
-
-提交代码前请检查：
-
-```powershell
-git status
-git diff --check
-```
-
-## 磁盘空间
-
-GitHub 仓库本身主要由代码、文档和运行时主题资源组成。开发目录变大通常来自两套 Cargo `target`、前端依赖和打包产物，而不是 Git 下载内容。
-
-需要释放本地编译缓存时可以分别执行：
-
-```powershell
-# 根目录 Rust 核心
-cargo clean
-
-# Tauri runtime
-cd web/src-tauri
-cargo clean
-```
-
-这不会删除源码、账户数据库或 Git 历史，但下一次编译会重新下载/构建必要依赖。
-
-## 开发约束
-
-- 保持本地优先：React 先显示 SQLite，再由 Rust 后台同步。
-- 不在 React、日志、错误信息或 Git 中暴露凭据和完整 RFC822 原文。
-- 不让 UI 直接等待 IMAP/SMTP。
-- 邮件 HTML 必须经过 Rust 清理和结构判定。
-- 同步、草稿和发送逻辑必须支持失败恢复，并避免隐式重复投递。
-- 修改持久架构或行为前先阅读 `AGENTS.md` 与 `docs/PRODUCT.md`；修改任何可见 UI 前必须阅读 `DESIGN.md`。
-
-## 发布状态与许可证
-
-Mine Mail 当前提供开发预览 Release 和安装包，但尚未完成 Windows 代码签名、
-macOS 签名/公证及完整发行安全审计，不应视为正式稳定发行。两个 Cargo
-package 当前声明为 MIT；正式对外分发前仍需补充仓库级 `LICENSE`、贡献规范
-和平台签名流程。
+开发协作先阅读 [`AGENTS.md`](AGENTS.md)。修改界面前阅读
+[`DESIGN.md`](DESIGN.md)；修改产品行为或邮件渲染前分别阅读
+[`docs/PRODUCT.md`](docs/PRODUCT.md) 和
+[`docs/MAIL_RENDERING.md`](docs/MAIL_RENDERING.md)。普通界面和核心开发不需要
+任何真实凭据；Gmail OAuth 联调使用的私有配置必须放在被 Git 忽略的
+`web/src-tauri/google-oauth-client.json`，严禁提交。
