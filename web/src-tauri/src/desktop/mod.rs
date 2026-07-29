@@ -123,6 +123,7 @@ pub(crate) struct DesktopRuntime {
     sync_gate: AsyncMutex<()>,
     last_sync_started: StdMutex<Option<Instant>>,
     pending_inbox_syncs: StdMutex<HashSet<String>>,
+    pending_notification_baselines: StdMutex<HashSet<String>>,
     exit_handshake: StdMutex<ExitHandshakeState>,
     notification_sequence: AtomicU64,
     notification_popup: StdMutex<Option<PendingNewMailNotification>>,
@@ -202,6 +203,7 @@ impl DesktopRuntime {
                 sync_gate: AsyncMutex::new(()),
                 last_sync_started: StdMutex::new(None),
                 pending_inbox_syncs: StdMutex::new(HashSet::new()),
+                pending_notification_baselines: StdMutex::new(HashSet::new()),
                 exit_handshake: StdMutex::new(ExitHandshakeState::default()),
                 notification_sequence: AtomicU64::new(0),
                 notification_popup: StdMutex::new(None),
@@ -615,6 +617,26 @@ impl DesktopRuntime {
             .map(|baseline| baseline.unwrap_or_default())
     }
 
+    pub(crate) fn begin_notification_baseline(&self, account_id: &str) -> Result<(), String> {
+        self.pending_notification_baselines
+            .lock()
+            .map_err(|_| "The notification baseline is temporarily unavailable.".to_owned())?
+            .insert(account_id.to_owned());
+        if let Some(store) = self.store.as_ref() {
+            store
+                .delete_notification_baseline(account_id)
+                .map_err(|_| "The notification baseline could not be reset.".to_owned())?;
+        }
+        Ok(())
+    }
+
+    fn notification_baseline_pending(&self, account_id: &str) -> Result<bool, String> {
+        self.pending_notification_baselines
+            .lock()
+            .map(|pending| pending.contains(account_id))
+            .map_err(|_| "The notification baseline is temporarily unavailable.".to_owned())
+    }
+
     fn update_notification_baseline(&self, account_id: &str, uid: u32) -> Result<(), String> {
         if let Some(store) = self.store.as_ref() {
             store
@@ -627,10 +649,18 @@ impl DesktopRuntime {
                 )
                 .map_err(|_| "The notification baseline could not be saved.".to_owned())?;
         }
+        self.pending_notification_baselines
+            .lock()
+            .map_err(|_| "The notification baseline is temporarily unavailable.".to_owned())?
+            .remove(account_id);
         Ok(())
     }
 
     pub(crate) fn remove_notification_baseline(&self, account_id: &str) -> Result<(), String> {
+        self.pending_notification_baselines
+            .lock()
+            .map_err(|_| "The notification baseline is temporarily unavailable.".to_owned())?
+            .remove(account_id);
         if let Some(store) = self.store.as_ref() {
             store
                 .delete_notification_baseline(account_id)
@@ -1911,34 +1941,24 @@ fn update_notification_baseline_and_notify(
     messages: &[InboxMessage],
 ) {
     let runtime = app.state::<DesktopRuntime>();
-    let (Ok(settings), Ok(baseline)) = (
+    let (Ok(settings), Ok(mut baseline), Ok(baseline_pending)) = (
         runtime.settings(),
         runtime.notification_baseline(account_id),
+        runtime.notification_baseline_pending(account_id),
     ) else {
         return;
     };
-    let current_highest_uid = messages
-        .iter()
-        .map(|message| message.uid)
-        .max()
-        .unwrap_or(0);
-
-    if !baseline.initialized || report.uid_validity_reset {
-        let _ = runtime.update_notification_baseline(account_id, current_highest_uid);
-        return;
+    if baseline_pending {
+        baseline = NotificationBaseline::default();
     }
-
-    let baseline = baseline.uid;
+    let (next_baseline_uid, mut new_unread) =
+        notification_candidates(baseline, report.uid_validity_reset, messages);
     if runtime
-        .update_notification_baseline(account_id, current_highest_uid.max(baseline))
+        .update_notification_baseline(account_id, next_baseline_uid)
         .is_err()
     {
         return;
     }
-    let mut new_unread: Vec<&InboxMessage> = messages
-        .iter()
-        .filter(|message| message.uid > baseline && !is_seen(message))
-        .collect();
     new_unread.sort_by_key(|message| message.uid);
     if new_unread.is_empty()
         || !should_deliver_new_mail_notification(settings, main_window_is_active(app))
@@ -1990,6 +2010,28 @@ fn update_notification_baseline_and_notify(
         count,
         settings,
     );
+}
+
+fn notification_candidates(
+    baseline: NotificationBaseline,
+    uid_validity_reset: bool,
+    messages: &[InboxMessage],
+) -> (u32, Vec<&InboxMessage>) {
+    let current_highest_uid = messages
+        .iter()
+        .map(|message| message.uid)
+        .max()
+        .unwrap_or(0);
+    if !baseline.initialized || uid_validity_reset {
+        return (current_highest_uid, Vec::new());
+    }
+    (
+        current_highest_uid.max(baseline.uid),
+        messages
+            .iter()
+            .filter(|message| message.uid > baseline.uid && !is_seen(message))
+            .collect(),
+    )
 }
 
 fn should_deliver_new_mail_notification(
@@ -2389,12 +2431,13 @@ mod tests {
     };
 
     use super::settings::NotificationSound;
-    use super::settings::StoredDesktopSettings;
+    use super::settings::{NotificationBaseline, StoredDesktopSettings};
     use super::{
         BeforeExitEvent, DesktopRuntime, EXIT_HANDSHAKE_TIMEOUT, SyncAllReport,
         available_optional_mailbox_roles, consume_open_new_mail_notification, is_seen,
-        notification_sender, notification_sender_email, optional_role_participates_periodically,
-        prioritize_active_account, sanitize_notification_text,
+        notification_candidates, notification_sender, notification_sender_email,
+        optional_role_participates_periodically, prioritize_active_account,
+        sanitize_notification_text,
         should_deliver_new_mail_notification, trigger_discovers_mailbox_roles,
     };
 
@@ -2545,6 +2588,62 @@ mod tests {
         settings.notifications_enabled = false;
         assert!(!should_deliver_new_mail_notification(settings, false));
         assert!(!should_deliver_new_mail_notification(settings, true));
+    }
+
+    #[test]
+    fn first_historical_import_establishes_baseline_without_notification_candidates() {
+        let mut messages = Vec::new();
+        for uid in 1..=250 {
+            let mut item = message(Vec::new());
+            item.uid = uid;
+            messages.push(item);
+        }
+
+        let (next_uid, candidates) =
+            notification_candidates(NotificationBaseline::default(), false, &messages);
+
+        assert_eq!(next_uid, 250);
+        assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn binding_an_account_resets_a_retained_notification_baseline() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let (runtime, _sync_rx, _shutdown_rx) = DesktopRuntime::open(directory.path());
+        runtime
+            .update_notification_baseline("retained-account", 42)
+            .expect("save stale baseline");
+
+        runtime
+            .begin_notification_baseline("retained-account")
+            .expect("reset baseline for binding");
+
+        assert!(
+            runtime
+                .notification_baseline_pending("retained-account")
+                .expect("pending baseline state")
+        );
+        assert_eq!(
+            runtime
+                .notification_baseline("retained-account")
+                .expect("reset baseline"),
+            NotificationBaseline::default()
+        );
+        runtime
+            .update_notification_baseline("retained-account", 88)
+            .expect("establish new baseline");
+        assert!(
+            !runtime
+                .notification_baseline_pending("retained-account")
+                .expect("settled baseline state")
+        );
+        assert_eq!(
+            runtime
+                .notification_baseline("retained-account")
+                .expect("established baseline")
+                .uid,
+            88
+        );
     }
 
     #[test]

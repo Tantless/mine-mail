@@ -1895,7 +1895,13 @@ async fn configure_account(
     request: ConfigureAccountRequest,
 ) -> CommandResult<AccountStatusDto> {
     let _sync_guard = desktop_runtime.acquire_sync_gate().await;
-    let (status, _account_changed) = account.configure(&backend, request).await?;
+    let (status, account_added) = account.configure(&backend, request).await?;
+    if account_added
+        && let Some(account_id) = backend.active_account_id()
+        && let Err(error) = desktop_runtime.begin_notification_baseline(&account_id)
+    {
+        desktop_runtime.record_startup_error(error);
+    }
     let _ = app.emit("mail:account-updated", status.clone());
     desktop::request_sync(&app, true, "account_change");
     Ok(status)
@@ -1909,7 +1915,13 @@ async fn connect_google_account(
     desktop_runtime: State<'_, DesktopRuntime>,
 ) -> CommandResult<AccountStatusDto> {
     let _sync_guard = desktop_runtime.acquire_sync_gate().await;
-    let (status, _account_changed) = account.connect_google(&backend).await?;
+    let (status, account_added) = account.connect_google(&backend).await?;
+    if account_added
+        && let Some(account_id) = backend.active_account_id()
+        && let Err(error) = desktop_runtime.begin_notification_baseline(&account_id)
+    {
+        desktop_runtime.record_startup_error(error);
+    }
     let _ = app.emit("mail:account-updated", status.clone());
     desktop::request_sync(&app, true, "account_change");
     Ok(status)

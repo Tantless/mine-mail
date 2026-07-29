@@ -4,6 +4,7 @@ import { mailApi } from "../services/mailApi.js";
 import { ProfileAvatar } from "./ProfileAvatar.jsx";
 
 const visibleDurationMs = 8000;
+const notificationCountLimit = 99;
 const validThemes = new Set(["daylight", "night", "dusk", "forest"]);
 
 function notificationSequence(value) {
@@ -30,6 +31,13 @@ function sameNotification(left, right) {
     rightSequence !== null &&
     leftSequence === rightSequence
   );
+}
+
+function notificationCountLabel(count) {
+  if (count <= 1) return "新邮件 · 刚刚";
+  const displayedCount =
+    count > notificationCountLimit ? `${notificationCountLimit}+` : count;
+  return `${displayedCount} 封新邮件 · 刚刚`;
 }
 
 function applySavedTheme() {
@@ -282,9 +290,7 @@ export function NewMailNotification() {
         <span className="new-mail-notification__copy">
           <span className="new-mail-notification__eyebrow">
             <span className="new-mail-notification__dot" />
-            {notification.count > 1
-              ? `${notification.count} 封新邮件 · 刚刚`
-              : "新邮件 · 刚刚"}
+            {notificationCountLabel(notification.count)}
           </span>
           <span className="new-mail-notification__sender">
             <strong>{senderLabel}</strong>

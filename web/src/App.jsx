@@ -5011,7 +5011,6 @@ export function App() {
         );
       }
       setAccountSubmitStatus("saved");
-      showToast("邮箱账户已安全连接");
     } catch (error) {
       const message = describeError(
         error,
@@ -5024,7 +5023,6 @@ export function App() {
 
   const applyActiveAccount = async (
     status,
-    successMessage,
     previousAccountId = activeAccountIdRef.current,
   ) => {
     setAccountStatus(status);
@@ -5056,7 +5054,6 @@ export function App() {
     void prefetchAccountViews(status);
     setAccountSubmitStatus("saved");
     setAccountError(null);
-    if (successMessage) showToast(successMessage);
   };
 
   const handleConnectGoogle = async () => {
@@ -5069,11 +5066,7 @@ export function App() {
     setAccountError(null);
     try {
       const status = await mailApi.connectGoogleAccount();
-      await applyActiveAccount(
-        status,
-        "Gmail 已通过 Google 安全连接",
-        previousAccountId,
-      );
+      await applyActiveAccount(status, previousAccountId);
     } catch (error) {
       const message = describeError(error, "Google 登录失败，请重试");
       setAccountError(message);
@@ -5260,7 +5253,7 @@ export function App() {
         options,
       );
       composerSessionsRef.current.delete(connectedAccount.accountId);
-      await applyActiveAccount(result.status, null);
+      await applyActiveAccount(result.status);
       if (result.localDataDeleted) {
         const ownerKey = normalizeAvatarEmail(connectedAccount.email);
         setProfileAvatars((current) =>

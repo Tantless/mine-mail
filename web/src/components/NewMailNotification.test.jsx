@@ -81,6 +81,38 @@ describe("Mine Mail new mail notification surface", () => {
     expect(notificationBridge.dismissNewMailNotification).toHaveBeenCalledWith(14);
   });
 
+  it("shows exact batch counts through 99 and caps larger labels at 99+", async () => {
+    render(<NewMailNotification />);
+    await waitFor(() => expect(notificationBridge.handler).toBeTypeOf("function"));
+
+    await act(async () => {
+      notificationBridge.handler({
+        payload: {
+          notificationId: 15,
+          sender: "Mine Mail",
+          subject: "99 封批次",
+          count: 99,
+          webSound: null,
+        },
+      });
+    });
+    expect(screen.getByText("99 封新邮件 · 刚刚")).toBeTruthy();
+
+    await act(async () => {
+      notificationBridge.handler({
+        payload: {
+          notificationId: 16,
+          sender: "Mine Mail",
+          subject: "超过 99 封批次",
+          count: 250,
+          webSound: null,
+        },
+      });
+    });
+    expect(screen.getByText("99+ 封新邮件 · 刚刚")).toBeTruthy();
+    expect(screen.queryByText("250 封新邮件 · 刚刚")).toBeNull();
+  });
+
   it("restores the notification when opening fails so the user can retry", async () => {
     const user = userEvent.setup();
     notificationBridge.openNewMailNotification.mockRejectedValueOnce(

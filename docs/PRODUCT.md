@@ -554,8 +554,11 @@ must be updated here when an intentional product change lands.
 
 ## Notifications
 
-- The first historical import establishes an account notification baseline and
-  does not generate arrival alerts.
+- Binding an account starts a fresh notification baseline. The first historical
+  import after binding, including re-adding an account whose local cache was
+  retained, establishes that baseline and does not generate arrival alerts.
+- Successful binding is reflected by the connected-account state and does not
+  produce a separate lower-right success toast.
 - Later unread arrivals may show:
   - resolved sender display identity and sender address;
   - subject;
@@ -565,6 +568,8 @@ must be updated here when an intentional product change lands.
 - One **桌面通知** setting controls popup delivery whether Mine Mail is active or
   in the background.
 - Notification sound enablement and sound preset are separate settings.
+- A notification batch shows its exact unread count through 99; larger batches
+  display **99+**.
 - Clicking a new-mail card opens that cached local message in its owning account.
 - Visual treatment and avatar use follow `../DESIGN.md`.
 

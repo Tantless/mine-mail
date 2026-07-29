@@ -919,6 +919,10 @@ impl AccountRuntime {
             .read()
             .map_err(|_| "Account state is temporarily unavailable.".to_owned())?
             .clone();
+        let account_added = !previous_stored
+            .accounts
+            .iter()
+            .any(|existing| existing.same_identity(&metadata));
         if let Some(existing) = previous_stored
             .accounts
             .iter()
@@ -951,8 +955,6 @@ impl AccountRuntime {
             return Err(error);
         }
 
-        let account_changed =
-            previous_stored.active_account_id != Some(metadata.account_id.clone());
         *self
             .stored
             .write()
@@ -962,7 +964,7 @@ impl AccountRuntime {
             .write()
             .map_err(|_| "Account state is temporarily unavailable.".to_owned())? = None;
         backend_state.replace_account(metadata.account_id, local_backend, network_backend)?;
-        Ok((self.status(backend_state), account_changed))
+        Ok((self.status(backend_state), account_added))
     }
 
     pub(crate) async fn connect_google(
@@ -978,6 +980,10 @@ impl AccountRuntime {
             .read()
             .map_err(|_| "Account state is temporarily unavailable.".to_owned())?
             .clone();
+        let account_added = !previous_stored
+            .accounts
+            .iter()
+            .any(|existing| existing.same_identity(&metadata));
         if let Some(existing) = previous_stored
             .accounts
             .iter()
@@ -1015,8 +1021,6 @@ impl AccountRuntime {
             return Err(error);
         }
 
-        let account_changed =
-            previous_stored.active_account_id != Some(metadata.account_id.clone());
         *self
             .stored
             .write()
@@ -1026,7 +1030,7 @@ impl AccountRuntime {
             .write()
             .map_err(|_| "Account state is temporarily unavailable.".to_owned())? = None;
         backend_state.replace_account(metadata.account_id, local_backend, network_backend)?;
-        Ok((self.status(backend_state), account_changed))
+        Ok((self.status(backend_state), account_added))
     }
 
     pub(crate) fn switch_account(
