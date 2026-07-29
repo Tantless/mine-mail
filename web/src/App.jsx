@@ -320,18 +320,6 @@ function describeError(error, fallback) {
   return fallback;
 }
 
-function forwardPreparationErrorMessage(kind) {
-  return (
-    {
-      message_unavailable: "完整邮件暂时不可用，请重新同步后重试。",
-      body_unavailable: "完整正文尚未准备好，请稍后重试。",
-      attachment_unavailable: "一个或多个原邮件附件暂时不可用。",
-      attachment_stage_failed: "一个或多个原邮件附件无法安全加入草稿。",
-      source_changed: "原邮件已发生变化，请重新打开后再转发。",
-    }[kind] || "无法准备完整的转发草稿，请稍后重试。"
-  );
-}
-
 function toDraftMessage(draft, index) {
   return {
     id: draft.id,
@@ -5247,7 +5235,7 @@ export function App() {
     }
   };
 
-  const handlePrepareForward = async (includeAttachments = true) => {
+  const handlePrepareForward = async () => {
     const messageId = localMessageId(selectedMessage);
     const sourceAccountId = activeAccountIdRef.current;
     if (!messageId || !sourceAccountId) return;
@@ -5262,10 +5250,7 @@ export function App() {
       },
     }));
     try {
-      const outcome = await mailApi.prepareForward(
-        messageId,
-        includeAttachments,
-      );
+      const outcome = await mailApi.prepareForward(messageId, true);
       if (
         forwardPreparationRequestRef.current !== requestId ||
         activeAccountIdRef.current !== sourceAccountId
@@ -5280,11 +5265,7 @@ export function App() {
           [messageId]: {
             status: "error",
             errorKind: preparationError.kind,
-            message: forwardPreparationErrorMessage(preparationError.kind),
             retryable: true,
-            retry_without_attachments_allowed: Boolean(
-              preparationError.retry_without_attachments_allowed,
-            ),
           },
         }));
         return;
@@ -5311,7 +5292,7 @@ export function App() {
       openComposer(draftToRequest(draft), draft.id, draft, {
         forwardWarnings: prepared.warnings || [],
       });
-    } catch (error) {
+    } catch {
       if (
         forwardPreparationRequestRef.current !== requestId ||
         activeAccountIdRef.current !== sourceAccountId
@@ -5323,9 +5304,7 @@ export function App() {
         ...current,
         [messageId]: {
           status: "error",
-          message: describeError(error, "无法准备完整的转发草稿"),
           retryable: true,
-          retry_without_attachments_allowed: false,
         },
       }));
     }
@@ -5472,12 +5451,7 @@ export function App() {
       onReply={openReply}
       onPrepareForward={
         selectedCanUseMailboxContentCommands
-          ? () => void handlePrepareForward(true)
-          : null
-      }
-      onPrepareForwardWithoutAttachments={
-        selectedCanUseMailboxContentCommands
-          ? () => void handlePrepareForward(false)
+          ? () => void handlePrepareForward()
           : null
       }
       forwardState={selectedForwardPreparationState}

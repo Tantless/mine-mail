@@ -506,10 +506,9 @@ describe("MessageView forward preparation", () => {
     expect(legacyForward).not.toHaveBeenCalled();
   });
 
-  it("shows bounded loading and explicit no-attachment recovery states", async () => {
+  it("keeps bounded loading and makes failed preparation silently retryable", async () => {
     const user = userEvent.setup();
     const onPrepareForward = vi.fn();
-    const withoutAttachments = vi.fn();
     const { rerender } = render(
       <MessageView
         message={messageFixture()}
@@ -530,7 +529,6 @@ describe("MessageView forward preparation", () => {
         message={messageFixture()}
         onClose={vi.fn()}
         onPrepareForward={onPrepareForward}
-        onPrepareForwardWithoutAttachments={withoutAttachments}
         forwardState={{
           status: "error",
           message: "一个附件无法安全准备",
@@ -539,9 +537,13 @@ describe("MessageView forward preparation", () => {
       />,
     );
 
-    expect(screen.getByText("一个附件无法安全准备")).toBeTruthy();
-    await user.click(screen.getByRole("button", { name: "无附件转发" }));
-    expect(withoutAttachments).toHaveBeenCalledOnce();
+    expect(screen.queryByText("一个附件无法安全准备")).toBeNull();
+    expect(screen.queryByText("转发准备失败")).toBeNull();
+    expect(screen.queryByRole("button", { name: "无附件转发" })).toBeNull();
+    await user.click(
+      screen.getByRole("button", { name: "重试准备转发" }),
+    );
+    expect(onPrepareForward).toHaveBeenCalledOnce();
   });
 });
 

@@ -292,9 +292,9 @@ family. Preserve the relative hierarchy when tuning optical values.
   the reader. Marking unread updates the list immediately and never adds a
   reader-body banner or reuses the pending mark-read state as toolbar feedback.
 - A forward action enters a bounded preparation state and cannot open a composer
-  from preview text. Failure leaves the current reader intact. If original
-  attachments cannot be prepared, the recovery surface offers an explicit
-  **无附件转发** action rather than silently omitting them.
+  from preview text. Failure leaves the current reader intact, adds no failure
+  card to the body, and returns the forward control to a retryable state.
+  Original attachments are never silently omitted.
 - Received attachments form a compact grid or list below the body using the
   shared control surface. Each card shows a type-appropriate Phosphor icon,
   safe name, exact attachment size, and its own save action; unknown types use a
@@ -415,9 +415,9 @@ family. Preserve the relative hierarchy when tuning optical values.
   the authored editor. It preserves clear original identity and body hierarchy,
   may collapse for space, and cannot be edited or accidentally selected as the
   user's new text.
-- Forwarded ordinary attachments are visible and removable before send. If the
-  user chose **无附件转发**, the compose surface must not imply that original
-  attachments remain included.
+- Forwarded ordinary attachments are visible and removable before send. A
+  composer opens only after the complete forward source has been prepared
+  safely.
 - Minimized compose is a 340 × 44 px subject-only bar at bottom center. The
   full-window scrim and blur disappear; the bar retains its own compact glass.
   An empty subject reads **新邮件**. Clicking the subject restores the composer;

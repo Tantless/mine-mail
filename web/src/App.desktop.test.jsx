@@ -2937,7 +2937,7 @@ describe("Mine Mail desktop state bridge", () => {
     expect(within(reader).queryByText("Myo myo@paa.moe")).toBeNull();
   });
 
-  it("uses only Rust-prepared forward drafts and requires an explicit attachment-free retry", async () => {
+  it("retries Rust-prepared forwarding without exposing a reader failure card", async () => {
     const source = {
       ...summary(8, "Forward source"),
       body_text: "Complete source body",
@@ -2995,7 +2995,7 @@ describe("Mine Mail desktop state bridge", () => {
         kind: "prepared",
         prepared: {
           draft: preparedDraft,
-          warnings: ["attachments_omitted_by_user"],
+          warnings: [],
         },
       });
     const user = userEvent.setup();
@@ -3004,9 +3004,13 @@ describe("Mine Mail desktop state bridge", () => {
     await user.click(await screen.findByText("Forward source"));
     await user.click(screen.getByRole("button", { name: "转发" }));
     expect(
-      await screen.findByText("一个或多个原邮件附件无法安全加入草稿。"),
-    ).toBeTruthy();
-    await user.click(screen.getByRole("button", { name: "无附件转发" }));
+      screen.queryByText("一个或多个原邮件附件无法安全加入草稿。"),
+    ).toBeNull();
+    expect(screen.queryByText("转发准备失败")).toBeNull();
+    expect(screen.queryByRole("button", { name: "无附件转发" })).toBeNull();
+    await user.click(
+      screen.getByRole("button", { name: "重试准备转发" }),
+    );
 
     const composer = await screen.findByRole("dialog", { name: "编辑草稿" });
     expect(within(composer).getByLabelText("主题").value).toBe(
@@ -3020,11 +3024,11 @@ describe("Mine Mail desktop state bridge", () => {
       within(composer).getByLabelText("不可编辑的转发原文"),
     ).toBeTruthy();
     expect(
-      within(composer).getByText("无附件转发：原邮件附件未加入当前草稿。"),
-    ).toBeTruthy();
+      within(composer).queryByText("无附件转发：原邮件附件未加入当前草稿。"),
+    ).toBeNull();
     expect(desktop.mailApi.prepareForward.mock.calls).toEqual([
       ["8", true],
-      ["8", false],
+      ["8", true],
     ]);
   });
 
@@ -3205,8 +3209,11 @@ describe("Mine Mail desktop state bridge", () => {
     ).toBeTruthy();
     await user.click(screen.getByRole("button", { name: "转发" }));
     expect(
-      await screen.findByText("完整邮件暂时不可用，请重新同步后重试。"),
+      await screen.findByRole("button", { name: "重试准备转发" }),
     ).toBeTruthy();
+    expect(
+      screen.queryByText("完整邮件暂时不可用，请重新同步后重试。"),
+    ).toBeNull();
     expect(desktop.mailApi.prepareForward).toHaveBeenCalledTimes(2);
   });
 

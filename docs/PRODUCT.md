@@ -339,8 +339,10 @@ must be updated here when an intentional product change lands.
   script, form, or sender-controlled style payload.
 - A forward includes all ordinary named original attachments by default and does
   not silently replace the original message with an `.eml` file. If any attachment
-  cannot be prepared safely, default preparation fails without omitting it. The
-  user may explicitly choose **无附件转发** and prepare the same message again.
+  cannot be prepared safely, preparation fails without omitting it. The reader
+  remains intact without a body-level failure card, and the Forward control
+  returns to a retryable state. The frontend does not offer an attachment-less
+  fallback.
 - Inline resources remain subject to the sanitizer and are not silently promoted
   to ordinary downloadable or forwarded attachments.
 

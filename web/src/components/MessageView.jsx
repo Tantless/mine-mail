@@ -418,15 +418,12 @@ function MessageToolbarAction({ icon, label, onAction, state, tone = "default" }
 function forwardPresentation(stateValue) {
   const state = normalizeActionState(stateValue);
   const status = state.status || "idle";
-  const detail = actionStateMessage(state);
 
   if (status === "loading" || status === "pending" || status === "in_flight") {
     return {
       disabled: true,
       label: "正在准备转发…",
       loading: true,
-      message: "",
-      retryWithoutAttachments: false,
     };
   }
 
@@ -434,13 +431,8 @@ function forwardPresentation(stateValue) {
     const retryable = state.retryable !== false;
     return {
       disabled: !retryable,
-      label: retryable ? "重试准备转发" : "转发准备失败",
+      label: "重试准备转发",
       loading: false,
-      message: detail || "无法准备完整邮件内容，请稍后重试。",
-      retryWithoutAttachments: Boolean(
-        state.retryWithoutAttachmentsAllowed ||
-          state.retry_without_attachments_allowed,
-      ),
     };
   }
 
@@ -448,8 +440,6 @@ function forwardPresentation(stateValue) {
     disabled: false,
     label: "转发",
     loading: false,
-    message: "",
-    retryWithoutAttachments: false,
   };
 }
 
@@ -462,7 +452,6 @@ export function MessageView({
   backLabel = "返回邮件列表",
   onReply,
   onPrepareForward,
-  onPrepareForwardWithoutAttachments,
   forwardState,
   onArchive,
   archiveState,
@@ -905,23 +894,6 @@ export function MessageView({
               ))}
             </div>
           </section>
-        ) : null}
-
-        {preparedForwardState.message ? (
-          <aside className="message-error delivery-status" role="alert">
-            <strong>转发准备失败</strong>
-            <span>{preparedForwardState.message}</span>
-            {preparedForwardState.retryWithoutAttachments &&
-            onPrepareForwardWithoutAttachments ? (
-              <button
-                type="button"
-                className="secondary-button"
-                onClick={() => onPrepareForwardWithoutAttachments()}
-              >
-                无附件转发
-              </button>
-            ) : null}
-          </aside>
         ) : null}
 
         {role !== "outbox" ? (
