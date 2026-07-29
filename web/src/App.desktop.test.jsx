@@ -991,7 +991,147 @@ describe("Mine Mail desktop state bridge", () => {
     });
   });
 
-  it("keeps a cross-account notification retryable while a composer is open", async () => {
+  it("keeps independent compose sessions while switching accounts from a notification", async () => {
+    const status = {
+      configured: true,
+      accountId: "account-a",
+      activeAccountId: "account-a",
+      provider: "163",
+      email: "a@example.com",
+      backendReady: true,
+      credentialAvailable: true,
+      networkReady: true,
+      startupError: null,
+      accounts: [
+        {
+          accountId: "account-a",
+          provider: "163",
+          email: "a@example.com",
+          backendReady: true,
+          credentialAvailable: true,
+          networkReady: true,
+        },
+        {
+          accountId: "account-b",
+          provider: "gmail",
+          email: "b@example.com",
+          backendReady: true,
+          credentialAvailable: true,
+          networkReady: true,
+        },
+      ],
+    };
+    let testActiveAccountId = "account-a";
+    const draftsByAccount = new Map([
+      ["account-a", []],
+      ["account-b", []],
+    ]);
+    const statusFor = (accountId) => ({
+      ...status,
+      ...status.accounts.find((account) => account.accountId === accountId),
+      accountId,
+      activeAccountId: accountId,
+    });
+    desktop.mailApi.getAccountStatus.mockImplementation(async () =>
+      statusFor(testActiveAccountId),
+    );
+    desktop.mailApi.switchAccount.mockImplementation(async (accountId) => {
+      testActiveAccountId = accountId;
+      return statusFor(accountId);
+    });
+    desktop.mailApi.listDrafts.mockImplementation(
+      async () => draftsByAccount.get(testActiveAccountId) || [],
+    );
+    let createdDrafts = 0;
+    desktop.mailApi.saveDraft.mockImplementation(
+      async (request, draftId, expectedLocalVersion) => {
+        const outcome = savedOutcome(
+          request,
+          draftId || `account-compose-${(createdDrafts += 1)}`,
+          expectedLocalVersion,
+        );
+        draftsByAccount.set(testActiveAccountId, [outcome.draft]);
+        return outcome;
+      },
+    );
+    desktop.mailApi.fetchMailboxMessage.mockImplementation(async (messageId) =>
+      messageId === "account-b-notification"
+        ? {
+            ...summary(
+              "account-b-notification",
+              "Retried cross-account notification",
+            ),
+            uid: undefined,
+            body_text: "Retried notification body",
+            body_fetched: true,
+            flags: ["\\Seen"],
+          }
+        : desktop.fixtures.inboxMessageSource(Number(messageId)),
+    );
+    const user = userEvent.setup();
+    render(<App />);
+    await waitFor(() =>
+      expect(desktop.listeners.has("mail:open-message")).toBe(true),
+    );
+    await screen.findByRole("button", { name: "当前账户 a@example.com" });
+    await user.click(screen.getByRole("button", { name: /写信/ }));
+    await user.type(screen.getByLabelText("主题"), "A 账户正在编辑");
+
+    await act(async () => {
+      desktop.listeners.get("mail:open-message")?.({
+        payload: {
+          message_id: "account-b-notification",
+          account_id: "account-b",
+        },
+      });
+    });
+    expect(await screen.findByText("Retried notification body")).toBeTruthy();
+    expect(
+      screen.queryByText("请先关闭当前写信窗口，再打开其他账户的新邮件"),
+    ).toBeNull();
+    expect(desktop.mailApi.switchAccount).toHaveBeenCalledOnce();
+    expect(desktop.mailApi.switchAccount).toHaveBeenCalledWith("account-b");
+    expect(desktop.mailApi.fetchMailboxMessage).toHaveBeenCalledWith(
+      "account-b-notification",
+    );
+    expect(desktop.mailApi.saveDraft).toHaveBeenCalledOnce();
+    expect(desktop.mailApi.saveDraft.mock.calls[0][0].subject).toBe(
+      "A 账户正在编辑",
+    );
+    expect(screen.queryByRole("dialog", { name: /A 账户正在编辑/ })).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: /写信/ }));
+    expect(screen.getByLabelText("主题").value).toBe("");
+    await user.type(screen.getByLabelText("主题"), "B 账户独立邮件");
+    minimizeComposer();
+    await user.click(
+      screen.getByRole("button", { name: "切换到 a@example.com" }),
+    );
+    await screen.findByRole("button", { name: "当前账户 a@example.com" });
+
+    const restoreA = await screen.findByRole("button", {
+      name: "还原写信窗口：A 账户正在编辑",
+    });
+    await user.click(restoreA);
+    expect(screen.getByLabelText("主题").value).toBe("A 账户正在编辑");
+
+    minimizeComposer();
+    await user.click(
+      screen.getByRole("button", { name: "切换到 b@example.com" }),
+    );
+    await screen.findByRole("button", { name: "当前账户 b@example.com" });
+    const restoreB = await screen.findByRole("button", {
+      name: "还原写信窗口：B 账户独立邮件",
+    });
+    await user.click(restoreB);
+    expect(screen.getByLabelText("主题").value).toBe("B 账户独立邮件");
+    expect(desktop.mailApi.saveDraft).toHaveBeenCalledTimes(2);
+    expect(desktop.mailApi.saveDraft.mock.calls[1][0].subject).toBe(
+      "B 账户独立邮件",
+    );
+  });
+
+  it("keeps the current account and editor when a switch-time draft save fails", async () => {
     const status = {
       configured: true,
       accountId: "account-a",
@@ -1022,54 +1162,31 @@ describe("Mine Mail desktop state bridge", () => {
       ],
     };
     desktop.mailApi.getAccountStatus.mockResolvedValue(status);
-    desktop.mailApi.fetchMailboxMessage.mockImplementation(async (messageId) =>
-      messageId === "account-b-notification"
-        ? {
-            ...summary(
-              "account-b-notification",
-              "Retried cross-account notification",
-            ),
-            uid: undefined,
-            body_text: "Retried notification body",
-            body_fetched: true,
-            flags: ["\\Seen"],
-          }
-        : desktop.fixtures.inboxMessageSource(Number(messageId)),
+    desktop.mailApi.saveDraft.mockRejectedValueOnce(
+      new Error("本地草稿写入失败"),
     );
     const user = userEvent.setup();
     render(<App />);
-    await waitFor(() =>
-      expect(desktop.listeners.has("mail:open-message")).toBe(true),
-    );
+
+    await screen.findByRole("button", { name: "当前账户 a@example.com" });
     await user.click(screen.getByRole("button", { name: /写信/ }));
-
-    await act(async () => {
-      desktop.listeners.get("mail:open-message")?.({
-        payload: {
-          message_id: "account-b-notification",
-          account_id: "account-b",
-        },
-      });
-    });
-    expect(
-      await screen.findByText(
-        "请先关闭当前写信窗口，再打开其他账户的新邮件",
-      ),
-    ).toBeTruthy();
-    expect(desktop.mailApi.switchAccount).not.toHaveBeenCalled();
-    expect(desktop.mailApi.fetchMailboxMessage).not.toHaveBeenCalledWith(
-      "account-b-notification",
-    );
-
+    await user.type(screen.getByLabelText("主题"), "不能丢失的内容");
     minimizeComposer();
-    await user.click(screen.getByRole("button", { name: "关闭写信窗口" }));
-    expect(await screen.findByText("Retried notification body")).toBeTruthy();
-    expect(desktop.mailApi.switchAccount).toHaveBeenCalledOnce();
-    expect(desktop.mailApi.switchAccount).toHaveBeenCalledWith("account-b");
-    expect(desktop.mailApi.fetchMailboxMessage).toHaveBeenCalledOnce();
-    expect(desktop.mailApi.fetchMailboxMessage).toHaveBeenCalledWith(
-      "account-b-notification",
+    await user.click(
+      screen.getByRole("button", { name: "切换到 b@example.com" }),
     );
+
+    expect(await screen.findByText("本地草稿写入失败")).toBeTruthy();
+    expect(desktop.mailApi.switchAccount).not.toHaveBeenCalled();
+    expect(
+      screen.getByRole("button", { name: "当前账户 a@example.com" }),
+    ).toBeTruthy();
+    await user.click(
+      screen.getByRole("button", {
+        name: "还原写信窗口：不能丢失的内容",
+      }),
+    );
+    expect(screen.getByLabelText("主题").value).toBe("不能丢失的内容");
   });
 
   it("marks an unread Inbox message read immediately and requests IMAP persistence", async () => {

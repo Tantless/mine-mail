@@ -51,7 +51,7 @@ must be updated here when an intentional product change lands.
 ## Account removal
 
 - Account removal is an explicit, confirmed operation and is unavailable while
-  a composer is open.
+  that account retains a live compose session.
 - Removing a password-based account deletes its OS credential and Mine Mail
   account record. Cached SQLite mail, drafts, and Outbox data remain unless the
   user separately selects **同时删除本地邮件缓存**.
@@ -316,6 +316,13 @@ must be updated here when an intentional product change lands.
   - a new compose session removes any recovery draft created only by that session;
   - closing an existing draft leaves its previously persisted version intact;
   - minimizing keeps the current editing session alive.
+- Each stable account ID owns at most one live compose session. Before switching
+  accounts, Mine Mail saves any edited content to that account's local draft
+  store and retains the session's in-memory editing state. The destination
+  account has an independent compose session and sender identity. Returning to
+  the source account restores its session as the minimized compose bar. A local
+  save failure leaves the current account and editor in place instead of risking
+  cross-account or unsaved state.
 - Compose window geometry and its visual behavior follow `../DESIGN.md`.
 
 ## Replies and forwarding

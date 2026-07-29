@@ -422,6 +422,11 @@ family. Preserve the relative hierarchy when tuning optical values.
   full-window scrim and blur disappear; the bar retains its own compact glass.
   An empty subject reads **新邮件**. Clicking the subject restores the composer;
   the only visible close control is at the far right of this minimized bar.
+- Each connected account owns at most one live compose surface. Switching
+  accounts saves and hides the source account's session without showing a
+  warning card. The target account opens its own independent compose flow.
+  Returning to an account with a retained session shows that session as the
+  standard minimized compose bar.
 
 ### Notifications and confirmations
 

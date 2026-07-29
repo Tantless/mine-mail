@@ -530,6 +530,7 @@ function createComposer(
     revision: 0,
     saveStatus: readOnlyUnsupported ? "readonly" : draftId ? "saved" : "idle",
     locked: false,
+    startMinimized: false,
     attachmentOperations: { add: null, remove: {} },
     forwardWarnings: [...forwardWarnings],
   };
@@ -619,6 +620,7 @@ export function App() {
   const [referenceJump, setReferenceJump] = useState(null);
 
   const composerRef = useRef(null);
+  const composerSessionsRef = useRef(new Map());
   const draftSaveRef = useRef(null);
   const exitFlushRef = useRef(null);
   const networkActionsAvailableRef = useRef(false);
@@ -868,11 +870,26 @@ export function App() {
       typeof valueOrUpdater === "function"
         ? valueOrUpdater(previous)
         : valueOrUpdater;
+    const accountId = activeAccountIdRef.current;
+    if (accountId) {
+      if (next) composerSessionsRef.current.set(accountId, next);
+      else composerSessionsRef.current.delete(accountId);
+    }
     composerRef.current = next;
     setComposer(next);
     if (previous && !next && pendingNotificationOpenRef.current) {
       Promise.resolve().then(() => resumeNotificationOpenRef.current?.());
     }
+    return next;
+  }, []);
+
+  const activateComposerForAccount = useCallback((accountId) => {
+    const next = accountId
+      ? composerSessionsRef.current.get(accountId) || null
+      : null;
+    composerRef.current = next;
+    setComposer(next);
+    setPendingSend(null);
     return next;
   }, []);
 
@@ -883,9 +900,12 @@ export function App() {
       persistedDraft = null,
       options = {},
     ) => {
+      if (composerRef.current) return composerRef.current;
       replyPreparationRequestRef.current += 1;
       setPendingSend(null);
-      commitComposer(createComposer(value, draftId, persistedDraft, options));
+      return commitComposer(
+        createComposer(value, draftId, persistedDraft, options),
+      );
     },
     [commitComposer],
   );
@@ -2002,6 +2022,7 @@ export function App() {
         mailboxCapabilities: null,
       };
       activeAccountIdRef.current = accountId;
+      activateComposerForAccount(accountId);
       selectionRequestRef.current += 1;
       setMessages(restored.messages);
       setSentMessages(restored.sentMessages || []);
@@ -2033,7 +2054,7 @@ export function App() {
       }
       return restored;
     },
-    [handleSelect, settleMailboxSnapshot],
+    [activateComposerForAccount, handleSelect, settleMailboxSnapshot],
   );
 
   const loadContacts = useCallback(
@@ -2496,6 +2517,50 @@ export function App() {
     [cacheAuthoritativeDrafts, commitComposer, showToast],
   );
 
+  const prepareComposerForAccountSwitch = useCallback(async () => {
+    const initial = composerRef.current;
+    if (!initial) return true;
+    if (initial.locked) {
+      showToast("请等待当前草稿操作完成后再切换邮箱账户。", "error");
+      return false;
+    }
+
+    const sessionId = initial.sessionId;
+    commitComposer((current) =>
+      current?.sessionId === sessionId ? { ...current, locked: true } : current,
+    );
+    try {
+      await saveDraftNow();
+    } catch (error) {
+      commitComposer((current) =>
+        current?.sessionId === sessionId
+          ? { ...current, locked: false, saveStatus: "error" }
+          : current,
+      );
+      showToast(
+        describeError(error, "切换账户前未能保存当前草稿，请重试"),
+        "error",
+      );
+      return false;
+    }
+
+    const current = composerRef.current;
+    if (!current || current.sessionId !== sessionId) return false;
+    commitComposer({
+      ...current,
+      locked: false,
+      startMinimized: true,
+      saveStatus: current.readOnlyUnsupported
+        ? "readonly"
+        : current.dirty
+          ? "dirty"
+          : current.draftId
+            ? "saved"
+            : "idle",
+    });
+    return true;
+  }, [commitComposer, saveDraftNow, showToast]);
+
   const applyAttachmentMutationOutcome = useCallback(
     (sessionId, outcome, operation) => {
       const draft = outcome?.draft;
@@ -2627,12 +2692,9 @@ export function App() {
         const currentAccountId =
           status.activeAccountId || status.accountId || null;
         if (currentAccountId !== opaqueAccountId) {
-          if (composerRef.current) {
+          const composerReady = await prepareComposerForAccountSwitch();
+          if (!composerReady) {
             pendingNotificationOpenRef.current = request;
-            showToast(
-              "请先关闭当前写信窗口，再打开其他账户的新邮件",
-              "error",
-            );
             return;
           }
           invalidateForwardPreparationsForAccount(
@@ -2996,6 +3058,7 @@ export function App() {
     invalidateForwardPreparationsForAccount,
     loadAccountView,
     loadMailboxRolePage,
+    prepareComposerForAccountSwitch,
     refreshDrafts,
     refreshInbox,
     refreshMailboxCapabilities,
@@ -4937,6 +5000,7 @@ export function App() {
       canUseAccountNetwork(status) ? "syncing" : "loading",
     );
     if (previousAccountId !== nextAccountId) {
+      activateComposerForAccount(nextAccountId);
       invalidateForwardPreparationsForAccount(previousAccountId);
       forwardPreparationRequestRef.current += 1;
       clearSelection();
@@ -5015,8 +5079,10 @@ export function App() {
     }
     replyPreparationRequestRef.current += 1;
     if (!accountId || accountId === accountStatus.activeAccountId) return true;
-    if (composerRef.current) {
-      showToast("请先关闭当前写信窗口，再切换邮箱账户。", "error");
+    if (!(await prepareComposerForAccountSwitch())) {
+      return false;
+    }
+    if (navigationIntentRef.current !== navigationIntentId) {
       return false;
     }
     invalidateForwardPreparationsForAccount(activeAccountIdRef.current);
@@ -5145,12 +5211,20 @@ export function App() {
       showToast("请先关闭当前写信窗口，再移除邮箱账户。", "error");
       return;
     }
+    if (composerSessionsRef.current.has(connectedAccount.accountId)) {
+      showToast(
+        "请先切换到该账户并关闭正在编辑的邮件，再移除邮箱账户。",
+        "error",
+      );
+      return;
+    }
     setAccountSubmitStatus("saving");
     try {
       const result = await mailApi.removeAccount(
         connectedAccount.accountId,
         options,
       );
+      composerSessionsRef.current.delete(connectedAccount.accountId);
       await applyActiveAccount(result.status, null);
       if (result.localDataDeleted) {
         const ownerKey = normalizeAvatarEmail(connectedAccount.email);
@@ -5769,6 +5843,7 @@ export function App() {
           isSending={isSending}
           locked={composer.locked}
           readOnly={composer.readOnlyUnsupported}
+          initiallyMinimized={composer.startMinimized}
           networkAvailable={networkActionsAvailable}
           onClose={() => void handleCloseComposer()}
           onDiscard={() => void handleDiscardComposer()}

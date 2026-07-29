@@ -402,6 +402,7 @@ export function ComposePanel({
   isSending,
   locked = false,
   readOnly = false,
+  initiallyMinimized = false,
   networkAvailable = true,
   onClose,
   onDiscard,
@@ -420,13 +421,27 @@ export function ComposePanel({
   const [showCopies, setShowCopies] = useState(
     Boolean(value.cc?.length || value.bcc?.length),
   );
-  const [geometry, setGeometry] = useState(loadInitialGeometry);
-  const [isMinimized, setIsMinimized] = useState(false);
+  const initialGeometryRef = useRef(null);
+  if (initialGeometryRef.current === null) {
+    const normal = loadInitialGeometry();
+    initialGeometryRef.current = {
+      normal,
+      current: initiallyMinimized ? minimizedGeometry() : normal,
+    };
+  }
+  const [geometry, setGeometry] = useState(
+    () => initialGeometryRef.current.current,
+  );
+  const [isMinimized, setIsMinimized] = useState(
+    Boolean(initiallyMinimized),
+  );
   const [isReplyExpanded, setIsReplyExpanded] = useState(false);
   const [isForwardExpanded, setIsForwardExpanded] = useState(false);
   const interactionRef = useRef(null);
   const geometryRef = useRef(geometry);
-  const minimizedGeometryRef = useRef(null);
+  const minimizedGeometryRef = useRef(
+    initiallyMinimized ? initialGeometryRef.current.normal : null,
+  );
   const dialogRef = useRef(null);
   const restoreFocusRef = useRef(
     typeof document !== "undefined" &&
