@@ -610,6 +610,10 @@ export function ComposePanel({
     setIsMinimized(true);
   };
 
+  const saveAndMinimize = async () => {
+    if ((await onSaveDraft()) === true) toggleMinimized();
+  };
+
   const canSend = useMemo(() => {
     const recipients = [...value.to, ...value.cc, ...value.bcc];
     return recipients.length > 0 && recipients.every(Boolean);
@@ -730,7 +734,7 @@ export function ComposePanel({
   const saveActionLabel =
     saveStatus === "saving" || saveStatus === "syncing"
       ? "正在保存草稿"
-      : "保存并关闭";
+      : "保存并最小化";
   const dialogLabel = readOnly ? "查看草稿" : draftId ? "编辑草稿" : "新邮件";
   const addOperationCopy = attachmentOperationCopy(addOperation, "add");
   const trapDialogFocus = (event) => {
@@ -1281,7 +1285,7 @@ export function ComposePanel({
                 </span>
                 <IconButton
                   label={saveActionLabel}
-                  onClick={onSaveDraft}
+                  onClick={() => void saveAndMinimize()}
                   disabled={
                     controlsDisabled ||
                     saveStatus === "saving" ||

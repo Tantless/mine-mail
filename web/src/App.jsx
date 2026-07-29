@@ -705,6 +705,7 @@ export function App() {
 
   const showToast = useCallback(
     (message, tone = "success", persistent = false) => {
+      if (tone === "success") return;
       toastSequenceRef.current += 1;
       setToast({
         message,
@@ -1581,7 +1582,7 @@ export function App() {
           readOnlyUnsupported: Boolean(canonical.has_unsupported_content),
           saveStatus: canonical.has_unsupported_content ? "readonly" : "saved",
         });
-        showToast("草稿已更新为其他客户端的最新版本");
+        showToast("草稿已更新为其他客户端的最新版本", "info");
       }
     }
     updateMailboxLoadState("drafts", (current) =>
@@ -3904,7 +3905,7 @@ export function App() {
       return;
     }
     if (!capability || capability.status === "discovery_pending") {
-      showToast("正在确认归档文件夹，请稍后重试");
+      showToast("正在确认归档文件夹，请稍后重试", "info");
       return;
     }
     showToast("此账户暂时不能使用归档", "error");
@@ -4531,16 +4532,23 @@ export function App() {
     }
   };
 
-  const handleSaveDraftAndClose = async ({ syncRemote = true } = {}) => {
+  const handleSaveDraftAndMinimize = async ({ syncRemote = true } = {}) => {
+    const initial = composerRef.current;
+    if (!initial || initial.locked) return false;
+    const sessionId = initial.sessionId;
     commitComposer((current) =>
-      current ? { ...current, locked: true } : current,
+      current?.sessionId === sessionId
+        ? { ...current, locked: true }
+        : current,
     );
     try {
       const draft = await saveDraftNow({ force: true });
-      commitComposer(null);
-      if (draft?.status !== "conflict") {
-        showToast(draft ? "草稿已保存到本地" : "空白写信窗口已关闭");
-      }
+      if (composerRef.current?.sessionId !== sessionId) return false;
+      commitComposer((current) =>
+        current?.sessionId === sessionId
+          ? { ...current, locked: false }
+          : current,
+      );
 
       if (syncRemote && draft && networkActionsAvailable) {
         void mailApi
@@ -4553,11 +4561,15 @@ export function App() {
             );
           });
       }
+      return true;
     } catch (error) {
       commitComposer((current) =>
-        current ? { ...current, locked: false, saveStatus: "error" } : current,
+        current?.sessionId === sessionId
+          ? { ...current, locked: false, saveStatus: "error" }
+          : current,
       );
       showToast(describeError(error, "草稿保存失败"), "error");
+      return false;
     }
   };
 
@@ -5848,7 +5860,7 @@ export function App() {
           onClose={() => void handleCloseComposer()}
           onDiscard={() => void handleDiscardComposer()}
           onChange={handleComposeChange}
-          onSaveDraft={() => void handleSaveDraftAndClose()}
+          onSaveDraft={handleSaveDraftAndMinimize}
           onRequestSend={() => void handleRequestSend()}
           sendShortcut={platform === "mac" ? "⌘ ↵" : "Ctrl ↵"}
           contacts={composeContactsWithAvatars}

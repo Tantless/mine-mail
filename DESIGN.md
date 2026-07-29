@@ -427,6 +427,10 @@ family. Preserve the relative hierarchy when tuning optical values.
   full-window scrim and blur disappear; the bar retains its own compact glass.
   An empty subject reads **新邮件**. Clicking the subject restores the composer;
   the only visible close control is at the far right of this minimized bar.
+- The expanded footer save action is **保存并最小化**. It saves authored content
+  locally before entering the standard minimized bar; an untouched empty session
+  enters the same bar without creating an empty draft. A local save failure keeps
+  the expanded composer visible and actionable.
 - Each connected account owns at most one live compose surface. Switching
   accounts saves and hides the source account's session without showing a
   warning card. The target account opens its own independent compose flow.
@@ -443,6 +447,9 @@ family. Preserve the relative hierarchy when tuning optical values.
   account. Body preview text is never shown.
 - Confirmation dialogs are compact, theme-owned, keyboard-operable, and reserved
   for consequential actions. Do not turn routine settings into confirmations.
+- Lower-right toasts are reserved for failures and bounded information that
+  requires attention. Routine successful actions use their resulting UI state or
+  nearby inline status and never produce a success toast.
 - Creating a missing Archive or Trash mailbox uses a one-time consequential
   confirmation. Archive setup is requested only from an explicit setup action or
   the first message Archive action, never from initial sidebar presentation.

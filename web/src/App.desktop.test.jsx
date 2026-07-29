@@ -3662,7 +3662,7 @@ describe("Mine Mail desktop state bridge", () => {
     expect(screen.getByRole("button", { name: "发送邮件" }).disabled).toBe(
       true,
     );
-    expect(screen.getByRole("button", { name: "保存并关闭" }).disabled).toBe(
+    expect(screen.getByRole("button", { name: "保存并最小化" }).disabled).toBe(
       true,
     );
     expect(screen.getByRole("button", { name: "丢弃草稿" }).disabled).toBe(

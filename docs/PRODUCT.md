@@ -312,6 +312,11 @@ must be updated here when an intentional product change lands.
   metadata and authored-boundary markers distinguish them from arbitrary
   sender-created HTML; missing or malformed ownership markers keep the draft
   read-only.
+- **保存并最小化** is a local stabilization action, not a close action. When the
+  current session has authored content, Mine Mail saves its exact local draft
+  version before showing the standard minimized compose bar. A new untouched
+  empty session minimizes without creating a draft. A local save failure leaves
+  the expanded editor open.
 - Closing the composer or pressing Escape never forces a save:
   - a new compose session removes any recovery draft created only by that session;
   - closing an existing draft leaves its previously persisted version intact;

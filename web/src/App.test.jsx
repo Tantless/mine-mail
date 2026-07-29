@@ -444,8 +444,8 @@ describe("Mine Mail MVP", () => {
     const initialTop = Number.parseFloat(dialog.style.top);
 
     expect(screen.queryByRole("button", { name: "展开写信窗口" })).toBeNull();
-    expect(screen.getByRole("button", { name: "保存并关闭" })).toBeTruthy();
-    expect(screen.queryByText("保存并关闭")).toBeNull();
+    expect(screen.getByRole("button", { name: "保存并最小化" })).toBeTruthy();
+    expect(screen.queryByText("保存并最小化")).toBeNull();
 
     fireEvent.pointerDown(dragSurface, {
       button: 0,
@@ -534,6 +534,66 @@ describe("Mine Mail MVP", () => {
     expect(
       screen.getByRole("button", { name: "还原写信窗口：新邮件" }).textContent,
     ).toBe("新邮件");
+  });
+
+  it("saves authored content before minimizing without a success toast", async () => {
+    const saveDraft = vi
+      .spyOn(mailApi, "saveDraft")
+      .mockImplementation(async (request, draftId, expectedLocalVersion) =>
+        savedOutcome(request, draftId, expectedLocalVersion),
+      );
+    vi.spyOn(mailApi, "syncDrafts").mockResolvedValue(undefined);
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findAllByText("欢迎来到 Mine Mail");
+
+    await user.click(screen.getByRole("button", { name: /写信/ }));
+    await user.type(screen.getByLabelText("主题"), "保存后缩略");
+    await user.click(screen.getByRole("button", { name: "保存并最小化" }));
+
+    await waitFor(() => expect(saveDraft).toHaveBeenCalledOnce());
+    const minimizedDialog = await screen.findByRole("dialog", {
+      name: "保存后缩略",
+    });
+    expect(minimizedDialog.dataset.minimized).toBe("true");
+    expect(
+      screen.getByRole("button", { name: "还原写信窗口：保存后缩略" }),
+    ).toBeTruthy();
+    expect(screen.queryByText("草稿已保存到本地")).toBeNull();
+    expect(document.querySelector(".toast")).toBeNull();
+  });
+
+  it("minimizes an untouched composer without creating an empty draft", async () => {
+    const saveDraft = vi.spyOn(mailApi, "saveDraft");
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findAllByText("欢迎来到 Mine Mail");
+
+    await user.click(screen.getByRole("button", { name: /写信/ }));
+    await user.click(screen.getByRole("button", { name: "保存并最小化" }));
+
+    const minimizedDialog = await screen.findByRole("dialog", { name: "新邮件" });
+    expect(minimizedDialog.dataset.minimized).toBe("true");
+    expect(saveDraft).not.toHaveBeenCalled();
+  });
+
+  it("keeps the composer expanded when saving before minimize fails", async () => {
+    vi.spyOn(mailApi, "saveDraft").mockRejectedValue(new Error("本地写入失败"));
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findAllByText("欢迎来到 Mine Mail");
+
+    await user.click(screen.getByRole("button", { name: /写信/ }));
+    await user.type(screen.getByLabelText("主题"), "保留当前编辑");
+    await user.click(screen.getByRole("button", { name: "保存并最小化" }));
+
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "本地写入失败",
+    );
+    expect(
+      screen.getByRole("dialog", { name: "新邮件" }).dataset.minimized,
+    ).toBe("false");
+    expect(screen.getByLabelText("主题").value).toBe("保留当前编辑");
   });
 
   it("filters the inbox by a search query", async () => {
@@ -685,6 +745,8 @@ describe("Mine Mail MVP", () => {
     await waitFor(() =>
       expect(syncMailbox).toHaveBeenCalledWith("demo-primary", "inbox"),
     );
+    expect(screen.queryByText("收件箱同步完成")).toBeNull();
+    expect(document.querySelector(".toast")).toBeNull();
   });
 
   it("navigates the settings menu and saves function preferences", async () => {
