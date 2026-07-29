@@ -257,6 +257,9 @@ family. Preserve the relative hierarchy when tuning optical values.
 
 - The message list paints cached summaries immediately. Selecting a message keeps
   list position stable and hydrates the body silently.
+- Each account and folder remembers its own message-list scroll position.
+  Opening a folder without a remembered position starts at the top; switching
+  back restores that account-and-folder position.
 - Inbox, Sent, Archive, and Trash append 50-message keyset pages automatically
   when the list approaches its bottom. There is no manual load-more button or
   persistent end card. A compact bottom line remains visible while loading, then

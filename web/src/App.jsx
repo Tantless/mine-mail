@@ -630,6 +630,7 @@ export function App() {
   const messageBodyCacheRef = useRef(new Map());
   const accountViewsRef = useRef(new Map());
   const accountViewLoadsRef = useRef(new Map());
+  const mailListScrollPositionsRef = useRef(new Map());
   const draftsRequestRef = useRef(0);
   const outboxRequestRef = useRef(0);
   const mailboxPageRequestsRef = useRef(new Map());
@@ -667,6 +668,10 @@ export function App() {
   const accountNeedsRepair = shouldRepairAccount(accountStatus);
   const activeAccountId =
     accountStatus.activeAccountId || accountStatus.accountId || null;
+  const mailListScrollStateKey = JSON.stringify([
+    activeAccountId,
+    activeFolder,
+  ]);
   networkActionsAvailableRef.current = networkActionsAvailable;
   accountStatusRef.current = accountStatus;
   draftsRef.current = drafts;
@@ -674,6 +679,15 @@ export function App() {
   activeFolderRef.current = activeFolder;
   selectedContactEmailRef.current = selectedContactEmail;
   selectedContactAccountIdRef.current = selectedContactAccountId;
+
+  const getMailListScrollTop = useCallback(
+    (key) => mailListScrollPositionsRef.current.get(key) ?? 0,
+    [],
+  );
+  const saveMailListScrollTop = useCallback((key, scrollTop) => {
+    if (!Number.isFinite(scrollTop)) return;
+    mailListScrollPositionsRef.current.set(key, Math.max(0, scrollTop));
+  }, []);
 
   useEffect(() => {
     const accountId = activeAccountIdRef.current;
@@ -5831,6 +5845,9 @@ export function App() {
               referenceJump={referenceJump}
               mailboxCapability={activeMailboxCapability}
               loadMoreState={loadMoreState}
+              scrollStateKey={mailListScrollStateKey}
+              getScrollTop={getMailListScrollTop}
+              onScrollTopChange={saveMailListScrollTop}
               onLoadMore={
                 canLoadOlder &&
                 !["offline", "unavailable", "loading"].includes(

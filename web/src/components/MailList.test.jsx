@@ -274,6 +274,48 @@ describe("MailList controlled controls", () => {
     }
   });
 
+  it("remembers scroll position per account and folder while new folders start at the top", () => {
+    const positions = new Map();
+    const getScrollTop = (key) => positions.get(key) ?? 0;
+    const onScrollTopChange = (key, scrollTop) => {
+      positions.set(key, scrollTop);
+    };
+    const { container, rerenderMailList } = renderMailList({
+      scrollStateKey: "account-a:inbox",
+      getScrollTop,
+      onScrollTopChange,
+    });
+    const surface = container.querySelector(".message-list");
+
+    surface.scrollTop = 180;
+    fireEvent.scroll(surface);
+    rerenderMailList({
+      folderRole: "sent",
+      scrollStateKey: "account-a:sent",
+      getScrollTop,
+      onScrollTopChange,
+    });
+    expect(surface.scrollTop).toBe(0);
+
+    surface.scrollTop = 72;
+    fireEvent.scroll(surface);
+    rerenderMailList({
+      folderRole: "inbox",
+      scrollStateKey: "account-a:inbox",
+      getScrollTop,
+      onScrollTopChange,
+    });
+    expect(surface.scrollTop).toBe(180);
+
+    rerenderMailList({
+      folderRole: "inbox",
+      scrollStateKey: "account-b:inbox",
+      getScrollTop,
+      onScrollTopChange,
+    });
+    expect(surface.scrollTop).toBe(0);
+  });
+
   it("keeps an unavailable sync action disabled with a reason", () => {
     renderMailList({
       canSync: false,

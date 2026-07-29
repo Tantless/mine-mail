@@ -6,7 +6,7 @@ import {
   MagnifyingGlass,
   Star,
 } from "@phosphor-icons/react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { IconButton } from "./IconButton.jsx";
 import { ProfileAvatar } from "./ProfileAvatar.jsx";
 import { TooltipTarget } from "./Tooltip.jsx";
@@ -240,6 +240,9 @@ export function MailList({
   mailboxCapability = null,
   loadMoreState = "idle",
   onLoadMore = null,
+  scrollStateKey = null,
+  getScrollTop = null,
+  onScrollTopChange = null,
 }) {
   const messageListRef = useRef(null);
   const loadMoreSentinelRef = useRef(null);
@@ -293,6 +296,25 @@ export function MailList({
     autoLoadRequestedRef.current = true;
     onLoadMore();
   };
+
+  useLayoutEffect(() => {
+    const surface = messageListRef.current;
+    if (!surface || scrollStateKey === null) return undefined;
+    const storedScrollTop =
+      typeof getScrollTop === "function"
+        ? getScrollTop(scrollStateKey)
+        : 0;
+    surface.scrollTop =
+      Number.isFinite(storedScrollTop) && storedScrollTop > 0
+        ? storedScrollTop
+        : 0;
+
+    return () => {
+      if (typeof onScrollTopChange === "function") {
+        onScrollTopChange(scrollStateKey, surface.scrollTop);
+      }
+    };
+  }, [getScrollTop, onScrollTopChange, scrollStateKey]);
 
   useEffect(() => {
     if (!referenceJump?.key || !messageListRef.current) return;
@@ -430,6 +452,12 @@ export function MailList({
         ref={messageListRef}
         onScroll={(event) => {
           const surface = event.currentTarget;
+          if (
+            scrollStateKey !== null &&
+            typeof onScrollTopChange === "function"
+          ) {
+            onScrollTopChange(scrollStateKey, surface.scrollTop);
+          }
           const remaining =
             surface.scrollHeight - surface.scrollTop - surface.clientHeight;
           if (remaining <= 64) requestOlderPage();
