@@ -31,6 +31,8 @@ import { CredentialWarning } from "./CredentialWarning.jsx";
 import { IconButton } from "./IconButton.jsx";
 import { EditableProfileAvatar, ProfileAvatar } from "./ProfileAvatar.jsx";
 import { ThemedSelect } from "./ThemedSelect.jsx";
+import { TooltipTarget } from "./Tooltip.jsx";
+import { useSlidingSelection } from "../hooks/useSlidingSelection.js";
 
 const remoteImageOptions = [
   { value: "automatic", label: "自动加载" },
@@ -170,6 +172,15 @@ function formatStorageBytes(bytes) {
   return `${size >= 100 ? size.toFixed(0) : size.toFixed(1)} ${unit}`;
 }
 
+function storageCompositionLabel(categories) {
+  const entries = (categories || []).map(
+    (category) => `${category.label} ${formatStorageBytes(category.bytes)}`,
+  );
+  return entries.length
+    ? `本地数据空间占用构成：${entries.join("，")}`
+    : "本地数据空间占用构成：暂无数据";
+}
+
 function storageLocationLabel(kind) {
   if (kind === "install_directory") return "随应用安装位置";
   if (kind === "custom") return "自定义位置";
@@ -276,6 +287,7 @@ export function SettingsPanel({
   const [pendingStorageDirectory, setPendingStorageDirectory] = useState(null);
   const [isRemoteImageHelpOpen, setIsRemoteImageHelpOpen] = useState(false);
   const scrollRef = useRef(null);
+  const settingsNavRef = useRef(null);
   const previousAccountSubmitStatusRef = useRef(accountSubmitStatus);
   const accountDialogReturnFocusRef = useRef(null);
   const storageDialogReturnFocusRef = useRef(null);
@@ -291,6 +303,15 @@ export function SettingsPanel({
       (account) =>
         account.accountId === (accountStatus?.activeAccountId || accountStatus?.accountId),
     ) || accounts[0];
+  const {
+    motionReady: navSelectionMotionReady,
+    selectionStyle: navSelectionStyle,
+    selectionVisible: navSelectionVisible,
+  } = useSlidingSelection({
+    containerRef: settingsNavRef,
+    layoutKey: activeSection,
+    selectedKey: activeSection,
+  });
   const providerOptions = useMemo(() => {
     const providers = accountPresets?.length
       ? accountPresets.map(normalizeProvider)
@@ -623,7 +644,14 @@ export function SettingsPanel({
           <h2 id="settings-title">设置</h2>
         </div>
 
-        <nav className="settings-nav" aria-label="设置菜单">
+        <nav
+          ref={settingsNavRef}
+          className="settings-nav"
+          aria-label="设置菜单"
+          data-selection-visible={navSelectionVisible || undefined}
+          data-selection-motion-ready={navSelectionMotionReady || undefined}
+          style={navSelectionStyle}
+        >
           {menuItems.map((item) => {
             const MenuIcon = item.icon;
             const selected = activeSection === item.id;
@@ -1189,52 +1217,68 @@ export function SettingsPanel({
                 </header>
 
                 <div className="settings-storage-location">
-                  <span>
-                    <small>
+                  <strong className="settings-storage-location__label">
+                    存储位置
+                  </strong>
+                  <div className="settings-storage-location__capsule">
+                    <small className="settings-storage-location__kind">
                       {storageLocationLabel(storageStatus?.locationKind)}
                     </small>
-                    <strong title={storageStatus?.dataPath}>
+                    <span
+                      className="settings-storage-location__divider"
+                      aria-hidden="true"
+                    />
+                    <strong
+                      className="settings-storage-location__path"
+                      title={storageStatus?.dataPath}
+                    >
                       {storageStatus?.dataPath || "正在读取数据目录…"}
                     </strong>
-                  </span>
-                  <button
-                    ref={storageDialogReturnFocusRef}
-                    type="button"
-                    className="secondary-button settings-storage-change"
-                    onClick={() => void chooseStorageDirectory()}
-                    disabled={
-                      !storageClient.isSupported ||
-                      !storageStatus?.available ||
-                      ["loading", "choosing", "migrating"].includes(storageState)
-                    }
-                  >
-                    <FolderOpen size={17} weight="bold" />
-                    {storageState === "choosing" ? "正在选择…" : "更改位置"}
-                  </button>
+                    <IconButton
+                      ref={storageDialogReturnFocusRef}
+                      className="settings-storage-change"
+                      label="更改位置"
+                      title={
+                        storageState === "choosing"
+                          ? "正在选择存储位置…"
+                          : "更改存储位置"
+                      }
+                      onClick={() => void chooseStorageDirectory()}
+                      disabled={
+                        !storageClient.isSupported ||
+                        !storageStatus?.available ||
+                        ["loading", "choosing", "migrating"].includes(
+                          storageState,
+                        )
+                      }
+                    >
+                      <FolderOpen size={18} weight="bold" />
+                    </IconButton>
+                  </div>
                 </div>
 
                 <div className="settings-storage-usage" aria-label="本地数据空间占用">
-                  {(storageStatus?.categories || []).map((category) => {
-                    const share =
-                      storageStatus.totalBytes > 0
-                        ? Math.round(
-                            (category.bytes / storageStatus.totalBytes) * 100,
-                          )
-                        : 0;
-                    return (
-                      <div className="settings-storage-usage__row" key={category.id}>
-                        <span>
-                          <strong>{category.label}</strong>
-                          <small>{formatStorageBytes(category.bytes)}</small>
-                        </span>
-                        <progress
-                          aria-label={`${category.label}占用`}
-                          max="100"
-                          value={share}
-                        />
-                      </div>
-                    );
-                  })}
+                  <div
+                    className="settings-storage-composition"
+                    role="img"
+                    aria-label={storageCompositionLabel(storageStatus?.categories)}
+                  >
+                    {(storageStatus?.categories || [])
+                      .filter((category) => Number(category.bytes) > 0)
+                      .map((category) => (
+                        <TooltipTarget
+                          key={category.id}
+                          label={`${category.label} · ${formatStorageBytes(category.bytes)}`}
+                        >
+                          <span
+                            className="settings-storage-composition__segment"
+                            data-storage-category={category.id}
+                            style={{ flexGrow: Number(category.bytes) }}
+                            aria-hidden="true"
+                          />
+                        </TooltipTarget>
+                      ))}
+                  </div>
                 </div>
 
                 <p

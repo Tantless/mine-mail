@@ -435,6 +435,8 @@ export function ComposePanel({
   const [isMinimized, setIsMinimized] = useState(
     Boolean(initiallyMinimized),
   );
+  const [interactionKind, setInteractionKind] = useState(null);
+  const [windowMotion, setWindowMotion] = useState(null);
   const [isReplyExpanded, setIsReplyExpanded] = useState(false);
   const [isForwardExpanded, setIsForwardExpanded] = useState(false);
   const interactionRef = useRef(null);
@@ -478,6 +480,7 @@ export function ComposePanel({
       persistGeometry(geometryRef.current);
     }
     interactionRef.current = null;
+    setInteractionKind(null);
     document.body.style.removeProperty("user-select");
     document.body.style.removeProperty("cursor");
   }, [isMinimized]);
@@ -576,6 +579,7 @@ export function ComposePanel({
       pointerY: event.clientY,
       geometry,
     };
+    setInteractionKind("drag");
     document.body.style.userSelect = "none";
     document.body.style.cursor = "grabbing";
   };
@@ -591,6 +595,7 @@ export function ComposePanel({
       pointerY: event.clientY,
       geometry,
     };
+    setInteractionKind("resize");
     document.body.style.userSelect = "none";
     document.body.style.cursor = getComputedStyle(event.currentTarget).cursor;
   };
@@ -602,11 +607,13 @@ export function ComposePanel({
         constrainGeometry(minimizedGeometryRef.current || loadInitialGeometry()),
       );
       minimizedGeometryRef.current = null;
+      setWindowMotion("restoring");
       setIsMinimized(false);
       return;
     }
     minimizedGeometryRef.current = geometryRef.current;
     commitGeometry(minimizedGeometry());
+    setWindowMotion("minimizing");
     setIsMinimized(true);
   };
 
@@ -789,6 +796,8 @@ export function ComposePanel({
         aria-label={isMinimized ? minimizedTitle : undefined}
         aria-labelledby={isMinimized ? undefined : "compose-title"}
         data-minimized={isMinimized}
+        data-interacting={interactionKind ? "true" : "false"}
+        data-window-motion={windowMotion || undefined}
         onKeyDown={trapDialogFocus}
         style={{
           left: geometry.x,
@@ -819,7 +828,7 @@ export function ComposePanel({
             </IconButton>
           </div>
         ) : (
-          <>
+          <div className="compose-expanded-shell">
             <h2 id="compose-title" className="compose-dialog-title">
               {dialogLabel}
             </h2>
@@ -1316,7 +1325,7 @@ export function ComposePanel({
                 {direction === "se" ? <DotsSix size={15} weight="bold" /> : null}
               </span>
             ))}
-          </>
+          </div>
         )}
       </section>
     </div>

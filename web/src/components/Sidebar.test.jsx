@@ -111,13 +111,13 @@ describe("Sidebar account switcher", () => {
       expect(selection.getAttribute("aria-hidden")).toBe("true");
       expect(selection.dataset.visible).toBe("true");
       expect(
-        selection.style.getPropertyValue("--folder-selection-y"),
+        selection.style.getPropertyValue("--sliding-selection-y"),
       ).toBe("0px");
 
       rerenderSidebar({ activeFolder: "starred" });
 
       expect(
-        selection.style.getPropertyValue("--folder-selection-y"),
+        selection.style.getPropertyValue("--sliding-selection-y"),
       ).toBe("47px");
       expect(
         screen.getByRole("button", { name: "已收藏" }).dataset.selected,
@@ -291,6 +291,66 @@ describe("Sidebar account switcher", () => {
     expect(firstAccount.dataset.active).toBe("false");
     expect(googleAccount.dataset.active).toBe("true");
     expect(googleAccount.getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("moves one shared selection surface between connected accounts", () => {
+    const rect = (top, left, width, height) => ({
+      bottom: top + height,
+      height,
+      left,
+      right: left + width,
+      top,
+      width,
+      x: left,
+      y: top,
+      toJSON: () => ({}),
+    });
+    const boundsSpy = vi
+      .spyOn(Element.prototype, "getBoundingClientRect")
+      .mockImplementation(function getBoundingClientRect() {
+        if (this.classList?.contains("account-switcher")) {
+          return rect(300, 20, 232, 174);
+        }
+        if (this.textContent?.includes("first@163.com")) {
+          return rect(361, 20, 232, 52);
+        }
+        if (this.textContent?.includes("second@gmail.com")) {
+          return rect(422, 20, 232, 52);
+        }
+        return rect(0, 0, 0, 0);
+      });
+
+    try {
+      const { rerenderSidebar } = renderSidebar(2);
+      const switcher = screen.getByRole("group", {
+        name: "已登录邮箱账户",
+      });
+
+      expect(switcher.dataset.selectionVisible).toBe("true");
+      expect(
+        switcher.style.getPropertyValue("--sliding-selection-y"),
+      ).toBe("61px");
+
+      rerenderSidebar({
+        accountStatus: {
+          configured: true,
+          accounts: accounts.slice(0, 2),
+          activeAccountId: "google",
+          maxAccounts: 3,
+        },
+      });
+
+      expect(
+        switcher.style.getPropertyValue("--sliding-selection-y"),
+      ).toBe("122px");
+      expect(
+        screen.getByRole("button", {
+          name: "当前账户 second@gmail.com",
+        }).getAttribute("aria-pressed"),
+      ).toBe("true");
+    } finally {
+      boundsSpy.mockRestore();
+    }
   });
 
   it("marks the exact account whose credential is invalid", () => {

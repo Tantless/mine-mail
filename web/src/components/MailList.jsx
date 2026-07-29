@@ -16,6 +16,7 @@ import {
   senderLabel,
 } from "../utils/formatters.js";
 import { messageNavigationKey } from "../utils/messageNavigation.js";
+import { useSlidingSelection } from "../hooks/useSlidingSelection.js";
 
 const folderConfigurations = {
   inbox: {
@@ -243,6 +244,7 @@ export function MailList({
   const messageListRef = useRef(null);
   const loadMoreSentinelRef = useRef(null);
   const autoLoadRequestedRef = useRef(false);
+  const mailRowsRef = useRef(null);
   const role = resolvedFolderRole(folderRole, folderLabel);
   const config = folderConfigurations[role];
   const title = folderLabel || config.title;
@@ -254,7 +256,21 @@ export function MailList({
   );
   const paginationPhase = resolvedPaginationPhase(loadMoreState);
   const selectedNavigationKey = messageNavigationKey(selectedMessage);
-
+  const selectedRowKey =
+    selectedNavigationKey ||
+    (typeof selectedMessageId === "string" ? selectedMessageId : null);
+  const mailRowsLayoutKey = messages
+    .map((message, index) => messageNavigationKey(message) || `legacy-${index}`)
+    .join("|");
+  const {
+    motionReady: rowSelectionMotionReady,
+    selectionStyle: rowSelectionStyle,
+    selectionVisible: rowSelectionVisible,
+  } = useSlidingSelection({
+    containerRef: mailRowsRef,
+    layoutKey: mailRowsLayoutKey,
+    selectedKey: selectedRowKey,
+  });
   const canSearch =
     typeof onQueryChange === "function" && !capabilityUnavailable;
   const visibleTabs =
@@ -421,8 +437,16 @@ export function MailList({
       >
         {messages.length ? (
           <>
-            <ul className="mail-list" aria-label="邮件">
-
+            <ul
+              ref={mailRowsRef}
+              className="mail-list"
+              aria-label="邮件"
+              data-selection-visible={rowSelectionVisible || undefined}
+              data-selection-motion-ready={
+                rowSelectionMotionReady || undefined
+              }
+              style={rowSelectionStyle}
+            >
               {messages.map((message, index) => {
                 const navigationKey = messageNavigationKey(message);
                 const rowMessageId =

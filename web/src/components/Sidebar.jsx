@@ -1,10 +1,8 @@
 import {
-  useCallback,
   useEffect,
   useId,
   useLayoutEffect,
   useRef,
-  useState,
 } from "react";
 import {
   AddressBook,
@@ -22,6 +20,7 @@ import {
 import { BrandLogo } from "./BrandLogo.jsx";
 import { CredentialWarning } from "./CredentialWarning.jsx";
 import { ProfileAvatar } from "./ProfileAvatar.jsx";
+import { useSlidingSelection } from "../hooks/useSlidingSelection.js";
 
 const folders = [
   { id: "inbox", label: "收件箱", icon: Tray },
@@ -156,14 +155,11 @@ export function Sidebar({
 }) {
   const sidebarRef = useRef(null);
   const folderNavRef = useRef(null);
-  const folderButtonRefs = useRef({});
+  const accountSwitcherRef = useRef(null);
   const drawerPreviousFocusRef = useRef(null);
   const themeToggleRef = useRef(null);
   const themeOptionRefs = useRef([]);
   const themeWasOpenRef = useRef(false);
-  const [folderSelection, setFolderSelection] = useState(null);
-  const [folderSelectionMotionReady, setFolderSelectionMotionReady] =
-    useState(false);
   const themeMenuId = `theme-menu-${useId().replaceAll(":", "")}`;
   const themeMenuOpenRef = useRef(isThemeMenuOpen);
   themeMenuOpenRef.current = isThemeMenuOpen;
@@ -172,68 +168,30 @@ export function Sidebar({
   const emptySlots = Math.max(0, maxAccounts - accounts.length);
   const hasAvailableAccountSlot = emptySlots > 0;
   const activeAccountId = accountStatus?.activeAccountId || accountStatus?.accountId;
-  const measureFolderSelection = useCallback(() => {
-    const navigation = folderNavRef.current;
-    const selectedButton = isSettingsOpen
-      ? null
-      : folderButtonRefs.current[activeFolder];
+  const folderSelectionKey = isSettingsOpen ? null : activeFolder;
+  const {
+    motionReady: folderSelectionMotionReady,
+    selectionStyle: folderSelectionStyle,
+    selectionVisible: folderSelectionVisible,
+  } = useSlidingSelection({
+    containerRef: folderNavRef,
+    layoutKey: folderSelectionKey,
+    selectedKey: folderSelectionKey,
+  });
+  const accountLayoutKey = accounts
+    .map((account) => account.accountId)
+    .join("|");
+  const {
+    motionReady: accountSelectionMotionReady,
+    selectionStyle: accountSelectionStyle,
+    selectionVisible: accountSelectionVisible,
+  } = useSlidingSelection({
+    containerRef: accountSwitcherRef,
+    layoutKey: accountLayoutKey,
+    selectedKey: activeAccountId || null,
+    selectedSelector: '.account-card[data-active="true"]',
+  });
 
-    if (!navigation || !selectedButton) {
-      setFolderSelection((current) =>
-        current?.visible ? { ...current, visible: false } : current,
-      );
-      return;
-    }
-
-    const navigationBounds = navigation.getBoundingClientRect();
-    const buttonBounds = selectedButton.getBoundingClientRect();
-    const nextSelection = {
-      x: buttonBounds.left - navigationBounds.left,
-      y: buttonBounds.top - navigationBounds.top,
-      width: buttonBounds.width,
-      height: buttonBounds.height,
-      visible: true,
-    };
-
-    setFolderSelection((current) =>
-      current &&
-      current.x === nextSelection.x &&
-      current.y === nextSelection.y &&
-      current.width === nextSelection.width &&
-      current.height === nextSelection.height &&
-      current.visible
-        ? current
-        : nextSelection,
-    );
-  }, [activeFolder, isSettingsOpen]);
-
-  useLayoutEffect(() => {
-    measureFolderSelection();
-
-    const navigation = folderNavRef.current;
-    const resizeObserver =
-      navigation && typeof ResizeObserver === "function"
-        ? new ResizeObserver(measureFolderSelection)
-        : null;
-    if (navigation) resizeObserver?.observe(navigation);
-    Object.values(folderButtonRefs.current).forEach((button) => {
-      if (button) resizeObserver?.observe(button);
-    });
-    window.addEventListener("resize", measureFolderSelection);
-
-    return () => {
-      resizeObserver?.disconnect();
-      window.removeEventListener("resize", measureFolderSelection);
-    };
-  }, [measureFolderSelection]);
-
-  useEffect(() => {
-    if (!folderSelection || folderSelectionMotionReady) return undefined;
-    const frame = window.requestAnimationFrame(() => {
-      setFolderSelectionMotionReady(true);
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [folderSelection, folderSelectionMotionReady]);
   useLayoutEffect(() => {
     const wasOpen = themeWasOpenRef.current;
     themeWasOpenRef.current = isThemeMenuOpen;
@@ -370,14 +328,9 @@ export function Sidebar({
             <span
               className="folder-nav__selection"
               aria-hidden="true"
-              data-visible={folderSelection?.visible || undefined}
+              data-visible={folderSelectionVisible || undefined}
               data-motion-ready={folderSelectionMotionReady || undefined}
-              style={{
-                "--folder-selection-x": `${folderSelection?.x || 0}px`,
-                "--folder-selection-y": `${folderSelection?.y || 0}px`,
-                "--folder-selection-width": `${folderSelection?.width || 0}px`,
-                "--folder-selection-height": `${folderSelection?.height || 0}px`,
-              }}
+              style={folderSelectionStyle}
             />
             {folders.map((folder) => {
               const FolderIcon = folder.icon;
@@ -407,13 +360,6 @@ export function Sidebar({
                 : folder.label;
               return (
                 <button
-                  ref={(button) => {
-                    if (button) {
-                      folderButtonRefs.current[folder.id] = button;
-                    } else {
-                      delete folderButtonRefs.current[folder.id];
-                    }
-                  }}
                   key={folder.id}
                   type="button"
                   className="folder-nav__item"
@@ -436,9 +382,15 @@ export function Sidebar({
 
         <div className="sidebar__footer">
           <div
+            ref={accountSwitcherRef}
             className="account-switcher"
             role="group"
             aria-label="已登录邮箱账户"
+            data-selection-visible={accountSelectionVisible || undefined}
+            data-selection-motion-ready={
+              accountSelectionMotionReady || undefined
+            }
+            style={accountSelectionStyle}
           >
             {hasAvailableAccountSlot ? (
               <button

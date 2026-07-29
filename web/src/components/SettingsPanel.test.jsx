@@ -61,6 +61,63 @@ function panelProps(overrides = {}) {
 describe("SettingsPanel account flow", () => {
   afterEach(() => cleanup());
 
+  it("moves one shared selection surface between settings categories", async () => {
+    const user = userEvent.setup();
+    const rect = (top, left, width, height) => ({
+      bottom: top + height,
+      height,
+      left,
+      right: left + width,
+      top,
+      width,
+      x: left,
+      y: top,
+      toJSON: () => ({}),
+    });
+    const boundsSpy = vi
+      .spyOn(Element.prototype, "getBoundingClientRect")
+      .mockImplementation(function getBoundingClientRect() {
+        if (this.classList?.contains("settings-nav")) {
+          return rect(100, 20, 182, 186);
+        }
+        if (this.textContent === "账户") {
+          return rect(100, 20, 182, 58);
+        }
+        if (this.textContent === "功能设定") {
+          return rect(164, 20, 182, 58);
+        }
+        if (this.textContent === "关于 Mine Mail") {
+          return rect(228, 20, 182, 58);
+        }
+        return rect(0, 0, 0, 0);
+      });
+
+    try {
+      render(<SettingsPanel {...panelProps()} />);
+      const navigation = screen.getByRole("navigation", {
+        name: "设置菜单",
+      });
+
+      expect(navigation.dataset.selectionVisible).toBe("true");
+      expect(
+        navigation.style.getPropertyValue("--sliding-selection-y"),
+      ).toBe("0px");
+
+      await user.click(screen.getByRole("button", { name: "功能设定" }));
+
+      expect(
+        navigation.style.getPropertyValue("--sliding-selection-y"),
+      ).toBe("64px");
+      expect(
+        screen
+          .getByRole("button", { name: "功能设定" })
+          .getAttribute("aria-current"),
+      ).toBe("page");
+    } finally {
+      boundsSpy.mockRestore();
+    }
+  });
+
   it("connects the remote-image privacy help control for pointer and keyboard users", async () => {
     const user = userEvent.setup();
     render(<SettingsPanel {...panelProps()} />);
@@ -496,7 +553,39 @@ describe("SettingsPanel account flow", () => {
     expect(screen.getByText("D:\\Mine Mail\\Data")).toBeTruthy();
     expect(screen.getByText("随应用安装位置")).toBeTruthy();
 
+    const storageSection = screen.getByRole("region", {
+      name: "本地数据存储",
+    });
+    expect(within(storageSection).getByText("存储位置")).toBeTruthy();
+    expect(within(storageSection).queryByText("数据构成")).toBeNull();
+    expect(within(storageSection).queryByText("总计 1.5 GiB")).toBeNull();
+    const composition = within(storageSection).getByRole("img", {
+      name: /本地数据空间占用构成/,
+    });
+    const segments = composition.querySelectorAll(
+      ".settings-storage-composition__segment",
+    );
+    expect(segments).toHaveLength(2);
+    expect(segments[0].dataset.storageCategory).toBe("mail");
+    expect(segments[0].style.flexGrow).toBe("1073741824");
+    expect(segments[1].dataset.storageCategory).toBe("webview");
+    expect(within(storageSection).queryByRole("progressbar")).toBeNull();
+    expect(
+      within(storageSection).queryByRole("list", {
+        name: "存储分类图例",
+      }),
+    ).toBeNull();
+
+    await user.hover(segments[0]);
+    expect((await screen.findByRole("tooltip")).textContent).toBe(
+      "邮件与本地资料 · 1.0 GiB",
+    );
+    await user.unhover(segments[0]);
+    await waitFor(() => expect(screen.queryByRole("tooltip")).toBeNull());
+
     const changeStorage = screen.getByRole("button", { name: "更改位置" });
+    expect(changeStorage.textContent).toBe("");
+    expect(changeStorage.closest(".settings-storage-location__capsule")).toBeTruthy();
     await user.click(changeStorage);
     const dialog = await screen.findByRole("dialog", { name: "迁移本地数据" });
     expect(within(dialog).getByText("E:\\Mine Mail Data")).toBeTruthy();

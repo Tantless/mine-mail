@@ -504,6 +504,7 @@ describe("Mine Mail MVP", () => {
     });
 
     expect(dialog.dataset.minimized).toBe("true");
+    expect(dialog.dataset.windowMotion).toBe("minimizing");
     expect(minimizedLayer.dataset.minimized).toBe("true");
     expect(dialog.style.width).toBe("340px");
     expect(dialog.style.height).toBe("44px");
@@ -513,6 +514,7 @@ describe("Mine Mail MVP", () => {
 
     await user.click(restoreButton);
     expect(dialog.dataset.minimized).toBe("false");
+    expect(dialog.dataset.windowMotion).toBe("restoring");
     expect(dialog.style.left).toBe(restoredGeometry.left);
     expect(dialog.style.top).toBe(restoredGeometry.top);
     expect(dialog.style.width).toBe(restoredGeometry.width);

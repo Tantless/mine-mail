@@ -46,6 +46,10 @@ Mine Mail is quiet, atmospheric, and content-first:
 - Use the fox for the application/package icon, tray, onboarding, About, sidebar,
   and Mine Mail-owned installer surfaces. The sidebar is the only shell/header
   brand; About may show a content-level brand mark.
+- The visible sidebar brand lockup scales its fox, `Mine Mail` wordmark, gap, and
+  vertical rhythm against the sidebar's available inline size. The wordmark
+  remains on one line at every non-compact width; the 78 px compact sidebar hides
+  the wordmark and centers the scaled fox instead of wrapping or clipping text.
 - New-mail notifications use the sender avatar, not the Mine Mail mark.
 - Do not introduce alternate mascots, redraw the fox, mix logo variants, or use
   discussion images as runtime assets.
@@ -212,10 +216,11 @@ family. Preserve the relative hierarchy when tuning optical values.
 
 - Mail and contact lists share topbar, search, heading, tabs, row density,
   selection edge, hover, metadata hierarchy, and truncation behavior.
-- The primary folder navigation uses one shared selection surface. Changing
-  folders moves that surface from the previous row to the next within
-  `--motion-normal`; the rows themselves never move, and reduced-motion mode
-  collapses the transition.
+- The primary folder navigation, connected-account switcher, mail list, and
+  settings category rail each use one shared selection surface. Changing
+  folders, accounts, messages, or settings categories moves that surface from
+  the previous row to the next within `--motion-normal`; the rows themselves
+  never move, and reduced-motion mode collapses the transition.
 - A selected row changes both surface and edge; unread state is semantic, not a
   second competing card style.
 - Background refreshes preserve the visible rows and selection. Loading must not
@@ -347,9 +352,14 @@ family. Preserve the relative hierarchy when tuning optical values.
 - Persistent backend health is not decorative chrome. Show only explicit action
   progress and failures that require user attention.
 - About keeps the compact version card first, then presents local storage as one
-  quiet subsection rather than a dashboard. Show the active path, total size,
-  compact category rows, and a secondary **更改位置** action using the existing
-  settings material and semantic progress treatment.
+  quiet subsection rather than a dashboard. Show the active path in a single
+  labeled row whose value is a horizontal capsule ending in an icon-only
+  **更改位置** action, then show the total size and one segmented
+  usage-composition bar without a persistent legend. Hovering a non-empty segment
+  reveals its category name and exact size through the shared tooltip; the bar's
+  accessible label exposes the same information without requiring a pointer.
+  Category colors describe composition only; they never imply a quota or
+  capacity limit.
 - Selecting a directory uses the platform folder picker. The consequential
   restart migration uses the standard Mine Mail confirmation surface, exposes
   the chosen path with truncation and a full hover title, and disables dismissal
@@ -431,6 +441,9 @@ family. Preserve the relative hierarchy when tuning optical values.
   locally before entering the standard minimized bar; an untouched empty session
   enters the same bar without creating an empty draft. A local save failure keeps
   the expanded composer visible and actionable.
+- Minimizing and restoring use one restrained 260 ms window-style geometry and
+  material transition; the compact bar highlights as one complete surface on
+  hover or keyboard focus. Reduced-motion mode collapses the transition.
 - Each connected account owns at most one live compose surface. Switching
   accounts saves and hides the source account's session without showing a
   warning card. The target account opens its own independent compose flow.

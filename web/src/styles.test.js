@@ -42,6 +42,27 @@ describe("text selection policy", () => {
 });
 
 describe("brand avatar sizing policy", () => {
+  it("scales the sidebar brand lockup without wrapping its wordmark", () => {
+    expect(declarationsFor("\\.sidebar__content")).toMatch(
+      /container-type:\s*inline-size/,
+    );
+
+    const brand = declarationsFor("\\.brand");
+    expect(brand).toMatch(
+      /--sidebar-brand-logo-size:\s*clamp\(48px,\s*23cqi,\s*60px\)/,
+    );
+    expect(brand).toMatch(
+      /--sidebar-brand-name-size:\s*clamp\(26px,\s*12\.5cqi,\s*35px\)/,
+    );
+    expect(brand).toMatch(/max-width:\s*100%/);
+    expect(brand).toMatch(/min-width:\s*0/);
+
+    const brandName = declarationsFor("\\.brand__name");
+    expect(brandName).toMatch(/min-width:\s*0/);
+    expect(brandName).toMatch(/overflow:\s*hidden/);
+    expect(brandName).toMatch(/white-space:\s*nowrap/);
+  });
+
   it("shares the reader mark proportions with compact avatars", () => {
     expect(
       declarationsFor("\\.mail-row__avatar\\.profile-avatar--brand"),
@@ -105,11 +126,64 @@ describe("embedded settings stylesheet boundary", () => {
   });
 });
 
+describe("storage composition styling", () => {
+  it("keeps the storage location in one labeled capsule row", () => {
+    const location = declarationsFor("\\.settings-storage-location");
+    expect(location).toMatch(
+      /grid-template-columns:\s*max-content minmax\(0,\s*1fr\)/,
+    );
+
+    const capsule = declarationsFor("\\.settings-storage-location__capsule");
+    expect(capsule).toMatch(/display:\s*flex/);
+    expect(capsule).toMatch(/border-radius:\s*99px/);
+
+    const changeButton = declarationsFor("\\.settings-storage-change");
+    expect(changeButton).toMatch(/width:\s*36px/);
+    expect(changeButton).toMatch(/height:\s*36px/);
+    expect(changeButton).toMatch(/border-radius:\s*50%/);
+  });
+
+  it("uses one segmented track with hoverable category segments", () => {
+    const root = declarationsFor("(?:^|\\r?\\n):root");
+    [
+      "mail",
+      "webview",
+      "user-assets",
+      "cache",
+      "logs",
+      "other",
+    ].forEach((category) => {
+      expect(root).toContain(`--storage-category-${category}:`);
+    });
+
+    const composition = declarationsFor("\\.settings-storage-composition");
+    expect(composition).toMatch(/display:\s*flex/);
+    expect(composition).toMatch(/height:\s*14px/);
+    expect(composition).toMatch(/overflow:\s*hidden/);
+
+    const segment = declarationsFor(
+      "\\.settings-storage-composition__segment",
+    );
+    expect(segment).toMatch(/cursor:\s*help/);
+    expect(styles).not.toContain(".settings-storage-usage__caption");
+    expect(styles).not.toContain(".settings-storage-legend");
+    expect(styles).not.toContain(".settings-storage-usage__row");
+    expect(styles).not.toContain("settings-storage-usage__row progress");
+  });
+});
+
 describe("compose page and stationery policy", () => {
   it("keeps the solid compose page and the original rounded editor surface", () => {
     const panel = declarationsFor("(?:^|\\r?\\n)\\.compose-panel");
     expect(panel).toMatch(/background:\s*var\(--compose-page-surface\)/);
     expect(panel).not.toMatch(/backdrop-filter/);
+    expect(panel).toMatch(/width var\(--motion-window\)/);
+    expect(panel).toMatch(/height var\(--motion-window\)/);
+
+    const minimizedHover = declarationsFor(
+      "\\.compose-minimized-shell:hover,\\s*\\r?\\n\\.compose-minimized-shell:focus-within",
+    );
+    expect(minimizedHover).toMatch(/background:\s*color-mix/);
 
     const fields = declarationsFor("\\.compose-fields");
     expect(fields).toMatch(/border:\s*0/);
@@ -407,13 +481,69 @@ describe("release-state accessibility and reflow contracts", () => {
       /background:\s*var\(--sidebar-selected\)/,
     );
     expect(declarationsFor("\\.folder-nav__selection")).toMatch(
-      /transform:\s*translate3d\([\s\S]*--folder-selection-x[\s\S]*--folder-selection-y/,
+      /transform:\s*translate3d\([\s\S]*--sliding-selection-x[\s\S]*--sliding-selection-y/,
     );
     expect(declarationsFor("\\.folder-nav__selection")).toMatch(
       /transform var\(--motion-normal\)/,
     );
     expect(
       declarationsFor('\\.folder-nav__item\\[data-selected="true"\\]'),
+    ).toMatch(/background:\s*transparent/);
+  });
+
+  it("moves one theme-owned mail selection surface without moving rows", () => {
+    expect(declarationsFor("\\.mail-list")).toMatch(
+      /position:\s*relative[\s\S]*isolation:\s*isolate/,
+    );
+    expect(declarationsFor("\\.mail-list::before")).toMatch(
+      /background:\s*var\(--row-selection-surface\)/,
+    );
+    expect(declarationsFor("\\.mail-list::before")).toMatch(
+      /transform:\s*translate3d\([\s\S]*--sliding-selection-x[\s\S]*--sliding-selection-y/,
+    );
+    expect(declarationsFor("\\.mail-list::before")).toMatch(
+      /transform var\(--motion-normal\)/,
+    );
+    expect(
+      declarationsFor('\\.mail-row\\[data-selected="true"\\]'),
+    ).toMatch(/background:\s*transparent/);
+  });
+
+  it("moves theme-owned account and settings selection surfaces", () => {
+    expect(declarationsFor("\\.account-switcher")).toMatch(
+      /position:\s*relative[\s\S]*isolation:\s*isolate/,
+    );
+    expect(declarationsFor("\\.account-switcher::before")).toMatch(
+      /background:\s*var\(--account-card-active-surface\)/,
+    );
+    expect(declarationsFor("\\.account-switcher::before")).toMatch(
+      /translate var\(--motion-normal\)/,
+    );
+    expect(declarationsFor("\\.account-switcher::before")).toMatch(
+      /transform var\(--account-selection-transform-duration\)/,
+    );
+    expect(
+      declarationsFor(
+        '\\.account-switcher:has\\(\\.account-card\\[data-active="true"\\]:hover\\)',
+      ),
+    ).toMatch(
+      /--account-selection-lift:\s*-1px[\s\S]*--account-selection-scale:\s*1\.006/,
+    );
+    expect(
+      declarationsFor('\\.account-card\\[data-active="true"\\]'),
+    ).toMatch(/background:\s*transparent/);
+
+    expect(declarationsFor("\\.settings-nav")).toMatch(
+      /position:\s*relative[\s\S]*isolation:\s*isolate/,
+    );
+    expect(declarationsFor("\\.settings-nav::before")).toMatch(
+      /var\(--color-primary\) 12%[\s\S]*var\(--compose-control-surface\)/,
+    );
+    expect(declarationsFor("\\.settings-nav::before")).toMatch(
+      /transform var\(--motion-normal\)/,
+    );
+    expect(
+      declarationsFor('\\.settings-nav button\\[data-selected="true"\\]'),
     ).toMatch(/background:\s*transparent/);
   });
 
@@ -465,8 +595,20 @@ describe("release-state accessibility and reflow contracts", () => {
     expect(reducedMotion).toMatch(
       /\.folder-nav__selection[\s\S]*will-change:\s*auto/,
     );
+    expect(reducedMotion).toMatch(
+      /\.mail-list::before[\s\S]*will-change:\s*auto/,
+    );
+    expect(reducedMotion).toMatch(
+      /\.account-switcher::before,[\s\S]*\.settings-nav::before[\s\S]*will-change:\s*auto/,
+    );
     expect(forcedColors).toMatch(
       /\.folder-nav__selection[\s\S]*background:\s*Highlight/,
+    );
+    expect(forcedColors).toMatch(
+      /\.mail-list::before[\s\S]*background:\s*Highlight/,
+    );
+    expect(forcedColors).toMatch(
+      /\.account-switcher::before,[\s\S]*\.settings-nav::before[\s\S]*background:\s*Highlight/,
     );
     expect(forcedColors).toMatch(
       /\.compose-forward-context\[data-immutable="true"\][\s\S]*forced-color-adjust:\s*auto/,

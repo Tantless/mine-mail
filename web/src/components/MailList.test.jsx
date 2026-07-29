@@ -197,6 +197,83 @@ describe("MailList controlled controls", () => {
     ).toBe(true);
   });
 
+  it("moves one shared selection surface to the active message", () => {
+    let secondMessageTop = 276;
+    const rect = (top, left, width, height) => ({
+      bottom: top + height,
+      height,
+      left,
+      right: left + width,
+      top,
+      width,
+      x: left,
+      y: top,
+      toJSON: () => ({}),
+    });
+    const boundsSpy = vi
+      .spyOn(Element.prototype, "getBoundingClientRect")
+      .mockImplementation(function getBoundingClientRect() {
+        if (this.classList?.contains("mail-list")) {
+          return rect(200, 100, 420, 152);
+        }
+        if (this.dataset?.navigationKey === "message:mail-inbox-11") {
+          return rect(200, 100, 420, 76);
+        }
+        if (this.dataset?.navigationKey === "message:mail-inbox-10") {
+          return rect(secondMessageTop, 100, 420, 76);
+        }
+        return rect(0, 0, 0, 0);
+      });
+
+    try {
+      const { rerenderMailList } = renderMailList({
+        messages: [firstMessage, secondMessage],
+        selectedMessage: firstMessage,
+      });
+      const list = screen.getByRole("list", { name: "邮件" });
+
+      expect(list.dataset.selectionVisible).toBe("true");
+      expect(
+        list.style.getPropertyValue("--sliding-selection-y"),
+      ).toBe("0px");
+
+      rerenderMailList({ selectedMessage: secondMessage });
+
+      expect(
+        list.style.getPropertyValue("--sliding-selection-y"),
+      ).toBe("76px");
+      expect(
+        screen.getByRole("button", {
+          name: "打开邮件：陈冬，会议安排",
+        }).getAttribute("aria-current"),
+      ).toBe("true");
+
+      const scrollSurface = list.closest(".message-list");
+      scrollSurface.scrollTop = 43;
+      secondMessageTop = 352;
+      rerenderMailList({
+        messages: [
+          {
+            ...firstMessage,
+            id: "mail-inbox-12",
+            uid: 12,
+            subject: "刚刚收到的新邮件",
+          },
+          firstMessage,
+          secondMessage,
+        ],
+        selectedMessage: secondMessage,
+      });
+
+      expect(
+        list.style.getPropertyValue("--sliding-selection-y"),
+      ).toBe("152px");
+      expect(scrollSurface.scrollTop).toBe(43);
+    } finally {
+      boundsSpy.mockRestore();
+    }
+  });
+
   it("keeps an unavailable sync action disabled with a reason", () => {
     renderMailList({
       canSync: false,

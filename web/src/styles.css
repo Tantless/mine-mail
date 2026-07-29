@@ -32,19 +32,14 @@
   --window-edge: clamp(12px, 1vw, 18px);
   --titlebar-height: 38px;
   --content-top: calc(var(--titlebar-height) + 14px);
-  /* Sidebar brand controls: edit these values to tune the logo lockup. */
-  --sidebar-brand-logo-size: 60px;
-  --sidebar-brand-name-size: 35px;
-  --sidebar-brand-gap: 10px;
-  --sidebar-brand-offset-y: -20px;
-  --sidebar-brand-row-height: 44px;
-  --sidebar-brand-margin-bottom: 14px;
   --window-radius: 14px;
   --panel-radius: 12px;
   --control-radius: 9px;
   --row-radius: 9px;
   --motion-fast: 120ms;
   --motion-normal: 180ms;
+  --motion-window: 260ms;
+  --motion-window-content-delay: 48ms;
 
   --wallpaper: url("./assets/wallpaper-daylight.png");
   --color-panel: #fcfcfd;
@@ -68,6 +63,12 @@
   --color-danger: #d34747;
   --color-on-danger: #fff;
   --color-favorite: #e4a82c;
+  --storage-category-mail: #2f80dd;
+  --storage-category-webview: #2f9f98;
+  --storage-category-user-assets: #806bc4;
+  --storage-category-cache: #d18a2f;
+  --storage-category-logs: #ca626c;
+  --storage-category-other: #7f8a96;
   --sidebar-text: #18313f;
   --sidebar-muted: rgba(18, 45, 59, 0.7);
   --sidebar-hover: rgba(247, 252, 255, 0.46);
@@ -280,6 +281,12 @@
   --color-hover: #202630;
   --color-unread: #65a8ff;
   --color-warning: #dda04d;
+  --storage-category-mail: #6ca7f4;
+  --storage-category-webview: #56c3b8;
+  --storage-category-user-assets: #a28ce6;
+  --storage-category-cache: #e7b755;
+  --storage-category-logs: #e9818a;
+  --storage-category-other: #98a3b1;
   --sidebar-text: #f3f6fa;
   --sidebar-muted: rgba(229, 236, 244, 0.72);
   --sidebar-hover: rgba(238, 245, 255, 0.1);
@@ -1072,6 +1079,7 @@ html[data-surface="new-mail-notification"] #root {
 }
 
 .sidebar__content {
+  container-type: inline-size;
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -1103,7 +1111,16 @@ html[data-surface="new-mail-notification"] #root {
 }
 
 .brand {
+  --sidebar-brand-logo-size: clamp(48px, 23cqi, 60px);
+  --sidebar-brand-name-size: clamp(26px, 12.5cqi, 35px);
+  --sidebar-brand-gap: clamp(7px, 4cqi, 10px);
+  --sidebar-brand-offset-y: clamp(-20px, -7cqi, -14px);
+  --sidebar-brand-row-height: clamp(40px, 17cqi, 44px);
+  --sidebar-brand-margin-bottom: clamp(10px, 5cqi, 14px);
   display: flex;
+  max-width: 100%;
+  min-width: 0;
+  flex: 0 0 auto;
   align-items: center;
   gap: var(--sidebar-brand-gap);
   height: var(--sidebar-brand-row-height);
@@ -1119,11 +1136,15 @@ html[data-surface="new-mail-notification"] #root {
 }
 
 .brand__name {
+  min-width: 0;
+  flex: 0 1 auto;
+  overflow: hidden;
   font-family: "Nunito Variable", "Arial Rounded MT Bold", sans-serif;
   font-size: var(--sidebar-brand-name-size);
   font-weight: 800;
   line-height: 1;
   letter-spacing: -0.035em;
+  white-space: nowrap;
   cursor: default;
   user-select: none;
   -webkit-user-select: none;
@@ -1274,8 +1295,8 @@ html[data-surface="new-mail-notification"] #root {
   top: 0;
   left: 0;
   z-index: 0;
-  width: var(--folder-selection-width);
-  height: var(--folder-selection-height);
+  width: var(--sliding-selection-width);
+  height: var(--sliding-selection-height);
   border: 1px solid rgba(255, 255, 255, 0.25);
   border-radius: var(--row-radius);
   background: var(--sidebar-selected);
@@ -1283,8 +1304,8 @@ html[data-surface="new-mail-notification"] #root {
   opacity: 0;
   pointer-events: none;
   transform: translate3d(
-    var(--folder-selection-x),
-    var(--folder-selection-y),
+    var(--sliding-selection-x),
+    var(--sliding-selection-y),
     0
   );
   transition:
@@ -1348,13 +1369,65 @@ html[data-surface="new-mail-notification"] #root {
 }
 
 .account-switcher {
+  --account-selection-lift: 0px;
+  --account-selection-scale: 1;
+  --account-selection-transform-duration: 260ms;
+  position: relative;
+  isolation: isolate;
   display: grid;
   gap: 9px;
   margin-bottom: 8px;
 }
 
+.account-switcher::before {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 0;
+  width: var(--sliding-selection-width);
+  height: var(--sliding-selection-height);
+  border: 1px solid var(--account-card-active-edge);
+  border-radius: 10px;
+  background: var(--account-card-active-surface);
+  content: "";
+  opacity: 0;
+  pointer-events: none;
+  translate: var(--sliding-selection-x) var(--sliding-selection-y);
+  transform: translateY(var(--account-selection-lift))
+    scale(var(--account-selection-scale));
+  transition:
+    width var(--motion-normal) cubic-bezier(0.22, 1, 0.36, 1),
+    height var(--motion-normal) cubic-bezier(0.22, 1, 0.36, 1),
+    opacity var(--motion-fast) ease-out,
+    translate var(--motion-normal) cubic-bezier(0.22, 1, 0.36, 1),
+    transform var(--account-selection-transform-duration)
+      cubic-bezier(0.16, 1, 0.3, 1);
+  will-change: width, height, translate, transform;
+}
+
+.account-switcher[data-selection-visible="true"]::before {
+  opacity: 1;
+}
+
+.account-switcher:not([data-selection-motion-ready="true"])::before {
+  transition: none;
+}
+
+.account-switcher:has(.account-card[data-active="true"]:hover) {
+  --account-selection-lift: -1px;
+  --account-selection-scale: 1.006;
+}
+
+.account-switcher:has(.account-card[data-active="true"]:active) {
+  --account-selection-lift: 1px;
+  --account-selection-scale: 0.979;
+  --account-selection-transform-duration: 75ms;
+}
+
 .account-card,
 .account-add-slot {
+  position: relative;
+  z-index: 1;
   width: 100%;
   min-height: 52px;
   border-radius: 10px;
@@ -1363,7 +1436,6 @@ html[data-surface="new-mail-notification"] #root {
 }
 
 .account-card {
-  position: relative;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -1394,14 +1466,14 @@ html[data-surface="new-mail-notification"] #root {
 }
 
 .account-card[data-active="true"] {
-  border-color: var(--account-card-active-edge);
-  background: var(--account-card-active-surface);
+  border-color: transparent;
+  background: transparent;
   box-shadow: none;
   transform: translate3d(0, 0, 0) scale(1.006);
 }
 
 .account-card[data-active="true"]:hover {
-  background: var(--account-card-active-hover);
+  background: transparent;
   box-shadow: 0 11px 24px color-mix(in srgb, var(--color-primary) 13%, transparent),
     inset 0 1px 0 rgba(255, 255, 255, 0.18);
   transform: translate3d(0, -1px, 0) scale(1.012);
@@ -1930,14 +2002,54 @@ html[data-surface="new-mail-notification"] #root {
   flex: 0 0 auto;
   animation: spin 900ms linear infinite;
 }
+
 .mail-list {
+  position: relative;
+  isolation: isolate;
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
+.mail-list::before {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 0;
+  width: var(--sliding-selection-width);
+  height: var(--sliding-selection-height);
+  border: 1px solid var(--row-selection-edge);
+  border-radius: var(--row-radius);
+  background: var(--row-selection-surface);
+  box-shadow: inset 0 1px 0
+    color-mix(in srgb, var(--surface-highlight) 54%, transparent);
+  content: "";
+  opacity: 0;
+  pointer-events: none;
+  transform: translate3d(
+    var(--sliding-selection-x),
+    var(--sliding-selection-y),
+    0
+  );
+  transition:
+    width var(--motion-normal) cubic-bezier(0.22, 1, 0.36, 1),
+    height var(--motion-normal) cubic-bezier(0.22, 1, 0.36, 1),
+    opacity var(--motion-fast) ease-out,
+    transform var(--motion-normal) cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: width, height, transform;
+}
+
+.mail-list[data-selection-visible="true"]::before {
+  opacity: 1;
+}
+
+.mail-list:not([data-selection-motion-ready="true"])::before {
+  transition: none;
+}
+
 .mail-row {
   position: relative;
+  z-index: 1;
   display: grid;
   grid-template-columns: 34px minmax(0, 1fr) 40px;
   gap: 9px;
@@ -1993,10 +2105,10 @@ html[data-surface="new-mail-notification"] #root {
 }
 
 .mail-row[data-selected="true"] {
-  border-color: var(--row-selection-edge);
+  border-color: transparent;
   border-radius: var(--row-radius);
-  background: var(--row-selection-surface);
-  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--surface-highlight) 54%, transparent);
+  background: transparent;
+  box-shadow: none;
 }
 
 .mail-row__avatar {
@@ -3422,6 +3534,13 @@ html[data-surface="new-mail-notification"] #root {
   -webkit-backdrop-filter: blur(7px) saturate(0.92);
 }
 
+.compose-layer {
+  transition:
+    background-color var(--motion-normal) ease-out,
+    backdrop-filter var(--motion-normal) ease-out,
+    -webkit-backdrop-filter var(--motion-normal) ease-out;
+}
+
 .compose-layer[data-minimized="true"] {
   background: transparent;
   pointer-events: none;
@@ -3447,7 +3566,19 @@ html[data-surface="new-mail-notification"] #root {
   color: var(--color-text);
   box-shadow: 0 28px 76px rgba(8, 17, 25, 0.28), var(--panel-shadow);
   animation: compose-in 220ms cubic-bezier(0.2, 0.72, 0.28, 1);
+  transition:
+    left var(--motion-window) cubic-bezier(0.2, 0.72, 0.28, 1),
+    top var(--motion-window) cubic-bezier(0.2, 0.72, 0.28, 1),
+    width var(--motion-window) cubic-bezier(0.2, 0.72, 0.28, 1),
+    height var(--motion-window) cubic-bezier(0.2, 0.72, 0.28, 1),
+    border-radius var(--motion-normal) ease-out,
+    background-color var(--motion-normal) ease-out,
+    box-shadow var(--motion-normal) ease-out;
   will-change: left, top, width, height;
+}
+
+.compose-panel[data-interacting="true"] {
+  transition: none;
 }
 
 .compose-panel::before {
@@ -3471,12 +3602,37 @@ html[data-surface="new-mail-notification"] #root {
   -webkit-backdrop-filter: blur(18px) saturate(var(--surface-saturation));
 }
 
+.compose-expanded-shell {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  height: 100%;
+  min-height: 0;
+  flex-direction: column;
+}
+
+.compose-panel[data-window-motion="restoring"] .compose-expanded-shell {
+  animation: compose-expanded-shell-in var(--motion-normal)
+    cubic-bezier(0.2, 0.72, 0.28, 1)
+    var(--motion-window-content-delay) both;
+}
+
 .compose-minimized-shell {
   display: grid;
   width: 100%;
   height: 100%;
   grid-template-columns: minmax(0, 1fr) 40px;
   align-items: center;
+  border-radius: inherit;
+  background: transparent;
+  animation: compose-minimized-shell-in var(--motion-normal) ease-out
+    var(--motion-fast) both;
+  transition: background-color var(--motion-fast) ease-out;
+}
+
+.compose-minimized-shell:hover,
+.compose-minimized-shell:focus-within {
+  background: color-mix(in srgb, var(--compose-control-hover) 52%, transparent);
 }
 
 .compose-minimized-bar {
@@ -3503,10 +3659,6 @@ html[data-surface="new-mail-notification"] #root {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.compose-minimized-bar:hover {
-  background: color-mix(in srgb, var(--compose-control-hover) 52%, transparent);
 }
 
 .compose-minimized-close.icon-button {
@@ -5607,7 +5759,6 @@ html[data-surface="new-mail-notification"] #root {
 
 .settings-storage-section__heading small,
 .settings-storage-location small,
-.settings-storage-usage__row small,
 .settings-storage-message,
 .storage-migration-dialog__path small,
 .storage-migration-dialog__note {
@@ -5623,25 +5774,50 @@ html[data-surface="new-mail-notification"] #root {
 }
 
 .settings-storage-location {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  justify-content: space-between;
-  gap: 18px;
-  min-height: 68px;
-  padding: 12px 14px;
-  border: 1px solid color-mix(in srgb, var(--compose-divider) 80%, var(--surface-edge));
-  border-radius: 11px;
-  background: color-mix(in srgb, var(--compose-control-surface) 66%, transparent);
-}
-
-.settings-storage-location > span {
   display: grid;
   min-width: 0;
-  gap: 5px;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: center;
+  gap: 18px;
 }
 
-.settings-storage-location > span > strong {
+.settings-storage-location__label {
+  padding-left: 2px;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  font-weight: 640;
+  white-space: nowrap;
+}
+
+.settings-storage-location__capsule {
+  display: flex;
+  min-width: 0;
+  min-height: 46px;
+  align-items: center;
+  gap: 10px;
+  padding: 3px 4px 3px 14px;
+  border: 1px solid color-mix(in srgb, var(--compose-divider) 80%, var(--surface-edge));
+  border-radius: 99px;
+  background: color-mix(in srgb, var(--compose-control-surface) 66%, transparent);
+  box-shadow: inset 0 1px 0
+    color-mix(in srgb, var(--surface-highlight) 66%, transparent);
+}
+
+.settings-storage-location__kind {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.settings-storage-location__divider {
+  width: 1px;
+  height: 18px;
+  flex: 0 0 auto;
+  background: color-mix(in srgb, var(--compose-divider) 86%, transparent);
+}
+
+.settings-storage-location__path {
+  min-width: 0;
+  flex: 1 1 auto;
   overflow: hidden;
   color: var(--color-text-secondary);
   font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
@@ -5652,65 +5828,73 @@ html[data-surface="new-mail-notification"] #root {
 }
 
 .settings-storage-change {
-  min-width: 104px;
-  flex: 0 0 auto;
-  gap: 6px;
-}
-
-.settings-storage-usage {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  column-gap: 24px;
-  border-top: 1px solid color-mix(in srgb, var(--compose-divider) 70%, transparent);
-}
-
-.settings-storage-usage__row {
-  display: grid;
-  gap: 8px;
-  padding: 12px 2px;
-  border-bottom: 1px solid color-mix(in srgb, var(--compose-divider) 70%, transparent);
-}
-
-.settings-storage-usage__row > span {
-  display: flex;
-  min-width: 0;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.settings-storage-usage__row strong {
-  overflow: hidden;
-  color: var(--color-text-secondary);
-  font-size: 11px;
-  font-weight: 620;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.settings-storage-usage__row small {
-  flex: 0 0 auto;
-  font-variant-numeric: tabular-nums;
-}
-
-.settings-storage-usage__row progress {
-  width: 100%;
-  height: 5px;
-  overflow: hidden;
-  border: 0;
-  border-radius: 99px;
-  background: color-mix(in srgb, var(--compose-divider) 68%, transparent);
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--color-control) 72%, transparent);
   color: var(--color-primary);
 }
 
-.settings-storage-usage__row progress::-webkit-progress-bar {
-  border-radius: 99px;
-  background: color-mix(in srgb, var(--compose-divider) 68%, transparent);
+.settings-storage-change:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--color-primary) 24%, var(--color-border));
+  background: color-mix(in srgb, var(--color-primary) 10%, var(--color-hover));
+  color: var(--color-primary);
 }
 
-.settings-storage-usage__row progress::-webkit-progress-value {
+.settings-storage-usage {
+  padding-top: 14px;
+  border-top: 1px solid color-mix(in srgb, var(--compose-divider) 70%, transparent);
+}
+
+.settings-storage-composition {
+  display: flex;
+  width: 100%;
+  height: 14px;
+  gap: 2px;
+  padding: 2px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--color-border) 86%, transparent);
   border-radius: 99px;
-  background: color-mix(in srgb, var(--color-primary) 72%, var(--color-text-muted));
+  background: color-mix(in srgb, var(--color-divider) 72%, transparent);
+  box-shadow: inset 0 1px 2px
+    color-mix(in srgb, var(--color-text) 8%, transparent);
+}
+
+.settings-storage-composition__segment {
+  min-width: 3px;
+  flex-basis: 0;
+  border-radius: 2px;
+  background: var(--storage-category-color, var(--storage-category-other));
+  cursor: help;
+  transition: filter var(--motion-fast);
+}
+
+.settings-storage-composition__segment:hover {
+  filter: brightness(1.08) saturate(1.08);
+}
+
+.settings-storage-usage [data-storage-category="mail"] {
+  --storage-category-color: var(--storage-category-mail);
+}
+
+.settings-storage-usage [data-storage-category="webview"] {
+  --storage-category-color: var(--storage-category-webview);
+}
+
+.settings-storage-usage [data-storage-category="user_assets"] {
+  --storage-category-color: var(--storage-category-user-assets);
+}
+
+.settings-storage-usage [data-storage-category="cache"] {
+  --storage-category-color: var(--storage-category-cache);
+}
+
+.settings-storage-usage [data-storage-category="logs"] {
+  --storage-category-color: var(--storage-category-logs);
+}
+
+.settings-storage-usage [data-storage-category="other"] {
+  --storage-category-color: var(--storage-category-other);
 }
 
 .settings-storage-message {
@@ -5960,11 +6144,56 @@ html[data-surface="new-mail-notification"] #root {
 }
 
 .settings-nav {
+  position: relative;
+  isolation: isolate;
   display: grid;
   gap: 6px;
 }
 
+.settings-nav::before {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 0;
+  width: var(--sliding-selection-width);
+  height: var(--sliding-selection-height);
+  border: 1px solid
+    color-mix(in srgb, var(--color-primary) 20%, var(--surface-edge));
+  border-radius: 11px;
+  background: color-mix(
+    in srgb,
+    var(--color-primary) 12%,
+    var(--compose-control-surface)
+  );
+  box-shadow: inset 0 1px 0
+    color-mix(in srgb, var(--surface-highlight) 82%, transparent);
+  content: "";
+  opacity: 0;
+  pointer-events: none;
+  transform: translate3d(
+    var(--sliding-selection-x),
+    var(--sliding-selection-y),
+    0
+  );
+  transition:
+    width var(--motion-normal) cubic-bezier(0.22, 1, 0.36, 1),
+    height var(--motion-normal) cubic-bezier(0.22, 1, 0.36, 1),
+    opacity var(--motion-fast) ease-out,
+    transform var(--motion-normal) cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: width, height, transform;
+}
+
+.settings-nav[data-selection-visible="true"]::before {
+  opacity: 1;
+}
+
+.settings-nav:not([data-selection-motion-ready="true"])::before {
+  transition: none;
+}
+
 .settings-nav button {
+  position: relative;
+  z-index: 1;
   display: grid;
   grid-template-columns: 36px minmax(0, 1fr);
   gap: 10px;
@@ -5986,10 +6215,10 @@ html[data-surface="new-mail-notification"] #root {
 }
 
 .settings-nav button[data-selected="true"] {
-  border-color: color-mix(in srgb, var(--color-primary) 20%, var(--surface-edge));
-  background: color-mix(in srgb, var(--color-primary) 12%, var(--compose-control-surface));
+  border-color: transparent;
+  background: transparent;
   color: var(--color-primary);
-  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--surface-highlight) 82%, transparent);
+  box-shadow: none;
 }
 
 .settings-nav__icon {
@@ -6866,6 +7095,18 @@ html[data-surface="new-mail-notification"] #root {
 @keyframes row-in { from { opacity: 0; transform: translateY(3px); } }
 @keyframes reader-in { from { opacity: 0; transform: translateX(8px); } }
 @keyframes compose-in { from { opacity: 0; transform: translateY(18px) scale(0.985); } }
+@keyframes compose-minimized-shell-in {
+  from {
+    opacity: 0;
+    transform: translateY(5px) scale(0.98);
+  }
+}
+@keyframes compose-expanded-shell-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.992);
+  }
+}
 @keyframes dialog-in { from { opacity: 0; transform: translateY(8px) scale(0.985); } }
 @keyframes notice-in {
   from {
@@ -7553,18 +7794,6 @@ html[data-surface="new-mail-notification"] #root {
     grid-column: 2;
   }
 
-  .settings-storage-location {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .settings-storage-change {
-    align-self: flex-start;
-  }
-
-  .settings-storage-usage {
-    grid-template-columns: 1fr;
-  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -7585,6 +7814,24 @@ html[data-surface="new-mail-notification"] #root {
     will-change: auto;
   }
 
+  .mail-list::before {
+    will-change: auto;
+  }
+
+  .account-switcher::before,
+  .settings-nav::before {
+    will-change: auto;
+  }
+
+  .compose-panel {
+    will-change: auto;
+  }
+
+  .compose-minimized-shell,
+  .compose-panel[data-window-motion="restoring"] .compose-expanded-shell {
+    animation-delay: 0ms !important;
+  }
+
   .compose-button:hover,
   .compose-button:active,
   .compose-button:hover::after,
@@ -7597,7 +7844,6 @@ html[data-surface="new-mail-notification"] #root {
   }
 
   .mail-pagination-notice svg,
-
   .attachment-card[aria-busy="true"] > svg:last-child,
   .attachment-card[data-state="saving"] > svg:last-child {
     animation: none !important;
@@ -7638,9 +7884,44 @@ html[data-surface="new-mail-notification"] #root {
 }
 
 @media (forced-colors: active) {
+  :root {
+    --storage-category-mail: Highlight;
+    --storage-category-webview: LinkText;
+    --storage-category-user-assets: VisitedText;
+    --storage-category-cache: Mark;
+    --storage-category-logs: ActiveText;
+    --storage-category-other: GrayText;
+  }
+
+  .settings-storage-composition {
+    border-color: CanvasText;
+    background: Canvas;
+    box-shadow: none;
+    forced-color-adjust: none;
+  }
+
+  .settings-storage-composition__segment {
+    forced-color-adjust: none;
+  }
+
   .folder-nav__selection {
     border-color: Highlight;
     background: Highlight;
+    forced-color-adjust: none;
+  }
+
+  .mail-list::before {
+    border-color: Highlight;
+    background: Highlight;
+    transition: none;
+    forced-color-adjust: none;
+  }
+
+  .account-switcher::before,
+  .settings-nav::before {
+    border-color: Highlight;
+    background: Highlight;
+    transition: none;
     forced-color-adjust: none;
   }
 
@@ -7649,8 +7930,18 @@ html[data-surface="new-mail-notification"] #root {
     forced-color-adjust: none;
   }
 
-  .delivery-status,
+  .mail-row[data-selected="true"] {
+    color: HighlightText;
+    forced-color-adjust: none;
+  }
 
+  .account-card[data-active="true"],
+  .settings-nav button[data-selected="true"] {
+    color: HighlightText;
+    forced-color-adjust: none;
+  }
+
+  .delivery-status,
   .attachment-card,
   .compose-attachment,
   .compose-attachment-operation,
