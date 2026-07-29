@@ -2060,8 +2060,6 @@ html[data-surface="new-mail-notification"] #root {
   border-radius: 0;
   color: var(--color-text);
   transition: border-color var(--motion-fast), border-radius var(--motion-fast);
-  animation: row-in 240ms ease-out both;
-  animation-delay: calc(var(--row-index) * 22ms);
 }
 
 .mail-row::before {
@@ -7146,7 +7144,6 @@ html[data-surface="new-mail-notification"] #root {
 
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes pulse { 50% { opacity: 0.38; } }
-@keyframes row-in { from { opacity: 0; transform: translateY(3px); } }
 @keyframes reader-in { from { opacity: 0; transform: translateX(8px); } }
 @keyframes compose-in { from { opacity: 0; transform: translateY(18px) scale(0.985); } }
 @keyframes compose-minimized-shell-in {

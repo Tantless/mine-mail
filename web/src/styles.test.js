@@ -393,6 +393,13 @@ describe("release-state semantic styling", () => {
       /folder-nav__capability|data-capability-status|data-pending-count/,
     );
   });
+
+  it("paints refreshed mail rows immediately when loading finishes", () => {
+    const mailRow = declarationsFor("\\.mail-row");
+    expect(mailRow).not.toMatch(/animation(?:-delay)?:/);
+    expect(styles).not.toMatch(/@keyframes\s+row-in/);
+    expect(styles).not.toContain("--row-index");
+  });
 });
 
 describe("release-state accessibility and reflow contracts", () => {

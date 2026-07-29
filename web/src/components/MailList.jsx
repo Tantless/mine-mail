@@ -510,7 +510,6 @@ export function MailList({
                     data-unread={unread}
                     data-navigation-key={navigationKey || undefined}
                     tabIndex={-1}
-                    style={{ "--row-index": index }}
                     onClick={(event) => {
                       if (
                         canOpen &&
