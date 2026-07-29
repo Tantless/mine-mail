@@ -393,10 +393,12 @@ const ComposeGridCellTokens = Extension.create({
             state.doc.descendants((node, position) => {
               if (!node.isText || !node.text) return;
               groupGridTextTokens(node.text).forEach((token) => {
+                const tokenFrom = position + token.from;
+                const tokenTo = position + token.to;
                 decorations.push(
                   Decoration.inline(
-                    position + token.from,
-                    position + token.to,
+                    tokenFrom,
+                    tokenTo,
                     {
                       class: "compose-grid-cell-token",
                       "data-grid-token-kind": token.kind,
@@ -409,6 +411,51 @@ const ComposeGridCellTokens = Extension.create({
                 );
               });
             });
+
+            if (state.selection.empty) {
+              const { $from } = state.selection;
+              const precedingCharacter = Array.from(
+                $from.nodeBefore?.text || "",
+              ).at(-1);
+              const followingCharacter = Array.from(
+                $from.nodeAfter?.text || "",
+              ).at(0);
+              // Keep the DOM cursor beyond the marker after a blank cell so
+              // browser and IME input lands in the following grid cell.
+              const caretSide = precedingCharacter &&
+                gridWhitespaceCharacter.test(precedingCharacter)
+                ? -1
+                : followingCharacter &&
+                    gridWhitespaceCharacter.test(followingCharacter)
+                  ? 1
+                  : null;
+
+              if (caretSide !== null) {
+                const marker = document.createElement("span");
+                marker.className = "compose-grid-space-caret";
+                marker.setAttribute("aria-hidden", "true");
+                decorations.push(
+                  Decoration.widget(state.selection.from, marker, {
+                    key: "compose-grid-space-caret",
+                    side: caretSide,
+                  }),
+                );
+
+                if ($from.depth > 0 && $from.parent.isTextblock) {
+                  const parentFrom = $from.before($from.depth);
+                  decorations.push(
+                    Decoration.node(
+                      parentFrom,
+                      parentFrom + $from.parent.nodeSize,
+                      {
+                        class: "compose-grid-space-caret-active",
+                      },
+                    ),
+                  );
+                }
+              }
+            }
+
             return decorations.length
               ? DecorationSet.create(state.doc, decorations)
               : null;

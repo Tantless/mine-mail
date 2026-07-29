@@ -402,6 +402,108 @@ it("gives every typed grid-paper space one complete independent cell", async () 
   expect(editor.textContent).toBe("a  \u00a0暗");
 });
 
+it("moves the grid-paper caret across the full blank cell", async () => {
+  const onEditorReady = vi.fn();
+  render(
+    <RichTextEditor
+      bodyText=""
+      format={{ ...emptyFormat, stationery: "grid" }}
+      stationery="grid"
+      onChange={vi.fn()}
+      onEditorReady={onEditorReady}
+    />,
+  );
+
+  const editor = screen.getByRole("textbox", { name: "邮件正文" });
+  const engine = onEditorReady.mock.calls.at(-1)[0];
+  act(() => sendTextInput(engine, "a "));
+
+  await waitFor(() => {
+    const space = editor.querySelector(
+      '.compose-grid-cell-token[data-grid-token-kind="space"]',
+    );
+    const caret = editor.querySelector(".compose-grid-space-caret");
+    expect(space?.textContent).toBe(" ");
+    expect(caret).not.toBeNull();
+    expect(space?.contains(caret)).toBe(false);
+    expect(
+      space?.compareDocumentPosition(caret) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).not.toBe(0);
+    expect(editor.querySelector("p")?.classList).toContain(
+      "compose-grid-space-caret-active",
+    );
+  });
+
+  act(() => onEditorReady.mock.calls.at(-1)[0].commands.focus());
+  await waitFor(() => {
+    const caret = editor.querySelector(".compose-grid-space-caret");
+    const selectionRange = window.getSelection()?.getRangeAt(0);
+    const afterCaret = document.createRange();
+    afterCaret.setStartAfter(caret);
+    afterCaret.collapse(true);
+    expect(
+      selectionRange?.compareBoundaryPoints(Range.START_TO_START, afterCaret),
+    ).toBe(0);
+  });
+
+  act(() => engine.commands.setTextSelection(2));
+
+  await waitFor(() => {
+    const space = editor.querySelector(
+      '.compose-grid-cell-token[data-grid-token-kind="space"]',
+    );
+    const caret = editor.querySelector(".compose-grid-space-caret");
+    expect(caret).not.toBeNull();
+    expect(space?.contains(caret)).toBe(false);
+    expect(
+      caret?.compareDocumentPosition(space) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).not.toBe(0);
+    expect(editor.querySelector("p")?.classList).toContain(
+      "compose-grid-space-caret-active",
+    );
+  });
+
+  act(() => engine.commands.setTextSelection(1));
+
+  await waitFor(() => {
+    expect(editor.querySelector(".compose-grid-space-caret")).toBeNull();
+    expect(editor.querySelector("p")?.classList).not.toContain(
+      "compose-grid-space-caret-active",
+    );
+  });
+});
+
+it("places text typed after a grid-paper space in the following cell", async () => {
+  const onEditorReady = vi.fn();
+  const user = userEvent.setup();
+  render(
+    <RichTextEditor
+      bodyText=""
+      format={{ ...emptyFormat, stationery: "grid" }}
+      stationery="grid"
+      onChange={vi.fn()}
+      onEditorReady={onEditorReady}
+    />,
+  );
+
+  const editor = screen.getByRole("textbox", { name: "邮件正文" });
+  await user.click(editor);
+  await user.keyboard("a {Space}暗");
+
+  await waitFor(() => {
+    const tokens = Array.from(
+      editor.querySelectorAll(".compose-grid-cell-token"),
+    );
+    expect(tokens.map((token) => token.textContent)).toEqual(["a", " ", "暗"]);
+    expect(tokens.map((token) => token.dataset.gridTokenKind)).toEqual([
+      "latin",
+      "space",
+      "han",
+    ]);
+  });
+  expect(onEditorReady.mock.calls.at(-1)[0].getText()).toBe("a 暗");
+});
+
 it("keeps a long legacy-indented paragraph cell-aligned after switching to grid paper", async () => {
   const text = "长段落".repeat(32);
   const format = {

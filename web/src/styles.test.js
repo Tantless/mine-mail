@@ -248,6 +248,21 @@ describe("compose page and stationery policy", () => {
     expect(gridToken).toMatch(/text-indent:\s*0/);
     expect(gridToken).toMatch(/white-space:\s*pre/);
 
+    const gridSpaceCaretActive = declarationsFor(
+      '\\.compose-editor-shell\\[data-stationery="grid"\\]\\s*\\.compose-grid-space-caret-active',
+    );
+    expect(gridSpaceCaretActive).toMatch(/caret-color:\s*transparent/);
+
+    const gridSpaceCaret = declarationsFor(
+      '\\.compose-editor-shell\\[data-stationery="grid"\\]\\s*\\.compose-rich-editor\\s*\\.ProseMirror:focus\\s*\\.compose-grid-space-caret',
+    );
+    expect(gridSpaceCaret).toMatch(/display:\s*inline-block/);
+    expect(gridSpaceCaret).toMatch(/width:\s*0/);
+    expect(gridSpaceCaret).toMatch(
+      /height:\s*var\(--compose-paper-cell-size\)/,
+    );
+    expect(gridSpaceCaret).toMatch(/pointer-events:\s*none/);
+
     const ordinaryIndent = declarationsFor(
       '\\.compose-rich-editor\\s*\\.ProseMirror\\s*p\\[data-first-line-indent="tab"\\]',
     );

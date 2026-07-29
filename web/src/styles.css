@@ -4459,6 +4459,37 @@ html[data-surface="new-mail-notification"] #root {
   white-space: pre;
 }
 
+.compose-editor-shell[data-stationery="grid"]
+  .compose-grid-space-caret-active {
+  caret-color: transparent;
+}
+
+.compose-editor-shell[data-stationery="grid"]
+  .compose-rich-editor
+  .ProseMirror:focus
+  .compose-grid-space-caret {
+  position: relative;
+  display: inline-block;
+  width: 0;
+  height: var(--compose-paper-cell-size);
+  pointer-events: none;
+  vertical-align: top;
+}
+
+.compose-editor-shell[data-stationery="grid"]
+  .compose-rich-editor
+  .ProseMirror:focus
+  .compose-grid-space-caret::after {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 1px;
+  height: 1em;
+  background: currentColor;
+  content: "";
+  transform: translateY(-50%);
+}
+
 .compose-rich-editor .ProseMirror ul,
 .compose-rich-editor .ProseMirror ol {
   margin: 0;
