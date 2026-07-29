@@ -374,6 +374,12 @@ describe("release-state accessibility and reflow contracts", () => {
     expect(declarationsFor("\\.settings-help__button")).toMatch(
       /width:\s*40px[\s\S]*height:\s*40px/,
     );
+    expect(declarationsFor("\\.settings-help__button")).toMatch(
+      /border:\s*0[\s\S]*background:\s*transparent/,
+    );
+    expect(declarationsFor("\\.settings-help__button::before")).toMatch(
+      /width:\s*19px[\s\S]*height:\s*19px/,
+    );
     expect(
       declarationsFor("\\.compose-stationery-toggle\\.icon-button"),
     ).toMatch(/height:\s*34px/);
