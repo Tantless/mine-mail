@@ -388,6 +388,24 @@ describe("release-state accessibility and reflow contracts", () => {
     );
   });
 
+  it("moves one theme-owned folder selection surface within normal motion", () => {
+    expect(declarationsFor("\\.folder-nav")).toMatch(
+      /position:\s*relative[\s\S]*isolation:\s*isolate/,
+    );
+    expect(declarationsFor("\\.folder-nav__selection")).toMatch(
+      /background:\s*var\(--sidebar-selected\)/,
+    );
+    expect(declarationsFor("\\.folder-nav__selection")).toMatch(
+      /transform:\s*translate3d\([\s\S]*--folder-selection-x[\s\S]*--folder-selection-y/,
+    );
+    expect(declarationsFor("\\.folder-nav__selection")).toMatch(
+      /transform var\(--motion-normal\)/,
+    );
+    expect(
+      declarationsFor('\\.folder-nav__item\\[data-selected="true"\\]'),
+    ).toMatch(/background:\s*transparent/);
+  });
+
   it("keeps native list actions focus-visible above the row overlay", () => {
     expect(declarationsFor("\\.mail-row__open")).toMatch(
       /min-height:\s*44px/,
@@ -432,6 +450,12 @@ describe("release-state accessibility and reflow contracts", () => {
     );
     expect(reducedMotion).toMatch(
       /\.attachment-card\[aria-busy="true"\][\s\S]*animation:\s*none !important/,
+    );
+    expect(reducedMotion).toMatch(
+      /\.folder-nav__selection[\s\S]*will-change:\s*auto/,
+    );
+    expect(forcedColors).toMatch(
+      /\.folder-nav__selection[\s\S]*background:\s*Highlight/,
     );
     expect(forcedColors).toMatch(
       /\.compose-forward-context\[data-immutable="true"\][\s\S]*forced-color-adjust:\s*auto/,

@@ -71,6 +71,62 @@ describe("Sidebar account switcher", () => {
     expect(onFolderChange).toHaveBeenCalledWith("contacts");
   });
 
+  it("moves one shared selection surface to the active folder", () => {
+    const rect = (top, left, width, height) => ({
+      bottom: top + height,
+      height,
+      left,
+      right: left + width,
+      top,
+      width,
+      x: left,
+      y: top,
+      toJSON: () => ({}),
+    });
+    const boundsSpy = vi
+      .spyOn(Element.prototype, "getBoundingClientRect")
+      .mockImplementation(function getBoundingClientRect() {
+        if (this.classList?.contains("folder-nav")) {
+          return rect(80, 20, 232, 373);
+        }
+        if (this.textContent?.includes("收件箱")) {
+          return rect(80, 20, 232, 44);
+        }
+        if (this.textContent?.includes("已收藏")) {
+          return rect(127, 20, 232, 44);
+        }
+        return rect(0, 0, 0, 0);
+      });
+
+    try {
+      const { rerenderSidebar } = renderSidebar(1);
+      const navigation = screen.getByRole("navigation", {
+        name: "邮箱文件夹",
+      });
+      const selection = navigation.querySelector(".folder-nav__selection");
+
+      expect(
+        navigation.querySelectorAll(".folder-nav__selection"),
+      ).toHaveLength(1);
+      expect(selection.getAttribute("aria-hidden")).toBe("true");
+      expect(selection.dataset.visible).toBe("true");
+      expect(
+        selection.style.getPropertyValue("--folder-selection-y"),
+      ).toBe("0px");
+
+      rerenderSidebar({ activeFolder: "starred" });
+
+      expect(
+        selection.style.getPropertyValue("--folder-selection-y"),
+      ).toBe("47px");
+      expect(
+        screen.getByRole("button", { name: "已收藏" }).dataset.selected,
+      ).toBe("true");
+    } finally {
+      boundsSpy.mockRestore();
+    }
+  });
+
   it("shows counts only for the inbox and outbox", () => {
     renderSidebar(1, {
       counts: {

@@ -212,6 +212,10 @@ family. Preserve the relative hierarchy when tuning optical values.
 
 - Mail and contact lists share topbar, search, heading, tabs, row density,
   selection edge, hover, metadata hierarchy, and truncation behavior.
+- The primary folder navigation uses one shared selection surface. Changing
+  folders moves that surface from the previous row to the next within
+  `--motion-normal`; the rows themselves never move, and reduced-motion mode
+  collapses the transition.
 - A selected row changes both surface and edge; unread state is semantic, not a
   second competing card style.
 - Background refreshes preserve the visible rows and selection. Loading must not

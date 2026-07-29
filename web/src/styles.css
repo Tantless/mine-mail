@@ -1257,13 +1257,51 @@ html[data-surface="new-mail-notification"] #root {
 }
 
 .folder-nav {
+  position: relative;
+  isolation: isolate;
   display: grid;
   gap: 3px;
   margin-top: 24px;
 }
 
+.folder-nav__selection {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 0;
+  width: var(--folder-selection-width);
+  height: var(--folder-selection-height);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: var(--row-radius);
+  background: var(--sidebar-selected);
+  box-shadow: 0 5px 14px rgba(21, 41, 48, 0.07);
+  opacity: 0;
+  pointer-events: none;
+  transform: translate3d(
+    var(--folder-selection-x),
+    var(--folder-selection-y),
+    0
+  );
+  transition:
+    width var(--motion-normal) cubic-bezier(0.22, 1, 0.36, 1),
+    height var(--motion-normal) cubic-bezier(0.22, 1, 0.36, 1),
+    opacity var(--motion-fast) ease-out,
+    transform var(--motion-normal) cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: width, height, transform;
+}
+
+.folder-nav__selection[data-visible="true"] {
+  opacity: 1;
+}
+
+.folder-nav__selection:not([data-motion-ready="true"]) {
+  transition: none;
+}
+
 .folder-nav__item,
 .sidebar-action {
+  position: relative;
+  z-index: 1;
   display: flex;
   align-items: center;
   gap: 12px;
@@ -1286,10 +1324,10 @@ html[data-surface="new-mail-notification"] #root {
 }
 
 .folder-nav__item[data-selected="true"] {
-  border-color: rgba(255, 255, 255, 0.25);
-  background: var(--sidebar-selected);
+  border-color: transparent;
+  background: transparent;
   font-weight: 650;
-  box-shadow: 0 5px 14px rgba(21, 41, 48, 0.07);
+  box-shadow: none;
 }
 
 .folder-nav__item[data-capability-status="discovery_pending"],
@@ -7742,6 +7780,10 @@ html[data-surface="new-mail-notification"] #root {
     will-change: auto;
   }
 
+  .folder-nav__selection {
+    will-change: auto;
+  }
+
   .compose-button:hover,
   .compose-button:active,
   .compose-button:hover::after,
@@ -7797,6 +7839,17 @@ html[data-surface="new-mail-notification"] #root {
 }
 
 @media (forced-colors: active) {
+  .folder-nav__selection {
+    border-color: Highlight;
+    background: Highlight;
+    forced-color-adjust: none;
+  }
+
+  .folder-nav__item[data-selected="true"] {
+    color: HighlightText;
+    forced-color-adjust: none;
+  }
+
   .folder-nav__item[data-capability-status],
   .folder-nav__item[data-pending-count],
   .mail-load-progress[data-pagination-state],

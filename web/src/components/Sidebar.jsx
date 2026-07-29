@@ -1,4 +1,11 @@
-import { useEffect, useId, useLayoutEffect, useRef } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import {
   AddressBook,
   Archive,
@@ -185,10 +192,15 @@ export function Sidebar({
   drawerTriggerRef = null,
 }) {
   const sidebarRef = useRef(null);
+  const folderNavRef = useRef(null);
+  const folderButtonRefs = useRef({});
   const drawerPreviousFocusRef = useRef(null);
   const themeToggleRef = useRef(null);
   const themeOptionRefs = useRef([]);
   const themeWasOpenRef = useRef(false);
+  const [folderSelection, setFolderSelection] = useState(null);
+  const [folderSelectionMotionReady, setFolderSelectionMotionReady] =
+    useState(false);
   const themeMenuId = `theme-menu-${useId().replaceAll(":", "")}`;
   const themeMenuOpenRef = useRef(isThemeMenuOpen);
   themeMenuOpenRef.current = isThemeMenuOpen;
@@ -206,6 +218,69 @@ export function Sidebar({
   const pendingAnnouncement = pendingFolderSummary.length
     ? `待同步操作：${pendingFolderSummary.join("，")}`
     : "文件夹操作已全部同步";
+
+  const measureFolderSelection = useCallback(() => {
+    const navigation = folderNavRef.current;
+    const selectedButton = isSettingsOpen
+      ? null
+      : folderButtonRefs.current[activeFolder];
+
+    if (!navigation || !selectedButton) {
+      setFolderSelection((current) =>
+        current?.visible ? { ...current, visible: false } : current,
+      );
+      return;
+    }
+
+    const navigationBounds = navigation.getBoundingClientRect();
+    const buttonBounds = selectedButton.getBoundingClientRect();
+    const nextSelection = {
+      x: buttonBounds.left - navigationBounds.left,
+      y: buttonBounds.top - navigationBounds.top,
+      width: buttonBounds.width,
+      height: buttonBounds.height,
+      visible: true,
+    };
+
+    setFolderSelection((current) =>
+      current &&
+      current.x === nextSelection.x &&
+      current.y === nextSelection.y &&
+      current.width === nextSelection.width &&
+      current.height === nextSelection.height &&
+      current.visible
+        ? current
+        : nextSelection,
+    );
+  }, [activeFolder, isSettingsOpen]);
+
+  useLayoutEffect(() => {
+    measureFolderSelection();
+
+    const navigation = folderNavRef.current;
+    const resizeObserver =
+      navigation && typeof ResizeObserver === "function"
+        ? new ResizeObserver(measureFolderSelection)
+        : null;
+    if (navigation) resizeObserver?.observe(navigation);
+    Object.values(folderButtonRefs.current).forEach((button) => {
+      if (button) resizeObserver?.observe(button);
+    });
+    window.addEventListener("resize", measureFolderSelection);
+
+    return () => {
+      resizeObserver?.disconnect();
+      window.removeEventListener("resize", measureFolderSelection);
+    };
+  }, [measureFolderSelection]);
+
+  useEffect(() => {
+    if (!folderSelection || folderSelectionMotionReady) return undefined;
+    const frame = window.requestAnimationFrame(() => {
+      setFolderSelectionMotionReady(true);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [folderSelection, folderSelectionMotionReady]);
 
   useLayoutEffect(() => {
     const wasOpen = themeWasOpenRef.current;
@@ -335,7 +410,23 @@ export function Sidebar({
         </button>
 
         <div className="sidebar__primary vertical-scroll-surface">
-          <nav className="folder-nav" aria-label="邮箱文件夹">
+          <nav
+            ref={folderNavRef}
+            className="folder-nav"
+            aria-label="邮箱文件夹"
+          >
+            <span
+              className="folder-nav__selection"
+              aria-hidden="true"
+              data-visible={folderSelection?.visible || undefined}
+              data-motion-ready={folderSelectionMotionReady || undefined}
+              style={{
+                "--folder-selection-x": `${folderSelection?.x || 0}px`,
+                "--folder-selection-y": `${folderSelection?.y || 0}px`,
+                "--folder-selection-width": `${folderSelection?.width || 0}px`,
+                "--folder-selection-height": `${folderSelection?.height || 0}px`,
+              }}
+            />
             <span
               className="sr-only"
               role="status"
@@ -387,6 +478,13 @@ export function Sidebar({
                 capabilityState?.short || (pendingCount ? "待同步" : null);
               return (
                 <button
+                  ref={(button) => {
+                    if (button) {
+                      folderButtonRefs.current[folder.id] = button;
+                    } else {
+                      delete folderButtonRefs.current[folder.id];
+                    }
+                  }}
                   key={folder.id}
                   type="button"
                   className="folder-nav__item"
