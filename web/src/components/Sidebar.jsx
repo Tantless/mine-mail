@@ -142,6 +142,8 @@ export function Sidebar({
   counts = {},
   accountStatus,
   isSettingsOpen = false,
+  isMailListExpanded = true,
+  mailListControlsId = "mail-list-panel",
   accountAvatarFor,
   onAccountSwitch,
   onAddAccount,
@@ -335,6 +337,7 @@ export function Sidebar({
             {folders.map((folder) => {
               const FolderIcon = folder.icon;
               const selected = !isSettingsOpen && folder.id === activeFolder;
+              const controlsMailList = selected && folder.id !== "contacts";
               const capability = mailboxCapabilityFor(
                 mailboxCapabilities,
                 folder.id,
@@ -368,6 +371,12 @@ export function Sidebar({
                   disabled={!folderAction}
                   aria-label={accessibleLabel}
                   aria-current={selected ? "page" : undefined}
+                  aria-controls={
+                    controlsMailList ? mailListControlsId : undefined
+                  }
+                  aria-expanded={
+                    controlsMailList ? isMailListExpanded : undefined
+                  }
                 >
                   <FolderIcon size={19} weight={selected ? "fill" : "regular"} />
                   <span>{folder.label}</span>

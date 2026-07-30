@@ -77,6 +77,36 @@ describe("Sidebar account switcher", () => {
     expect(onFolderChange).toHaveBeenCalledWith("contacts");
   });
 
+  it("exposes the selected mail folder's relationship to the mail list", () => {
+    const { rerenderSidebar } = renderSidebar(1);
+    const inbox = screen.getByRole("button", { name: "收件箱" });
+
+    expect(inbox.getAttribute("aria-controls")).toBe("mail-list-panel");
+    expect(inbox.getAttribute("aria-expanded")).toBe("true");
+
+    rerenderSidebar({ isMailListExpanded: false });
+
+    expect(inbox.getAttribute("aria-controls")).toBe("mail-list-panel");
+    expect(inbox.getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("omits mail-list disclosure semantics from settings and contacts", () => {
+    const { rerenderSidebar } = renderSidebar(1, { isSettingsOpen: true });
+    const inbox = screen.getByRole("button", { name: "收件箱" });
+    const settings = screen.getByRole("button", { name: "设置" });
+
+    expect(inbox.hasAttribute("aria-controls")).toBe(false);
+    expect(inbox.hasAttribute("aria-expanded")).toBe(false);
+    expect(settings.hasAttribute("aria-controls")).toBe(false);
+    expect(settings.hasAttribute("aria-expanded")).toBe(false);
+
+    rerenderSidebar({ activeFolder: "contacts", isSettingsOpen: false });
+
+    const contacts = screen.getByRole("button", { name: "通讯录" });
+    expect(contacts.hasAttribute("aria-controls")).toBe(false);
+    expect(contacts.hasAttribute("aria-expanded")).toBe(false);
+  });
+
   it("moves one shared selection surface to the active folder", () => {
     const rect = (top, left, width, height) => ({
       bottom: top + height,

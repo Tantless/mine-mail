@@ -450,6 +450,9 @@ export function MessageView({
   onRetry,
   onClose,
   backLabel = "返回邮件列表",
+  motion = "open",
+  exitSpeed = "normal",
+  onMotionEnd = null,
   onReply,
   onPrepareForward,
   forwardState,
@@ -498,6 +501,7 @@ export function MessageView({
       <section
         className="reader-panel reader-panel--empty"
         aria-label="邮件阅读区，当前未打开邮件"
+        data-reader-motion="idle"
       >
         <ReaderIdleExperience />
       </section>
@@ -578,7 +582,22 @@ export function MessageView({
   }
 
   return (
-    <section className="reader-panel reader-panel--message" aria-label="邮件阅读区">
+    <section
+      className="reader-panel reader-panel--message"
+      aria-label="邮件阅读区"
+      data-reader-motion={motion}
+      data-reader-exit-speed={exitSpeed}
+      inert={motion === "exiting" ? true : undefined}
+      aria-hidden={motion === "exiting" || undefined}
+      onAnimationEnd={(event) => {
+        if (
+          event.target === event.currentTarget &&
+          typeof onMotionEnd === "function"
+        ) {
+          onMotionEnd();
+        }
+      }}
+    >
       <header className="reader-toolbar">
         <div className="reader-toolbar__group">
           {onClose ? (

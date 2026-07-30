@@ -4,6 +4,7 @@ import {
   FunnelSimple,
   List,
   MagnifyingGlass,
+  SidebarSimple,
   Star,
 } from "@phosphor-icons/react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
@@ -225,6 +226,7 @@ export function MailList({
   onFilterChange = null,
   onOpenFilters = null,
   filterDisabledReason = null,
+  onCollapse = null,
   onSync = null,
   syncState = "idle",
   loadState = { phase: "ready", completed: 0, total: null },
@@ -356,7 +358,11 @@ export function MailList({
   }, [messages.length, onLoadMore, paginationPhase]);
 
   return (
-    <section className="mail-list-panel" aria-label={`${title}邮件列表`}>
+    <section
+      id="mail-list-panel"
+      className="mail-list-panel"
+      aria-label={`${title}邮件列表`}
+    >
       <div className="list-topbar">
         {typeof onOpenMobileNav === "function" ? (
           <button
@@ -393,6 +399,16 @@ export function MailList({
             disabled={typeof onOpenFilters !== "function"}
           >
             <FunnelSimple size={19} />
+          </IconButton>
+        ) : null}
+        {typeof onCollapse === "function" ? (
+          <IconButton
+            label="收起邮件列表"
+            onClick={onCollapse}
+            aria-controls="mail-list-panel"
+            aria-expanded="true"
+          >
+            <SidebarSimple size={19} aria-hidden="true" />
           </IconButton>
         ) : null}
       </div>

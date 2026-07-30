@@ -260,6 +260,40 @@ family. Preserve the relative hierarchy when tuning optical values.
 - Each account and folder remembers its own message-list scroll position.
   Opening a folder without a remembered position starts at the top; switching
   back restores that account-and-folder position.
+- In the wide mail workspace, opening a message brings only the reader content
+  into the existing third column with a restrained 260 ms window-style geometry
+  and material transition: it grows from a slightly smaller, quieter,
+  center-anchored state without spring, overshoot, or movement from the selected
+  row. The third-column geometry does not move. Back reverses the same transition
+  and returns to the empty-reader scene; it never retracts the reader column
+  itself. Changing from one open message to another replaces the reader content
+  immediately and does not replay an entrance or content-swap animation.
+- The wide mail workspace may retract its middle message-list column. The list
+  topbar provides an explicit retract action, and activating the already-current
+  mail folder in the sidebar performs the same action. If a message is open, its
+  reader content must finish a fast `--motion-fast` exit before the list begins
+  retracting; a retracted list therefore never leaves message details open. The
+  list surface then contracts toward its center and disappears over one
+  restrained 260 ms transition while the quiet empty-reader scene fills all space
+  beside the sidebar. Activating any mail folder while the list is retracted
+  reveals that folder with the reverse transition.
+- Activating a different mail folder while the list is visible uses one
+  coordinated transition. Any open reader content exits first with
+  `--motion-fast`; the middle surface then uses one 260 ms scene transition to
+  contract evenly from all four edges, replace its contents only at the midpoint,
+  and expand as the target folder. It must read as one compact workspace changing
+  context, not as a horizontal page slide or two lists crossing through each
+  other.
+- Retraction and folder transitions keep at most one pending navigation intent:
+  newer input replaces older pending input after the in-flight phase reaches a
+  safe visual boundary. Retraction itself preserves the current folder's
+  search/filter state and scroll position. `prefers-reduced-motion` collapses each
+  coordinated sequence to one atomic final state with no scale, fade, or staged
+  delay.
+- These list-retraction and folder-change transitions belong only to wide layouts
+  where the sidebar, message list, and reader are concurrently visible. Defensive
+  drawer, two-pane, and single-pane reflows retain their existing navigation
+  model rather than imitating a collapsible desktop column.
 - Inbox, Sent, Archive, and Trash append 50-message keyset pages automatically
   when the list approaches its bottom. There is no manual load-more button or
   persistent end card. A compact bottom line remains visible while loading, then

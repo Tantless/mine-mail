@@ -41,6 +41,86 @@ describe("text selection policy", () => {
   });
 });
 
+describe("mail workspace motion contract", () => {
+  it("uses center-anchored window motion without horizontal page travel", () => {
+    const readerEntering = declarationsFor(
+      '\\.reader-panel--message\\[data-reader-motion="entering"\\]',
+    );
+    const readerWindowIn = nestedBlockFor("@keyframes reader-window-in");
+    const listContextOut = nestedBlockFor("@keyframes mail-list-context-out");
+
+    expect(readerEntering).toMatch(
+      /animation:\s*reader-window-in var\(--motion-window\)/,
+    );
+    expect(readerEntering).toMatch(/transform-origin:\s*center/);
+    expect(readerWindowIn).toMatch(/scale\(0\.96\)/);
+    expect(readerWindowIn).toMatch(/translate3d\(0,\s*6px,\s*0\)/);
+    expect(readerWindowIn).not.toMatch(/translateX/);
+    expect(listContextOut).toMatch(/scale\(0\.94\)/);
+    expect(listContextOut).toMatch(/translate3d\(0,\s*0,\s*0\)/);
+    expect(listContextOut).not.toMatch(/translateX/);
+    expect(styles).not.toContain('data-reader-motion="swapping"');
+    expect(styles).not.toContain("@keyframes reader-content-swap");
+  });
+
+  it("keeps collapse as one full window cycle and swaps folders at its midpoint", () => {
+    const collapsing = declarationsFor(
+      '\\.mail-workspace\\[data-list-motion="collapsing"\\] \\.mail-list-motion-frame',
+    );
+    const switchingOut = declarationsFor(
+      '\\.mail-workspace\\[data-list-motion="switching-out"\\] \\.mail-list-motion-frame',
+    );
+    const switchingIn = declarationsFor(
+      '\\.mail-workspace\\[data-list-motion="switching-in"\\] \\.mail-list-motion-frame',
+    );
+    const expanding = declarationsFor(
+      '\\.mail-workspace\\[data-list-motion="expanding"\\] \\.mail-list-motion-frame',
+    );
+    const collapsedGeometry = declarationsFor(
+      '\\.mail-workspace\\[data-list-motion="collapsing"\\],\\s*\\.mail-workspace\\[data-list-motion="collapsed"\\]',
+    );
+    const fastReaderExit = declarationsFor(
+      '\\.reader-panel--message\\[data-reader-motion="exiting"\\]\\[data-reader-exit-speed="fast"\\]',
+    );
+
+    expect(collapsing).toMatch(
+      /animation:\s*mail-list-window-out var\(--motion-window\)/,
+    );
+    expect(switchingOut).toMatch(/var\(--motion-window-half\)/);
+    expect(switchingIn).toMatch(/var\(--motion-window-half\)/);
+    expect(expanding).toMatch(
+      /mail-list-window-in var\(--motion-window-half\)[\s\S]*var\(--motion-window-half\) both/,
+    );
+    expect(collapsedGeometry).toMatch(
+      /grid-template-columns:\s*0 minmax\(0,\s*1fr\)/,
+    );
+    expect(fastReaderExit).toMatch(
+      /animation-duration:\s*var\(--motion-fast\)/,
+    );
+  });
+
+  it("disables retraction in defensive layouts and removes staged motion when requested", () => {
+    const compact = nestedBlockFor("@media (max-width: 940px)");
+    const singlePane = nestedBlockFor("@media (max-width: 720px)");
+    const reducedMotion = nestedBlockFor(
+      "@media (prefers-reduced-motion: reduce)",
+    );
+
+    expect(compact).toMatch(
+      /\.mail-workspace,[\s\S]*\.mail-workspace\[data-list-motion\][\s\S]*transition:\s*none/,
+    );
+    expect(singlePane).toMatch(
+      /\.app-shell\.has-selection \.mail-list-motion-frame[\s\S]*display:\s*none/,
+    );
+    expect(reducedMotion).toMatch(
+      /\.mail-list-motion-frame,[\s\S]*\.reader-panel--message[\s\S]*animation:\s*none !important/,
+    );
+    expect(reducedMotion).toMatch(
+      /\.mail-workspace[\s\S]*transition:\s*none !important/,
+    );
+  });
+});
+
 describe("brand avatar sizing policy", () => {
   it("scales the sidebar brand lockup without wrapping its wordmark", () => {
     expect(declarationsFor("\\.sidebar__content")).toMatch(

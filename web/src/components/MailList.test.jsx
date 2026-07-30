@@ -163,6 +163,29 @@ describe("MailList controlled controls", () => {
     ).toBe(true);
   });
 
+  it("exposes a working list collapse action only when the capability is available", async () => {
+    const user = userEvent.setup();
+    const onCollapse = vi.fn();
+    const { rerenderMailList } = renderMailList({ onCollapse });
+
+    const collapse = screen.getByRole("button", {
+      name: "收起邮件列表",
+    });
+    expect(collapse.getAttribute("aria-controls")).toBe("mail-list-panel");
+    expect(collapse.getAttribute("aria-expanded")).toBe("true");
+    expect(
+      screen.getByRole("region", { name: "收件箱邮件列表" }).id,
+    ).toBe("mail-list-panel");
+
+    await user.click(collapse);
+    expect(onCollapse).toHaveBeenCalledOnce();
+
+    rerenderMailList({ onCollapse: null });
+    expect(
+      screen.queryByRole("button", { name: "收起邮件列表" }),
+    ).toBeNull();
+  });
+
   it("renders no dead controls when their callbacks are absent", () => {
     renderMailList({
       messages: [firstMessage],

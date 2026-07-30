@@ -155,6 +155,78 @@ function mailboxPage(items, role, overrides = {}) {
   };
 }
 
+function installWorkspaceMedia({
+  width = 600,
+  reducedMotion = false,
+} = {}) {
+  let viewportWidth = width;
+  let reduce = reducedMotion;
+  const queries = new Map();
+  const evaluate = (query) => {
+    if (query.includes("prefers-reduced-motion")) return reduce;
+    const minimum = query.match(/min-width:\s*(\d+)px/);
+    return !minimum || viewportWidth >= Number(minimum[1]);
+  };
+
+  vi.stubGlobal(
+    "matchMedia",
+    vi.fn((media) => {
+      if (queries.has(media)) return queries.get(media);
+      const listeners = new Set();
+      const query = {
+        media,
+        matches: evaluate(media),
+        addEventListener: vi.fn((_, listener) => listeners.add(listener)),
+        removeEventListener: vi.fn((_, listener) =>
+          listeners.delete(listener),
+        ),
+        addListener: vi.fn((listener) => listeners.add(listener)),
+        removeListener: vi.fn((listener) => listeners.delete(listener)),
+        listeners,
+      };
+      queries.set(media, query);
+      return query;
+    }),
+  );
+
+  const notify = () => {
+    for (const query of queries.values()) {
+      const matches = evaluate(query.media);
+      if (matches === query.matches) continue;
+      query.matches = matches;
+      query.listeners.forEach((listener) =>
+        listener({ matches, media: query.media }),
+      );
+    }
+  };
+  const setWidth = (nextWidth) => {
+    act(() => {
+      viewportWidth = nextWidth;
+      Object.defineProperty(window, "innerWidth", {
+        configurable: true,
+        value: nextWidth,
+      });
+      notify();
+      window.dispatchEvent(new Event("resize"));
+    });
+  };
+  const setReducedMotion = (nextValue) => {
+    act(() => {
+      reduce = nextValue;
+      notify();
+    });
+  };
+
+  setWidth(width);
+  return { setReducedMotion, setWidth };
+}
+
+async function advanceWorkspaceMotion(milliseconds) {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(milliseconds);
+  });
+}
+
 function draftSnapshot(localVersion, subject, bodyText = "Draft body") {
   return {
     id: "shared-draft",
@@ -503,7 +575,268 @@ describe("Mine Mail desktop state bridge", () => {
     window.localStorage.clear();
   });
 
-  afterEach(() => cleanup());
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    cleanup();
+  });
+
+  describe("wide mail workspace motion", () => {
+    async function renderWideWorkspace() {
+      const media = installWorkspaceMedia({ width: 600 });
+      render(<App />);
+      const opener = await screen.findByRole("button", {
+        name: "打开邮件：Sender 1，First mail",
+      });
+      media.setWidth(1440);
+      await screen.findByRole("button", { name: "收起邮件列表" });
+      vi.useFakeTimers();
+      return { media, opener };
+    }
+
+    it("keeps reader content mounted through its reverse window transition and restores row focus", async () => {
+      const { opener } = await renderWideWorkspace();
+
+      fireEvent.click(opener);
+      let reader = screen.getByLabelText("邮件阅读区");
+      expect(reader.dataset.readerMotion).toBe("entering");
+      await advanceWorkspaceMotion(400);
+      reader = screen.getByLabelText("邮件阅读区");
+      expect(reader.dataset.readerMotion).toBe("open");
+
+      const back = within(reader).getByRole("button", {
+        name: "返回邮件列表",
+      });
+      fireEvent.click(back);
+      expect(reader.dataset.readerMotion).toBe("exiting");
+      expect(document.querySelector(".reader-panel--message")).toBe(reader);
+
+      await advanceWorkspaceMotion(400);
+      expect(document.querySelector(".reader-panel--message")).toBeNull();
+      expect(screen.getByLabelText("邮件阅读区，当前未打开邮件")).toBeTruthy();
+      expect(document.activeElement).toBe(opener);
+    });
+
+    it("replaces an already-open message without animating the reader again", async () => {
+      desktop.fixtures.inboxPageSource.mockResolvedValue([
+        summary(1, "First mail"),
+        summary(2, "Second mail"),
+      ]);
+      desktop.fixtures.inboxMessageSource.mockImplementation(async (uid) => ({
+        ...summary(uid, uid === 2 ? "Second mail" : "First mail"),
+        body_text: `Loaded body ${uid}`,
+        body_fetched: true,
+      }));
+      const { opener } = await renderWideWorkspace();
+      fireEvent.click(opener);
+      await advanceWorkspaceMotion(400);
+
+      fireEvent.click(
+        screen.getByRole("button", {
+          name: "打开邮件：Sender 2，Second mail",
+        }),
+      );
+
+      const reader = screen.getByLabelText("邮件阅读区");
+      expect(reader.dataset.readerMotion).toBe("open");
+      expect(
+        within(reader).getByRole("heading", { name: "Second mail" }),
+      ).toBeTruthy();
+    });
+
+    it("closes an open reader before the current sidebar folder retracts the list, then reveals another folder", async () => {
+      const { opener } = await renderWideWorkspace();
+      fireEvent.click(opener);
+      const reader = screen.getByLabelText("邮件阅读区");
+      await advanceWorkspaceMotion(400);
+
+      fireEvent.click(screen.getByRole("button", { name: "收件箱" }));
+      expect(reader.dataset.readerMotion).toBe("exiting");
+      expect(reader.dataset.readerExitSpeed).toBe("fast");
+      expect(
+        document.querySelector(".mail-workspace").dataset.listMotion,
+      ).toBe("expanded");
+
+      await advanceWorkspaceMotion(240);
+      expect(
+        document.querySelector(".mail-workspace").dataset.listMotion,
+      ).toBe("collapsing");
+      await advanceWorkspaceMotion(400);
+      expect(
+        document.querySelector(".mail-workspace").dataset.listMotion,
+      ).toBe("collapsed");
+      expect(
+        screen.getByRole("button", { name: "收件箱" }).getAttribute(
+          "aria-expanded",
+        ),
+      ).toBe("false");
+
+      fireEvent.click(screen.getByRole("button", { name: "已收藏" }));
+      expect(
+        document.querySelector(".mail-workspace").dataset.listMotion,
+      ).toBe("expanding");
+      expect(
+        document.querySelector(".mail-list-panel h1").textContent,
+      ).toBe("已收藏");
+      await advanceWorkspaceMotion(400);
+      expect(
+        document.querySelector(".mail-workspace").dataset.listMotion,
+      ).toBe("expanded");
+    });
+
+    it("closes an open reader before switching the visible list at its midpoint", async () => {
+      const { opener } = await renderWideWorkspace();
+      fireEvent.click(opener);
+      const reader = screen.getByLabelText("邮件阅读区");
+      await advanceWorkspaceMotion(400);
+
+      fireEvent.click(screen.getByRole("button", { name: "已收藏" }));
+      expect(reader.dataset.readerMotion).toBe("exiting");
+      expect(reader.dataset.readerExitSpeed).toBe("fast");
+      expect(
+        document.querySelector(".mail-workspace").dataset.listMotion,
+      ).toBe("expanded");
+
+      await advanceWorkspaceMotion(240);
+      expect(document.querySelector(".reader-panel--message")).toBeNull();
+      expect(
+        document.querySelector(".mail-workspace").dataset.listMotion,
+      ).toBe("switching-out");
+      expect(
+        document.querySelector(".mail-list-panel h1").textContent,
+      ).toBe("收件箱");
+
+      await advanceWorkspaceMotion(250);
+      expect(
+        document.querySelector(".mail-workspace").dataset.listMotion,
+      ).toBe("switching-in");
+      expect(
+        document.querySelector(".mail-list-panel h1").textContent,
+      ).toBe("已收藏");
+
+      await advanceWorkspaceMotion(250);
+      expect(
+        document.querySelector(".mail-workspace").dataset.listMotion,
+      ).toBe("expanded");
+    });
+
+    it("changes folders only at the shrink midpoint and retargets rapid navigation to the latest folder", async () => {
+      await renderWideWorkspace();
+
+      fireEvent.click(screen.getByRole("button", { name: "已发送" }));
+      expect(
+        document.querySelector(".mail-workspace").dataset.listMotion,
+      ).toBe("switching-out");
+      expect(
+        document.querySelector(".mail-list-panel h1").textContent,
+      ).toBe("收件箱");
+
+      fireEvent.click(screen.getByRole("button", { name: "已收藏" }));
+      await advanceWorkspaceMotion(250);
+      expect(
+        document.querySelector(".mail-workspace").dataset.listMotion,
+      ).toBe("switching-in");
+      expect(
+        document.querySelector(".mail-list-panel h1").textContent,
+      ).toBe("已收藏");
+      expect(
+        document.querySelector(".mail-list-panel h1").textContent,
+      ).not.toBe("已发送");
+
+      await advanceWorkspaceMotion(250);
+      expect(
+        document.querySelector(".mail-workspace").dataset.listMotion,
+      ).toBe("expanded");
+    });
+
+    it("cancels a delayed retraction when the workspace becomes compact during reader exit", async () => {
+      const { media, opener } = await renderWideWorkspace();
+      fireEvent.click(opener);
+      await advanceWorkspaceMotion(400);
+
+      fireEvent.click(
+        screen.getByRole("button", { name: "收起邮件列表" }),
+      );
+      expect(
+        screen.getByLabelText("邮件阅读区").dataset.readerMotion,
+      ).toBe("exiting");
+
+      media.setWidth(900);
+      expect(
+        document.querySelector(".mail-workspace").dataset.listMotion,
+      ).toBe("expanded");
+      await advanceWorkspaceMotion(240);
+      expect(
+        document.querySelector(".mail-workspace").dataset.listMotion,
+      ).toBe("expanded");
+      expect(document.querySelector(".reader-panel--message")).toBeNull();
+
+      media.setWidth(1440);
+      expect(
+        document.querySelector(".mail-workspace").dataset.listMotion,
+      ).toBe("expanded");
+      expect(
+        screen.getByRole("button", { name: "收起邮件列表" }),
+      ).toBeTruthy();
+    });
+
+    it("reveals the list before a desktop notification presents message details", async () => {
+      const { media } = await renderWideWorkspace();
+      expect(desktop.listeners.has("mail:open-message")).toBe(true);
+      fireEvent.click(
+        screen.getByRole("button", { name: "收起邮件列表" }),
+      );
+      await advanceWorkspaceMotion(400);
+      expect(
+        document.querySelector(".mail-workspace").dataset.listMotion,
+      ).toBe("collapsed");
+
+      vi.useRealTimers();
+      act(() => {
+        desktop.listeners.get("mail:open-message")?.({
+          payload: {
+            message_id: "1",
+            account_id: "desktop-account",
+          },
+        });
+      });
+
+      expect(await screen.findByText("Loaded body")).toBeTruthy();
+      expect(
+        document.querySelector(".mail-workspace").dataset.listMotion,
+      ).toBe("expanded");
+      expect(document.querySelector(".reader-panel--message")).toBeTruthy();
+      media.setWidth(1024);
+    });
+
+    it("uses atomic navigation for reduced motion and keeps retraction out of compact layouts", async () => {
+      const { media } = await renderWideWorkspace();
+      media.setReducedMotion(true);
+
+      fireEvent.click(screen.getByRole("button", { name: "已收藏" }));
+      expect(
+        document.querySelector(".mail-list-panel h1").textContent,
+      ).toBe("已收藏");
+      expect(
+        document.querySelector(".mail-workspace").dataset.listMotion,
+      ).toBe("expanded");
+
+      fireEvent.click(screen.getByRole("button", { name: "已收藏" }));
+      expect(
+        document.querySelector(".mail-workspace").dataset.listMotion,
+      ).toBe("collapsed");
+
+      media.setWidth(900);
+      expect(
+        screen.queryByRole("button", { name: "收起邮件列表" }),
+      ).toBeNull();
+      expect(
+        document.querySelector(".mail-workspace").dataset.listMotion,
+      ).toBe("expanded");
+
+      media.setWidth(1024);
+    });
+  });
 
   it("subscribes to desktop update events and refreshes local SQLite views", async () => {
     render(<App />);

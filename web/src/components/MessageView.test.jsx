@@ -73,6 +73,48 @@ describe("MessageView idle experience", () => {
   });
 });
 
+describe("MessageView window motion", () => {
+  it("makes an exiting reader inert and completes only from its own animation", () => {
+    const onMotionEnd = vi.fn();
+    const { container } = render(
+      <MessageView
+        message={messageFixture()}
+        onClose={vi.fn()}
+        motion="exiting"
+        exitSpeed="fast"
+        onMotionEnd={onMotionEnd}
+      />,
+    );
+    const reader = container.querySelector(".reader-panel--message");
+    const child = reader.querySelector(".reader-toolbar");
+
+    expect(reader.dataset.readerMotion).toBe("exiting");
+    expect(reader.dataset.readerExitSpeed).toBe("fast");
+    expect(reader.hasAttribute("inert")).toBe(true);
+    expect(reader.getAttribute("aria-hidden")).toBe("true");
+
+    // React selects the WebKit-prefixed synthetic event in jsdom because
+    // AnimationEvent is absent there; production browsers still emit
+    // animationend for the same onAnimationEnd prop.
+    fireEvent(
+      child,
+      new Event("webkitAnimationEnd", {
+        bubbles: true,
+        cancelable: false,
+      }),
+    );
+    expect(onMotionEnd).not.toHaveBeenCalled();
+    fireEvent(
+      reader,
+      new Event("webkitAnimationEnd", {
+        bubbles: true,
+        cancelable: false,
+      }),
+    );
+    expect(onMotionEnd).toHaveBeenCalledOnce();
+  });
+});
+
 describe("MessageView role-specific actions", () => {
   it("exposes only the actions allowed for Inbox and calls their controlled callbacks", async () => {
     const user = userEvent.setup();
