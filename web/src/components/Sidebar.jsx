@@ -400,7 +400,7 @@ export function Sidebar({
                 onClick={onAddAccount}
               >
                 <Plus size={16} weight="bold" aria-hidden="true" />
-                <span>添加账号</span>
+                <span>添加账户</span>
               </button>
             ) : null}
 

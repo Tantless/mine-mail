@@ -1,4 +1,10 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Sidebar } from "./Sidebar.jsx";
@@ -173,6 +179,7 @@ describe("Sidebar account switcher", () => {
     const footer = accountSwitcher.closest(".sidebar__footer");
 
     expect(footer).toBeTruthy();
+    expect(within(accountSwitcher).getByText("添加账户")).toBeTruthy();
     expect(footer.contains(screen.getByRole("button", { name: "设置" }))).toBe(true);
     expect(footer.contains(screen.getByRole("button", { name: "写信" }))).toBe(false);
   });

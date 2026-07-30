@@ -288,6 +288,8 @@ export function SettingsPanel({
   const [isRemoteImageHelpOpen, setIsRemoteImageHelpOpen] = useState(false);
   const scrollRef = useRef(null);
   const settingsNavRef = useRef(null);
+  const accountMenuRef = useRef(null);
+  const accountMenuTriggerRef = useRef(null);
   const previousAccountSubmitStatusRef = useRef(accountSubmitStatus);
   const accountDialogReturnFocusRef = useRef(null);
   const storageDialogReturnFocusRef = useRef(null);
@@ -411,6 +413,25 @@ export function SettingsPanel({
     setAccountRemarkError(null);
   }, [accountFlow, activeSection, selectedProvider]);
 
+  useEffect(() => {
+    if (!accountMenu) return undefined;
+    const menu = accountMenuRef.current;
+    menu?.querySelector('[role="menuitem"]')?.focus();
+
+    const handlePointerDown = (event) => {
+      if (
+        menu?.contains(event.target) ||
+        accountMenuTriggerRef.current?.contains(event.target)
+      ) {
+        return;
+      }
+      setAccountMenu(null);
+    };
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => document.removeEventListener("pointerdown", handlePointerDown);
+  }, [accountMenu]);
+
   const updateSettings = (updater) => {
     const next = typeof updater === "function" ? updater(value) : updater;
     setValue(next);
@@ -437,6 +458,32 @@ export function SettingsPanel({
     setEditingAccountRemark(account);
     setAccountRemarkValue(account.remark || "");
     setAccountRemarkError(null);
+  };
+
+  const handleAccountMenuKeyDown = (event) => {
+    const items = Array.from(
+      event.currentTarget.querySelectorAll('[role="menuitem"]:not(:disabled)'),
+    );
+    const currentIndex = items.indexOf(document.activeElement);
+
+    if (event.key === "Escape") {
+      event.preventDefault();
+      setAccountMenu(null);
+      accountMenuTriggerRef.current?.focus();
+      return;
+    }
+
+    if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    const nextIndex =
+      event.key === "Home"
+        ? 0
+        : event.key === "End"
+          ? items.length - 1
+          : event.key === "ArrowDown"
+            ? (currentIndex + 1) % items.length
+            : (currentIndex - 1 + items.length) % items.length;
+    items[nextIndex]?.focus();
   };
 
   const saveAccountRemark = async () => {
@@ -793,15 +840,29 @@ export function SettingsPanel({
                               <ArrowsLeftRight size={17} />
                             </IconButton>
                           )}
-                          <span className="settings-account-menu-wrap">
+                          <span
+                            className="settings-account-menu-wrap"
+                            onBlur={(event) => {
+                              if (!event.currentTarget.contains(event.relatedTarget)) {
+                                setAccountMenu(null);
+                              }
+                            }}
+                          >
                             <IconButton
                               className="settings-account-action"
                               label={`管理 ${connectedAccount.email}`}
                               title="更多账户操作"
+                              aria-haspopup="menu"
                               aria-expanded={accountMenu === connectedAccount.accountId}
+                              aria-controls={
+                                accountMenu === connectedAccount.accountId
+                                  ? `settings-account-menu-${connectedAccount.accountId}`
+                                  : undefined
+                              }
                               onClick={(event) => {
                                 accountDialogReturnFocusRef.current =
                                   event.currentTarget;
+                                accountMenuTriggerRef.current = event.currentTarget;
                                 setAccountMenu((current) =>
                                   current === connectedAccount.accountId
                                     ? null
@@ -812,10 +873,17 @@ export function SettingsPanel({
                               <DotsThree size={20} weight="bold" />
                             </IconButton>
                             {accountMenu === connectedAccount.accountId ? (
-                              <span className="settings-account-menu" role="menu">
+                              <span
+                                ref={accountMenuRef}
+                                id={`settings-account-menu-${connectedAccount.accountId}`}
+                                className="settings-account-menu"
+                                role="menu"
+                                onKeyDown={handleAccountMenuKeyDown}
+                              >
                                 <button
                                   type="button"
                                   role="menuitem"
+                                  tabIndex={-1}
                                   onClick={() =>
                                     openAccountRemarkEditor(connectedAccount)
                                   }
@@ -826,6 +894,7 @@ export function SettingsPanel({
                                 <button
                                   type="button"
                                   role="menuitem"
+                                  tabIndex={-1}
                                   data-tone="danger"
                                   onClick={() => {
                                     setAccountMenu(null);
@@ -962,7 +1031,7 @@ export function SettingsPanel({
                   <h3 id="connect-title">
                     {selectedProvider === "outlook"
                       ? "Outlook 账户仅可读取缓存"
-                      : `连接 ${providerNames[selectedProvider] || "邮箱"}`}
+                      : `连接${providerNames[selectedProvider] || "邮箱"}`}
                   </h3>
                   <p>
                     {selectedProvider === "outlook"

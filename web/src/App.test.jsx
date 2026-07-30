@@ -169,7 +169,7 @@ describe("Mine Mail MVP", () => {
     expect(await screen.findByRole("region", { name: "设置" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "选择邮箱服务商" })).toBeTruthy();
     await user.click(screen.getByRole("button", { name: /163 邮箱/ }));
-    expect(await screen.findByRole("heading", { name: "连接 163 邮箱" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "连接163 邮箱" })).toBeTruthy();
     expect(screen.getByRole("textbox", { name: "邮箱地址" })).toBeTruthy();
   });
 
@@ -1003,7 +1003,7 @@ describe("Mine Mail MVP", () => {
     );
 
     expect(
-      screen.getByRole("heading", { name: "连接 163 邮箱" }),
+      screen.getByRole("heading", { name: "连接163 邮箱" }),
     ).toBeTruthy();
     expect(screen.getByDisplayValue("repair@163.com")).toBeTruthy();
     expect(screen.getByRole("button", { name: "更新账户" })).toBeTruthy();

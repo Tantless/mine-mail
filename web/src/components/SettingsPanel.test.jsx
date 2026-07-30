@@ -179,6 +179,21 @@ describe("SettingsPanel account flow", () => {
     expect(screen.getByRole("heading", { name: "选择邮箱服务商" })).toBeTruthy();
   });
 
+  it("keeps Chinese connection headings free of inserted whitespace", async () => {
+    const user = userEvent.setup();
+    render(<SettingsPanel {...panelProps()} />);
+
+    await user.click(screen.getByRole("button", { name: "添加账户" }));
+    await user.click(screen.getByRole("button", { name: /其他邮箱/ }));
+
+    expect(
+      screen.getByRole("heading", { name: "连接自定义邮箱" }),
+    ).toBeTruthy();
+    expect(
+      screen.queryByRole("heading", { name: "连接 自定义邮箱" }),
+    ).toBeNull();
+  });
+
   it("hides Outlook from the formal provider list even when a stale preset includes it", async () => {
     const user = userEvent.setup();
     render(
@@ -364,6 +379,42 @@ describe("SettingsPanel account flow", () => {
     );
     expect(screen.queryByRole("dialog", { name: "设置邮箱备注" })).toBeNull();
     expect(document.activeElement).toBe(manageAccount);
+  });
+
+  it("supports keyboard and outside-click dismissal for account action menus", async () => {
+    const user = userEvent.setup();
+    render(<SettingsPanel {...panelProps()} />);
+
+    const gmailCard = screen
+      .getByText("second@gmail.com")
+      .closest(".settings-account-card");
+    const manageAccount = within(gmailCard).getByRole("button", {
+      name: "管理 second@gmail.com",
+    });
+
+    await user.click(manageAccount);
+    const menu = within(gmailCard).getByRole("menu");
+    const addRemark = within(menu).getByRole("menuitem", {
+      name: "添加备注",
+    });
+    const removeAccount = within(menu).getByRole("menuitem", {
+      name: "移除账户",
+    });
+
+    expect(manageAccount.getAttribute("aria-haspopup")).toBe("menu");
+    expect(manageAccount.getAttribute("aria-controls")).toBe(menu.id);
+    expect(document.activeElement).toBe(addRemark);
+
+    fireEvent.keyDown(addRemark, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(removeAccount);
+
+    fireEvent.keyDown(removeAccount, { key: "Escape" });
+    expect(within(gmailCard).queryByRole("menu")).toBeNull();
+    expect(document.activeElement).toBe(manageAccount);
+
+    await user.click(manageAccount);
+    fireEvent.pointerDown(document.body);
+    expect(within(gmailCard).queryByRole("menu")).toBeNull();
   });
 
   it("locks and announces account-remark saving, then restores the account trigger", async () => {
