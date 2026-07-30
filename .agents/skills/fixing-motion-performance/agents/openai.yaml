@@ -1,0 +1,6 @@
+interface:
+  display_name: "Fixing Motion Performance"
+  short_description: "Explicit-only motion performance review and repair"
+  default_prompt: "Use $fixing-motion-performance to review and repair animation performance issues."
+policy:
+  allow_implicit_invocation: false

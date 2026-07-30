@@ -1,0 +1,6 @@
+interface:
+  display_name: "Fixing Accessibility"
+  short_description: "Explicit-only accessibility review and repair"
+  default_prompt: "Use $fixing-accessibility to review and repair accessibility issues in the selected interface."
+policy:
+  allow_implicit_invocation: false

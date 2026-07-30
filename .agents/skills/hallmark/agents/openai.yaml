@@ -1,0 +1,6 @@
+interface:
+  display_name: "Hallmark"
+  short_description: "Explicit-only UI design and audit alternative"
+  default_prompt: "Use $hallmark to audit or redesign this interface with a distinctive visual system."
+policy:
+  allow_implicit_invocation: false

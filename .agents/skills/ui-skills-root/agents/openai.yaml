@@ -1,0 +1,6 @@
+interface:
+  display_name: "UI Skills Router"
+  short_description: "Explicit-only router for optional UI skills"
+  default_prompt: "Use $ui-skills-root to choose the smallest useful UI Skill for this task."
+policy:
+  allow_implicit_invocation: false
