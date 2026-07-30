@@ -23,9 +23,12 @@ use crate::{
         MailboxCapabilityUnavailableReason, MailboxRole, MessageActionKind,
         MessageMutationErrorKind, MessageMutationReceipt, MessagePage, MessagePageCursor,
         MessagePageItem, MutationStatus, PendingMessageProjection, RemoteHistoryState,
-        RemoteMutationPhase, SystemFlagKind, SystemFlagMutationReceipt,
+        RemoteMutationPhase, SystemFlagKind,
     },
 };
+
+#[cfg(test)]
+use crate::models::SystemFlagMutationReceipt;
 
 const MESSAGE_COLUMNS: &str = "id, account_id, mailbox, uid, message_id, in_reply_to_json, \
     references_json, subject, sender_json, to_json, cc_json, sent_at, internal_date, flags_json, \
@@ -740,6 +743,7 @@ impl Repository {
             .map_err(Into::into)
     }
 
+    #[cfg(test)]
     pub(crate) fn update_mailbox_history(
         &self,
         account_id: &str,
@@ -1579,6 +1583,7 @@ impl Repository {
         Ok(changed == 1)
     }
 
+    #[cfg(test)]
     pub(crate) fn system_flag_mutation_receipt(
         &self,
         expected_account_id: &str,
@@ -1618,6 +1623,7 @@ impl Repository {
             .map(|(changed, _)| changed)
     }
 
+    #[cfg(test)]
     pub(crate) fn pending_seen_updates(
         &self,
         account_id: &str,
@@ -1632,6 +1638,7 @@ impl Repository {
             })
     }
 
+    #[cfg(test)]
     pub(crate) fn pending_seen_uids(&self, account_id: &str, mailbox: &str) -> Result<Vec<u32>> {
         self.pending_seen_updates(account_id, mailbox)
             .map(|updates| {
@@ -1642,6 +1649,7 @@ impl Repository {
             })
     }
 
+    #[cfg(test)]
     pub(crate) fn complete_pending_seen_if_unchanged(
         &self,
         account_id: &str,
@@ -1662,6 +1670,7 @@ impl Repository {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn complete_pending_seen(
         &self,
         account_id: &str,
@@ -1692,6 +1701,7 @@ impl Repository {
             .map(|(changed, _)| changed)
     }
 
+    #[cfg(test)]
     pub(crate) fn pending_flagged_updates(
         &self,
         account_id: &str,
@@ -1706,6 +1716,7 @@ impl Repository {
             })
     }
 
+    #[cfg(test)]
     pub(crate) fn complete_pending_flagged(
         &self,
         account_id: &str,
@@ -1726,6 +1737,7 @@ impl Repository {
         )
     }
 
+    #[cfg(test)]
     fn compatibility_complete_system_flag(
         &self,
         account_id: &str,
@@ -1764,6 +1776,7 @@ impl Repository {
 
     /// Compatibility entry point for callers that have not yet threaded their
     /// already-validated account ID through to the repository boundary.
+    #[cfg(test)]
     pub(crate) fn queue_message_action(
         &self,
         message_id: i64,
@@ -2040,6 +2053,7 @@ impl Repository {
             .map_err(Into::into)
     }
 
+    #[cfg(test)]
     pub(crate) fn message_action(
         &self,
         account_id: &str,
@@ -2704,6 +2718,7 @@ impl Repository {
 
     /// Compatibility adapter retained while backend integration migrates to
     /// the explicit queue/claim/phase/finalize/reconcile API.
+    #[cfg(test)]
     pub(crate) fn update_message_action_status_if_unchanged(
         &self,
         account_id: &str,
@@ -3631,6 +3646,7 @@ impl Repository {
     /// advancing the exact editable draft version in one transaction. A stale
     /// version returns `None` without registering any blob or changing any
     /// association.
+    #[cfg(test)]
     pub(crate) fn add_draft_attachments_if_local_version(
         &self,
         account_id: &str,
@@ -3803,6 +3819,7 @@ impl Repository {
     /// Removes one exact association and advances the draft version. A stale
     /// caller returns `None` before the attachment lookup, so it can never
     /// remove an attachment from a newer draft.
+    #[cfg(test)]
     pub(crate) fn remove_draft_attachment_if_local_version(
         &self,
         account_id: &str,
@@ -3927,6 +3944,7 @@ impl Repository {
         }))
     }
 
+    #[cfg(test)]
     pub(crate) fn clone_draft_attachments_to_conflict(
         &self,
         account_id: &str,
@@ -4159,29 +4177,7 @@ impl Repository {
         Ok(true)
     }
 
-    /// Binds an immutable Outbox row to the complete attachment set of its
-    /// confirmed draft version. Repeating the exact binding is idempotent;
-    /// attempting to reuse the Outbox ID for another snapshot is rejected.
-    pub(crate) fn bind_outbox_attachments(
-        &self,
-        account_id: &str,
-        outbox_id: &str,
-        draft_id: &str,
-        draft_local_version: u64,
-    ) -> Result<bool> {
-        let mut connection = self.connection()?;
-        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let changed = bind_outbox_attachment_rows(
-            &transaction,
-            account_id,
-            outbox_id,
-            draft_id,
-            draft_local_version,
-        )?;
-        transaction.commit()?;
-        Ok(changed)
-    }
-
+    #[cfg(test)]
     pub(crate) fn list_outbox_attachments(
         &self,
         account_id: &str,
@@ -4395,6 +4391,7 @@ impl Repository {
         Ok((removed == 1).then_some(orphan))
     }
 
+    #[cfg(test)]
     pub(crate) fn save_forward_context_if_absent(
         &self,
         account_id: &str,
@@ -4431,6 +4428,7 @@ impl Repository {
         Ok(true)
     }
 
+    #[cfg(test)]
     pub(crate) fn forward_context(
         &self,
         account_id: &str,
@@ -6459,6 +6457,7 @@ fn row_to_pending_system_flag_mutation(
     })
 }
 
+#[cfg(test)]
 fn system_flag_mutation_receipt(mutation: PendingSystemFlagMutation) -> SystemFlagMutationReceipt {
     SystemFlagMutationReceipt {
         operation_id: mutation.operation_id,
@@ -7525,6 +7524,7 @@ fn query_draft_attachments(
         .map_err(Into::into)
 }
 
+#[cfg(test)]
 fn query_outbox_attachments(
     connection: &Connection,
     account_id: &str,

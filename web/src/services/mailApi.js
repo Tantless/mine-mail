@@ -542,11 +542,6 @@ export const mailApi = {
     );
   },
 
-  async checkConnections() {
-    if (isTauri) return desktopInvoke("check_connections");
-    return callDemo("checkConnections");
-  },
-
   async getDesktopSettings() {
     if (isTauri) {
       return normalizeSettings(await desktopInvoke("get_desktop_settings"));

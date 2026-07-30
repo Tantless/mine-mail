@@ -32,7 +32,6 @@
   --window-edge: clamp(12px, 1vw, 18px);
   --titlebar-height: 38px;
   --content-top: calc(var(--titlebar-height) + 14px);
-  --window-radius: 14px;
   --panel-radius: 12px;
   --control-radius: 9px;
   --row-radius: 9px;
@@ -91,11 +90,6 @@
     var(--color-primary) 12%,
     rgba(255, 255, 255, 0.18)
   );
-  --account-card-active-hover: color-mix(
-    in srgb,
-    var(--color-primary) 16%,
-    rgba(255, 255, 255, 0.23)
-  );
   --account-card-active-edge: color-mix(
     in srgb,
     var(--color-primary) 42%,
@@ -104,9 +98,6 @@
   --sidebar-scrim-top: rgba(241, 249, 252, 0.44);
   --sidebar-scrim-bottom: rgba(216, 231, 232, 0.42);
   --titlebar-text: #17303f;
-  --titlebar-muted: rgba(23, 48, 63, 0.72);
-  --titlebar-surface: rgba(235, 245, 247, 0.28);
-  --titlebar-border: rgba(23, 48, 63, 0.16);
   --titlebar-hover: rgba(251, 254, 255, 0.38);
   --overlay: rgba(13, 20, 28, 0.36);
   --panel-border: rgba(42, 55, 69, 0.18);
@@ -140,8 +131,6 @@
   --reader-wallpaper-echo: 0.14;
   --compose-wallpaper-echo: 0.1;
   --compose-panel-surface: color-mix(in srgb, var(--color-panel) 66%, transparent);
-  --compose-panel-wallpaper-echo: 0.13;
-  --compose-header-surface: color-mix(in srgb, var(--color-panel-subtle) 42%, transparent);
   --compose-content-surface: color-mix(in srgb, var(--color-panel) 34%, transparent);
   --compose-control-surface: color-mix(in srgb, var(--color-control) 48%, transparent);
   --compose-control-hover: color-mix(in srgb, var(--color-hover) 64%, transparent);
@@ -251,8 +240,6 @@
   --reader-wallpaper-echo: 0.2;
   --compose-wallpaper-echo: 0.18;
   --compose-panel-surface: rgba(242, 248, 252, 0.62);
-  --compose-panel-wallpaper-echo: 0.18;
-  --compose-header-surface: rgba(246, 251, 254, 0.38);
   --compose-content-surface: rgba(249, 252, 254, 0.3);
   --compose-control-surface: rgba(239, 246, 250, 0.46);
   --compose-control-hover: rgba(248, 252, 254, 0.62);
@@ -295,9 +282,6 @@
   --sidebar-scrim-top: rgba(4, 9, 17, 0.22);
   --sidebar-scrim-bottom: rgba(2, 8, 13, 0.64);
   --titlebar-text: #f3f6fa;
-  --titlebar-muted: rgba(229, 236, 244, 0.72);
-  --titlebar-surface: rgba(6, 12, 21, 0.34);
-  --titlebar-border: rgba(223, 233, 244, 0.12);
   --titlebar-hover: rgba(240, 246, 255, 0.12);
   --panel-border: rgba(202, 216, 232, 0.14);
   --panel-shadow: 0 16px 40px rgba(0, 0, 0, 0.36), 0 2px 8px rgba(0, 0, 0, 0.22);
@@ -317,8 +301,6 @@
   --reader-wallpaper-echo: 0.1;
   --compose-wallpaper-echo: 0.08;
   --compose-panel-surface: rgba(17, 23, 32, 0.68);
-  --compose-panel-wallpaper-echo: 0.1;
-  --compose-header-surface: rgba(30, 38, 50, 0.46);
   --compose-content-surface: rgba(20, 27, 38, 0.42);
   --compose-control-surface: rgba(39, 48, 61, 0.5);
   --compose-control-hover: rgba(49, 61, 77, 0.64);
@@ -373,9 +355,6 @@
   --sidebar-scrim-top: rgba(61, 36, 49, 0.16);
   --sidebar-scrim-bottom: rgba(46, 26, 36, 0.58);
   --titlebar-text: #fff8f2;
-  --titlebar-muted: rgba(255, 244, 235, 0.75);
-  --titlebar-surface: rgba(55, 31, 42, 0.3);
-  --titlebar-border: rgba(255, 235, 222, 0.14);
   --titlebar-hover: rgba(255, 248, 242, 0.13);
   --panel-border: rgba(90, 58, 58, 0.18);
   --panel-shadow: 0 16px 38px rgba(75, 42, 42, 0.2), 0 2px 8px rgba(75, 42, 42, 0.1);
@@ -402,8 +381,6 @@
   --reader-wallpaper-echo: 0.14;
   --compose-wallpaper-echo: 0.1;
   --compose-panel-surface: rgba(250, 242, 235, 0.66);
-  --compose-panel-wallpaper-echo: 0.13;
-  --compose-header-surface: rgba(255, 248, 243, 0.4);
   --compose-content-surface: rgba(255, 250, 246, 0.32);
   --compose-control-surface: rgba(248, 237, 229, 0.48);
   --compose-control-hover: rgba(255, 247, 241, 0.62);
@@ -441,9 +418,6 @@
   --sidebar-scrim-top: rgba(13, 40, 27, 0.18);
   --sidebar-scrim-bottom: rgba(8, 31, 20, 0.62);
   --titlebar-text: #f1f7f2;
-  --titlebar-muted: rgba(229, 240, 231, 0.74);
-  --titlebar-surface: rgba(8, 31, 20, 0.3);
-  --titlebar-border: rgba(228, 241, 231, 0.13);
   --titlebar-hover: rgba(239, 248, 240, 0.13);
   --panel-border: rgba(38, 67, 50, 0.18);
   --panel-shadow: 0 16px 38px rgba(17, 48, 32, 0.25), 0 2px 8px rgba(17, 48, 32, 0.12);
@@ -470,8 +444,6 @@
   --reader-wallpaper-echo: 0.14;
   --compose-wallpaper-echo: 0.1;
   --compose-panel-surface: rgba(234, 243, 234, 0.66);
-  --compose-panel-wallpaper-echo: 0.13;
-  --compose-header-surface: rgba(247, 252, 247, 0.4);
   --compose-content-surface: rgba(249, 253, 249, 0.32);
   --compose-control-surface: rgba(231, 240, 231, 0.48);
   --compose-control-hover: rgba(244, 250, 245, 0.62);
@@ -2631,13 +2603,6 @@ html[data-surface="new-mail-notification"] #root {
   color: color-mix(in srgb, var(--color-danger) 62%, var(--color-text-muted));
 }
 
-.toolbar-divider {
-  width: 1px;
-  height: 22px;
-  margin: 0 6px;
-  background: var(--color-divider);
-}
-
 .reader-back {
   display: inline-grid;
 }
@@ -2765,8 +2730,7 @@ html[data-surface="new-mail-notification"] #root {
   cursor: pointer;
 }
 
-.avatar-picker__choose input,
-.account-avatar-setting__choose input {
+.avatar-picker__choose input {
   position: absolute;
   width: 1px;
   height: 1px;
@@ -4764,7 +4728,6 @@ html[data-surface="new-mail-notification"] #root {
 }
 
 .compose-attachment-operation,
-.compose-attachment-requirement,
 .compose-forward-attachment-warning {
   min-width: 0;
   padding: 8px 10px;
@@ -4786,7 +4749,6 @@ html[data-surface="new-mail-notification"] #root {
   color: var(--color-danger);
 }
 
-.compose-attachment-requirement,
 .compose-forward-attachment-warning {
   border-color: var(--state-warning-edge);
   background: var(--state-warning-surface);
@@ -6843,13 +6805,6 @@ html[data-surface="new-mail-notification"] #root {
   color: var(--color-primary);
 }
 
-.settings-provider-status {
-  padding: 4px 8px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--color-text-muted) 9%, transparent);
-  white-space: nowrap;
-}
-
 .settings-account-setup {
   padding: 22px;
   border: 1px solid color-mix(in srgb, var(--compose-divider) 82%, var(--surface-edge));
@@ -7737,10 +7692,6 @@ html[data-surface="new-mail-notification"] #root {
     flex: 0 0 auto;
   }
 
-  .toolbar-divider {
-    display: none;
-  }
-
   .reader-scroll {
     padding: 26px 22px 38px;
   }
@@ -7850,8 +7801,7 @@ html[data-surface="new-mail-notification"] #root {
     justify-self: start;
   }
 
-  .account-provider-grid,
-  .settings-options {
+  .account-provider-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -8190,7 +8140,6 @@ html[data-surface="new-mail-notification"] #root {
   .attachment-card,
   .compose-attachment,
   .compose-attachment-operation,
-  .compose-attachment-requirement,
   .compose-forward-attachment-warning,
   .compose-forward-context[data-immutable="true"] {
     border: 1px solid CanvasText;

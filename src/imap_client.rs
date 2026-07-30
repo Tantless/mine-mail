@@ -306,18 +306,6 @@ impl ImapConnection {
         self.supports_idle
     }
 
-    pub fn supports_move(&self) -> bool {
-        self.supports_move
-    }
-
-    pub fn supports_uidplus(&self) -> bool {
-        self.supports_uidplus
-    }
-
-    pub fn supports_special_use(&self) -> bool {
-        self.supports_special_use
-    }
-
     pub fn message_move_method(&self) -> MessageMoveMethod {
         choose_message_move_method(self.supports_move)
     }
@@ -757,11 +745,6 @@ impl ImapConnection {
         desired: bool,
     ) -> Result<Vec<(u32, Vec<String>)>> {
         self.set_seen(uids, desired).await
-    }
-
-    /// Compatibility wrapper for the existing incremental Inbox synchronizer.
-    pub async fn add_seen_flags(&mut self, uids: &[u32]) -> Result<Vec<(u32, Vec<String>)>> {
-        self.set_seen(uids, true).await
     }
 
     /// Adds or removes the standard `\Flagged` system flag without replacing

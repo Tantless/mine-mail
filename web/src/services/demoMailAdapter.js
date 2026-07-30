@@ -905,10 +905,6 @@ function createDemoActions(
       return structuredClone(result);
     },
 
-    checkConnections() {
-      return { imap_ok: true, smtp_ok: true };
-    },
-
     getDesktopSettings() {
       return structuredClone(state.settings);
     },

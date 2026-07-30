@@ -10,14 +10,13 @@ use std::time::Instant;
 
 use mine_mail::{
     AttachmentDisposition, AttachmentMeta, AttachmentSaveErrorKind, AttachmentSaveResult,
-    AttachmentSaveStatus, ComposeFormat, ComposeRequest, ConnectionReport, ContactMessage,
-    ContactMessageDirection, DeliveryUnknownDecision, Draft, DraftAttachmentMeta,
-    DraftAttachmentMutationKind, DraftAttachmentMutationOutcome, DraftDeleteKind,
-    DraftDto as CoreDraftDto, DraftSaveKind, DraftSaveOutcome, ForwardContext,
-    ForwardPreparationError, ForwardPreparationErrorKind, ForwardPreparationOutcome,
-    ForwardQuotedRenderMode, ForwardWarning, InboxMessage, MailAddress, MailBackend, MailboxRole,
-    OutboxItem, OutboxRecipientGroups, OutboxStatus, PreparedForward, ReplyContext,
-    StationeryTheme, outbox_body_html, outbox_body_text, outbox_has_reply_headers,
+    AttachmentSaveStatus, ComposeFormat, ComposeRequest, ContactMessage, ContactMessageDirection,
+    DeliveryUnknownDecision, Draft, DraftAttachmentMeta, DraftAttachmentMutationKind,
+    DraftAttachmentMutationOutcome, DraftDeleteKind, DraftDto as CoreDraftDto, DraftSaveKind,
+    DraftSaveOutcome, ForwardContext, ForwardPreparationError, ForwardPreparationErrorKind,
+    ForwardPreparationOutcome, ForwardQuotedRenderMode, ForwardWarning, InboxMessage, MailAddress,
+    MailBackend, MailboxRole, OutboxItem, OutboxRecipientGroups, OutboxStatus, PreparedForward,
+    ReplyContext, StationeryTheme, outbox_body_html, outbox_body_text, outbox_has_reply_headers,
     outbox_message_id, outbox_preview, outbox_sent_at, outbox_subject, sanitize_compose_html,
 };
 use serde::Serialize;
@@ -1110,21 +1109,6 @@ impl From<OutboxItem> for OutboxMessageDto {
 }
 
 #[tauri::command]
-async fn check_connections(
-    account: State<'_, AccountRuntime>,
-    backend: State<'_, BackendState>,
-) -> CommandResult<ConnectionReport> {
-    account.refresh_active_oauth_backend(&backend).await?;
-    let backend = backend.network()?;
-    backend.check_connections().await.map_err(safe_mail_error)
-}
-
-#[tauri::command]
-async fn sync_inbox(app: AppHandle) -> CommandResult<desktop::SyncReportDto> {
-    desktop::perform_inbox_sync(&app).await.map(Into::into)
-}
-
-#[tauri::command]
 async fn sync_sent(app: AppHandle) -> CommandResult<desktop::SyncReportDto> {
     desktop::perform_sent_sync(&app).await.map(Into::into)
 }
@@ -2170,8 +2154,6 @@ pub fn run() {
             switch_account,
             set_account_remark,
             remove_account,
-            check_connections,
-            sync_inbox,
             sync_sent,
             sync_all,
             list_contacts,

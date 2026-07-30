@@ -60,7 +60,6 @@ const desktop = vi.hoisted(() => {
       retryOutbox: vi.fn(),
       resolveDeliveryUnknown: vi.fn(),
       sendDraft: vi.fn(),
-      checkConnections: vi.fn(),
       getDesktopSettings: vi.fn(),
       updateDesktopSettings: vi.fn(),
       listAccountPresets: vi.fn(),
@@ -389,10 +388,6 @@ describe("Mine Mail desktop state bridge", () => {
     desktop.mailApi.listContactMessages.mockResolvedValue([]);
     desktop.mailApi.setContactFavorite.mockResolvedValue(true);
     desktop.mailApi.setContactRemark.mockResolvedValue(true);
-    desktop.mailApi.checkConnections.mockResolvedValue({
-      imap_ok: true,
-      smtp_ok: true,
-    });
     desktop.fixtures.inboxMessageSource.mockImplementation(async (uid) => ({
       ...summary(uid, "First mail"),
       body_text: "Loaded body",

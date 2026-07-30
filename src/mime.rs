@@ -55,6 +55,13 @@ const ATTACHMENT_TOKEN_BYTES: usize = 36;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum MimeSourceCompleteness {
     CompleteRfc822,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the bounded-prefix rejection path is a tested mail-safety boundary"
+        )
+    )]
     BoundedSummaryPrefix,
 }
 

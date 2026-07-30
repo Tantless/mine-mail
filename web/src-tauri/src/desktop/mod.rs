@@ -1556,23 +1556,6 @@ async fn perform_incremental_inbox_sync(
     sync_new_inbox_for(app, account_id).await
 }
 
-pub(crate) async fn perform_inbox_sync(app: &AppHandle) -> Result<SyncReport, String> {
-    let runtime = app.state::<DesktopRuntime>();
-    let _guard = runtime.sync_gate.lock().await;
-    runtime.record_sync_start()?;
-    let account_runtime = app.state::<AccountRuntime>();
-    let backend_state = app.state::<BackendState>();
-    let refresh_result = account_runtime
-        .refresh_active_oauth_backend(&backend_state)
-        .await;
-    emit_account_status(app, &account_runtime, &backend_state);
-    refresh_result?;
-    let account_id = backend_state
-        .active_account_id()
-        .ok_or_else(|| "No mail account is selected.".to_owned())?;
-    sync_inbox_for(app, &account_id).await
-}
-
 pub(crate) async fn perform_sent_sync(app: &AppHandle) -> Result<SyncReport, String> {
     let runtime = app.state::<DesktopRuntime>();
     let _guard = runtime.sync_gate.lock().await;
