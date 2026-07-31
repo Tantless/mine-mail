@@ -93,8 +93,10 @@ must be updated here when an intentional product change lands.
   list. Completion states whether synchronization succeeded and reports the
   bounded synchronized-message count; Drafts reports processed drafts and Outbox
   reports its refreshed queue count. Success or failure disappears after two
-  seconds. Routine success never creates a lower-right toast, and background
-  synchronization does not create this foreground feedback row.
+  seconds. The refresh control remains busy only until that explicit request
+  settles. Routine success never creates a lower-right toast, and background or
+  event-driven reconciliation does not restart foreground synchronization
+  feedback.
 - IMAP IDLE and lightweight arrival polling monitor Inbox only. A periodic
   reconciliation always flushes queued mutations; Archive and Trash participate
   when they have been initialized locally or have pending mutations.
@@ -152,10 +154,10 @@ must be updated here when an intentional product change lands.
   account, folder, epoch, or query.
 - A page distinguishes more SQLite history, more possible server history, an
   unavailable offline history request, and a confirmed end. Approaching the
-  bottom automatically requests the next page of at most 50 messages. Loading
-  uses one compact bottom line; completion with the appended count or failure is
-  shown for two seconds and then removed. There is no manual load-more control or
-  persistent end/empty-state explanation.
+  bottom automatically requests the next page of at most 50 messages without a
+  separate bottom loading, completion, or failure line. Explicit synchronization
+  feedback remains in the shared status band below the tabs. There is no manual
+  load-more control or persistent end/empty-state explanation.
 - New arrivals and background refreshes are merged by exact mailbox and UID
   without invalidating an older keyset cursor, duplicating rows, changing the
   current selection, or moving the visible scroll position. A UIDVALIDITY change

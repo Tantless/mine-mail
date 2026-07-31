@@ -316,9 +316,10 @@ family. Preserve the relative hierarchy when tuning optical values.
   navigation model rather than imitating a collapsible desktop column.
 - Inbox, Sent, Archive, and Trash append 50-message keyset pages automatically
   when the list approaches its bottom. There is no manual load-more button or
-  persistent end card. A compact bottom line remains visible while loading, then
-  shows the loaded count or failure for two seconds before disappearing;
-  appending or receiving mail preserves selection and scroll position.
+  persistent end card. Automatic pagination stays visually silent and never adds
+  a bottom loading/result line; appending or receiving mail preserves selection
+  and scroll position. Explicit synchronization uses the shared status band
+  below the tabs.
 - Every explicit folder refresh deepens the list material into one full-width,
   square-edged status band directly below the tabs. The compact band reaches
   through the panel's inline edge seam and is only one tonal step deeper than the
@@ -330,7 +331,9 @@ family. Preserve the relative hierarchy when tuning optical values.
   another card layered above it. It reports progress, then success with the
   bounded number of synchronized messages or a retryable failure. The completed
   row disappears after two seconds and never duplicates routine success in a
-  lower-right toast.
+  lower-right toast. The heading refresh icon spins only for that explicit
+  request; event-driven list reconciliation never restarts its busy state after
+  the request completes.
 - Mail search uses the established search shell and identifies its bounded local
   scope as **搜索已同步邮件**. Search and folder tabs must not imply access to
   uncached server history.

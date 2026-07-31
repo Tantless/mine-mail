@@ -3821,58 +3821,6 @@ export function App() {
     });
   }, [activeFolder, contactRemarkForEmail, filter, folderMessages, query]);
 
-  const activeMailboxLoadState = useMemo(() => {
-    const normalizedQuery = normalizedMailboxQuery(query);
-    if (
-      normalizedQuery &&
-      remoteSearch?.accountId === activeAccountId &&
-      remoteSearch?.folder === activeFolder &&
-      remoteSearch?.query === normalizedQuery
-    ) {
-      return {
-        phase: remoteSearch.phase,
-        completed: remoteSearch.items.length,
-        total: null,
-      };
-    }
-    if (mailboxLoadStates[activeFolder]) {
-      return mailboxLoadStates[activeFolder];
-    }
-    if (activeFolder === "starred") {
-      const sources = [
-        mailboxLoadStates.inbox,
-        mailboxLoadStates.sent,
-        mailboxLoadStates.archive,
-      ].filter(Boolean);
-      const phase = sources.some((state) => state.phase === "syncing")
-        ? "syncing"
-        : sources.some((state) => state.phase === "loading")
-          ? "loading"
-          : sources.some((state) => state.phase === "error")
-            ? "error"
-            : "ready";
-      const totals = sources.map((state) => state.total);
-      return {
-        phase,
-        completed: sources.reduce(
-          (sum, state) => sum + (state.completed || 0),
-          0,
-        ),
-        total: totals.every((total) => Number.isFinite(total))
-          ? totals.reduce((sum, total) => sum + total, 0)
-          : null,
-      };
-    }
-    return { phase: "ready", completed: visibleMessages.length, total: null };
-  }, [
-    activeAccountId,
-    activeFolder,
-    mailboxLoadStates,
-    query,
-    remoteSearch,
-    visibleMessages.length,
-  ]);
-
   const selectedMessageKey = remoteFlagKey(selectedMessage);
   const selectedIndex = visibleMessages.findIndex((message) => {
     const key = remoteFlagKey(message);
@@ -4047,8 +3995,8 @@ export function App() {
         append: true,
       });
     } catch {
-      // The page state retains the failure for diagnostics. The list owns the
-      // bounded two-second feedback after an automatic pagination attempt.
+      // The page state retains the silent automatic-pagination failure so a
+      // later explicit refresh can reconcile the folder without losing rows.
     }
   }, [
     activeFolder,
@@ -6862,7 +6810,6 @@ export function App() {
                         ? manualSyncFeedback
                         : null
                     }
-                    loadState={activeMailboxLoadState}
                     canSync={networkActionsAvailable}
                     syncDisabledReason={
                       networkActionsAvailable

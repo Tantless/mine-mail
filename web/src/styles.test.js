@@ -547,20 +547,11 @@ describe("release-state semantic styling", () => {
     ).toMatch(/overflow-wrap:\s*anywhere/);
   });
 
-  it("keeps automatic pagination compact and removes persistent folder state chrome", () => {
-    expect(declarationsFor("\\.mail-pagination-notice")).toMatch(
-      /min-height:\s*22px/,
+  it("keeps automatic pagination silent and removes persistent folder state chrome", () => {
+    expect(declarationsFor("\\.mail-pagination-sentinel")).toMatch(
+      /height:\s*1px/,
     );
-    expect(
-      declarationsFor(
-        '\\.mail-pagination-notice\\[data-state="loading"\\]',
-      ),
-    ).toMatch(/color:\s*var\(--color-primary\)/);
-    expect(
-      declarationsFor(
-        '\\.mail-pagination-notice\\[data-state="error"\\]',
-      ),
-    ).toMatch(/color:\s*var\(--color-danger\)/);
+    expect(styles).not.toMatch(/mail-pagination-notice/);
     expect(styles).not.toMatch(/mail-load-progress|empty-list/);
     expect(styles).not.toMatch(
       /folder-nav__capability|data-capability-status|data-pending-count/,

@@ -2142,35 +2142,6 @@ html[data-surface="new-mail-notification"] #root {
   height: 1px;
 }
 
-.mail-pagination-notice {
-  display: flex;
-  min-height: 22px;
-  align-items: center;
-  justify-content: center;
-  gap: 5px;
-  margin: 0 8px 4px;
-  color: var(--color-text-muted);
-  font-size: 10px;
-  line-height: 1;
-}
-
-.mail-pagination-notice[data-state="loading"] {
-  color: var(--color-primary);
-}
-
-.mail-pagination-notice[data-state="complete"] {
-  color: color-mix(in srgb, var(--color-success) 72%, var(--color-text));
-}
-
-.mail-pagination-notice[data-state="error"] {
-  color: var(--color-danger);
-}
-
-.mail-pagination-notice svg {
-  flex: 0 0 auto;
-  animation: spin 900ms linear infinite;
-}
-
 .mail-list {
   position: relative;
   isolation: isolate;
@@ -8222,7 +8193,6 @@ html[data-surface="new-mail-notification"] #root {
     transform: none;
   }
 
-  .mail-pagination-notice svg,
   .mail-sync-feedback[data-state="syncing"] svg,
   .attachment-card[aria-busy="true"] > svg:last-child,
   .attachment-card[data-state="saving"] > svg:last-child {

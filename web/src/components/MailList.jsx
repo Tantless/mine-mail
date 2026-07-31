@@ -9,7 +9,7 @@ import {
   Star,
   XCircle,
 } from "@phosphor-icons/react";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef } from "react";
 import { IconButton } from "./IconButton.jsx";
 import { ProfileAvatar } from "./ProfileAvatar.jsx";
 import { TooltipTarget } from "./Tooltip.jsx";
@@ -148,72 +148,6 @@ function resolvedPaginationPhase(loadMoreState) {
     : "idle";
 }
 
-function PaginationControl({ phase, visibleCount }) {
-  const previousPhaseRef = useRef(phase);
-  const loadStartCountRef = useRef(visibleCount);
-  const dismissTimerRef = useRef(null);
-  const [notice, setNotice] = useState(null);
-
-  useEffect(() => {
-    const previousPhase = previousPhaseRef.current;
-    previousPhaseRef.current = phase;
-
-    if (dismissTimerRef.current) {
-      window.clearTimeout(dismissTimerRef.current);
-      dismissTimerRef.current = null;
-    }
-
-    if (phase === "loading") {
-      loadStartCountRef.current = visibleCount;
-      setNotice({ state: "loading", text: "正在加载…" });
-      return undefined;
-    }
-
-    if (previousPhase !== "loading") return undefined;
-
-    const failed = ["retry", "offline", "unavailable"].includes(phase);
-    const appendedCount = Math.max(0, visibleCount - loadStartCountRef.current);
-    setNotice({
-      state: failed ? "error" : "complete",
-      text: failed
-        ? "加载失败"
-        : appendedCount
-          ? `已加载 ${appendedCount} 封`
-          : "加载完成",
-    });
-    dismissTimerRef.current = window.setTimeout(() => {
-      setNotice(null);
-      dismissTimerRef.current = null;
-    }, 2_000);
-    return undefined;
-  }, [phase, visibleCount]);
-
-  useEffect(
-    () => () => {
-      if (dismissTimerRef.current) {
-        window.clearTimeout(dismissTimerRef.current);
-      }
-    },
-    [],
-  );
-
-  if (!notice) return null;
-  return (
-    <div
-      className="mail-pagination-notice"
-      data-state={notice.state}
-      role={notice.state === "error" ? "alert" : "status"}
-      aria-live={notice.state === "error" ? "assertive" : "polite"}
-      aria-atomic="true"
-    >
-      {notice.state === "loading" ? (
-        <CircleNotch size={13} aria-hidden="true" />
-      ) : null}
-      <span>{notice.text}</span>
-    </div>
-  );
-}
-
 function SyncFeedbackRow({ feedback }) {
   if (!feedback) return null;
   const state = ["syncing", "success", "error"].includes(feedback.state)
@@ -258,7 +192,6 @@ export function MailList({
   onSync = null,
   syncState = "idle",
   syncFeedback = null,
-  loadState = { phase: "ready", completed: 0, total: null },
   canSync = true,
   syncDisabledReason = null,
   onOpenMobileNav = null,
@@ -279,7 +212,7 @@ export function MailList({
   const role = resolvedFolderRole(folderRole, folderLabel);
   const config = folderConfigurations[role];
   const title = folderLabel || config.title;
-  const isSyncing = syncState === "syncing" || loadState.phase === "syncing";
+  const isSyncing = syncState === "syncing";
   const capabilityUnavailable = Boolean(
     config.mailboxLabel &&
       mailboxCapability &&
@@ -632,10 +565,6 @@ export function MailList({
               ref={loadMoreSentinelRef}
               className="mail-pagination-sentinel"
               aria-hidden="true"
-            />
-            <PaginationControl
-              phase={paginationPhase}
-              visibleCount={messages.length}
             />
           </>
         ) : null}

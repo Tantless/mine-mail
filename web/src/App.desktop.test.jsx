@@ -2395,7 +2395,8 @@ describe("Mine Mail desktop state bridge", () => {
     );
     expect(await screen.findByText("Older local page")).toBeTruthy();
     expect(screen.getByText("Newest local page")).toBeTruthy();
-    expect(await screen.findByText("已加载 1 封")).toBeTruthy();
+    expect(screen.queryByText("已加载 1 封")).toBeNull();
+    expect(list.querySelector(".mail-pagination-notice")).toBeNull();
     expect(
       screen.queryByRole("button", { name: /加载更早邮件/ }),
     ).toBeNull();

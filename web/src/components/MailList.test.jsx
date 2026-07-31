@@ -38,7 +38,6 @@ function renderMailList(overrides = {}) {
     onFilterChange: vi.fn(),
     onSync: vi.fn(),
     syncState: "idle",
-    loadState: { phase: "ready", completed: 0, total: null },
     canSync: true,
   };
   const view = render(<MailList {...baseProps} {...overrides} />);
@@ -120,6 +119,19 @@ describe("MailList folder contracts", () => {
     const sync = screen.getByRole("button", { name: label });
     expect(sync.disabled).toBe(true);
     expect(sync.getAttribute("aria-busy")).toBe("true");
+  });
+
+  it("does not restart the explicit Starred sync affordance for a trailing mailbox refresh", () => {
+    renderMailList({
+      folderRole: "starred",
+      syncState: "done",
+      loadState: { phase: "syncing", completed: 1, total: 1 },
+    });
+
+    const sync = screen.getByRole("button", { name: "同步已收藏邮件" });
+    expect(sync.disabled).toBe(false);
+    expect(sync.getAttribute("aria-busy")).toBeNull();
+    expect(sync.classList.contains("is-spinning")).toBe(false);
   });
 
   it.each([
@@ -382,16 +394,13 @@ describe("MailList controlled controls", () => {
 describe("MailList state distinctions", () => {
   afterEach(cleanup);
 
-  it("keeps empty, loading, failure, search, and capability states visually quiet", () => {
-    const { container, rerenderMailList } = renderMailList({
-      loadState: { phase: "loading", completed: 0, total: null },
-    });
+  it("keeps empty, search, and capability states visually quiet", () => {
+    const { container, rerenderMailList } = renderMailList();
     expect(container.querySelector(".empty-list")).toBeNull();
     expect(container.querySelector(".mail-loading-state")).toBeNull();
 
     rerenderMailList({
       query: "不存在",
-      loadState: { phase: "error", completed: 0, total: null },
     });
     expect(screen.queryByText("没有匹配的已同步邮件")).toBeNull();
     expect(screen.queryByText("部分邮件暂时没有加载完成")).toBeNull();
@@ -411,13 +420,9 @@ describe("MailList state distinctions", () => {
 });
 
 describe("MailList pagination and semantics", () => {
-  afterEach(() => {
-    cleanup();
-    vi.useRealTimers();
-  });
+  afterEach(cleanup);
 
-  it("loads automatically near the bottom and keeps completion feedback for two seconds", () => {
-    vi.useFakeTimers();
+  it("loads automatically near the bottom without rendering bottom pagination feedback", () => {
     const onLoadMore = vi.fn();
     const { container, rerenderMailList } = renderMailList({
       messages: [firstMessage],
@@ -440,39 +445,25 @@ describe("MailList pagination and semantics", () => {
     ).toBeNull();
 
     rerenderMailList({ loadMoreState: "loading" });
-    expect(screen.getByText("正在加载…")).toBeTruthy();
+    expect(screen.queryByText("正在加载…")).toBeNull();
+    expect(container.querySelector(".mail-pagination-notice")).toBeNull();
     rerenderMailList({
       messages: [firstMessage, secondMessage],
       loadMoreState: "idle",
     });
-    expect(screen.getByText("已加载 1 封")).toBeTruthy();
-
-    act(() => {
-      vi.advanceTimersByTime(2_000);
-    });
     expect(screen.queryByText("已加载 1 封")).toBeNull();
-    vi.useRealTimers();
   });
 
-  it("shows a compact two-second failure only after a loading attempt", () => {
-    vi.useFakeTimers();
-    const { rerenderMailList } = renderMailList({
+  it("keeps pagination state silent after a failed automatic attempt", () => {
+    const { container, rerenderMailList } = renderMailList({
       messages: [firstMessage],
       loadMoreState: "idle",
     });
 
     rerenderMailList({ loadMoreState: "loading" });
-    expect(screen.getByText("正在加载…")).toBeTruthy();
     rerenderMailList({ loadMoreState: "retry" });
-    const failure = screen.getByRole("alert");
-    expect(failure.textContent).toBe("加载失败");
-    expect(failure.className).toBe("mail-pagination-notice");
-
-    act(() => {
-      vi.advanceTimersByTime(2_000);
-    });
     expect(screen.queryByText("加载失败")).toBeNull();
-    vi.useRealTimers();
+    expect(container.querySelector(".mail-pagination-notice")).toBeNull();
   });
 
   it("does not render persistent offline, unavailable, or confirmed-end copy", () => {
