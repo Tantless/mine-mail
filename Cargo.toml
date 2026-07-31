@@ -1,6 +1,6 @@
 [package]
 name = "mine-mail"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2024"
 rust-version = "1.97"
 description = "Local-first mail core for the Mine Mail desktop client"
