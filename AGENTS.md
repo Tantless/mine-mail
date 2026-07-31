@@ -100,14 +100,14 @@ screen-specific copy, timing constants, pixel values, or speculative future plan
 
 ## Git commits
 
-- Read `GIT_COMMIT.md` before creating a commit.
+- Read `contributing.md` before creating a commit.
 - Every agent-authored commit subject must exactly match
   `<type>: <中文说明>`, including amended, reverted, and merge commits.
 - Everything after the colon must form a Chinese phrase. English is allowed only
   for an indivisible technical proper noun, protocol name, file name, code
   symbol, or version number embedded in an otherwise Chinese description.
   English sentences, clauses, and action phrases are forbidden.
-- Use only the commit types defined in `GIT_COMMIT.md`: `feat`, `fix`, `ui`,
+- Use only the commit types defined in `contributing.md`: `feat`, `fix`, `ui`,
   `perf`, `refactor`, `docs`, `test`, `ci`, `build`, `chore`, `release`, and
   `revert`.
 - Use a lowercase type, an ASCII colon, and one space. Never add a scope:

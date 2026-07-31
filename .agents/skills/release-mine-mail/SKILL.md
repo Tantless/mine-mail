@@ -15,7 +15,7 @@ mixing unrelated work.
   version as authority to edit the version, commit, tag, and push.
 - If the user asks only to check or prepare a release, stop before the first
   unrequested commit, tag, or push.
-- Read repository `AGENTS.md`, `GIT_COMMIT.md`, `.github/workflows/release.yml`,
+- Read repository `AGENTS.md`, `contributing.md`, `.github/workflows/release.yml`,
   and the relevant open items in `docs/RELEASE.md` before changing files.
 - Work only on Mine Mail's `main` branch and `origin` remote. Never force-push,
   move/delete an existing tag, rewrite history, or open a PR for this workflow.
@@ -93,7 +93,7 @@ release: 发布 vX.Y.Z
 ```
 
 4. Run `git log -1 --format=%s` and ensure the actual subject satisfies
-   `GIT_COMMIT.md`.
+   `contributing.md`.
 
 ### 5. Create and publish the tag
 
