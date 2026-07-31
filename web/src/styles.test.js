@@ -559,9 +559,25 @@ describe("release-state accessibility and reflow contracts", () => {
     expect(declarationsFor("\\.send-button")).toMatch(
       /color:\s*var\(--color-on-primary\)/,
     );
-    expect(declarationsFor("\\.recipient-toggle")).toMatch(
-      /min-height:\s*40px/,
+    const recipientToggle = declarationsFor("\\.recipient-toggle");
+    expect(recipientToggle).toMatch(/padding:\s*0/);
+    expect(recipientToggle).toMatch(/border:\s*0/);
+    expect(recipientToggle).toMatch(/background:\s*transparent/);
+    expect(recipientToggle).not.toMatch(/min-height/);
+    const recipientDisclosure = declarationsFor(
+      "\\.sender-card__recipient-disclosure",
     );
+    expect(recipientDisclosure).toMatch(/position:\s*relative/);
+    expect(recipientDisclosure).toMatch(/align-items:\s*center/);
+    expect(recipientDisclosure).toMatch(/transform:\s*translateY\(12px\)/);
+    const recipientDetails = declarationsFor(
+      "\\.sender-card__recipient-disclosure > \\.recipient-details",
+    );
+    expect(recipientDetails).toMatch(/position:\s*absolute/);
+    expect(recipientDetails).toMatch(/top:\s*50%/);
+    expect(recipientDetails).toMatch(/transform:\s*translateY\(-50%\)/);
+    expect(recipientDetails).toMatch(/border:\s*0/);
+    expect(recipientDetails).toMatch(/background:\s*transparent/);
     expect(declarationsFor("\\.star-button")).toMatch(
       /width:\s*40px[\s\S]*height:\s*40px/,
     );

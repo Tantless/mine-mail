@@ -2817,6 +2817,12 @@ html[data-surface="new-mail-notification"] #root {
   box-shadow: var(--focus-ring);
 }
 
+.sender-card__content {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+}
+
 .sender-card__identity {
   display: grid;
   justify-items: start;
@@ -2832,12 +2838,14 @@ html[data-surface="new-mail-notification"] #root {
 }
 
 .sender-card__identity > span,
+.sender-card__recipient-disclosure > span,
 .sender-card time {
   color: var(--color-text-muted);
   font-size: 11px;
 }
 
-.sender-card__identity > span {
+.sender-card__identity > span,
+.sender-card__recipient-disclosure > span {
   max-width: 100%;
   overflow-wrap: anywhere;
 }
@@ -2848,75 +2856,85 @@ html[data-surface="new-mail-notification"] #root {
   text-align: right;
 }
 
-.recipient-toggle {
+.sender-card__recipient-disclosure {
+  position: relative;
   display: flex;
-  min-height: 40px;
+  min-width: 0;
+  align-items: center;
+  transform: translateY(12px);
+}
+
+.recipient-toggle {
+  display: inline-flex;
   align-items: center;
   gap: 4px;
-  margin-top: 3px;
-  margin-left: -6px;
-  padding: 0 6px;
+  padding: 0;
   border: 0;
-  border-radius: 7px;
   background: transparent;
   color: var(--color-text-muted);
   font-size: 10px;
-  transition: background var(--motion-fast), color var(--motion-fast);
+  line-height: 1.5;
+  transition: color var(--motion-fast);
 }
 
 .recipient-toggle:hover,
 .recipient-toggle[aria-expanded="true"] {
-  background: var(--color-hover);
+  background: transparent;
   color: var(--color-primary);
 }
 
-.message-header > [role="region"][aria-label="收件人详情"] {
-  max-width: 760px;
-  margin: 12px 0 2px 54px;
-  padding: 12px 14px;
-  border: 1px solid var(--color-border);
-  border-radius: var(--control-radius);
-  background: color-mix(in srgb, var(--control-surface) 72%, transparent);
+.sender-card__recipient-disclosure > .recipient-details {
+  position: absolute;
+  top: 50%;
+  right: 0;
+  left: 102px;
+  z-index: 3;
+  min-width: 0;
+  margin: 0;
+  padding: 4px 0;
+  border: 0;
+  background: transparent;
   color: var(--color-text-secondary);
+  transform: translateY(-50%);
 }
 
-.message-header > [role="region"][aria-label="收件人详情"]:focus {
-  outline: none;
-  box-shadow: inset 3px 0 0 var(--color-primary);
+.recipient-details:focus-visible {
+  outline: 1px solid var(--color-primary);
+  outline-offset: 2px;
 }
 
-.message-header > [role="region"][aria-label="收件人详情"] dl {
+.recipient-details dl {
   display: grid;
-  gap: 10px;
+  gap: 7px;
   margin: 0;
 }
 
-.message-header > [role="region"][aria-label="收件人详情"] dl > div {
+.recipient-details dl > div {
   display: grid;
   grid-template-columns: 52px minmax(0, 1fr);
   gap: 10px;
 }
 
-.message-header > [role="region"][aria-label="收件人详情"] dt {
+.recipient-details dt {
   color: var(--color-text-muted);
   font-size: 10px;
   font-weight: 650;
 }
 
-.message-header > [role="region"][aria-label="收件人详情"] dd,
-.message-header > [role="region"][aria-label="收件人详情"] ul {
+.recipient-details dd,
+.recipient-details ul {
   min-width: 0;
   margin: 0;
   padding: 0;
 }
 
-.message-header > [role="region"][aria-label="收件人详情"] ul {
+.recipient-details ul {
   display: grid;
-  gap: 7px;
+  gap: 5px;
   list-style: none;
 }
 
-.message-header > [role="region"][aria-label="收件人详情"] li {
+.recipient-details li {
   display: flex;
   min-width: 0;
   flex-wrap: wrap;
@@ -2925,11 +2943,11 @@ html[data-surface="new-mail-notification"] #root {
   font-size: 11px;
 }
 
-.message-header > [role="region"][aria-label="收件人详情"] li strong {
+.recipient-details li strong {
   color: var(--color-text);
 }
 
-.message-header > [role="region"][aria-label="收件人详情"] li span {
+.recipient-details li span {
   color: var(--color-text-muted);
 }
 
@@ -2938,8 +2956,7 @@ html[data-surface="new-mail-notification"] #root {
   overflow-wrap: anywhere;
 }
 
-.message-header > [role="region"][aria-label="收件人详情"]
-  .recipient-groups-unavailable {
+.recipient-details .recipient-groups-unavailable {
   margin: 10px 0 0;
   padding-top: 10px;
   border-top: 1px solid var(--state-warning-edge);
@@ -7732,8 +7749,8 @@ html[data-surface="new-mail-notification"] #root {
     padding: 26px 22px 38px;
   }
 
-  .message-header > [role="region"][aria-label="收件人详情"] {
-    margin-left: 0;
+  .sender-card__recipient-disclosure > .recipient-details {
+    left: 96px;
   }
 
   .attachment-grid {

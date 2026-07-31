@@ -4,10 +4,8 @@ import {
   ArrowBendUpLeft,
   ArrowBendUpRight,
   ArrowLeft,
-  CaretDown,
   CaretLeft,
   CaretRight,
-  CaretUp,
   CheckCircle,
   DownloadSimple,
   EnvelopeOpen,
@@ -684,64 +682,68 @@ export function MessageView({
                 customSrc={senderAvatar}
               />
             )}
-            <div className="sender-card__identity">
-              <strong>{sender}</strong>
-              <span>{primarySender.email}</span>
-              {hasRecipientDetails ? (
-                <button
-                  ref={recipientToggleRef}
-                  type="button"
-                  className="recipient-toggle"
-                  aria-controls={recipientDetailsId}
-                  aria-expanded={recipientDetailsOpen}
-                  onClick={() => setRecipientDetailsOpen((current) => !current)}
-                >
-                  {recipientDetailsOpen ? "收起收件人详情" : "查看收件人"}
-                  {recipientDetailsOpen ? (
-                    <CaretUp aria-hidden="true" size={12} />
-                  ) : (
-                    <CaretDown aria-hidden="true" size={12} />
-                  )}
-                </button>
-              ) : (
-                <span>收件人信息不可用</span>
-              )}
-              {outboxRecipientGroupsUnavailable && !recipientDetailsOpen ? (
-                <span className="recipient-groups-unavailable">
-                  旧版邮件收件人分组不可用
-                </span>
-              ) : null}
+            <div className="sender-card__content">
+              <div className="sender-card__identity">
+                <strong>{sender}</strong>
+                <span>{primarySender.email}</span>
+              </div>
+              <div className="sender-card__recipient-disclosure">
+                {hasRecipientDetails ? (
+                  <button
+                    ref={recipientToggleRef}
+                    type="button"
+                    className="recipient-toggle"
+                    aria-controls={recipientDetailsId}
+                    aria-expanded={recipientDetailsOpen}
+                    onClick={() => setRecipientDetailsOpen((current) => !current)}
+                  >
+                    {recipientDetailsOpen ? "收起收件人详情" : "查看收件人"}
+                    <CaretRight
+                      aria-hidden="true"
+                      className="recipient-toggle__caret"
+                      size={12}
+                    />
+                  </button>
+                ) : (
+                  <span>收件人信息不可用</span>
+                )}
+                {recipientDetailsOpen ? (
+                  <section
+                    ref={recipientRegionRef}
+                    id={recipientDetailsId}
+                    className="recipient-details"
+                    role="region"
+                    tabIndex={-1}
+                    aria-label="收件人详情"
+                    onKeyDown={(event) => {
+                      if (event.key !== "Escape") return;
+                      event.preventDefault();
+                      setRecipientDetailsOpen(false);
+                      recipientToggleRef.current?.focus();
+                    }}
+                  >
+                    <dl>
+                      <RecipientGroup label="发件人" recipients={fromRecipients} />
+                      <RecipientGroup label="收件人" recipients={toRecipients} />
+                      <RecipientGroup label="抄送" recipients={ccRecipients} />
+                      <RecipientGroup label="密送" recipients={bccRecipients} />
+                    </dl>
+                    {outboxRecipientGroupsUnavailable ? (
+                      <p className="recipient-groups-unavailable">
+                        旧版邮件收件人分组不可用
+                      </p>
+                    ) : null}
+                  </section>
+                ) : null}
+                {outboxRecipientGroupsUnavailable && !recipientDetailsOpen ? (
+                  <span className="recipient-groups-unavailable">
+                    旧版邮件收件人分组不可用
+                  </span>
+                ) : null}
+              </div>
             </div>
             <time dateTime={message.sent_at}>{formatFullDate(message.sent_at)}</time>
           </div>
-
-          {recipientDetailsOpen ? (
-            <section
-              ref={recipientRegionRef}
-              id={recipientDetailsId}
-              role="region"
-              tabIndex={-1}
-              aria-label="收件人详情"
-              onKeyDown={(event) => {
-                if (event.key !== "Escape") return;
-                event.preventDefault();
-                setRecipientDetailsOpen(false);
-                recipientToggleRef.current?.focus();
-              }}
-            >
-              <dl>
-                <RecipientGroup label="发件人" recipients={fromRecipients} />
-                <RecipientGroup label="收件人" recipients={toRecipients} />
-                <RecipientGroup label="抄送" recipients={ccRecipients} />
-                <RecipientGroup label="密送" recipients={bccRecipients} />
-              </dl>
-              {outboxRecipientGroupsUnavailable ? (
-                <p className="recipient-groups-unavailable">
-                  旧版邮件收件人分组不可用
-                </p>
-              ) : null}
-            </section>
-          ) : null}
         </div>
 
         {actionFeedback.length ? (

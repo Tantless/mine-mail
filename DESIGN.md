@@ -326,10 +326,14 @@ family. Preserve the relative hierarchy when tuning optical values.
 - The reader has one outer scrollbar. Native text/semantic HTML uses Mine Mail
   typography; complex sender HTML remains sanitized and isolated. See
   `docs/MAIL_RENDERING.md`.
-- The reader header keeps the sender summary compact and exposes one disclosure
-  for the authoritative **发件人 / 收件人 / 抄送 / 密送** groups. Empty optional
-  groups stay absent. A local remark may lead the visible identity, but the real
-  mailbox address remains present and readable.
+- The reader header keeps the sender summary compact and exposes one text-only
+  disclosure, without a button surface, for the authoritative **发件人 / 收件人 /
+  抄送 / 密送** groups. The disclosure is vertically centered beside a simple,
+  transparent details overlay, and its caret points right toward that overlay.
+  The disclosure and overlay sit below the sender's real address. Opening the
+  overlay never participates in reader layout or moves the divider and message
+  body below it. Empty optional groups stay absent. A local remark may lead the
+  visible identity, but the real mailbox address remains present and readable.
 - Outbox recipient details use only the persisted recipient groups. A legacy
   Outbox item without those groups says **旧版邮件收件人分组不可用** and never
   invents To/Cc/Bcc from a flat delivery-recipient list.

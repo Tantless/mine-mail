@@ -621,10 +621,14 @@ describe("MessageView recipient details", () => {
 
     const toggle = screen.getByRole("button", { name: "查看收件人" });
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(toggle.querySelector(".recipient-toggle__caret")).toBeTruthy();
     await user.click(toggle);
 
     const region = screen.getByRole("region", { name: "收件人详情" });
     expect(region).toBeTruthy();
+    expect(region.parentElement).toBe(toggle.parentElement);
+    expect(region.previousElementSibling).toBe(toggle);
+    expect(toggle.querySelector(".recipient-toggle__caret")).toBeTruthy();
     expect(document.activeElement).toBe(region);
     expect(screen.getByText("发件人")).toBeTruthy();
     expect(screen.getAllByText("本地备注发件人")).toHaveLength(2);
