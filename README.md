@@ -13,9 +13,7 @@ Tauri 2、React 19、Rust 与 SQLite 构建。
 Mine Mail 目前仍是开发预览版。主要开发与验收环境为 Windows 11；macOS 和
 Linux 是目标平台，但仍需更多真实设备验证。
 
-## 四主题截图
 
-以下截图均由无网络演示模式中的同一组 mock 数据生成，不包含真实邮箱信息。
 
 <table>
   <tr>
@@ -40,7 +38,7 @@ Linux 是目标平台，但仍需更多真实设备验证。
   </tr>
 </table>
 
-## 普通用户安装向导
+## 安装向导
 
 1. 打开 [Mine Mail 最新版本](https://github.com/Tantless/mine-mail/releases/latest)，
    阅读发行说明并下载与你的系统匹配的安装包：
@@ -64,7 +62,7 @@ Linux 是目标平台，但仍需更多真实设备验证。
 当前预览版尚未完成所有平台的签名、公证和兼容性验收。如果 Release 页面没有你的
 平台安装包，或系统提示无法验证开发者，请不要从第三方站点下载安装文件。
 
-## 开发者开发指引
+## 开发者
 
 开始前安装 [Git](https://git-scm.com/)、[Node.js 24 LTS](https://nodejs.org/)、
 [Rustup](https://rustup.rs/) 以及当前系统所需的
