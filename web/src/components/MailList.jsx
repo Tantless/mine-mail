@@ -587,7 +587,9 @@ export function MailList({
                         <span className="mail-row__meta">
                           <span className="mail-row__sender">
                             {unread ? <span className="unread-dot" /> : null}
-                            {sender}
+                            <span className="mail-row__sender-text">
+                              {sender}
+                            </span>
                           </span>
                           <time dateTime={message.sent_at}>
                             {formatMailTime(message.sent_at)}

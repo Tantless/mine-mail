@@ -187,6 +187,20 @@ describe("mail synchronization feedback material contract", () => {
   });
 });
 
+describe("mail unread indicator contract", () => {
+  it("clips long sender text without clipping the unread dot halo", () => {
+    const sender = declarationsFor("\\.mail-row__sender");
+    const senderText = declarationsFor("\\.mail-row__sender-text");
+
+    expect(sender).not.toMatch(/overflow:\s*hidden/);
+    expect(sender).toMatch(/min-width:\s*0/);
+    expect(senderText).toMatch(/min-width:\s*0/);
+    expect(senderText).toMatch(/overflow:\s*hidden/);
+    expect(senderText).toMatch(/text-overflow:\s*ellipsis/);
+    expect(senderText).toMatch(/white-space:\s*nowrap/);
+  });
+});
+
 describe("brand avatar sizing policy", () => {
   it("scales the sidebar brand lockup without wrapping its wordmark", () => {
     expect(declarationsFor("\\.sidebar__content")).toMatch(

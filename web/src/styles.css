@@ -2327,7 +2327,6 @@ html[data-surface="new-mail-notification"] #root {
   gap: 8px;
 }
 
-.mail-row__sender,
 .mail-row__subject,
 .mail-row__preview {
   overflow: hidden;
@@ -2338,10 +2337,18 @@ html[data-surface="new-mail-notification"] #root {
 .mail-row__sender {
   display: flex;
   flex: 1;
+  min-width: 0;
   align-items: center;
   gap: 6px;
   font-size: 13px;
   font-weight: 520;
+}
+
+.mail-row__sender-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .mail-row__meta time {

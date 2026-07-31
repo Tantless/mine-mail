@@ -145,6 +145,16 @@ describe("MailList folder contracts", () => {
 describe("MailList controlled controls", () => {
   afterEach(cleanup);
 
+  it("keeps the unread indicator separate from truncating sender text", () => {
+    const { container } = renderMailList({ messages: [firstMessage] });
+    const sender = container.querySelector(".mail-row__sender");
+
+    expect(sender?.querySelector(":scope > .unread-dot")).toBeTruthy();
+    expect(
+      sender?.querySelector(":scope > .mail-row__sender-text")?.textContent,
+    ).toBe("林然");
+  });
+
   it("states the bounded search scope while retaining the established accessible name", async () => {
     const user = userEvent.setup();
     const onQueryChange = vi.fn();
