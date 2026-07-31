@@ -587,6 +587,7 @@ function createComposer(
     saveStatus: readOnlyUnsupported ? "readonly" : draftId ? "saved" : "idle",
     locked: false,
     startMinimized: false,
+    minimized: false,
     attachmentOperations: { add: null, remove: {} },
     forwardWarnings: [...forwardWarnings],
   };
@@ -684,6 +685,7 @@ export function App() {
 
   const composerRef = useRef(null);
   const composerSessionsRef = useRef(new Map());
+  const switchMinimizedComposerDraftRef = useRef(null);
   const draftSaveRef = useRef(null);
   const exitFlushRef = useRef(null);
   const networkActionsAvailableRef = useRef(false);
@@ -1209,23 +1211,19 @@ export function App() {
       if (!message) return;
       if (message.kind === "draft") {
         if (localMessageId(message) === null) return;
+        const current = composerRef.current;
+        if (current?.draftId === message.draft.id) {
+          setComposeRestoreRequest((request) => request + 1);
+          return;
+        }
+        if (current) {
+          if (current.minimized) {
+            await switchMinimizedComposerDraftRef.current?.(message.draft);
+          }
+          return;
+        }
         openComposer(
-          {
-            to: message.draft.to || [],
-            cc: message.draft.cc || [],
-            bcc: message.draft.bcc || [],
-            subject: message.draft.subject || "",
-            body_text: message.draft.body_text || "",
-            format: {
-              body_html: message.draft.format?.body_html || null,
-              stationery: message.draft.format?.stationery || "none",
-              send_stationery:
-                message.draft.format?.send_stationery === true,
-            },
-            reply_context: message.draft.reply_context
-              ? structuredClone(message.draft.reply_context)
-              : null,
-          },
+          draftToRequest(message.draft),
           message.draft.id,
           message.draft,
         );
@@ -2704,6 +2702,53 @@ export function App() {
     [cacheAuthoritativeDrafts, commitComposer, showToast],
   );
 
+  const switchMinimizedComposerDraft = useCallback(
+    async (draft) => {
+      if (!draft?.id) return false;
+      const initial = composerRef.current;
+      if (!initial) {
+        openComposer(draftToRequest(draft), draft.id, draft);
+        return true;
+      }
+      if (!initial.minimized) return false;
+      if (initial.draftId === draft.id) {
+        setComposeRestoreRequest((request) => request + 1);
+        return true;
+      }
+      if (initial.locked) {
+        showToast("请等待当前草稿操作完成后再切换草稿。", "error");
+        return false;
+      }
+
+      const sessionId = initial.sessionId;
+      commitComposer((current) =>
+        current?.sessionId === sessionId
+          ? { ...current, locked: true }
+          : current,
+      );
+      try {
+        await saveDraftNow();
+      } catch (error) {
+        commitComposer((current) =>
+          current?.sessionId === sessionId
+            ? { ...current, locked: false, saveStatus: "error" }
+            : current,
+        );
+        showToast(
+          describeError(error, "切换草稿前未能保存当前编辑，请重试"),
+          "error",
+        );
+        return false;
+      }
+
+      if (composerRef.current?.sessionId !== sessionId) return false;
+      commitComposer(createComposer(draftToRequest(draft), draft.id, draft));
+      return true;
+    },
+    [commitComposer, openComposer, saveDraftNow, showToast],
+  );
+  switchMinimizedComposerDraftRef.current = switchMinimizedComposerDraft;
+
   const prepareComposerForAccountSwitch = useCallback(async () => {
     const initial = composerRef.current;
     if (!initial) return true;
@@ -2737,6 +2782,7 @@ export function App() {
       ...current,
       locked: false,
       startMinimized: true,
+      minimized: true,
       saveStatus: current.readOnlyUnsupported
         ? "readonly"
         : current.dirty
@@ -5039,6 +5085,17 @@ export function App() {
     });
   };
 
+  const handleComposeMinimizedChange = useCallback(
+    (minimized) => {
+      commitComposer((current) =>
+        current && current.minimized !== minimized
+          ? { ...current, minimized }
+          : current,
+      );
+    },
+    [commitComposer],
+  );
+
   const handleAddAttachments = async () => {
     const initial = composerRef.current;
     if (!initial || initial.locked || initial.readOnlyUnsupported) return;
@@ -6599,6 +6656,7 @@ export function App() {
           readOnly={composer.readOnlyUnsupported}
           initiallyMinimized={composer.startMinimized}
           restoreRequest={composeRestoreRequest}
+          onMinimizedChange={handleComposeMinimizedChange}
           networkAvailable={networkActionsAvailable}
           onClose={() => void handleCloseComposer()}
           onDiscard={() => void handleDiscardComposer()}

@@ -87,6 +87,25 @@ function formatAttachmentSize(value) {
   return `${new Intl.NumberFormat("zh-CN").format(size)} 字节`;
 }
 
+function minimizedComposeTitle(value, contacts) {
+  const subject = value.subject.trim();
+  const recipientEmail = [...value.to, ...value.cc, ...value.bcc]
+    .find((email) => email?.trim())
+    ?.trim();
+  if (!recipientEmail) return subject || "新草稿";
+
+  const normalizedEmail = recipientEmail.toLowerCase();
+  const contact = contacts.find(
+    (candidate) => candidate?.email?.trim().toLowerCase() === normalizedEmail,
+  );
+  const recipientLabel =
+    contact?.displayName?.trim() ||
+    contact?.remark?.trim() ||
+    contact?.originalName?.trim() ||
+    recipientEmail;
+  return `${subject || "新草稿"}(${recipientLabel})`;
+}
+
 function attachmentName(attachment) {
   return (
     attachment?.name ||
@@ -404,6 +423,7 @@ export function ComposePanel({
   readOnly = false,
   initiallyMinimized = false,
   restoreRequest = 0,
+  onMinimizedChange = null,
   networkAvailable = true,
   onClose,
   onDiscard,
@@ -465,6 +485,10 @@ export function ComposePanel({
   useEffect(() => {
     if (value.cc?.length || value.bcc?.length) setShowCopies(true);
   }, [value.bcc, value.cc]);
+
+  useEffect(() => {
+    onMinimizedChange?.(isMinimized);
+  }, [isMinimized, onMinimizedChange]);
 
   const commitGeometry = useCallback((valueOrUpdater) => {
     setGeometry((current) => {
@@ -734,7 +758,7 @@ export function ComposePanel({
     onRemoveAttachment(attachmentId, localVersion);
   };
 
-  const minimizedTitle = value.subject.trim() || "新邮件";
+  const minimizedTitle = minimizedComposeTitle(value, contacts);
   const composeFormat = {
     body_html: null,
     stationery: "none",

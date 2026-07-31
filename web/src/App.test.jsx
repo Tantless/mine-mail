@@ -523,7 +523,7 @@ describe("Mine Mail MVP", () => {
     await user.clear(screen.getByLabelText("主题"));
     minimizeComposer(dialog);
     await user.click(screen.getByRole("button", { name: "关闭写信窗口" }));
-    expect(screen.queryByRole("dialog", { name: "新邮件" })).toBeNull();
+    expect(screen.queryByRole("dialog", { name: "新草稿" })).toBeNull();
     await user.click(screen.getByRole("button", { name: /写信/ }));
 
     const reopened = screen.getByRole("dialog", { name: "新邮件" });
@@ -534,8 +534,8 @@ describe("Mine Mail MVP", () => {
 
     minimizeComposer(reopened);
     expect(
-      screen.getByRole("button", { name: "还原写信窗口：新邮件" }).textContent,
-    ).toBe("新邮件");
+      screen.getByRole("button", { name: "还原写信窗口：新草稿" }).textContent,
+    ).toBe("新草稿");
   });
 
   it("saves authored content before minimizing without a success toast", async () => {
@@ -593,7 +593,7 @@ describe("Mine Mail MVP", () => {
     await user.click(screen.getByRole("button", { name: /写信/ }));
     await user.click(screen.getByRole("button", { name: "保存并最小化" }));
 
-    const minimizedDialog = await screen.findByRole("dialog", { name: "新邮件" });
+    const minimizedDialog = await screen.findByRole("dialog", { name: "新草稿" });
     expect(minimizedDialog.dataset.minimized).toBe("true");
     expect(saveDraft).not.toHaveBeenCalled();
   });

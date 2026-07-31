@@ -339,6 +339,16 @@ must be updated here when an intentional product change lands.
   version before showing the standard minimized compose bar. A new untouched
   empty session minimizes without creating a draft. A local save failure leaves
   the expanded editor open.
+- The minimized compose summary is **新草稿** when both subject and recipients
+  are empty, **新草稿(联系人)** when only a recipient is present, **主题** when
+  only a subject is present, and **主题(联系人)** when both are present. The
+  contact label uses the first listed recipient's local display name and falls
+  back to the real email address.
+- While the composer is minimized, selecting a different item in **草稿** first
+  stabilizes any unsaved current edit locally, then replaces the minimized
+  session with that selected draft in the expanded editor. A save failure keeps
+  the current minimized session and does not switch drafts. Selecting the draft
+  already in the live session restores that session.
 - Closing the composer or pressing Escape never forces a save:
   - a new compose session removes any recovery draft created only by that session;
   - closing an existing draft leaves its previously persisted version intact;

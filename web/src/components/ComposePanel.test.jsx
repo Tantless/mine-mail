@@ -58,6 +58,69 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+it("summarizes minimized drafts from subject and first recipient", () => {
+  const emptyValue = {
+    ...baseValue,
+    to: [],
+    subject: "",
+  };
+  const contacts = [
+    {
+      email: "friend@example.com",
+      displayName: "林夏",
+    },
+  ];
+  const view = renderCompose({
+    value: emptyValue,
+    initiallyMinimized: true,
+    contacts,
+  });
+
+  expect(
+    screen.getByRole("button", { name: "还原写信窗口：新草稿" }).textContent,
+  ).toBe("新草稿");
+
+  view.rerender(
+    <ComposePanel
+      {...view.props}
+      value={{ ...emptyValue, to: ["friend@example.com"] }}
+    />,
+  );
+  expect(
+    screen.getByRole("button", {
+      name: "还原写信窗口：新草稿(林夏)",
+    }).textContent,
+  ).toBe("新草稿(林夏)");
+
+  view.rerender(
+    <ComposePanel
+      {...view.props}
+      value={{ ...emptyValue, subject: "季度计划" }}
+    />,
+  );
+  expect(
+    screen.getByRole("button", {
+      name: "还原写信窗口：季度计划",
+    }).textContent,
+  ).toBe("季度计划");
+
+  view.rerender(
+    <ComposePanel
+      {...view.props}
+      value={{
+        ...emptyValue,
+        to: ["friend@example.com"],
+        subject: "季度计划",
+      }}
+    />,
+  );
+  expect(
+    screen.getByRole("button", {
+      name: "还原写信窗口：季度计划(林夏)",
+    }).textContent,
+  ).toBe("季度计划(林夏)");
+});
+
 it("traps focus inside the open composer and restores the invoking control", () => {
   const opener = document.createElement("button");
   opener.textContent = "打开写信";

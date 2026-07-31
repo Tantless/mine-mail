@@ -494,12 +494,16 @@ family. Preserve the relative hierarchy when tuning optical values.
 - Forwarded ordinary attachments are visible and removable before send. A
   composer opens only after the complete forward source has been prepared
   safely.
-- Minimized compose is a 340 × 44 px subject-only bar at bottom center. The
+- Minimized compose is a 340 × 44 px summary bar at bottom center. The
   full-window scrim and blur disappear; the bar retains its own compact glass.
-  An empty subject reads **新邮件**. Clicking the subject restores the composer;
-  activating the primary **写信** action while this bar is present restores the
-  same composer instead of starting another session. The only visible close
-  control is at the far right of this minimized bar.
+  With neither subject nor recipient it reads **新草稿**; adding a recipient
+  makes it **新草稿(联系人)**, adding only a subject makes it **主题**, and
+  providing both makes it **主题(联系人)**. **联系人** is the first listed
+  recipient's local display name, falling back to the real email address.
+  Clicking the summary restores the composer; activating the primary **写信**
+  action while this bar is present restores the same composer instead of
+  starting another session. The only visible close control is at the far right
+  of this minimized bar.
 - The expanded footer save action is **保存并最小化**. It saves authored content
   locally before entering the standard minimized bar; an untouched empty session
   enters the same bar without creating an empty draft. A local save failure keeps

@@ -4922,6 +4922,88 @@ describe("Mine Mail desktop state bridge", () => {
     expect(desktop.mailApi.deleteDraft).not.toHaveBeenCalled();
   });
 
+  it("switches from a minimized draft after preserving its unsaved edit", async () => {
+    const first = {
+      ...draftSnapshot(1, "First draft", "First body"),
+      id: "first-draft",
+    };
+    const second = {
+      ...draftSnapshot(3, "Second draft", "Second body"),
+      id: "second-draft",
+    };
+    desktop.mailApi.listDrafts.mockResolvedValue([first, second]);
+    desktop.mailApi.saveDraft.mockImplementation(
+      async (request, draftId, expectedLocalVersion) =>
+        savedOutcome(request, draftId, expectedLocalVersion),
+    );
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findAllByText("First mail");
+
+    await user.click(screen.getByRole("button", { name: /草稿/ }));
+    await user.click(await screen.findByText("First draft"));
+    fireEvent.change(screen.getByLabelText("主题"), {
+      target: { value: "Unsaved first edit" },
+    });
+    minimizeComposer();
+    expect(
+      screen.getByRole("dialog", {
+        name: "Unsaved first edit(friend@example.com)",
+      }).dataset.minimized,
+    ).toBe("true");
+
+    await user.click(screen.getByText("Second draft"));
+
+    await waitFor(() =>
+      expect(desktop.mailApi.saveDraft).toHaveBeenCalledWith(
+        expect.objectContaining({ subject: "Unsaved first edit" }),
+        "first-draft",
+        1,
+      ),
+    );
+    const composer = await screen.findByRole("dialog", {
+      name: "编辑草稿",
+    });
+    expect(composer.dataset.minimized).toBe("false");
+    expect(within(composer).getByLabelText("主题").value).toBe("Second draft");
+    expect(
+      (await within(composer).findByLabelText("邮件正文")).textContent,
+    ).toBe("Second body");
+  });
+
+  it("keeps the minimized draft when saving before a switch fails", async () => {
+    const first = {
+      ...draftSnapshot(1, "First draft", "First body"),
+      id: "first-draft",
+    };
+    const second = {
+      ...draftSnapshot(3, "Second draft", "Second body"),
+      id: "second-draft",
+    };
+    desktop.mailApi.listDrafts.mockResolvedValue([first, second]);
+    desktop.mailApi.saveDraft.mockRejectedValue(new Error("local write failed"));
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findAllByText("First mail");
+
+    await user.click(screen.getByRole("button", { name: /草稿/ }));
+    await user.click(await screen.findByText("First draft"));
+    fireEvent.change(screen.getByLabelText("主题"), {
+      target: { value: "Keep this edit" },
+    });
+    minimizeComposer();
+    await user.click(screen.getByText("Second draft"));
+
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "local write failed",
+    );
+    const composer = screen.getByRole("dialog", {
+      name: "Keep this edit(friend@example.com)",
+    });
+    expect(composer.dataset.minimized).toBe("true");
+    expect(screen.queryByRole("dialog", { name: "编辑草稿" })).toBeNull();
+  });
+
   it("preserves a dirty stale edit as a conflict copy", async () => {
     const original = draftSnapshot(1, "Original subject");
     const canonical = draftSnapshot(2, "New canonical", "Canonical body");
