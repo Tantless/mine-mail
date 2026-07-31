@@ -364,6 +364,10 @@ family. Preserve the relative hierarchy when tuning optical values.
   **仍要重试** with explicit copy that the recipient may receive a duplicate.
   Pending and failed decisions keep the authoritative Outbox item visible; a
   stale attempt refreshes the item and requires a new review.
+- A successfully sent or externally confirmed item leaves the active Outbox
+  list immediately. If its reader is open there, the reader closes instead of
+  showing a completed queue item. The same immutable item may appear quietly in
+  Sent as a local fallback until the provider's exact Sent copy is synchronized.
 - Archive, Trash, read/unread, and delete actions show local completion
   immediately and keep a reasonable adjacent message selected. Archive, Trash,
   and delete may expose actionable pending or failure feedback without blanking
@@ -373,10 +377,6 @@ family. Preserve the relative hierarchy when tuning optical values.
   from preview text. Failure leaves the current reader intact, adds no failure
   card to the body, and returns the forward control to a retryable state.
   Original attachments are never silently omitted.
-- A successfully sent or externally confirmed item leaves the active Outbox
-  list immediately. If its reader is open there, the reader closes instead of
-  showing a completed queue item. The same immutable item may appear quietly in
-  Sent as a local fallback until the provider's exact Sent copy is synchronized.
 - Received attachments form a compact grid or list below the body using the
   shared control surface. Each card shows a type-appropriate Phosphor icon,
   safe name, attachment size, and its own save action; unknown types use a

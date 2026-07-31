@@ -673,6 +673,7 @@ export function App() {
   const [trashMessages, setTrashMessages] = useState([]);
   const [drafts, setDrafts] = useState([]);
   const [outbox, setOutbox] = useState([]);
+  const [sentOutboxFallbacks, setSentOutboxFallbacks] = useState([]);
   const [selectedMessageId, setSelectedMessageId] = useState(null);
   const [selectedMessage, setSelectedMessage] = useState(null);
   const [isMessageLoading, setIsMessageLoading] = useState(false);
@@ -723,7 +724,6 @@ export function App() {
   const [accountSubmitStatus, setAccountSubmitStatus] = useState("idle");
   const [accountError, setAccountError] = useState(null);
   const [isAccountRepairVisible, setIsAccountRepairVisible] = useState(false);
-  const [sentOutboxFallbacks, setSentOutboxFallbacks] = useState([]);
   const [profileAvatars, setProfileAvatars] = useState([]);
   const [toast, setToast] = useState(null);
   const [referenceJump, setReferenceJump] = useState(null);
@@ -6017,7 +6017,6 @@ export function App() {
         trashMessages,
         drafts,
         outbox,
-        sentOutboxFallbacks,
         selectedMessageId,
         selectedMessage,
         mailboxPageStates,

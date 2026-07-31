@@ -1,9 +1,10 @@
 use mine_mail::{
     AttachmentMeta, AttachmentSaveErrorKind, ForwardPreparationErrorKind,
     ForwardPreparationOutcome, InboxMessage, MailBackend, MailError, MailboxCapability,
-    MailboxCapabilityStatus, MailboxCapabilityUnavailableReason, MailboxRole,
-    MessageMutationReceipt, MessagePage, MessagePageCursor, MessagePageItem,
-    PendingMessageProjection, PermanentDeletePlan, RemoteHistoryState, SystemFlagMutationReceipt,
+    MailboxCapabilityStatus,
+    MailboxCapabilityUnavailableReason, MailboxRole, MessageMutationReceipt, MessagePage,
+    MessagePageCursor, MessagePageItem, PendingMessageProjection, PermanentDeletePlan,
+    RemoteHistoryState, SystemFlagMutationReceipt,
 };
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};

@@ -425,16 +425,6 @@ must be updated here when an intentional product change lands.
   version.
 - Distinguish confirmed success, confirmed failure, retryable failure, and
   `delivery_unknown`.
-- Never automatically retry `delivery_unknown`; the user must decide whether to
-  risk a duplicate.
-- An ambiguous attempt exposes only two explicit decisions. After checking the
-  provider, the user may confirm that the message was delivered; Mine Mail then
-  atomically marks that exact Outbox attempt sent and consumes only its exact
-  draft version. This decision does not invent an SMTP delivery timestamp:
-  `sent_at` remains absent unless it was already known, while the immutable MIME
-  Date and Outbox creation time remain available for display fallback.
-  Alternatively, the user may explicitly acknowledge the duplicate-delivery
-  risk and request one manual retry.
 - The active Outbox contains only work that is pending, retryable, rejected, or
   requires delivery review. Confirmed `sent` rows leave Outbox immediately and
   remain as local Sent fallbacks only until provider reconciliation completes.
@@ -447,12 +437,30 @@ must be updated here when an intentional product change lands.
   `delivery_unknown` attempt. Rust consumes only the bound draft version and
   retires that Outbox row atomically. Removing the row releases its immutable
   attachment references so ordinary orphan cleanup can remove unused blobs.
+- Never automatically retry `delivery_unknown`; the user must decide whether to
+  risk a duplicate.
+- An ambiguous attempt exposes only two explicit decisions. After checking the
+  provider, the user may confirm that the message was delivered; Mine Mail then
+  atomically marks that exact Outbox attempt sent and consumes only its exact
+  draft version. This decision does not invent an SMTP delivery timestamp:
+  `sent_at` remains absent unless it was already known, while the immutable MIME
+  Date and Outbox creation time remain available for display fallback.
+  Alternatively, the user may explicitly acknowledge the duplicate-delivery
+  risk and request one manual retry.
 - A duplicate-risk retry reuses the exact persisted RFC822 bytes and SMTP
   envelope; it never rebuilds MIME from the editable draft. Each decision is
   bound to the reviewed attempt generation so concurrent or repeated submission
   cannot create an extra retry. If the manual retry also ends in
   `delivery_unknown`, it remains blocked until the user reviews the new
   generation and decides again.
+- Outbox crash recovery runs once when the account's startup-local backend opens.
+  Creating network/runtime handles, refreshing OAuth, or reauthenticating an
+  already-open account must not reclassify another handle's live `sending`
+  attempt as abandoned.
+- Once desktop exit begins, no new SMTP operation may start. A graceful exit
+  waits for every in-flight SMTP operation to record its confirmed or uncertain
+  outcome before committing shutdown; the bounded forced-exit path preserves
+  the existing next-start `delivery_unknown` recovery rule.
 
 ## Desktop mail API boundary
 
@@ -463,14 +471,6 @@ must be updated here when an intentional product change lands.
 - Every message exposed through this boundary uses an account-bound, randomly
   generated opaque `public_id` that remains stable across restarts and ordinary
   upserts. SQLite row IDs never cross into React; deleting a mailbox epoch after
-- Outbox crash recovery runs once when the account's startup-local backend opens.
-  Creating network/runtime handles, refreshing OAuth, or reauthenticating an
-  already-open account must not reclassify another handle's live `sending`
-  attempt as abandoned.
-- Once desktop exit begins, no new SMTP operation may start. A graceful exit
-  waits for every in-flight SMTP operation to record its confirmed or uncertain
-  outcome before committing shutdown; the bounded forced-exit path preserves
-  the existing next-start `delivery_unknown` recovery rule.
   a UIDVALIDITY change and importing it again creates new message identities.
 - `InboxMessage.bcc` is an address list sourced only from an actual cached
   RFC822 `Bcc` header. `OutboxItem.recipient_groups` is either

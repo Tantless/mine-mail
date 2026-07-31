@@ -8654,51 +8654,6 @@ mod tests {
     }
 
     #[test]
-    fn runtime_backend_clone_does_not_recover_a_live_sending_attempt() {
-        let directory = tempdir().expect("tempdir");
-        let database_path = directory.path().join("mail.db");
-        let primary_config =
-            AccountConfig::from_163_lines(["demo@163.com", "not-a-real-secret"]).expect("config");
-        let backend = MailBackend::open(primary_config, &database_path).expect("primary backend");
-        backend.initialize().expect("initialize primary");
-        let queued = OutboxItem {
-            id: "live-send".to_owned(),
-            account_id: backend.config.account_id.clone(),
-            draft_id: None,
-            draft_revision: None,
-            draft_local_version: None,
-            recipients: vec!["receiver@example.com".to_owned()],
-            recipient_groups: Some(crate::OutboxRecipientGroups {
-                to: vec!["receiver@example.com".to_owned()],
-                cc: Vec::new(),
-                bcc: Vec::new(),
-            }),
-            status: OutboxStatus::Queued,
-            attempts: 0,
-            last_error: None,
-            created_at: "2026-07-28T00:00:00Z".to_owned(),
-            sent_at: None,
-            raw_rfc822: b"Message-ID: <live-send@example.com>\r\n\r\nBody".to_vec(),
-        };
-        backend
-            .repository
-            .enqueue_and_claim_outbox(&queued)
-            .expect("claim live SMTP attempt");
-
-        let clone_config =
-            AccountConfig::from_163_lines(["demo@163.com", "not-a-real-secret"]).expect("config");
-        let runtime_clone =
-            MailBackend::open(clone_config, &database_path).expect("runtime backend clone");
-        runtime_clone
-            .initialize_without_outbox_recovery()
-            .expect("initialize clone");
-        assert_eq!(
-            backend.repository.get_outbox(&queued.id).unwrap().status,
-            OutboxStatus::Sending
-        );
-    }
-
-    #[test]
     fn sent_fallback_keeps_exact_blob_until_cached_sent_reconciliation() {
         let directory = tempdir().expect("tempdir");
         let selected_directory = tempdir().expect("selected file");
@@ -8805,6 +8760,51 @@ mod tests {
                 .list_internal_names()
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn runtime_backend_clone_does_not_recover_a_live_sending_attempt() {
+        let directory = tempdir().expect("tempdir");
+        let database_path = directory.path().join("mail.db");
+        let primary_config =
+            AccountConfig::from_163_lines(["demo@163.com", "not-a-real-secret"]).expect("config");
+        let backend = MailBackend::open(primary_config, &database_path).expect("primary backend");
+        backend.initialize().expect("initialize primary");
+        let queued = OutboxItem {
+            id: "live-send".to_owned(),
+            account_id: backend.config.account_id.clone(),
+            draft_id: None,
+            draft_revision: None,
+            draft_local_version: None,
+            recipients: vec!["receiver@example.com".to_owned()],
+            recipient_groups: Some(crate::OutboxRecipientGroups {
+                to: vec!["receiver@example.com".to_owned()],
+                cc: Vec::new(),
+                bcc: Vec::new(),
+            }),
+            status: OutboxStatus::Queued,
+            attempts: 0,
+            last_error: None,
+            created_at: "2026-07-28T00:00:00Z".to_owned(),
+            sent_at: None,
+            raw_rfc822: b"Message-ID: <live-send@example.com>\r\n\r\nBody".to_vec(),
+        };
+        backend
+            .repository
+            .enqueue_and_claim_outbox(&queued)
+            .expect("claim live SMTP attempt");
+
+        let clone_config =
+            AccountConfig::from_163_lines(["demo@163.com", "not-a-real-secret"]).expect("config");
+        let runtime_clone =
+            MailBackend::open(clone_config, &database_path).expect("runtime backend clone");
+        runtime_clone
+            .initialize_without_outbox_recovery()
+            .expect("initialize clone");
+        assert_eq!(
+            backend.repository.get_outbox(&queued.id).unwrap().status,
+            OutboxStatus::Sending
         );
     }
 
@@ -9531,7 +9531,8 @@ mod tests {
         assert!(confirmed.request.format.send_stationery);
         let outgoing = crate::mime::build_outgoing_message("demo@163.com", &confirmed.request)
             .expect("outgoing stationery message");
-        let html = crate::mime::outbox_body_html(&outgoing.raw_rfc822).expect("HTML alternative");
+        let html =
+            crate::mime::outbox_body_html(&outgoing.raw_rfc822).expect("HTML alternative");
         assert!(html.contains(r#"data-mine-mail-stationery="lined""#));
     }
 
