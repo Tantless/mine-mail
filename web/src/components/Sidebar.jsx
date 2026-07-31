@@ -143,6 +143,7 @@ export function Sidebar({
   accountStatus,
   isSettingsOpen = false,
   isMailListExpanded = true,
+  isFolderSelectionVisible = true,
   mailListControlsId = "mail-list-panel",
   accountAvatarFor,
   onAccountSwitch,
@@ -170,7 +171,8 @@ export function Sidebar({
   const emptySlots = Math.max(0, maxAccounts - accounts.length);
   const hasAvailableAccountSlot = emptySlots > 0;
   const activeAccountId = accountStatus?.activeAccountId || accountStatus?.accountId;
-  const folderSelectionKey = isSettingsOpen ? null : activeFolder;
+  const folderSelectionKey =
+    isSettingsOpen || !isFolderSelectionVisible ? null : activeFolder;
   const {
     motionReady: folderSelectionMotionReady,
     selectionStyle: folderSelectionStyle,
@@ -336,8 +338,9 @@ export function Sidebar({
             />
             {folders.map((folder) => {
               const FolderIcon = folder.icon;
-              const selected = !isSettingsOpen && folder.id === activeFolder;
-              const controlsMailList = selected && folder.id !== "contacts";
+              const selected = folder.id === folderSelectionKey;
+              const controlsMailList =
+                !isSettingsOpen && folder.id === activeFolder;
               const capability = mailboxCapabilityFor(
                 mailboxCapabilities,
                 folder.id,

@@ -172,6 +172,7 @@ function ContactList({
             <button
               type="button"
               className="contacts-row__select"
+              data-contact-key={key}
               aria-label={`查看联系人 ${scopedLabel}`}
               aria-current={selected ? "true" : undefined}
               disabled={!canInteract}
@@ -244,6 +245,9 @@ function ContactList({
 
 function ContactDetails({
   contact,
+  motion,
+  exitSpeed,
+  onMotionEnd,
   showAccountScope,
   messages,
   isMessagesLoading,
@@ -286,8 +290,20 @@ function ContactDetails({
 
   return (
     <section
-      className="reader-panel contacts-detail-panel"
+      className="reader-panel contacts-detail-panel contacts-detail-panel--selected"
       aria-label={`${label} 的联系人详情`}
+      data-reader-motion={motion}
+      data-reader-exit-speed={exitSpeed}
+      inert={motion === "exiting" ? true : undefined}
+      aria-hidden={motion === "exiting" || undefined}
+      onAnimationEnd={(event) => {
+        if (
+          event.target === event.currentTarget &&
+          typeof onMotionEnd === "function"
+        ) {
+          onMotionEnd();
+        }
+      }}
     >
       <div className="contacts-detail-scroll vertical-scroll-surface">
         {onBackToContacts ? (
@@ -571,8 +587,8 @@ function ContactRemarkEditor({ contact, onSaveRemark }) {
 }
 
 /**
- * Controlled contacts workspace. Render it directly inside `.mail-layout` so
- * its two sibling panels occupy the existing middle and reader grid columns.
+ * Controlled contacts workspace. Render it directly inside `.mail-workspace`
+ * so its two sibling panels occupy the existing middle and reader grid columns.
  */
 export function ContactsWorkspace({
   contacts = [],
@@ -585,6 +601,10 @@ export function ContactsWorkspace({
   isMessagesLoading = false,
   messagesError = null,
   readerContent = null,
+  detailMotion = "open",
+  detailExitSpeed = "normal",
+  onDetailMotionEnd = null,
+  listMotionFrameProps = {},
   onRetry = null,
   onRetryMessages = null,
   onBackToContacts = null,
@@ -601,82 +621,91 @@ export function ContactsWorkspace({
 }) {
   return (
     <>
-      <section
-        className="mail-list-panel contacts-list-panel"
-        aria-label="通讯录联系人列表"
+      <div
+        {...listMotionFrameProps}
+        className="mail-list-motion-frame"
       >
-        <div className="contacts-list-topbar">
-          {onOpenMobileNav ? (
-            <button
-              type="button"
-              className="mobile-nav-button"
-              aria-label="打开导航"
-              onClick={onOpenMobileNav}
-            >
-              <List size={21} />
-            </button>
-          ) : null}
-          <label className="contacts-search inset-input-shell">
-            <MagnifyingGlass size={18} aria-hidden="true" />
-            <input
-              value={query}
-              autoComplete="off"
-              onChange={(event) => onSearchChange(event.target.value)}
-              placeholder="搜索名称或邮箱"
-              aria-label="搜索联系人"
-            />
-          </label>
-        </div>
-
-        <div className="contacts-list-heading">
-          <div>
-            <p className="eyebrow">ADDRESS BOOK</p>
-            <h1>通讯录</h1>
+        <section
+          id="mail-list-panel"
+          className="mail-list-panel contacts-list-panel"
+          aria-label="通讯录联系人列表"
+        >
+          <div className="contacts-list-topbar">
+            {onOpenMobileNav ? (
+              <button
+                type="button"
+                className="mobile-nav-button"
+                aria-label="打开导航"
+                onClick={onOpenMobileNav}
+              >
+                <List size={21} />
+              </button>
+            ) : null}
+            <label className="contacts-search inset-input-shell">
+              <MagnifyingGlass size={18} aria-hidden="true" />
+              <input
+                value={query}
+                autoComplete="off"
+                onChange={(event) => onSearchChange(event.target.value)}
+                placeholder="搜索名称或邮箱"
+                aria-label="搜索联系人"
+              />
+            </label>
           </div>
-          <AddressBook size={24} weight="duotone" aria-hidden="true" />
-        </div>
 
-        <div className="contacts-tabs" role="tablist" aria-label="联系人筛选">
-          {contactFilters.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              role="tab"
-              aria-selected={filter === item.id}
-              data-selected={filter === item.id}
-              onClick={() => onFilterChange(item.id)}
-            >
-              {item.label}
-            </button>
-          ))}
-          <span>{contacts.length} 人</span>
-        </div>
+          <div className="contacts-list-heading">
+            <div>
+              <p className="eyebrow">ADDRESS BOOK</p>
+              <h1>通讯录</h1>
+            </div>
+            <AddressBook size={24} weight="duotone" aria-hidden="true" />
+          </div>
 
-        <div className="contacts-list-body vertical-scroll-surface">
-          {isLoading && !contacts.length ? (
-            <ContactsLoadingState />
-          ) : error || !contacts.length ? (
-            <ContactsListState
-              error={error}
-              query={query}
-              filter={filter}
-              onRetry={onRetry}
-            />
-          ) : (
-            <ContactList
-              contacts={contacts}
-              selectedContact={selectedContact}
-              showAccountScope={filter === "favorite"}
-              onSelectContact={onSelectContact}
-              onToggleFavorite={onToggleFavorite}
-            />
-          )}
-        </div>
-      </section>
+          <div className="contacts-tabs" role="tablist" aria-label="联系人筛选">
+            {contactFilters.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                role="tab"
+                aria-selected={filter === item.id}
+                data-selected={filter === item.id}
+                onClick={() => onFilterChange(item.id)}
+              >
+                {item.label}
+              </button>
+            ))}
+            <span>{contacts.length} 人</span>
+          </div>
+
+          <div className="contacts-list-body vertical-scroll-surface">
+            {isLoading && !contacts.length ? (
+              <ContactsLoadingState />
+            ) : error || !contacts.length ? (
+              <ContactsListState
+                error={error}
+                query={query}
+                filter={filter}
+                onRetry={onRetry}
+              />
+            ) : (
+              <ContactList
+                contacts={contacts}
+                selectedContact={selectedContact}
+                showAccountScope={filter === "favorite"}
+                onSelectContact={onSelectContact}
+                onToggleFavorite={onToggleFavorite}
+              />
+            )}
+          </div>
+        </section>
+      </div>
 
       {readerContent ?? (
         <ContactDetails
           contact={selectedContact}
+          motion={detailMotion}
+          exitSpeed={detailExitSpeed}
+          onMotionEnd={onDetailMotionEnd}
           showAccountScope={filter === "favorite"}
           messages={messages}
           isMessagesLoading={isMessagesLoading}

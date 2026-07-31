@@ -1,4 +1,10 @@
-import { cleanup, render, screen, within } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ContactsWorkspace } from "./ContactsWorkspace.jsx";
@@ -49,7 +55,7 @@ function renderWorkspace(overrides = {}) {
     onSaveRemark: vi.fn().mockResolvedValue(undefined),
   };
 
-  render(
+  const view = render(
     <ContactsWorkspace
       contacts={[contact]}
       selectedContact={contact}
@@ -60,7 +66,7 @@ function renderWorkspace(overrides = {}) {
       {...overrides}
     />,
   );
-  return callbacks;
+  return { ...callbacks, ...view };
 }
 
 describe("ContactsWorkspace", () => {
@@ -99,6 +105,41 @@ describe("ContactsWorkspace", () => {
     expect(screen.queryByRole("button", { name: "保存联系人" })).toBeNull();
     expect(screen.queryByRole("button", { name: "编辑名称" })).toBeNull();
     expect(screen.queryByRole("button", { name: "移除联系人" })).toBeNull();
+  });
+
+  it("makes an exiting contact detail inert and completes only from its own animation", () => {
+    const onDetailMotionEnd = vi.fn();
+    const { container } = renderWorkspace({
+      detailMotion: "exiting",
+      detailExitSpeed: "fast",
+      onDetailMotionEnd,
+    });
+    const detail = container.querySelector(
+      ".contacts-detail-panel--selected",
+    );
+    const child = detail.querySelector(".contacts-detail-scroll");
+
+    expect(detail.dataset.readerMotion).toBe("exiting");
+    expect(detail.dataset.readerExitSpeed).toBe("fast");
+    expect(detail.hasAttribute("inert")).toBe(true);
+    expect(detail.getAttribute("aria-hidden")).toBe("true");
+
+    fireEvent(
+      child,
+      new Event("webkitAnimationEnd", {
+        bubbles: true,
+        cancelable: false,
+      }),
+    );
+    expect(onDetailMotionEnd).not.toHaveBeenCalled();
+    fireEvent(
+      detail,
+      new Event("webkitAnimationEnd", {
+        bubbles: true,
+        cancelable: false,
+      }),
+    );
+    expect(onDetailMotionEnd).toHaveBeenCalledOnce();
   });
 
   it("opens a correspondence message", async () => {

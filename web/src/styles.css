@@ -1058,6 +1058,11 @@ html[data-surface="new-mail-notification"] #root {
   height: 100%;
 }
 
+.mail-list-motion-frame > .secondary-workspace-loading {
+  grid-column: auto;
+  height: 100%;
+}
+
 .mail-workspace[data-list-motion="collapsing"],
 .mail-workspace[data-list-motion="collapsed"] {
   grid-template-columns: 0 minmax(0, 1fr);
@@ -1105,6 +1110,10 @@ html[data-surface="new-mail-notification"] #root {
 .mail-workspace[data-list-motion="switching-in"] .mail-list-motion-frame {
   animation: mail-list-context-in var(--motion-window-half)
     cubic-bezier(0.2, 0.72, 0.28, 1) both;
+}
+
+.mail-workspace[data-list-motion^="switching"] .contacts-row {
+  animation: none;
 }
 
 .sidebar {
@@ -1352,17 +1361,24 @@ html[data-surface="new-mail-notification"] #root {
     var(--sliding-selection-x),
     var(--sliding-selection-y),
     0
-  );
+  )
+    scale(0.97);
   transition:
     width var(--motion-normal) cubic-bezier(0.22, 1, 0.36, 1),
     height var(--motion-normal) cubic-bezier(0.22, 1, 0.36, 1),
     opacity var(--motion-fast) ease-out,
     transform var(--motion-normal) cubic-bezier(0.22, 1, 0.36, 1);
-  will-change: width, height, transform;
+  will-change: width, height, opacity, transform;
 }
 
 .folder-nav__selection[data-visible="true"] {
   opacity: 1;
+  transform: translate3d(
+      var(--sliding-selection-x),
+      var(--sliding-selection-y),
+      0
+    )
+    scale(1);
 }
 
 .folder-nav__selection:not([data-motion-ready="true"]) {
@@ -1386,7 +1402,10 @@ html[data-surface="new-mail-notification"] #root {
   font-size: 14px;
   font-weight: 520;
   text-align: left;
-  transition: background var(--motion-fast), border-color var(--motion-fast);
+  transition:
+    background var(--motion-fast),
+    border-color var(--motion-fast),
+    font-weight var(--motion-fast);
 }
 
 .folder-nav__item:hover,
@@ -2342,6 +2361,12 @@ html[data-surface="new-mail-notification"] #root {
     cubic-bezier(0.2, 0.72, 0.28, 1) both;
 }
 
+.contacts-detail-panel--selected[data-reader-motion="entering"] {
+  transform-origin: center;
+  animation: reader-window-in var(--motion-window)
+    cubic-bezier(0.2, 0.72, 0.28, 1) both;
+}
+
 .reader-panel--message[data-reader-motion="exiting"] {
   transform-origin: center;
   pointer-events: none;
@@ -2349,7 +2374,18 @@ html[data-surface="new-mail-notification"] #root {
     cubic-bezier(0.4, 0, 1, 1) forwards;
 }
 
+.contacts-detail-panel--selected[data-reader-motion="exiting"] {
+  transform-origin: center;
+  pointer-events: none;
+  animation: reader-window-out var(--motion-window)
+    cubic-bezier(0.4, 0, 1, 1) forwards;
+}
+
 .reader-panel--message[data-reader-motion="exiting"][data-reader-exit-speed="fast"] {
+  animation-duration: var(--motion-fast);
+}
+
+.contacts-detail-panel--selected[data-reader-motion="exiting"][data-reader-exit-speed="fast"] {
   animation-duration: var(--motion-fast);
 }
 
@@ -8016,7 +8052,8 @@ html[data-surface="new-mail-notification"] #root {
   }
 
   .mail-list-motion-frame,
-  .reader-panel--message {
+  .reader-panel--message,
+  .contacts-detail-panel--selected {
     animation: none !important;
     transform: none !important;
     will-change: auto;

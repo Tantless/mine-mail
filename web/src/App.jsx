@@ -35,6 +35,11 @@ const ContactsWorkspace = lazy(() =>
     default: ContactsWorkspace,
   })),
 );
+
+function preloadContactsWorkspace() {
+  return import("./components/ContactsWorkspace.jsx");
+}
+
 const SettingsPanel = lazy(() =>
   import("./components/SettingsPanel.jsx").then(({ SettingsPanel }) => ({
     default: SettingsPanel,
@@ -88,6 +93,12 @@ function prefersReducedMotion() {
   // A non-visual runtime cannot complete CSS animation events, so atomic
   // transitions are the safest fallback there as well.
   return mediaQueryMatches(reducedMotionQuery, true);
+}
+
+function contactNavigationKey(email, accountId) {
+  const normalizedEmail = normalizeAvatarEmail(email);
+  if (!normalizedEmail) return "";
+  return accountId ? `${accountId}:${normalizedEmail}` : normalizedEmail;
 }
 
 function useMediaQuery(query, fallback) {
@@ -666,6 +677,8 @@ export function App() {
   const [referenceJump, setReferenceJump] = useState(null);
   const [readerMotion, setReaderMotion] = useState("idle");
   const [readerExitSpeed, setReaderExitSpeed] = useState("normal");
+  const [contactDetailMotion, setContactDetailMotion] = useState("idle");
+  const [contactDetailExitSpeed, setContactDetailExitSpeed] = useState("normal");
   const [mailListMotion, setMailListMotion] = useState("expanded");
   const isWideMailWorkspace = useMediaQuery(wideMailWorkspaceQuery, true);
 
@@ -714,14 +727,21 @@ export function App() {
   const readerMotionRef = useRef("idle");
   const readerAfterExitRef = useRef(null);
   const completeReaderMotionRef = useRef(() => {});
+  const contactDetailMotionRef = useRef("idle");
+  const contactDetailAfterExitRef = useRef(null);
+  const completeContactDetailMotionRef = useRef(() => {});
   const mailListMotionRef = useRef("expanded");
   const activeMailListIntentRef = useRef(null);
   const queuedMailListIntentRef = useRef(null);
+  const folderMotionRequestRef = useRef(0);
   const startMailListIntentRef = useRef(() => {});
   const completeMailListMotionRef = useRef(() => {});
   const commitFolderChangeRef = useRef(() => {});
   const isWideMailWorkspaceRef = useRef(isWideMailWorkspace);
   isWideMailWorkspaceRef.current = isWideMailWorkspace;
+  const invalidatePreparedFolderMotion = useCallback(() => {
+    folderMotionRequestRef.current += 1;
+  }, []);
   const platform = /Mac|iPhone|iPad/.test(navigator.platform)
     ? "mac"
     : "windows";
@@ -762,6 +782,20 @@ export function App() {
       setReaderMotionPhase(prefersReducedMotion() ? "open" : phase);
     },
     [setReaderMotionPhase],
+  );
+
+  const setContactDetailMotionPhase = useCallback((phase) => {
+    contactDetailMotionRef.current = phase;
+    setContactDetailMotion(phase);
+  }, []);
+
+  const presentContactDetail = useCallback(
+    (phase) => {
+      contactDetailAfterExitRef.current = null;
+      setContactDetailExitSpeed("normal");
+      setContactDetailMotionPhase(prefersReducedMotion() ? "open" : phase);
+    },
+    [setContactDetailMotionPhase],
   );
 
   const setMailListMotionPhase = useCallback((phase) => {
@@ -1047,6 +1081,15 @@ export function App() {
     return true;
   }, [setReaderMotionPhase]);
 
+  const clearContactSelection = useCallback(() => {
+    selectedContactEmailRef.current = null;
+    selectedContactAccountIdRef.current = null;
+    setSelectedContactEmail(null);
+    setSelectedContactAccountId(null);
+    contactDetailAfterExitRef.current = null;
+    setContactDetailMotionPhase("idle");
+  }, [setContactDetailMotionPhase]);
+
   const commitRoleItems = useCallback((role, update, accountId) => {
     const targetAccountId =
       accountId || activeAccountIdRef.current || "unscoped";
@@ -1139,6 +1182,7 @@ export function App() {
 
   const handleSelect = useCallback(
     async (message, forceFetch = false, options = {}) => {
+      invalidatePreparedFolderMotion();
       const navigationIntentId = options?.navigationIntentId ?? null;
       if (
         navigationIntentId !== null &&
@@ -1380,6 +1424,7 @@ export function App() {
     [
       commitRoleItems,
       ensureMailListVisibleForReader,
+      invalidatePreparedFolderMotion,
       mergeRemoteMessage,
       openComposer,
       presentReader,
@@ -2363,17 +2408,14 @@ export function App() {
       setSelectedContactEmail(preserved.email);
       setSelectedContactAccountId(preserved.accountId);
     } else {
-      selectedContactEmailRef.current = null;
-      selectedContactAccountIdRef.current = null;
-      setSelectedContactEmail(null);
-      setSelectedContactAccountId(null);
+      clearContactSelection();
     }
     preservedContactContextRef.current = null;
     // Contact remarks are local metadata used by the mail list and reader too,
     // so hydrate them with the active account's cached header activity even
     // before the contacts workspace is opened.
     void loadContacts({ accountId: activeAccountId }).catch(() => {});
-  }, [activeAccountId, loadContacts]);
+  }, [activeAccountId, clearContactSelection, loadContacts]);
 
   useEffect(() => {
     if (
@@ -3459,10 +3501,10 @@ export function App() {
     ) {
       return;
     }
-    setSelectedContactEmail(null);
-    setSelectedContactAccountId(null);
+    clearContactSelection();
   }, [
     activeFolder,
+    clearContactSelection,
     selectedContactAccountId,
     selectedContactEmail,
     visibleContacts,
@@ -4250,6 +4292,19 @@ export function App() {
       ?.focus({ preventScroll: true });
   }, []);
 
+  const focusContactRow = useCallback((key) => {
+    const row = Array.from(
+      document.querySelectorAll(".contacts-row__select[data-contact-key]"),
+    ).find((candidate) => candidate.dataset.contactKey === key);
+    if (row) {
+      row.focus({ preventScroll: true });
+      return;
+    }
+    document
+      .querySelector(".contacts-search input")
+      ?.focus({ preventScroll: true });
+  }, []);
+
   const completeReaderMotion = useCallback(() => {
     const phase = readerMotionRef.current;
     if (phase === "entering") {
@@ -4314,6 +4369,79 @@ export function App() {
     return () => window.clearTimeout(timer);
   }, [readerExitSpeed, readerMotion]);
 
+  const completeContactDetailMotion = useCallback(() => {
+    const phase = contactDetailMotionRef.current;
+    if (phase === "entering") {
+      setContactDetailMotionPhase("open");
+      return;
+    }
+    if (phase !== "exiting") return;
+
+    const afterExit = contactDetailAfterExitRef.current;
+    contactDetailAfterExitRef.current = null;
+    if (afterExit?.restoreFocusKey) {
+      focusContactRow(afterExit.restoreFocusKey);
+    }
+    clearContactSelection();
+    afterExit?.run?.();
+  }, [
+    clearContactSelection,
+    focusContactRow,
+    setContactDetailMotionPhase,
+  ]);
+  completeContactDetailMotionRef.current = completeContactDetailMotion;
+
+  const requestContactDetailExit = useCallback(
+    ({
+      speed = "normal",
+      restoreFocusKey = null,
+      afterExit = null,
+    } = {}) => {
+      const run = typeof afterExit === "function" ? afterExit : null;
+      if (!selectedContactEmailRef.current) {
+        run?.();
+        return;
+      }
+
+      const nextAction = { restoreFocusKey, run };
+      if (prefersReducedMotion()) {
+        if (restoreFocusKey) focusContactRow(restoreFocusKey);
+        clearContactSelection();
+        run?.();
+        return;
+      }
+
+      contactDetailAfterExitRef.current = nextAction;
+      if (contactDetailMotionRef.current === "exiting") {
+        if (speed === "fast") setContactDetailExitSpeed("fast");
+        return;
+      }
+      setContactDetailExitSpeed(speed);
+      setContactDetailMotionPhase("exiting");
+    },
+    [
+      clearContactSelection,
+      focusContactRow,
+      setContactDetailMotionPhase,
+    ],
+  );
+
+  useEffect(() => {
+    if (!["entering", "exiting"].includes(contactDetailMotion)) {
+      return undefined;
+    }
+    const duration =
+      contactDetailMotion === "exiting" &&
+      contactDetailExitSpeed === "fast"
+        ? readerFastExitMs
+        : readerWindowMotionMs;
+    const timer = window.setTimeout(
+      () => completeContactDetailMotionRef.current(),
+      duration + motionFallbackPaddingMs,
+    );
+    return () => window.clearTimeout(timer);
+  }, [contactDetailExitSpeed, contactDetailMotion]);
+
   const settleMailListMotion = useCallback(() => {
     const queuedIntent = queuedMailListIntentRef.current;
     queuedMailListIntentRef.current = null;
@@ -4327,7 +4455,9 @@ export function App() {
 
     if (phase === "switching-out") {
       if (activeIntent?.type === "switch") {
-        commitFolderChangeRef.current(activeIntent.folder);
+        if (activeIntent.folder !== activeFolderRef.current) {
+          commitFolderChangeRef.current(activeIntent.folder);
+        }
         setMailListMotionPhase("switching-in");
         return;
       }
@@ -4375,6 +4505,7 @@ export function App() {
           // The old surface has not reached its midpoint yet, so retargeting
           // here avoids ever committing an obsolete intermediate folder.
           activeMailListIntentRef.current = intent;
+          queuedMailListIntentRef.current = null;
         } else {
           queuedMailListIntentRef.current = intent;
         }
@@ -4462,7 +4593,18 @@ export function App() {
   }, [setMailListMotionPhase]);
 
   useEffect(() => {
-    if (!isWideMailWorkspace) resetMailListMotion();
+    if (isWideMailWorkspace) return;
+    const latestIntent =
+      queuedMailListIntentRef.current ||
+      activeMailListIntentRef.current;
+    if (
+      ["switch", "reveal"].includes(latestIntent?.type) &&
+      latestIntent.folder &&
+      latestIntent.folder !== activeFolderRef.current
+    ) {
+      commitFolderChangeRef.current(latestIntent.folder);
+    }
+    resetMailListMotion();
   }, [isWideMailWorkspace, resetMailListMotion]);
 
   useEffect(() => {
@@ -4493,12 +4635,11 @@ export function App() {
     if (folder === "contacts") {
       setContactFilter("all");
       setContactQuery("");
-      setSelectedContactEmail(null);
-      setSelectedContactAccountId(null);
     } else {
       setFilter("all");
       setQuery("");
     }
+    clearContactSelection();
     clearSelection();
     setIsSidebarOpen(false);
     if (paginatedMailboxRoles.includes(folder) && activeAccountId) {
@@ -4531,6 +4672,7 @@ export function App() {
     ) {
       return;
     }
+    invalidatePreparedFolderMotion();
     focusActiveFolder();
     const collapse = () =>
       startMailListIntentRef.current({ type: "collapse" });
@@ -4542,6 +4684,8 @@ export function App() {
   };
 
   const handleFolderChange = (folder) => {
+    const folderMotionRequest = folderMotionRequestRef.current + 1;
+    folderMotionRequestRef.current = folderMotionRequest;
     if (
       folder === "trash" &&
       !capabilityAvailable(mailboxCapabilities, folder)
@@ -4551,17 +4695,14 @@ export function App() {
     }
 
     const currentFolder = activeFolderRef.current;
-    const targetIsMail = folder !== "contacts";
-    const currentIsMail = currentFolder !== "contacts";
-    const hasVisibleMailWorkspace = Boolean(
-      document.getElementById("mail-list-panel"),
+    const currentFolderActivated = folder === currentFolder;
+    const hasVisibleListWorkspace = Boolean(
+      document.querySelector(".mail-workspace .mail-list-motion-frame"),
     );
     const canCoordinate =
       isWideMailWorkspace &&
       !isSettingsOpen &&
-      currentIsMail &&
-      targetIsMail &&
-      hasVisibleMailWorkspace;
+      hasVisibleListWorkspace;
 
     if (!canCoordinate) {
       resetMailListMotion();
@@ -4570,40 +4711,94 @@ export function App() {
     }
 
     const phase = mailListMotionRef.current;
-    const currentFolderActivated = folder === currentFolder;
     const listIsRetractedOrRetracting = [
       "collapsed",
       "collapsing",
     ].includes(phase);
-    const intent = currentFolderActivated
-      ? listIsRetractedOrRetracting
-        ? { type: "reveal", folder }
-        : { type: "collapse" }
-      : listIsRetractedOrRetracting
-        ? { type: "reveal", folder }
-        : { type: "switch", folder };
-    const startIntent = () => startMailListIntentRef.current(intent);
+    const intent =
+      phase === "switching-out"
+        ? { type: "switch", folder }
+        : currentFolderActivated
+          ? listIsRetractedOrRetracting
+            ? { type: "reveal", folder }
+            : { type: "collapse" }
+          : listIsRetractedOrRetracting
+            ? { type: "reveal", folder }
+            : { type: "switch", folder };
+    const targetWorkspaceReady =
+      folder === "contacts" && folder !== currentFolder
+        ? preloadContactsWorkspace()
+        : null;
+    const startIntent = () => {
+      const begin = () => {
+        if (folderMotionRequestRef.current !== folderMotionRequest) return;
+        startMailListIntentRef.current(intent);
+      };
+      if (targetWorkspaceReady) {
+        void targetWorkspaceReady.then(begin, begin);
+      } else {
+        begin();
+      }
+    };
 
-    if (
+    if (intent.type !== "reveal" && selectedMessageIdRef.current !== null) {
+      requestReaderExit({
+        speed: "fast",
+        afterExit: () => {
+          if (currentFolder === "contacts") clearContactSelection();
+          startIntent();
+        },
+      });
+    } else if (
       intent.type !== "reveal" &&
-      selectedMessageIdRef.current !== null
+      currentFolder === "contacts" &&
+      selectedContactEmailRef.current
     ) {
-      requestReaderExit({ speed: "fast", afterExit: startIntent });
+      requestContactDetailExit({
+        speed: "fast",
+        afterExit: startIntent,
+      });
     } else {
       startIntent();
     }
   };
 
   const handleSelectContact = (contact) => {
+    invalidatePreparedFolderMotion();
+    const previousKey = contactNavigationKey(
+      selectedContactEmailRef.current,
+      selectedContactAccountIdRef.current,
+    );
+    const nextEmail = contact?.email || null;
+    const nextAccountId = contact?.accountId || null;
+    const nextKey = contactNavigationKey(nextEmail, nextAccountId);
     clearSelection();
-    setSelectedContactEmail(contact?.email || null);
-    setSelectedContactAccountId(contact?.accountId || null);
+    if (!nextKey) {
+      clearContactSelection();
+      return;
+    }
+    selectedContactEmailRef.current = nextEmail;
+    selectedContactAccountIdRef.current = nextAccountId;
+    setSelectedContactEmail(nextEmail);
+    setSelectedContactAccountId(nextAccountId);
+    if (!previousKey || contactDetailMotionRef.current === "idle") {
+      presentContactDetail("entering");
+    } else if (
+      previousKey !== nextKey ||
+      contactDetailMotionRef.current === "exiting"
+    ) {
+      presentContactDetail("open");
+    }
   };
 
   const handleBackToContacts = () => {
     clearSelection();
-    setSelectedContactEmail(null);
-    setSelectedContactAccountId(null);
+    requestContactDetailExit({
+      restoreFocusKey: contactNavigationKey(
+        selectedContactEmailRef.current,
+        selectedContactAccountIdRef.current,
+      ),
+    });
   };
 
   const handleOpenContactMessage = async (message) => {
@@ -5521,6 +5716,7 @@ export function App() {
   };
 
   const handleSwitchAccount = async (accountId, options = {}) => {
+    invalidatePreparedFolderMotion();
     const suppliedNavigationIntentId = options.navigationIntentId ?? null;
     if (
       suppliedNavigationIntentId !== null &&
@@ -5911,12 +6107,14 @@ export function App() {
     accountNeedsRepair && isAccountRepairVisible;
 
   const openAccountSetup = () => {
+    invalidatePreparedFolderMotion();
     setSettingsSaveStatus("idle");
     setSettingsFocusTarget(`account-form:${Date.now()}`);
     setIsSettingsOpen(true);
   };
 
   const openAccountRepair = () => {
+    invalidatePreparedFolderMotion();
     setSettingsSaveStatus("idle");
     setSettingsFocusTarget(`account-repair:${Date.now()}`);
     setIsSettingsOpen(true);
@@ -5990,6 +6188,17 @@ export function App() {
     mailListMotion,
   );
   const mailListIsInteractive = mailListMotion === "expanded";
+  const mailListMotionFrameProps = {
+    inert: !mailListIsInteractive ? true : undefined,
+    "aria-hidden": mailListIsRetracted || undefined,
+    "aria-busy":
+      !["expanded", "collapsed"].includes(mailListMotion) || undefined,
+    onAnimationEnd: (event) => {
+      if (event.target === event.currentTarget) {
+        completeMailListMotion();
+      }
+    },
+  };
   const visibleReaderMessage = mailListIsRetracted
     ? null
     : selectedMessage;
@@ -6153,14 +6362,16 @@ export function App() {
           activeFolder={activeFolder}
           onFolderChange={handleFolderChange}
           isMailListExpanded={!mailListIsRetracted}
+          isFolderSelectionVisible={!mailListIsRetracted}
           mailListControlsId="mail-list-panel"
-          onCompose={() =>
-            needsAccountWorkspace
+          onCompose={() => {
+            invalidatePreparedFolderMotion();
+            return needsAccountWorkspace
               ? accountBackendUnavailable
                 ? openAccountRepair()
                 : openAccountSetup()
-              : openOrRestoreComposer()
-          }
+              : openOrRestoreComposer();
+          }}
           theme={theme}
           onThemeChange={(nextTheme) => {
             setTheme(nextTheme);
@@ -6176,6 +6387,7 @@ export function App() {
           onAccountSwitch={handleSidebarAccountSwitch}
           onAddAccount={openAccountSetup}
           onOpenSettings={() => {
+            invalidatePreparedFolderMotion();
             setSettingsSaveStatus("idle");
             setSettingsFocusTarget(null);
             setIsSettingsOpen(true);
@@ -6240,53 +6452,6 @@ export function App() {
               accountBackendUnavailable ? openAccountRepair : openAccountSetup
             }
           />
-        ) : isContactMode ? (
-          <Suspense
-            fallback={<SecondaryWorkspaceLoading label="正在打开通讯录…" />}
-          >
-            <ContactsWorkspace
-              contacts={visibleContacts}
-              selectedContact={selectedContact}
-              messages={contactMessages}
-              query={contactQuery}
-              filter={contactFilter}
-              isLoading={contactsState === "loading"}
-              error={contactsError}
-              isMessagesLoading={contactMessagesState === "loading"}
-              messagesError={contactMessagesError}
-              readerContent={
-                selectedMessage || !selectedContact ? messageReader : null
-              }
-              onRetry={() =>
-                activeAccountId &&
-                void loadContacts({ accountId: activeAccountId })
-              }
-              onRetryMessages={() =>
-                selectedContactAccountId &&
-                selectedContactEmail &&
-                void loadContactMessages(selectedContactEmail, {
-                  accountId: selectedContactAccountId,
-                })
-              }
-              onOpenMobileNav={openSidebarDrawer}
-              onSearchChange={setContactQuery}
-              onFilterChange={setContactFilter}
-              onSelectContact={handleSelectContact}
-              onBackToContacts={handleBackToContacts}
-              onToggleFavorite={(contact) =>
-                void handleToggleContactFavorite(contact)
-              }
-              onCompose={handleComposeToContact}
-              onOpenMessage={handleOpenContactMessage}
-              onSaveRemark={handleSaveContactRemark}
-              onSetAvatar={(contact, file) =>
-                handleSaveProfileAvatar("contact", contact.email, file)
-              }
-              onRemoveAvatar={(contact) =>
-                handleDeleteProfileAvatar("contact", contact.email)
-              }
-            />
-          </Suspense>
         ) : (
           <div
             className="mail-workspace"
@@ -6295,66 +6460,129 @@ export function App() {
               mailListMotion === "collapsed" ? "retracted" : "visible"
             }
           >
-            <div
-              className="mail-list-motion-frame"
-              inert={!mailListIsInteractive ? true : undefined}
-              aria-hidden={mailListIsRetracted || undefined}
-              aria-busy={
-                !["expanded", "collapsed"].includes(mailListMotion) ||
-                undefined
-              }
-              onAnimationEnd={(event) => {
-                if (event.target === event.currentTarget) {
-                  completeMailListMotion();
+            {isContactMode ? (
+              <Suspense
+                fallback={
+                  <>
+                    <div
+                      {...mailListMotionFrameProps}
+                      className="mail-list-motion-frame"
+                    >
+                      <SecondaryWorkspaceLoading label="正在打开通讯录…" />
+                    </div>
+                    {messageReader}
+                  </>
                 }
-              }}
-            >
-              <MailList
-                folderRole={activeFolder}
-                folderLabel={folderLabels[activeFolder]}
-                messages={visibleMessages}
-                selectedMessageId={selectedMessageId}
-                selectedMessage={selectedMessage}
-                onSelect={handleSelect}
-                onToggleStar={(message) => void handleToggleStar(message)}
-                query={query}
-                onQueryChange={setQuery}
-                filter={filter}
-                onFilterChange={setFilter}
-                onCollapse={
-                  isWideMailWorkspace ? handleCollapseMailList : null
-                }
-                onSync={handleSync}
-                syncState={syncState}
-                loadState={activeMailboxLoadState}
-                canSync={networkActionsAvailable}
-                syncDisabledReason={
-                  networkActionsAvailable
-                    ? null
-                    : "当前离线，无法同步"
-                }
-                onOpenMobileNav={openSidebarDrawer}
-                avatarForEmail={(email) =>
-                  profileAvatarFor("contact", email)
-                }
-                displayNameForEmail={contactRemarkForEmail}
-                referenceJump={referenceJump}
-                mailboxCapability={activeMailboxCapability}
-                loadMoreState={loadMoreState}
-                scrollStateKey={mailListScrollStateKey}
-                getScrollTop={getMailListScrollTop}
-                onScrollTopChange={saveMailListScrollTop}
-                onLoadMore={
-                  canLoadOlder &&
-                  !["offline", "unavailable", "loading"].includes(
-                    loadMoreState,
-                  )
-                    ? () => void handleLoadMore()
-                    : null
-                }
-              />
-            </div>
-            {messageReader}
+              >
+                <ContactsWorkspace
+                  contacts={visibleContacts}
+                  selectedContact={selectedContact}
+                  messages={contactMessages}
+                  query={contactQuery}
+                  filter={contactFilter}
+                  isLoading={contactsState === "loading"}
+                  error={contactsError}
+                  isMessagesLoading={contactMessagesState === "loading"}
+                  messagesError={contactMessagesError}
+                  readerContent={
+                    selectedMessage || !selectedContact
+                      ? messageReader
+                      : null
+                  }
+                  detailMotion={contactDetailMotion}
+                  detailExitSpeed={contactDetailExitSpeed}
+                  onDetailMotionEnd={completeContactDetailMotion}
+                  listMotionFrameProps={mailListMotionFrameProps}
+                  onRetry={() =>
+                    activeAccountId &&
+                    void loadContacts({ accountId: activeAccountId })
+                  }
+                  onRetryMessages={() =>
+                    selectedContactAccountId &&
+                    selectedContactEmail &&
+                    void loadContactMessages(selectedContactEmail, {
+                      accountId: selectedContactAccountId,
+                    })
+                  }
+                  onOpenMobileNav={openSidebarDrawer}
+                  onSearchChange={setContactQuery}
+                  onFilterChange={setContactFilter}
+                  onSelectContact={handleSelectContact}
+                  onBackToContacts={handleBackToContacts}
+                  onToggleFavorite={(contact) =>
+                    void handleToggleContactFavorite(contact)
+                  }
+                  onCompose={handleComposeToContact}
+                  onOpenMessage={handleOpenContactMessage}
+                  onSaveRemark={handleSaveContactRemark}
+                  onSetAvatar={(contact, file) =>
+                    handleSaveProfileAvatar(
+                      "contact",
+                      contact.email,
+                      file,
+                    )
+                  }
+                  onRemoveAvatar={(contact) =>
+                    handleDeleteProfileAvatar("contact", contact.email)
+                  }
+                />
+              </Suspense>
+            ) : (
+              <>
+                <div
+                  {...mailListMotionFrameProps}
+                  className="mail-list-motion-frame"
+                >
+                  <MailList
+                    folderRole={activeFolder}
+                    folderLabel={folderLabels[activeFolder]}
+                    messages={visibleMessages}
+                    selectedMessageId={selectedMessageId}
+                    selectedMessage={selectedMessage}
+                    onSelect={handleSelect}
+                    onToggleStar={(message) =>
+                      void handleToggleStar(message)
+                    }
+                    query={query}
+                    onQueryChange={setQuery}
+                    filter={filter}
+                    onFilterChange={setFilter}
+                    onCollapse={
+                      isWideMailWorkspace ? handleCollapseMailList : null
+                    }
+                    onSync={handleSync}
+                    syncState={syncState}
+                    loadState={activeMailboxLoadState}
+                    canSync={networkActionsAvailable}
+                    syncDisabledReason={
+                      networkActionsAvailable
+                        ? null
+                        : "当前离线，无法同步"
+                    }
+                    onOpenMobileNav={openSidebarDrawer}
+                    avatarForEmail={(email) =>
+                      profileAvatarFor("contact", email)
+                    }
+                    displayNameForEmail={contactRemarkForEmail}
+                    referenceJump={referenceJump}
+                    mailboxCapability={activeMailboxCapability}
+                    loadMoreState={loadMoreState}
+                    scrollStateKey={mailListScrollStateKey}
+                    getScrollTop={getMailListScrollTop}
+                    onScrollTopChange={saveMailListScrollTop}
+                    onLoadMore={
+                      canLoadOlder &&
+                      !["offline", "unavailable", "loading"].includes(
+                        loadMoreState,
+                      )
+                        ? () => void handleLoadMore()
+                        : null
+                    }
+                  />
+                </div>
+                {messageReader}
+              </>
+            )}
           </div>
         )}
       </div>

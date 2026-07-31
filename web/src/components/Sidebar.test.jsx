@@ -77,20 +77,30 @@ describe("Sidebar account switcher", () => {
     expect(onFolderChange).toHaveBeenCalledWith("contacts");
   });
 
-  it("exposes the selected mail folder's relationship to the mail list", () => {
+  it("keeps disclosure semantics while hiding selection for a retracted list", () => {
     const { rerenderSidebar } = renderSidebar(1);
     const inbox = screen.getByRole("button", { name: "收件箱" });
+    const selection = screen
+      .getByRole("navigation", { name: "邮箱文件夹" })
+      .querySelector(".folder-nav__selection");
 
     expect(inbox.getAttribute("aria-controls")).toBe("mail-list-panel");
     expect(inbox.getAttribute("aria-expanded")).toBe("true");
+    expect(inbox.dataset.selected).toBe("true");
 
-    rerenderSidebar({ isMailListExpanded: false });
+    rerenderSidebar({
+      isMailListExpanded: false,
+      isFolderSelectionVisible: false,
+    });
 
     expect(inbox.getAttribute("aria-controls")).toBe("mail-list-panel");
     expect(inbox.getAttribute("aria-expanded")).toBe("false");
+    expect(inbox.dataset.selected).toBe("false");
+    expect(inbox.hasAttribute("aria-current")).toBe(false);
+    expect(selection.dataset.visible).toBeUndefined();
   });
 
-  it("omits mail-list disclosure semantics from settings and contacts", () => {
+  it("omits disclosure semantics from settings and includes Contacts", () => {
     const { rerenderSidebar } = renderSidebar(1, { isSettingsOpen: true });
     const inbox = screen.getByRole("button", { name: "收件箱" });
     const settings = screen.getByRole("button", { name: "设置" });
@@ -103,8 +113,8 @@ describe("Sidebar account switcher", () => {
     rerenderSidebar({ activeFolder: "contacts", isSettingsOpen: false });
 
     const contacts = screen.getByRole("button", { name: "通讯录" });
-    expect(contacts.hasAttribute("aria-controls")).toBe(false);
-    expect(contacts.hasAttribute("aria-expanded")).toBe(false);
+    expect(contacts.getAttribute("aria-controls")).toBe("mail-list-panel");
+    expect(contacts.getAttribute("aria-expanded")).toBe("true");
   });
 
   it("moves one shared selection surface to the active folder", () => {
@@ -155,6 +165,26 @@ describe("Sidebar account switcher", () => {
       expect(
         selection.style.getPropertyValue("--sliding-selection-y"),
       ).toBe("47px");
+      expect(
+        screen.getByRole("button", { name: "已收藏" }).dataset.selected,
+      ).toBe("true");
+
+      rerenderSidebar({
+        activeFolder: "starred",
+        isFolderSelectionVisible: false,
+      });
+
+      expect(selection.dataset.visible).toBeUndefined();
+      expect(
+        screen.getByRole("button", { name: "已收藏" }).dataset.selected,
+      ).toBe("false");
+
+      rerenderSidebar({
+        activeFolder: "starred",
+        isFolderSelectionVisible: true,
+      });
+
+      expect(selection.dataset.visible).toBe("true");
       expect(
         screen.getByRole("button", { name: "已收藏" }).dataset.selected,
       ).toBe("true");

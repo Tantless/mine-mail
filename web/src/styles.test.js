@@ -46,6 +46,9 @@ describe("mail workspace motion contract", () => {
     const readerEntering = declarationsFor(
       '\\.reader-panel--message\\[data-reader-motion="entering"\\]',
     );
+    const contactEntering = declarationsFor(
+      '\\.contacts-detail-panel--selected\\[data-reader-motion="entering"\\]',
+    );
     const readerWindowIn = nestedBlockFor("@keyframes reader-window-in");
     const listContextOut = nestedBlockFor("@keyframes mail-list-context-out");
 
@@ -53,6 +56,10 @@ describe("mail workspace motion contract", () => {
       /animation:\s*reader-window-in var\(--motion-window\)/,
     );
     expect(readerEntering).toMatch(/transform-origin:\s*center/);
+    expect(contactEntering).toMatch(
+      /animation:\s*reader-window-in var\(--motion-window\)/,
+    );
+    expect(contactEntering).toMatch(/transform-origin:\s*center/);
     expect(readerWindowIn).toMatch(/scale\(0\.96\)/);
     expect(readerWindowIn).toMatch(/translate3d\(0,\s*6px,\s*0\)/);
     expect(readerWindowIn).not.toMatch(/translateX/);
@@ -82,6 +89,15 @@ describe("mail workspace motion contract", () => {
     const fastReaderExit = declarationsFor(
       '\\.reader-panel--message\\[data-reader-motion="exiting"\\]\\[data-reader-exit-speed="fast"\\]',
     );
+    const fastContactExit = declarationsFor(
+      '\\.contacts-detail-panel--selected\\[data-reader-motion="exiting"\\]\\[data-reader-exit-speed="fast"\\]',
+    );
+    const contactsRowsDuringSwitch = declarationsFor(
+      '\\.mail-workspace\\[data-list-motion\\^="switching"\\] \\.contacts-row',
+    );
+    const contactsFallback = declarationsFor(
+      "\\.mail-list-motion-frame > \\.secondary-workspace-loading",
+    );
 
     expect(collapsing).toMatch(
       /animation:\s*mail-list-window-out var\(--motion-window\)/,
@@ -97,6 +113,12 @@ describe("mail workspace motion contract", () => {
     expect(fastReaderExit).toMatch(
       /animation-duration:\s*var\(--motion-fast\)/,
     );
+    expect(fastContactExit).toMatch(
+      /animation-duration:\s*var\(--motion-fast\)/,
+    );
+    expect(contactsRowsDuringSwitch).toMatch(/animation:\s*none/);
+    expect(contactsFallback).toMatch(/grid-column:\s*auto/);
+    expect(contactsFallback).toMatch(/height:\s*100%/);
   });
 
   it("disables retraction in defensive layouts and removes staged motion when requested", () => {
@@ -113,10 +135,13 @@ describe("mail workspace motion contract", () => {
       /\.app-shell\.has-selection \.mail-list-motion-frame[\s\S]*display:\s*none/,
     );
     expect(reducedMotion).toMatch(
-      /\.mail-list-motion-frame,[\s\S]*\.reader-panel--message[\s\S]*animation:\s*none !important/,
+      /\.mail-list-motion-frame,[\s\S]*\.reader-panel--message,[\s\S]*\.contacts-detail-panel--selected[\s\S]*animation:\s*none !important/,
     );
     expect(reducedMotion).toMatch(
       /\.mail-workspace[\s\S]*transition:\s*none !important/,
+    );
+    expect(reducedMotion).toMatch(
+      /\*,\s*\*::before,\s*\*::after\s*\{[\s\S]*transition-duration:\s*1ms !important/,
     );
   });
 });
@@ -587,6 +612,20 @@ describe("release-state accessibility and reflow contracts", () => {
     );
     expect(declarationsFor("\\.folder-nav__selection")).toMatch(
       /transform var\(--motion-normal\)/,
+    );
+    expect(declarationsFor("\\.folder-nav__selection")).toMatch(
+      /opacity:\s*0[\s\S]*scale\(0\.97\)/,
+    );
+    expect(declarationsFor("\\.folder-nav__selection")).toMatch(
+      /opacity var\(--motion-fast\) ease-out/,
+    );
+    expect(
+      declarationsFor(
+        '\\.folder-nav__selection\\[data-visible="true"\\]',
+      ),
+    ).toMatch(/opacity:\s*1[\s\S]*scale\(1\)/);
+    expect(declarationsFor("\\.folder-nav__item,\\s*\\.sidebar-action")).toMatch(
+      /font-weight var\(--motion-fast\)/,
     );
     expect(
       declarationsFor('\\.folder-nav__item\\[data-selected="true"\\]'),

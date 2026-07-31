@@ -264,36 +264,45 @@ family. Preserve the relative hierarchy when tuning optical values.
   into the existing third column with a restrained 260 ms window-style geometry
   and material transition: it grows from a slightly smaller, quieter,
   center-anchored state without spring, overshoot, or movement from the selected
-  row. The third-column geometry does not move. Back reverses the same transition
-  and returns to the empty-reader scene; it never retracts the reader column
-  itself. Changing from one open message to another replaces the reader content
+  row. This entrance applies equally when opening from aggregate Starred or Sent.
+  The third-column geometry does not move. Back reverses the same transition and
+  returns to the empty-reader scene; it never retracts the reader column itself.
+  Changing from one open message to another replaces the reader content
   immediately and does not replay an entrance or content-swap animation.
-- The wide mail workspace may retract its middle message-list column. The list
-  topbar provides an explicit retract action, and activating the already-current
-  mail folder in the sidebar performs the same action. If a message is open, its
+- The wide workspace may retract its middle mail or contact-list column. Mail
+  list topbars provide an explicit retract action, and activating the
+  already-current primary list destination in the sidebar, including Contacts,
+  performs the same action. If mail or contact detail is open, the visible
   reader content must finish a fast `--motion-fast` exit before the list begins
-  retracting; a retracted list therefore never leaves message details open. The
-  list surface then contracts toward its center and disappears over one
-  restrained 260 ms transition while the quiet empty-reader scene fills all space
-  beside the sidebar. Activating any mail folder while the list is retracted
-  reveals that folder with the reverse transition.
-- Activating a different mail folder while the list is visible uses one
-  coordinated transition. Any open reader content exits first with
+  retracting; a retracted list therefore never leaves details open. The list
+  surface then contracts toward its center and disappears over one restrained
+  260 ms transition while the quiet empty-reader scene fills all space beside
+  the sidebar. At retraction start, the shared sidebar selection surface eases
+  out with one short fade and slight scale reduction; no folder remains visually
+  selected while the list is retracted. Activating any primary list destination
+  while retracted restores its selection surface and reveals that destination
+  with the reverse transition.
+- Activating a different primary list workspace while the middle list is visible
+  uses one coordinated transition. This includes transitions between mail
+  folders and Contacts, so Starred, Contacts, and Sent use the same sequence in
+  both directions. Any open mail reader content exits first with
   `--motion-fast`; the middle surface then uses one 260 ms scene transition to
-  contract evenly from all four edges, replace its contents only at the midpoint,
-  and expand as the target folder. It must read as one compact workspace changing
-  context, not as a horizontal page slide or two lists crossing through each
-  other.
-- Retraction and folder transitions keep at most one pending navigation intent:
-  newer input replaces older pending input after the in-flight phase reaches a
-  safe visual boundary. Retraction itself preserves the current folder's
-  search/filter state and scroll position. `prefers-reduced-motion` collapses each
-  coordinated sequence to one atomic final state with no scale, fade, or staged
-  delay.
-- These list-retraction and folder-change transitions belong only to wide layouts
-  where the sidebar, message list, and reader are concurrently visible. Defensive
-  drawer, two-pane, and single-pane reflows retain their existing navigation
-  model rather than imitating a collapsible desktop column.
+  contract evenly from all four edges, replace its mail or contact list only at
+  the midpoint, and expand as the target workspace. It must read as one compact
+  workspace changing context, not as a horizontal page slide or two lists
+  crossing through each other. Contacts participates in both this
+  cross-destination scene transition and current-destination retraction without
+  adding a mail-specific retract control to its topbar.
+- Retraction and list-workspace transitions keep at most one pending navigation
+  intent: newer input replaces older pending input after the in-flight phase
+  reaches a safe visual boundary. Retraction itself preserves the current
+  folder's search/filter state and scroll position. `prefers-reduced-motion`
+  collapses each coordinated sequence to one atomic final state with no scale,
+  fade, or staged delay.
+- These list-retraction and list-workspace transitions belong only to wide
+  layouts where the sidebar, middle list, and reader are concurrently visible.
+  Defensive drawer, two-pane, and single-pane reflows retain their existing
+  navigation model rather than imitating a collapsible desktop column.
 - Inbox, Sent, Archive, and Trash append 50-message keyset pages automatically
   when the list approaches its bottom. There is no manual load-more button or
   persistent end card. A compact bottom line remains visible while loading, then
@@ -373,8 +382,17 @@ family. Preserve the relative hierarchy when tuning optical values.
   detail/relationship history.
 - The unselected detail pane uses the current quiet, theme-owned “选择一个联系人”
   placeholder rather than inventing a new illustration or card system.
-- Contact detail has a persistent back action. Opening a correspondence message
-  reuses the mail reader and provides a separate return to contact history.
+- Contact detail has a persistent back action. In the wide workspace, the first
+  selected contact enters the existing third column with the same centered
+  260 ms window transition as mail, and Back reverses it before restoring the
+  quiet unselected detail pane. Changing from one open contact to another
+  replaces the detail immediately without replaying the entrance. Leaving
+  Contacts first completes a fast `--motion-fast` detail exit before the middle
+  workspace changes context. Opening a correspondence message reuses the mail
+  reader and provides a separate return to contact history; leaving Contacts
+  from that nested reader closes only the visible mail window and clears the
+  underlying contact in the same transition boundary, so contact detail never
+  flashes back between scenes.
 
 ### Settings
 
