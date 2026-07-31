@@ -11,6 +11,10 @@ reader's visual language.
   indexing/extraction, forward preparation, and cached-body persistence.
 - Rust may derive a list preview from a bounded, non-marking IMAP body prefix.
   The prefix is discarded after parsing and never counts as a fetched body.
+- For a selected uncached message, Rust may request a bounded IMAP MIME structure
+  and non-marking MIME/body sections for the chosen plain and HTML leaves. It
+  must not request ordinary attachment bodies as a prerequisite for reader
+  rendering.
 - React receives only the bounded body representation needed by the selected
   render mode. It never receives a complete raw RFC822 message.
 - Inbox/list summaries never contain full HTML or raw message source.
@@ -104,21 +108,29 @@ frontend code. An intentional threshold change must:
 
 ## Attachment indexing and extraction
 
-- Attachment indexing requires a completely cached RFC822 message. A bounded
-  summary prefix may advertise neither attachment bytes nor authoritative
-  attachment metadata.
-- Each ordinary attachment receives an opaque stable part ID tied to the cached
-  message and MIME tree. File name alone and display order are not identities.
+- A bounded summary prefix advertises neither attachment bytes nor authoritative
+  attachment metadata. An IMAP MIME structure may supply the reader's bounded
+  attachment inventory before any attachment body is downloaded. A completely
+  cached RFC822 message remains the authority for byte-backed local indexing and
+  exact decoded sizes.
+- Each ordinary attachment receives an opaque stable part ID tied to the message
+  and MIME tree. A remote ID binds the current public message epoch, MIME part
+  path, and bounded structure metadata without exposing the path to React. File
+  name alone and display order are not identities.
 - The bounded metadata is original name when present, safe display name, declared
-  or detected MIME type, exact decoded byte size, and disposition. Unknown types
-  remain generic files; they are never presented as PDF merely because no icon is
-  known.
+  or detected MIME type, byte size, whether that size is approximate, and
+  disposition. A transfer-encoded structure size is shown as approximate until
+  the part is decoded; complete cached MIME metadata uses the exact decoded size.
+  Unknown types remain generic files; they are never presented as PDF merely
+  because no icon is known.
 - Inline resources remain distinct from ordinary named attachments. Rendering an
   inline resource does not automatically make it downloadable or forward it as a
   separate ordinary attachment.
-- Saving resolves exactly one message and part ID in Rust, reparses the cached
-  MIME, and streams only that decoded part to a platform-selected destination.
-  React never supplies a source path or receives the bytes.
+- Saving resolves exactly one message and part ID in Rust. A cached ID reparses
+  the complete MIME. A remote ID is matched against a freshly fetched structure
+  before Rust requests and decodes only that MIME part. Both paths stream only
+  the selected decoded part to a platform-selected destination. React never
+  supplies a source path or receives the bytes.
 - Safe output names remove separators and control characters, reject platform
   reserved names, trim unsafe trailing dots/spaces, enforce a bounded length, and
   fall back to `attachment.bin`. The final path must remain inside the directory
@@ -126,9 +138,9 @@ frontend code. An intentional threshold change must:
 - Existing files are never overwritten. Resolve collisions with a numeric suffix
   before the extension. Write a newly created temporary sibling and finalize it
   only after complete extraction; cancellation or failure removes partial output.
-- If the full message is absent, the save path first requests normal body/MIME
-  hydration. Failure leaves the reader and every other attachment unchanged and
-  may be retried.
+- If the full message is absent, saving one remote attachment does not hydrate the
+  other parts or replace the already readable body. Failure leaves the reader and
+  every other attachment unchanged and may be retried.
 
 ## Authored rich text and stationery
 
@@ -261,6 +273,7 @@ For a rendering-boundary change, run at minimum:
 
 Add focused regression cases using synthetic mail fixtures. Do not commit real
 messages, raw personal RFC822, remote credentials, or screenshot-only evidence.
-Attachment cases must cover malicious and colliding names, unknown types, decoded
-sizes, multi-attachment identity, cancellation, partial-write cleanup, stale draft
-versions, and forward preparation with and without requested attachments.
+Attachment cases must cover malicious and colliding names, unknown types, exact
+and approximate sizes, selective body requests that exclude large attachment
+sections, multi-attachment identity, cancellation, partial-write cleanup, stale
+draft versions, and forward preparation with and without requested attachments.

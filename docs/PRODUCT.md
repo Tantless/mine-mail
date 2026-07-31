@@ -114,9 +114,12 @@ must be updated here when an intentional product change lands.
 - The primary sidebar shows numeric badges only for unread Inbox messages and
   Outbox items not yet confirmed sent. Zero counts are omitted. Starred,
   Contacts, Sent, Drafts, Archive, and Trash never show numeric badges.
-- Selecting a message paints its cached preview immediately and hydrates the body
-  silently. A selected message uses a foreground fetch lane that outranks queued
-  prefetch work; queued neighbors are promoted, and an identical in-flight
+- Selecting a message paints its cached preview immediately. If a complete MIME
+  is not cached, the foreground reader first fetches the server MIME structure
+  and then only the selected plain/HTML body sections; ordinary attachment bytes
+  must not block the body or attachment cards. Attachment bytes are fetched only
+  when the user saves that attachment. The foreground lane outranks queued
+  prefetch work; queued neighbors are promoted, and an identical complete-MIME
   download is shared instead of requested twice.
 - Returning a mailbox page schedules its uncached bodies as background candidates
   in visible order. The default 50-message page may cache at most 16 MiB and skips
@@ -124,11 +127,12 @@ must be updated here when an intentional product change lands.
   schedule the 20 most recent bounded candidates within 8 MiB. Loading another
   page cancels page work that has not started. These are opportunistic caches,
   not a guarantee that every listed body is downloaded.
-- Full-body cache payloads have a 512 MiB device budget shared evenly across
-  connected accounts. Least-recently-used bodies are evicted first while their
-  list summaries and bounded previews remain available; selecting an evicted
-  message downloads it again. Drafts, Outbox state, and explicitly managed
-  attachment files are outside this eviction policy.
+- Cached body and complete-MIME payloads have a 512 MiB device budget shared
+  evenly across connected accounts. Least-recently-used payloads are evicted
+  first while their list summaries and bounded previews remain available;
+  selecting an evicted message fetches the structure and renderable sections
+  again. Drafts, Outbox state, and explicitly managed attachment files are
+  outside this eviction policy.
 - Inbox, Sent, Archive, and Trash use opaque keyset pagination. The default page
   contains 50 messages and a caller may request at most 100. A cursor is bound to
   the account, mailbox role, UIDVALIDITY epoch, stable sort position, remote
@@ -500,7 +504,10 @@ must be updated here when an intentional product change lands.
   from an error string.
 - `AttachmentMeta` is
   `{ id, original_name?, safe_display_name, mime_type, size_bytes,
-  disposition }`.
+  size_is_estimate, disposition }`. A server MIME-structure size may describe
+  transfer-encoded octets, so the reader labels its decoded-size projection as
+  approximate. Metadata extracted from a complete cached MIME uses an exact
+  decoded size.
 - `DraftAttachmentMeta` is
   `{ id, name, mime_type, size_bytes, source_attachment_id? }`. The optional
   source ID identifies an ordinary attachment imported from a forwarded message;

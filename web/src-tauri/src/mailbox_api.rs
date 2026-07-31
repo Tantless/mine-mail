@@ -1,9 +1,9 @@
 use mine_mail::{
-    AttachmentSaveErrorKind, ForwardPreparationErrorKind, ForwardPreparationOutcome, InboxMessage,
-    MailBackend, MailError, MailboxCapability, MailboxCapabilityStatus,
-    MailboxCapabilityUnavailableReason, MailboxRole, MessageMutationReceipt, MessagePage,
-    MessagePageCursor, MessagePageItem, PendingMessageProjection, PermanentDeletePlan,
-    RemoteHistoryState, SystemFlagMutationReceipt,
+    AttachmentMeta, AttachmentSaveErrorKind, ForwardPreparationErrorKind,
+    ForwardPreparationOutcome, InboxMessage, MailBackend, MailError, MailboxCapability,
+    MailboxCapabilityStatus, MailboxCapabilityUnavailableReason, MailboxRole,
+    MessageMutationReceipt, MessagePage, MessagePageCursor, MessagePageItem,
+    PendingMessageProjection, PermanentDeletePlan, RemoteHistoryState, SystemFlagMutationReceipt,
 };
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -112,9 +112,10 @@ pub(crate) struct MailboxMessageDto {
     body_html_loaded: bool,
     has_remote_images: bool,
     attachment_names: Vec<String>,
-    /// `Some`, including an empty vector, is authoritative for the completely
-    /// cached MIME. `None` keeps a readable body available when attachment
-    /// indexing alone is malformed or temporarily unavailable.
+    /// `Some`, including an empty vector, is authoritative for the current
+    /// server MIME structure or the completely cached MIME. `None` keeps a
+    /// readable cached body available when attachment metadata is temporarily
+    /// unavailable.
     attachments: Option<Vec<AttachmentMetaDto>>,
     body_fetched: bool,
     synced_at: String,
@@ -327,10 +328,10 @@ fn complete_mailbox_message_dto(
     backend: &MailBackend,
     public_id: String,
     message: InboxMessage,
+    supplied_attachments: Option<Vec<AttachmentMeta>>,
 ) -> CommandResult<MailboxMessageDto> {
-    let attachments = backend
-        .cached_message_attachments(&public_id)
-        .ok()
+    let attachments = supplied_attachments
+        .or_else(|| backend.cached_message_attachments(&public_id).ok())
         .map(|attachments| attachments.into_iter().map(Into::into).collect());
     Ok(MailboxMessageDto::from_full_message(
         public_id,
@@ -611,13 +612,18 @@ pub(crate) async fn fetch_mailbox_message(
     let _ = account.refresh_oauth_backends(&backend).await;
     if let Ok(network) = backend.network_for(&account_id) {
         network.promote_body_prefetch_for_selection(&message_id);
-        match network.fetch_message_by_id(&message_id, false).await {
-            Ok(message) => {
-                return complete_mailbox_message_dto(&network, message_id, message);
+        match network.fetch_message_view_by_id(&message_id, false).await {
+            Ok((message, attachments)) => {
+                return complete_mailbox_message_dto(
+                    &network,
+                    message_id,
+                    message,
+                    Some(attachments),
+                );
             }
             Err(network_error) => {
                 if let Ok(message) = local.cached_message_by_id(&message_id) {
-                    return complete_mailbox_message_dto(&local, message_id, message);
+                    return complete_mailbox_message_dto(&local, message_id, message, None);
                 }
                 return Err(safe_mail_error(network_error));
             }
@@ -626,7 +632,7 @@ pub(crate) async fn fetch_mailbox_message(
     local
         .cached_message_by_id(&message_id)
         .map_err(safe_mail_error)
-        .and_then(|message| complete_mailbox_message_dto(&local, message_id, message))
+        .and_then(|message| complete_mailbox_message_dto(&local, message_id, message, None))
 }
 
 #[tauri::command]
@@ -1083,6 +1089,7 @@ mod tests {
                 safe_display_name: "invoice.pdf".to_owned(),
                 mime_type: "application/pdf".to_owned(),
                 size_bytes: 42,
+                size_is_estimate: true,
                 disposition: AttachmentDisposition::Attachment,
             })]),
         );
@@ -1097,6 +1104,7 @@ mod tests {
         assert!(json.get("raw_rfc822").is_none());
         assert_eq!(json["attachments"][0]["id"], "opaque-attachment");
         assert_eq!(json["attachments"][0]["size_bytes"], 42);
+        assert_eq!(json["attachments"][0]["size_is_estimate"], true);
         assert!(json["attachments"][0].get("bytes").is_none());
         assert!(json["attachments"][0].get("path").is_none());
         assert_no_private_mail_coordinates(&json);

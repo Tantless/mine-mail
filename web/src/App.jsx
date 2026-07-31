@@ -1302,11 +1302,17 @@ export function App() {
         Object.prototype.hasOwnProperty.call(displayMessage, "body_text") ||
         Object.prototype.hasOwnProperty.call(displayMessage, "body_html") ||
         Object.prototype.hasOwnProperty.call(displayMessage, "body_segments");
+      const needsAttachmentHydration =
+        isRemoteMailboxMessage &&
+        !Array.isArray(displayMessage.attachments) &&
+        Array.isArray(displayMessage.attachment_names) &&
+        displayMessage.attachment_names.length > 0;
       if (
         !forceFetch &&
         displayMessage.body_fetched &&
         hasHydratedBodyPayload &&
-        !needsHtmlHydration
+        !needsHtmlHydration &&
+        !needsAttachmentHydration
       ) {
         setIsMessageLoading(false);
         return;
@@ -1778,6 +1784,7 @@ export function App() {
     }));
     const accountId = activeAccountIdRef.current || "unscoped";
     let items;
+    let sentFallbacks;
     try {
       [items, sentFallbacks] = await Promise.all([
         mailApi.listOutbox(),
@@ -1801,6 +1808,14 @@ export function App() {
     });
     if (activeAccountIdRef.current !== accountId) return items;
     setOutbox(items);
+    setSentOutboxFallbacks(sentFallbacks);
+    if (
+      activeFolderRef.current === "outbox" &&
+      selectedMessageIdRef.current &&
+      !items.some((item) => item.id === selectedMessageIdRef.current)
+    ) {
+      clearSelection();
+    }
     setSelectedMessage((current) => {
       if (current?.kind !== "outbox") return current;
       const displayedRole =
@@ -1813,6 +1828,7 @@ export function App() {
         freshItem,
         draftsRef.current,
         accountSenderIdentity(accountStatusRef.current),
+        displayedRole,
       );
       return current.body_fetched
         ? { ...summary, ...bodySnapshot(current) }
@@ -1835,6 +1851,9 @@ export function App() {
       next[index] = item;
       return next;
     };
+    const removeItem = (items = []) =>
+      items.filter((candidate) => candidate.id !== item.id);
+    const itemWasSent = item.status === "sent";
     if (activeAccountIdRef.current !== accountId) {
       const view = accountViewsRef.current.get(accountId) || {};
       accountViewsRef.current.set(accountId, {
@@ -1854,6 +1873,23 @@ export function App() {
       accountViewsRef.current.set(accountId, { ...view, outbox: next });
       return next;
     });
+    setSentOutboxFallbacks((current) => {
+      const next = itemWasSent ? upsertItem(current) : removeItem(current);
+      const view = accountViewsRef.current.get(accountId) || {};
+      accountViewsRef.current.set(accountId, {
+        ...view,
+        sentOutboxFallbacks: next,
+      });
+      return next;
+    });
+    if (
+      itemWasSent &&
+      activeFolderRef.current === "outbox" &&
+      selectedMessageIdRef.current === item.id
+    ) {
+      clearSelection();
+      return;
+    }
     setSelectedMessage((current) => {
       if (current?.kind !== "outbox" || current.outbox?.id !== item.id) {
         return current;
@@ -1862,6 +1898,7 @@ export function App() {
         item,
         draftsRef.current,
         accountSenderIdentity(accountStatusRef.current),
+        itemWasSent ? "sent" : "outbox",
       );
       return current.body_fetched
         ? { ...summary, ...bodySnapshot(current) }
@@ -1887,14 +1924,6 @@ export function App() {
             loadMailboxRolePage({ accountId, role }),
           ),
         );
-    setSentOutboxFallbacks(sentFallbacks);
-    if (
-      activeFolderRef.current === "outbox" &&
-      selectedMessageIdRef.current &&
-      !items.some((item) => item.id === selectedMessageIdRef.current)
-    ) {
-      clearSelection();
-    }
         const previous = accountViewsRef.current.get(accountId) || {};
         const view = {
           messages: previous.messages || [],
@@ -1903,7 +1932,7 @@ export function App() {
           trashMessages: previous.trashMessages || [],
           drafts: previous.drafts || [],
           outbox: previous.outbox || [],
-        displayedRole,
+          sentOutboxFallbacks: previous.sentOutboxFallbacks || [],
           selectedMessageId: previous.selectedMessageId ?? null,
           selectedMessage: previous.selectedMessage ?? null,
           mailboxPageStates:
@@ -1926,9 +1955,6 @@ export function App() {
 
   const prefetchAccountViews = useCallback(
     async (status) => {
-    const removeItem = (items = []) =>
-      items.filter((candidate) => candidate.id !== item.id);
-    const itemWasSent = item.status === "sent";
       const accounts = status?.accounts || [];
       const activeAccountId =
         status?.activeAccountId || status?.accountId || null;
@@ -1943,23 +1969,6 @@ export function App() {
 
   const loadMailboxData = useCallback(
     async ({
-    setSentOutboxFallbacks((current) => {
-      const next = itemWasSent ? upsertItem(current) : removeItem(current);
-      const view = accountViewsRef.current.get(accountId) || {};
-      accountViewsRef.current.set(accountId, {
-        ...view,
-        sentOutboxFallbacks: next,
-      });
-      return next;
-    });
-    if (
-      itemWasSent &&
-      activeFolderRef.current === "outbox" &&
-      selectedMessageIdRef.current === item.id
-    ) {
-      clearSelection();
-      return;
-    }
       selectFirst = false,
       accountId = activeAccountIdRef.current,
     } = {}) => {
@@ -1968,7 +1977,6 @@ export function App() {
       try {
         capabilities = await refreshMailboxCapabilities(accountId);
       } catch (error) {
-        itemWasSent ? "sent" : "outbox",
         if (activeAccountIdRef.current === accountId) {
           setMailboxCapabilities({});
         }
@@ -2002,7 +2010,6 @@ export function App() {
           }),
         ),
       );
-          sentOutboxFallbacks: previous.sentOutboxFallbacks || [],
       const activeLocalResults =
         activeAccountIdRef.current === accountId
           ? await Promise.allSettled([
@@ -2018,6 +2025,7 @@ export function App() {
         trashMessages: previous.trashMessages || [],
         drafts: previous.drafts || [],
         outbox: previous.outbox || [],
+        sentOutboxFallbacks: previous.sentOutboxFallbacks || [],
         selectedMessageId: previous.selectedMessageId ?? null,
         selectedMessage: previous.selectedMessage ?? null,
         mailboxPageStates:
@@ -2095,7 +2103,6 @@ export function App() {
           items: fallbackItems,
           sources: {},
           phase: "loading",
-        sentOutboxFallbacks: previous.sentOutboxFallbacks || [],
           loadMorePhase: "idle",
           loadMoreError: null,
           endReached: false,
@@ -2237,6 +2244,7 @@ export function App() {
         trashMessages: [],
         drafts: [],
         outbox: [],
+        sentOutboxFallbacks: [],
         selectedMessageId: null,
         selectedMessage: null,
         mailboxPageStates: createMailboxPageStates(),
@@ -2252,6 +2260,7 @@ export function App() {
       draftsRef.current = restored.drafts;
       setDrafts(restored.drafts);
       setOutbox(restored.outbox);
+      setSentOutboxFallbacks(restored.sentOutboxFallbacks || []);
       setMailboxPageStates(
         restored.mailboxPageStates || createMailboxPageStates(),
       );
@@ -2314,7 +2323,6 @@ export function App() {
       try {
         const directory = await mailApi.listContacts(accountId);
         if (
-        sentOutboxFallbacks: [],
           contactsRequestRef.current !== requestId ||
           activeAccountIdRef.current !== accountId
         ) {
@@ -2330,7 +2338,6 @@ export function App() {
           Array.isArray(directory) ? [] : directory.favorites || []
         );
         const appFavorites = favoriteCandidates
-      setSentOutboxFallbacks(restored.sentOutboxFallbacks || []);
           .filter(
             (item) =>
               typeof item?.accountId === "string" &&
@@ -5760,6 +5767,7 @@ export function App() {
         setTrashMessages([]);
         setDrafts([]);
         setOutbox([]);
+        setSentOutboxFallbacks([]);
         setMailboxPageStates(createMailboxPageStates());
         setMailboxCapabilities(null);
         setRemoteSearch(null);
@@ -5807,6 +5815,7 @@ export function App() {
       setTrashMessages([]);
       setDrafts([]);
       setOutbox([]);
+      setSentOutboxFallbacks([]);
       setMailboxPageStates(createMailboxPageStates());
       setMailboxCapabilities(null);
       setRemoteSearch(null);
@@ -5887,10 +5896,10 @@ export function App() {
         messages,
         sentMessages,
         archiveMessages,
-        setSentOutboxFallbacks([]);
         trashMessages,
         drafts,
         outbox,
+        sentOutboxFallbacks,
         selectedMessageId,
         selectedMessage,
         mailboxPageStates,
@@ -5935,7 +5944,6 @@ export function App() {
           restoreAccountView(accountId, loadedView, { selectFirst: false });
         });
       }
-      setSentOutboxFallbacks([]);
       const status = await mailApi.switchAccount(accountId);
       const loadedView = await viewPromise;
       if (

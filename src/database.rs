@@ -7991,6 +7991,7 @@ fn query_forward_context(
                 safe_display_name: row.get(2)?,
                 mime_type: row.get(3)?,
                 size_bytes: decode_u64(4, row.get(4)?)?,
+                size_is_estimate: false,
                 disposition: attachment_disposition_from_column(5, disposition)?,
             })
         })?
@@ -9124,6 +9125,32 @@ mod tests {
             repository.get_message(first_id).unwrap().flags,
             ["\\Flagged"]
         );
+    }
+
+    #[test]
+    fn selective_body_cache_can_upgrade_to_a_complete_mime_snapshot() {
+        let (_directory, repository, account) = setup();
+        let mut selective = message(&account.account_id, true);
+        selective.body_text = Some("Selected text part".to_owned());
+        selective.raw_rfc822.clear();
+        let message_id = repository
+            .upsert_message(&selective)
+            .expect("selective body");
+
+        let stored = repository
+            .get_message(message_id)
+            .expect("stored selective body");
+        assert!(stored.body_fetched);
+        assert_eq!(stored.body_text.as_deref(), Some("Selected text part"));
+        assert!(stored.raw_rfc822.is_empty());
+
+        let complete = message(&account.account_id, true);
+        repository.upsert_message(&complete).expect("complete MIME");
+        let upgraded = repository
+            .get_message(message_id)
+            .expect("upgraded complete MIME");
+        assert_eq!(upgraded.body_text.as_deref(), Some("Full body"));
+        assert_eq!(upgraded.raw_rfc822, b"full raw message");
     }
 
     #[test]
@@ -11714,33 +11741,6 @@ mod tests {
         assert_eq!(repository.get_draft("draft-1").unwrap().status, "sent");
         assert_eq!(
             repository.list_outbox(&account.account_id).unwrap().len(),
-            1
-        );
-    }
-
-    #[test]
-    fn stale_remote_pull_cannot_overwrite_a_concurrent_local_edit_or_create_conflict_copy() {
-        let (_directory, first, account) = setup();
-        let second = Repository::open(&first.path).expect("second repository connection");
-        let base = draft_record(&account.account_id, "shared-draft", "base", 1, 1);
-        first.save_draft_record(&base).expect("base draft");
-        let sync_snapshot = first
-            .get_draft_record(&base.draft.id)
-            .expect("sync snapshot");
-
-        let mut concurrent_edit = sync_snapshot.clone();
-        concurrent_edit.local_version = 2;
-        concurrent_edit.draft.local_version = 2;
-        concurrent_edit.revision = 2;
-        concurrent_edit.draft.status = "local".to_owned();
-        concurrent_edit.draft.subject = "new local edit".to_owned();
-        concurrent_edit.draft.raw_rfc822 = b"new local bytes".to_vec();
-        second
-            .save_draft_record(&concurrent_edit)
-            .expect("concurrent edit");
-
-        let mut stale_remote = sync_snapshot.clone();
-        stale_remote.revision = 2;
             0
         );
         assert_eq!(
@@ -11748,10 +11748,10 @@ mod tests {
                 .list_sent_outbox_fallbacks(&account.account_id)
                 .unwrap()
                 .len(),
-        stale_remote.synced_revision = 2;
-        stale_remote.draft.subject = "remote replacement".to_owned();
-        stale_remote.draft.raw_rfc822 = b"remote bytes".to_vec();
-        let conflict_copy = draft_record(
+            1
+        );
+    }
+
     #[test]
     fn exact_cached_sent_message_retires_sent_and_unknown_outbox_rows() {
         let (_directory, repository, account) = setup();
@@ -11834,6 +11834,33 @@ mod tests {
         assert!(repository.get_outbox(&unknown.id).is_err());
     }
 
+    #[test]
+    fn stale_remote_pull_cannot_overwrite_a_concurrent_local_edit_or_create_conflict_copy() {
+        let (_directory, first, account) = setup();
+        let second = Repository::open(&first.path).expect("second repository connection");
+        let base = draft_record(&account.account_id, "shared-draft", "base", 1, 1);
+        first.save_draft_record(&base).expect("base draft");
+        let sync_snapshot = first
+            .get_draft_record(&base.draft.id)
+            .expect("sync snapshot");
+
+        let mut concurrent_edit = sync_snapshot.clone();
+        concurrent_edit.local_version = 2;
+        concurrent_edit.draft.local_version = 2;
+        concurrent_edit.revision = 2;
+        concurrent_edit.draft.status = "local".to_owned();
+        concurrent_edit.draft.subject = "new local edit".to_owned();
+        concurrent_edit.draft.raw_rfc822 = b"new local bytes".to_vec();
+        second
+            .save_draft_record(&concurrent_edit)
+            .expect("concurrent edit");
+
+        let mut stale_remote = sync_snapshot.clone();
+        stale_remote.revision = 2;
+        stale_remote.synced_revision = 2;
+        stale_remote.draft.subject = "remote replacement".to_owned();
+        stale_remote.draft.raw_rfc822 = b"remote bytes".to_vec();
+        let conflict_copy = draft_record(
             &account.account_id,
             "conflict-copy",
             "stale conflict copy",
@@ -13436,6 +13463,7 @@ mod tests {
                 safe_display_name: "second.bin".to_owned(),
                 mime_type: "application/octet-stream".to_owned(),
                 size_bytes: second.imported.size_bytes,
+                size_is_estimate: false,
                 disposition: AttachmentDisposition::Attachment,
             }],
         };

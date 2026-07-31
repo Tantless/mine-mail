@@ -3,6 +3,10 @@ use std::{collections::BTreeSet, time::Duration};
 use async_imap::{
     Session,
     extensions::idle::IdleResponse,
+    imap_proto::types::{
+        BodyContentCommon, BodyContentSinglePart, BodyStructure, ContentEncoding, MessageSection,
+        SectionPath,
+    },
     types::{Capabilities, Capability, Flag, NameAttribute},
 };
 use async_native_tls::TlsStream;
@@ -74,6 +78,40 @@ pub(crate) struct RemoteMessage {
     pub internal_date: Option<String>,
     pub size_bytes: u32,
     pub raw: Vec<u8>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum RemoteTransferEncoding {
+    SevenBit,
+    EightBit,
+    Binary,
+    Base64,
+    QuotedPrintable,
+    Other(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RemoteMimePart {
+    pub path: Vec<u32>,
+    pub mime_type: String,
+    pub original_name: Option<String>,
+    pub disposition: Option<String>,
+    pub content_id: Option<String>,
+    pub transfer_encoding: RemoteTransferEncoding,
+    pub encoded_size_bytes: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RemoteMessageStructure {
+    pub uid: u32,
+    pub parts: Vec<RemoteMimePart>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RemoteBodyPart {
+    pub path: Vec<u32>,
+    pub mime_header: Vec<u8>,
+    pub encoded_body: Vec<u8>,
 }
 
 #[derive(Clone, Debug)]
@@ -667,6 +705,135 @@ impl ImapConnection {
         })
     }
 
+    pub async fn fetch_message_structure(&mut self, uid: u32) -> Result<RemoteMessageStructure> {
+        if uid == 0 {
+            return Err(MailError::Validation(
+                "message UID must be greater than zero".to_owned(),
+            ));
+        }
+        let stream = timeout(
+            COMMAND_TIMEOUT,
+            self.session
+                .uid_fetch(uid.to_string(), message_structure_fetch_query()),
+        )
+        .await
+        .map_err(|_| MailError::Timeout {
+            operation: "IMAP message structure fetch",
+        })?
+        .map_err(|error| MailError::Imap(error.to_string()))?;
+        let fetched = timeout(COMMAND_TIMEOUT, stream.try_collect::<Vec<_>>())
+            .await
+            .map_err(|_| MailError::Timeout {
+                operation: "IMAP message structure response",
+            })?
+            .map_err(|error| MailError::Imap(error.to_string()))?;
+        let fetched = fetched
+            .into_iter()
+            .find(|message| message.uid == Some(uid))
+            .ok_or_else(|| MailError::NotFound {
+                entity: "remote message UID",
+                id: uid.to_string(),
+            })?;
+        let structure = fetched
+            .bodystructure()
+            .ok_or_else(|| MailError::Imap("server omitted BODYSTRUCTURE".to_owned()))?;
+        let mut parts = Vec::new();
+        collect_remote_mime_parts(structure, &[], &mut parts)?;
+        Ok(RemoteMessageStructure { uid, parts })
+    }
+
+    pub async fn fetch_message_parts(
+        &mut self,
+        uid: u32,
+        paths: &[Vec<u32>],
+    ) -> Result<Vec<RemoteBodyPart>> {
+        self.fetch_message_parts_with_limit(uid, paths, None).await
+    }
+
+    pub async fn fetch_message_parts_bounded(
+        &mut self,
+        uid: u32,
+        paths: &[Vec<u32>],
+        max_body_bytes: u64,
+    ) -> Result<Vec<RemoteBodyPart>> {
+        if max_body_bytes == 0 {
+            return Err(MailError::Validation(
+                "message MIME part byte limit must be greater than zero".to_owned(),
+            ));
+        }
+        self.fetch_message_parts_with_limit(uid, paths, Some(max_body_bytes))
+            .await
+    }
+
+    async fn fetch_message_parts_with_limit(
+        &mut self,
+        uid: u32,
+        paths: &[Vec<u32>],
+        max_body_bytes: Option<u64>,
+    ) -> Result<Vec<RemoteBodyPart>> {
+        if uid == 0 {
+            return Err(MailError::Validation(
+                "message UID must be greater than zero".to_owned(),
+            ));
+        }
+        if paths.is_empty() {
+            return Ok(Vec::new());
+        }
+        let query = message_parts_fetch_query_with_limit(paths, max_body_bytes)?;
+        let stream = timeout(
+            COMMAND_TIMEOUT,
+            self.session.uid_fetch(uid.to_string(), query),
+        )
+        .await
+        .map_err(|_| MailError::Timeout {
+            operation: "IMAP message part fetch",
+        })?
+        .map_err(|error| MailError::Imap(error.to_string()))?;
+        let fetched = timeout(COMMAND_TIMEOUT, stream.try_collect::<Vec<_>>())
+            .await
+            .map_err(|_| MailError::Timeout {
+                operation: "IMAP message part response",
+            })?
+            .map_err(|error| MailError::Imap(error.to_string()))?;
+        let fetched = fetched
+            .into_iter()
+            .find(|message| message.uid == Some(uid))
+            .ok_or_else(|| MailError::NotFound {
+                entity: "remote message UID",
+                id: uid.to_string(),
+            })?;
+
+        paths
+            .iter()
+            .map(|path| {
+                let mime_path = SectionPath::Part(path.clone(), Some(MessageSection::Mime));
+                let body_path = SectionPath::Part(path.clone(), None);
+                let mime_header = fetched
+                    .section(&mime_path)
+                    .ok_or_else(|| {
+                        MailError::Imap("server omitted requested MIME part header".to_owned())
+                    })?
+                    .to_vec();
+                let encoded_body = fetched
+                    .section(&body_path)
+                    .ok_or_else(|| {
+                        MailError::Imap("server omitted requested MIME part body".to_owned())
+                    })?
+                    .to_vec();
+                if max_body_bytes.is_some_and(|limit| encoded_body.len() as u64 > limit) {
+                    return Err(MailError::Validation(
+                        "selected message body part exceeds the reader byte limit".to_owned(),
+                    ));
+                }
+                Ok(RemoteBodyPart {
+                    path: path.clone(),
+                    mime_header,
+                    encoded_body,
+                })
+            })
+            .collect()
+    }
+
     pub async fn fetch_flags(&mut self, uids: &[u32]) -> Result<Vec<(u32, Vec<String>)>> {
         if uids.is_empty() {
             return Ok(Vec::new());
@@ -1029,6 +1196,150 @@ fn summary_fetch_query() -> String {
     format!("(UID FLAGS INTERNALDATE RFC822.SIZE BODY.PEEK[]<0.{SUMMARY_PREVIEW_BYTES}>)")
 }
 
+fn message_structure_fetch_query() -> &'static str {
+    "(UID BODYSTRUCTURE)"
+}
+
+fn message_parts_fetch_query_with_limit(
+    paths: &[Vec<u32>],
+    max_body_bytes: Option<u64>,
+) -> Result<String> {
+    if paths.is_empty() {
+        return Err(MailError::Validation(
+            "at least one message MIME part is required".to_owned(),
+        ));
+    }
+    let requested_body_bytes = max_body_bytes
+        .map(|limit| {
+            limit.checked_add(1).ok_or_else(|| {
+                MailError::Validation("message MIME part byte limit is invalid".to_owned())
+            })
+        })
+        .transpose()?;
+    let mut query = String::from("(UID");
+    for path in paths {
+        let section = validated_part_section(path)?;
+        query.push_str(&format!(" BODY.PEEK[{section}.MIME]"));
+        if let Some(requested_body_bytes) = requested_body_bytes {
+            query.push_str(&format!(" BODY.PEEK[{section}]<0.{requested_body_bytes}>"));
+        } else {
+            query.push_str(&format!(" BODY.PEEK[{section}]"));
+        }
+    }
+    query.push(')');
+    Ok(query)
+}
+
+fn collect_remote_mime_parts(
+    structure: &BodyStructure<'_>,
+    parent_path: &[u32],
+    parts: &mut Vec<RemoteMimePart>,
+) -> Result<()> {
+    const MAX_REMOTE_MIME_PARTS: usize = 4_096;
+    const MAX_REMOTE_MIME_DEPTH: usize = 64;
+
+    if parent_path.len() > MAX_REMOTE_MIME_DEPTH {
+        return Err(MailError::Mime(
+            "remote MIME structure is too deeply nested".to_owned(),
+        ));
+    }
+    match structure {
+        BodyStructure::Multipart { bodies, .. } => {
+            for (index, body) in bodies.iter().enumerate() {
+                if parts.len() >= MAX_REMOTE_MIME_PARTS {
+                    return Err(MailError::Mime(
+                        "remote MIME structure contains too many parts".to_owned(),
+                    ));
+                }
+                let mut path = parent_path.to_vec();
+                path.push(u32::try_from(index + 1).map_err(|_| {
+                    MailError::Mime("remote MIME part index is invalid".to_owned())
+                })?);
+                collect_remote_mime_parts(body, &path, parts)?;
+            }
+        }
+        BodyStructure::Basic { common, other, .. }
+        | BodyStructure::Text { common, other, .. }
+        | BodyStructure::Message { common, other, .. } => {
+            if parts.len() >= MAX_REMOTE_MIME_PARTS {
+                return Err(MailError::Mime(
+                    "remote MIME structure contains too many parts".to_owned(),
+                ));
+            }
+            let path = if parent_path.is_empty() {
+                vec![1]
+            } else {
+                parent_path.to_vec()
+            };
+            parts.push(remote_mime_part(path, common, other));
+        }
+    }
+    Ok(())
+}
+
+fn remote_mime_part(
+    path: Vec<u32>,
+    common: &BodyContentCommon<'_>,
+    other: &BodyContentSinglePart<'_>,
+) -> RemoteMimePart {
+    let original_name = body_parameter(
+        common
+            .disposition
+            .as_ref()
+            .and_then(|disposition| disposition.params.as_ref()),
+        "filename",
+    )
+    .or_else(|| body_parameter(common.ty.params.as_ref(), "name"));
+    let transfer_encoding = match &other.transfer_encoding {
+        ContentEncoding::SevenBit => RemoteTransferEncoding::SevenBit,
+        ContentEncoding::EightBit => RemoteTransferEncoding::EightBit,
+        ContentEncoding::Binary => RemoteTransferEncoding::Binary,
+        ContentEncoding::Base64 => RemoteTransferEncoding::Base64,
+        ContentEncoding::QuotedPrintable => RemoteTransferEncoding::QuotedPrintable,
+        ContentEncoding::Other(value) => RemoteTransferEncoding::Other(value.to_string()),
+    };
+    RemoteMimePart {
+        path,
+        mime_type: format!(
+            "{}/{}",
+            common.ty.ty.to_ascii_lowercase(),
+            common.ty.subtype.to_ascii_lowercase()
+        ),
+        original_name,
+        disposition: common
+            .disposition
+            .as_ref()
+            .map(|disposition| disposition.ty.to_ascii_lowercase()),
+        content_id: other.id.as_ref().map(ToString::to_string),
+        transfer_encoding,
+        encoded_size_bytes: u64::from(other.octets),
+    }
+}
+
+fn body_parameter(
+    parameters: Option<&Vec<(std::borrow::Cow<'_, str>, std::borrow::Cow<'_, str>)>>,
+    expected: &str,
+) -> Option<String> {
+    parameters?
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(expected))
+        .map(|(_, value)| value.to_string())
+        .filter(|value| !value.trim().is_empty())
+}
+
+fn validated_part_section(path: &[u32]) -> Result<String> {
+    if path.is_empty() || path.len() > 64 || path.iter().any(|segment| *segment == 0) {
+        return Err(MailError::Validation(
+            "message MIME part path is invalid".to_owned(),
+        ));
+    }
+    Ok(path
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join("."))
+}
+
 fn has_capability(capabilities: &Capabilities, expected: &str) -> bool {
     capabilities
         .iter()
@@ -1287,7 +1598,8 @@ mod tests {
         UidSearchWindow, capability_atom_matches, choose_delete_finalization,
         choose_message_move_method, classify_remote_mailbox, compress_uid_set, ensure_flag_state,
         finish_older_uid_search, mailbox_allows_deleted_updates, mailbox_allows_flagged_updates,
-        mailbox_allows_seen_updates, older_uid_search_window, required_uid_set,
+        mailbox_allows_seen_updates, message_parts_fetch_query_with_limit,
+        message_structure_fetch_query, older_uid_search_window, required_uid_set,
         summary_fetch_query, validate_history_page_size, validated_mailbox_name,
     };
 
@@ -1298,6 +1610,25 @@ mod tests {
         assert!(query.contains("BODY.PEEK[]"));
         assert!(query.contains(&format!("<0.{SUMMARY_PREVIEW_BYTES}>")));
         assert!(!query.contains("BODY[]"));
+    }
+
+    #[test]
+    fn selected_reader_fetches_structure_and_only_requested_mime_parts() {
+        assert_eq!(message_structure_fetch_query(), "(UID BODYSTRUCTURE)");
+        let query =
+            message_parts_fetch_query_with_limit(&[vec![1], vec![2, 1]], None).expect("part query");
+
+        assert!(query.contains("BODY.PEEK[1.MIME]"));
+        assert!(query.contains("BODY.PEEK[1]"));
+        assert!(query.contains("BODY.PEEK[2.1.MIME]"));
+        assert!(query.contains("BODY.PEEK[2.1]"));
+        assert!(!query.contains("BODY.PEEK[]"));
+        assert!(message_parts_fetch_query_with_limit(&[vec![0]], None).is_err());
+
+        let bounded =
+            message_parts_fetch_query_with_limit(&[vec![1]], Some(12)).expect("bounded query");
+        assert!(bounded.contains("BODY.PEEK[1]<0.13>"));
+        assert!(!bounded.contains("BODY.PEEK[1] BODY.PEEK"));
     }
 
     #[test]

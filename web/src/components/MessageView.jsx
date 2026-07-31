@@ -271,9 +271,9 @@ function attachmentStatusPresentation(attachment, stateValue, canSave) {
     actionable: canSave,
     busy: false,
     label: canSave ? `保存附件 ${name}` : `附件 ${name}，当前无法保存`,
-    statusText: `${attachment.mime_type || "未知类型"} · ${formatAttachmentSize(
-      attachment.size_bytes,
-    )}`,
+    statusText: `${attachment.mime_type || "未知类型"} · ${
+      attachment.size_is_estimate ? "约 " : ""
+    }${formatAttachmentSize(attachment.size_bytes)}`,
     status: canSave ? status : "disabled",
   };
 }

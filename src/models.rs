@@ -601,8 +601,10 @@ pub enum AttachmentDisposition {
     Inline,
 }
 
-/// Bounded metadata for one attachment indexed from a completely cached
-/// message. `id` is opaque to React and is never a MIME part number or path.
+/// Bounded metadata for one attachment. `id` is opaque to React and is never a
+/// MIME part number or path. A remote BODYSTRUCTURE listing can report only the
+/// transfer-encoded size, so `size_is_estimate` remains explicit until the part
+/// has been decoded.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub struct AttachmentMeta {
     pub id: String,
@@ -611,6 +613,8 @@ pub struct AttachmentMeta {
     pub safe_display_name: String,
     pub mime_type: String,
     pub size_bytes: u64,
+    #[serde(default)]
+    pub size_is_estimate: bool,
     pub disposition: AttachmentDisposition,
 }
 

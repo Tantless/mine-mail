@@ -667,6 +667,7 @@ struct AttachmentMetaDto {
     safe_display_name: String,
     mime_type: String,
     size_bytes: u64,
+    size_is_estimate: bool,
     disposition: AttachmentDisposition,
 }
 
@@ -678,6 +679,7 @@ impl From<AttachmentMeta> for AttachmentMetaDto {
             safe_display_name: value.safe_display_name,
             mime_type: value.mime_type,
             size_bytes: value.size_bytes,
+            size_is_estimate: value.size_is_estimate,
             disposition: value.disposition,
         }
     }
@@ -1464,9 +1466,9 @@ fn delete_draft(
 async fn send_draft(
     account: State<'_, AccountRuntime>,
     backend: State<'_, BackendState>,
+    desktop_runtime: State<'_, DesktopRuntime>,
     draft_id: String,
     expected_local_version: u64,
-    desktop_runtime: State<'_, DesktopRuntime>,
     confirmed_recipients: Vec<String>,
 ) -> CommandResult<OutboxItemDto> {
     let started = Instant::now();
@@ -1481,9 +1483,9 @@ async fn send_draft(
         fields = fields.account(account_id);
     }
     diagnostics::info("send_started", fields.clone());
+    let _smtp_operation = desktop_runtime.begin_smtp_operation()?;
     if let Err(error) = account.refresh_active_oauth_backend(&backend).await {
         diagnostics::error(
-    let _smtp_operation = desktop_runtime.begin_smtp_operation()?;
             "send_failed",
             fields
                 .clone()
@@ -1538,9 +1540,9 @@ async fn send_draft(
 async fn retry_outbox(
     account: State<'_, AccountRuntime>,
     backend: State<'_, BackendState>,
+    desktop_runtime: State<'_, DesktopRuntime>,
     outbox_id: String,
 ) -> CommandResult<OutboxItemDto> {
-    desktop_runtime: State<'_, DesktopRuntime>,
     let started = Instant::now();
     let operation_id = diagnostics::operation_id();
     let account_id = backend.active_account_id();
@@ -1552,9 +1554,9 @@ async fn retry_outbox(
         fields = fields.account(account_id);
     }
     diagnostics::info("outbox_retry_started", fields.clone());
+    let _smtp_operation = desktop_runtime.begin_smtp_operation()?;
     if let Err(error) = account.refresh_active_oauth_backend(&backend).await {
         diagnostics::error(
-    let _smtp_operation = desktop_runtime.begin_smtp_operation()?;
             "outbox_retry_failed",
             fields
                 .clone()
@@ -1642,9 +1644,9 @@ fn delivery_unknown_decision_name(decision: DeliveryUnknownDecision) -> &'static
 async fn resolve_delivery_unknown(
     account: State<'_, AccountRuntime>,
     backend: State<'_, BackendState>,
+    desktop_runtime: State<'_, DesktopRuntime>,
     outbox_id: String,
     expected_attempts: u32,
-    desktop_runtime: State<'_, DesktopRuntime>,
     decision: DeliveryUnknownDecision,
     acknowledge_duplicate_risk: bool,
 ) -> CommandResult<OutboxItemDto> {
@@ -1673,9 +1675,9 @@ async fn resolve_delivery_unknown(
             })
             .map(OutboxItemDto::from),
         DeliveryUnknownDecision::RetryOnce => {
+            let _smtp_operation = desktop_runtime.begin_smtp_operation()?;
             if let Err(error) = account.refresh_active_oauth_backend(&backend).await {
                 diagnostics::error(
-            let _smtp_operation = desktop_runtime.begin_smtp_operation()?;
                     "delivery_unknown_resolution_failed",
                     fields
                         .clone()
@@ -1752,8 +1754,6 @@ fn list_outbox(backend: State<'_, BackendState>) -> CommandResult<Vec<OutboxItem
         .map_err(safe_mail_error)
 }
 
-/// Hydrates only the selected local Outbox body. Raw RFC822 bytes never cross
-/// the desktop boundary, and list responses remain bounded summaries.
 #[tauri::command]
 fn list_sent_outbox_fallbacks(
     backend: State<'_, BackendState>,
@@ -1765,6 +1765,8 @@ fn list_sent_outbox_fallbacks(
         .map_err(safe_mail_error)
 }
 
+/// Hydrates only the selected local Outbox body. Raw RFC822 bytes never cross
+/// the desktop boundary, and list responses remain bounded summaries.
 #[tauri::command]
 fn fetch_outbox_message(
     backend: State<'_, BackendState>,
@@ -2281,9 +2283,9 @@ pub fn run() {
             retry_outbox,
             resolve_delivery_unknown,
             list_outbox,
+            list_sent_outbox_fallbacks,
             fetch_outbox_message,
             get_storage_status,
-            list_sent_outbox_fallbacks,
             prepare_storage_migration,
             cancel_storage_migration,
             get_desktop_settings,
@@ -2704,6 +2706,7 @@ mod tests {
                     safe_display_name: "invoice.pdf".to_owned(),
                     mime_type: "application/pdf".to_owned(),
                     size_bytes: 42,
+                    size_is_estimate: false,
                     disposition: AttachmentDisposition::Attachment,
                 }],
             }),

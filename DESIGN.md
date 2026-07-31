@@ -367,8 +367,10 @@ family. Preserve the relative hierarchy when tuning optical values.
   Sent as a local fallback until the provider's exact Sent copy is synchronized.
 - Received attachments form a compact grid or list below the body using the
   shared control surface. Each card shows a type-appropriate Phosphor icon,
-  safe name, exact attachment size, and its own save action; unknown types use a
-  generic file icon.
+  safe name, attachment size, and its own save action; unknown types use a
+  generic file icon. A decoded cached part shows its exact size. Metadata shown
+  before remote bytes are decoded labels the transfer-size projection with
+  **约** rather than presenting it as exact.
 - An attachment card exposes saving, canceled, completed, and retryable-error
   states without changing other cards or the current reader. It never labels
   every attachment as PDF, substitutes whole-message size, or displays a

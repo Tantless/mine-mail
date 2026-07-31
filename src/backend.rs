@@ -10,10 +10,12 @@ use std::{
     time::Duration,
 };
 
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, SecondsFormat, TimeDelta, Utc};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tokio::{
-    sync::{Mutex, Semaphore},
+    sync::{Mutex, MutexGuard, Semaphore},
     time::Instant,
 };
 use uuid::Uuid;
@@ -30,7 +32,8 @@ use crate::{
     },
     imap_client::{
         CreatableMailboxRole, DeleteFinalization, ImapConnection, MailboxHint, MailboxMessageScope,
-        MessageMoveMethod, RemoteMailbox, RemoteMessage,
+        MessageMoveMethod, RemoteBodyPart, RemoteMailbox, RemoteMessage, RemoteMessageStructure,
+        RemoteMimePart, RemoteTransferEncoding,
     },
     mailbox_mutation::{
         PersistedFlagWork, PersistedPhaseWork, persisted_flag_work, persisted_phase_work,
@@ -40,12 +43,13 @@ use crate::{
         AttachmentIndexError, AttachmentPartMetadata, ForwardHtmlRenderMode, ForwardSourceError,
         IncomingMetadata, MAX_ATTACHMENT_PARTS, MAX_MANAGED_ATTACHMENT_BYTES,
         MAX_MANAGED_ATTACHMENT_TOTAL_BYTES, ManagedMimeAttachment, MimeSourceCompleteness,
-        build_draft_message_revision, build_draft_message_revision_with_attachments,
-        build_outgoing_message, build_outgoing_message_with_attachments, extract_attachment,
+        bounded_original_attachment_name, build_draft_message_revision,
+        build_draft_message_revision_with_attachments, build_outgoing_message,
+        build_outgoing_message_with_attachments, decode_remote_mime_part, extract_attachment,
         index_message_attachments, outbox_message_id, parse_draft_message, parse_incoming_message,
         parse_incoming_summary_or_fallback, prepare_forward_source,
         prepare_forward_source_without_attachments, render_message_html, restore_outbox_envelope,
-        sanitize_compose_html, validate_attachment_id,
+        safe_attachment_filename, sanitize_compose_html, validate_attachment_id,
     },
     models::{
         AttachmentDisposition, AttachmentMeta, AttachmentSaveErrorKind, AttachmentSaveResult,
@@ -69,6 +73,8 @@ const FLAG_BATCH_SIZE: usize = 250;
 const MAX_CACHED_MESSAGE_BYTES: u32 = 50 * 1024 * 1024;
 const MAX_REPLY_QUOTED_TEXT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_REPLY_QUOTED_HTML_BYTES: usize = 12 * 1024 * 1024;
+const MAX_SELECTED_BODY_SECTION_BYTES: u64 = 12 * 1024 * 1024;
+const REMOTE_ATTACHMENT_ID_PREFIX: &str = "MMR1_";
 const MAX_LOCAL_DRAFT_CAS_RETRIES: usize = 32;
 const BODY_IMAP_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(60);
 const DEFAULT_MESSAGE_PAGE_SIZE: usize = 50;
@@ -599,14 +605,6 @@ impl MailBackend {
     }
 
     pub fn initialize(&self) -> Result<()> {
-        self.repository.initialize_account(&self.config)?;
-        if recover_outbox {
-            // Current senders create queued and claim sending inside one SQLite
-            // transaction, so a visible queued row can only be a legacy/crashed
-            // item from an older lifecycle and is safe to expose for manual retry.
-            self.repository.recover_queued_as_retryable()?;
-            self.repository.recover_sending_as_delivery_unknown()?;
-        }
         self.initialize_internal(true)
     }
 
@@ -617,6 +615,14 @@ impl MailBackend {
     }
 
     fn initialize_internal(&self, recover_outbox: bool) -> Result<()> {
+        self.repository.initialize_account(&self.config)?;
+        if recover_outbox {
+            // Current senders create queued and claim sending inside one SQLite
+            // transaction, so a visible queued row can only be a legacy/crashed
+            // item from an older lifecycle and is safe to expose for manual retry.
+            self.repository.recover_queued_as_retryable()?;
+            self.repository.recover_sending_as_delivery_unknown()?;
+        }
         self.cleanup_managed_attachments()?;
         Ok(())
     }
@@ -1029,16 +1035,10 @@ impl MailBackend {
         let report = report?;
         self.repository
             .assign_mailbox_role(&self.config.account_id, "sent", &mailbox)?;
+        self.reconcile_sent_outbox(&mailbox)?;
         Ok(report)
     }
 
-    /// Synchronizes one semantic role while preserving the per-account backend
-    /// boundary. Archive and Trash require a persisted available capability;
-    /// no action is silently redirected to another folder.
-        self.reconcile_sent_outbox(&mailbox)?;
-    pub async fn sync_mailbox(&self, account_id: &str, role: MailboxRole) -> Result<()> {
-        self.ensure_account_scope(account_id)?;
-        match role {
     fn reconcile_sent_outbox(&self, sent_mailbox: &str) -> Result<usize> {
         let mut retired = 0;
         for candidate in self
@@ -1063,6 +1063,12 @@ impl MailBackend {
         Ok(retired)
     }
 
+    /// Synchronizes one semantic role while preserving the per-account backend
+    /// boundary. Archive and Trash require a persisted available capability;
+    /// no action is silently redirected to another folder.
+    pub async fn sync_mailbox(&self, account_id: &str, role: MailboxRole) -> Result<()> {
+        self.ensure_account_scope(account_id)?;
+        match role {
             MailboxRole::Inbox => {
                 self.sync_inbox(DEFAULT_MESSAGE_PAGE_SIZE).await?;
             }
@@ -1829,12 +1835,20 @@ impl MailBackend {
             .map_err(|_| MailError::Mime("cached attachment indexing failed".to_owned()))
     }
 
-    /// Hydrates one already-known message before indexing. This accepts only
-    /// the opaque local message identity; provider mailbox names, UIDs, raw
-    /// MIME, part numbers, and attachment bytes stay inside Rust.
+    /// Returns attachment metadata for one known message without downloading
+    /// ordinary attachment bodies. A completely cached MIME uses the local
+    /// authoritative index; otherwise the server BODYSTRUCTURE is normalized
+    /// behind opaque IDs.
     pub async fn message_attachments(&self, public_id: &str) -> Result<Vec<AttachmentMeta>> {
-        self.fetch_message_by_id(public_id, false).await?;
-        self.cached_message_attachments(public_id)
+        let cached = self
+            .repository
+            .get_message_by_public_id(&self.config.account_id, public_id)?;
+        if cached.body_fetched && !cached.raw_rfc822.is_empty() {
+            return self.cached_message_attachments(public_id);
+        }
+        self.fetch_message_view_by_id(public_id, false)
+            .await
+            .map(|(_, attachments)| attachments)
     }
 
     /// Completes the Rust side of a platform Save As flow. `selected_destination`
@@ -1846,9 +1860,10 @@ impl MailBackend {
         attachment_id: &str,
         selected_destination: Option<&Path>,
     ) -> Result<AttachmentSaveResult> {
-        self.repository
+        let cached = self
+            .repository
             .get_message_by_public_id(&self.config.account_id, public_id)?;
-        if !validate_attachment_id(attachment_id) {
+        if !validate_attachment_id(attachment_id) && !is_remote_attachment_id(attachment_id) {
             return Err(MailError::Validation(
                 "the attachment identifier is invalid".to_owned(),
             ));
@@ -1862,59 +1877,133 @@ impl MailBackend {
             });
         };
 
-        let message = match self.fetch_message_by_id(public_id, false).await {
-            Ok(message) => message,
-            Err(_) => {
+        let (safe_display_name, bytes) = if validate_attachment_id(attachment_id)
+            && !cached.raw_rfc822.is_empty()
+        {
+            let metadata = match index_message_attachments(
+                &cached.raw_rfc822,
+                MimeSourceCompleteness::CompleteRfc822,
+            ) {
+                Ok(metadata) => metadata,
+                Err(_) => {
+                    return Ok(attachment_save_error(
+                        AttachmentSaveErrorKind::MessageUnavailable,
+                        true,
+                    ));
+                }
+            };
+            let Some(metadata) = metadata
+                .into_iter()
+                .find(|metadata| metadata.id == attachment_id)
+            else {
+                return Ok(attachment_save_error(
+                    AttachmentSaveErrorKind::AttachmentNotFound,
+                    false,
+                ));
+            };
+            let bytes = match extract_attachment(&cached.raw_rfc822, attachment_id) {
+                Ok(bytes) => bytes,
+                Err(AttachmentIndexError::AttachmentNotFound)
+                | Err(AttachmentIndexError::InvalidPartToken) => {
+                    return Ok(attachment_save_error(
+                        AttachmentSaveErrorKind::AttachmentNotFound,
+                        false,
+                    ));
+                }
+                Err(_) => {
+                    return Ok(attachment_save_error(
+                        AttachmentSaveErrorKind::MessageUnavailable,
+                        true,
+                    ));
+                }
+            };
+            if bytes.len() as u64 != metadata.size_bytes {
                 return Ok(attachment_save_error(
                     AttachmentSaveErrorKind::MessageUnavailable,
                     true,
                 ));
             }
-        };
-        let metadata = match index_message_attachments(
-            &message.raw_rfc822,
-            MimeSourceCompleteness::CompleteRfc822,
-        ) {
-            Ok(metadata) => metadata,
-            Err(_) => {
-                return Ok(attachment_save_error(
-                    AttachmentSaveErrorKind::MessageUnavailable,
-                    true,
-                ));
+            (metadata.safe_display_name, bytes)
+        } else if is_remote_attachment_id(attachment_id) {
+            let mut body_imap = match self.selected_foreground_body_session(&cached.mailbox).await {
+                Ok(session) => session,
+                Err(_) => {
+                    return Ok(attachment_save_error(
+                        AttachmentSaveErrorKind::MessageUnavailable,
+                        true,
+                    ));
+                }
+            };
+            let result = async {
+                let session = body_imap
+                    .as_mut()
+                    .expect("foreground body IMAP session is connected before attachment fetch");
+                let structure = session
+                    .connection
+                    .fetch_message_structure(cached.uid)
+                    .await?;
+                let listing = remote_attachment_listing(public_id, &structure);
+                let Some((metadata, path)) = listing
+                    .into_iter()
+                    .find(|(metadata, _)| metadata.id == attachment_id)
+                else {
+                    return Err(MailError::NotFound {
+                        entity: "remote attachment",
+                        id: "opaque".to_owned(),
+                    });
+                };
+                if metadata.disposition != AttachmentDisposition::Attachment {
+                    return Err(MailError::Validation(
+                        "inline MIME resources cannot be saved as ordinary attachments".to_owned(),
+                    ));
+                }
+                let mut fetched = session
+                    .connection
+                    .fetch_message_parts(cached.uid, std::slice::from_ref(&path))
+                    .await?;
+                let fetched = fetched.pop().ok_or_else(|| MailError::NotFound {
+                    entity: "remote attachment part",
+                    id: "opaque".to_owned(),
+                })?;
+                let decoded = decode_remote_mime_part(&fetched.mime_header, &fetched.encoded_body)?;
+                if !metadata.size_is_estimate
+                    && decoded.contents.len() as u64 != metadata.size_bytes
+                {
+                    return Err(MailError::Mime(
+                        "remote attachment size changed during download".to_owned(),
+                    ));
+                }
+                Ok((metadata.safe_display_name, decoded.contents))
             }
-        };
-        let Some(metadata) = metadata
-            .into_iter()
-            .find(|metadata| metadata.id == attachment_id)
-        else {
+            .await;
+            match result {
+                Ok(value) => {
+                    if let Some(session) = body_imap.as_mut() {
+                        session.last_used = Instant::now();
+                    }
+                    value
+                }
+                Err(MailError::NotFound { .. }) | Err(MailError::Validation(_)) => {
+                    return Ok(attachment_save_error(
+                        AttachmentSaveErrorKind::AttachmentNotFound,
+                        false,
+                    ));
+                }
+                Err(_) => {
+                    *body_imap = None;
+                    return Ok(attachment_save_error(
+                        AttachmentSaveErrorKind::MessageUnavailable,
+                        true,
+                    ));
+                }
+            }
+        } else {
             return Ok(attachment_save_error(
                 AttachmentSaveErrorKind::AttachmentNotFound,
                 false,
             ));
         };
-        let bytes = match extract_attachment(&message.raw_rfc822, attachment_id) {
-            Ok(bytes) => bytes,
-            Err(AttachmentIndexError::AttachmentNotFound)
-            | Err(AttachmentIndexError::InvalidPartToken) => {
-                return Ok(attachment_save_error(
-                    AttachmentSaveErrorKind::AttachmentNotFound,
-                    false,
-                ));
-            }
-            Err(_) => {
-                return Ok(attachment_save_error(
-                    AttachmentSaveErrorKind::MessageUnavailable,
-                    true,
-                ));
-            }
-        };
-        if bytes.len() as u64 != metadata.size_bytes {
-            return Ok(attachment_save_error(
-                AttachmentSaveErrorKind::MessageUnavailable,
-                true,
-            ));
-        }
-        match save_extracted_file(selected_destination, &metadata.safe_display_name, &bytes) {
+        match save_extracted_file(selected_destination, &safe_display_name, &bytes) {
             Ok(file_name) => Ok(AttachmentSaveResult {
                 status: AttachmentSaveStatus::Saved,
                 file_name: Some(file_name),
@@ -3899,6 +3988,133 @@ impl MailBackend {
         self.fetch_mailbox_message(&mailbox, uid, force).await
     }
 
+    /// Fetches only the renderable text/HTML parts and attachment metadata for
+    /// the selected reader. Ordinary attachment bodies are excluded from this
+    /// path and remain on-demand.
+    pub async fn fetch_message_view_by_id(
+        &self,
+        public_id: &str,
+        force: bool,
+    ) -> Result<(InboxMessage, Vec<AttachmentMeta>)> {
+        let cached = self
+            .repository
+            .get_message_by_public_id(&self.config.account_id, public_id)?;
+        if cached.body_fetched && !cached.raw_rfc822.is_empty() && !force {
+            self.repository.touch_message_body_access(cached.id)?;
+            let attachments = self.cached_message_attachments(public_id)?;
+            return self
+                .repair_cached_inline_images(cached)
+                .map(|message| (message, attachments));
+        }
+
+        let mut body_imap = self
+            .selected_foreground_body_session(&cached.mailbox)
+            .await?;
+        let result = async {
+            let session = body_imap
+                .as_mut()
+                .expect("foreground body IMAP session is connected before use");
+            let structure = session
+                .connection
+                .fetch_message_structure(cached.uid)
+                .await?;
+            let attachment_pairs = remote_attachment_listing(public_id, &structure);
+            let attachments = attachment_pairs
+                .iter()
+                .map(|(metadata, _)| metadata.clone())
+                .collect::<Vec<_>>();
+            let message = if cached.body_fetched && !force {
+                self.repository.touch_message_body_access(cached.id)?;
+                cached
+            } else {
+                let paths = selected_remote_body_paths(&structure.parts)?;
+                let fetched_parts = session
+                    .connection
+                    .fetch_message_parts_bounded(
+                        cached.uid,
+                        &paths,
+                        MAX_SELECTED_BODY_SECTION_BYTES,
+                    )
+                    .await?;
+                let hydrated =
+                    hydrate_selected_message_body(cached, &structure, fetched_parts, &attachments)?;
+                self.repository.upsert_message(&hydrated)?;
+                let stored = self
+                    .repository
+                    .get_message_by_public_id(&self.config.account_id, public_id)?;
+                self.enforce_body_cache_budget(Some(stored.id))?;
+                stored
+            };
+            Ok((message, attachments))
+        }
+        .await;
+        match result {
+            Ok(value) => {
+                if let Some(session) = body_imap.as_mut() {
+                    session.last_used = Instant::now();
+                }
+                Ok(value)
+            }
+            Err(error) => {
+                *body_imap = None;
+                Err(error)
+            }
+        }
+    }
+
+    async fn selected_foreground_body_session(
+        &self,
+        mailbox: &str,
+    ) -> Result<MutexGuard<'_, Option<BodyImapSession>>> {
+        let mut body_imap = self.body_imap.lock().await;
+        let connection_is_stale = match body_imap.as_mut() {
+            Some(session) if session.last_used.elapsed() >= BODY_IMAP_KEEPALIVE_INTERVAL => {
+                session.connection.noop().await.is_err()
+            }
+            Some(_) => false,
+            None => true,
+        };
+        if connection_is_stale {
+            *body_imap = Some(BodyImapSession {
+                connection: ImapConnection::connect(&self.config).await?,
+                last_used: Instant::now(),
+            });
+        }
+        let session = body_imap
+            .as_mut()
+            .expect("foreground body IMAP session is connected before mailbox selection");
+        let selected_uid_validity = match session.connection.select_mailbox_for_fetch(mailbox).await
+        {
+            Ok(value) => value,
+            Err(error) => {
+                *body_imap = None;
+                return Err(error);
+            }
+        };
+        let local_uid_validity = self
+            .repository
+            .mailbox_state(&self.config.account_id, mailbox)?
+            .and_then(|state| state.uid_validity);
+        match classify_inbox_uid_scope(local_uid_validity, selected_uid_validity) {
+            InboxUidScope::Current => Ok(body_imap),
+            InboxUidScope::NeedsSync => {
+                *body_imap = None;
+                Err(MailError::Validation(
+                    "Mailbox must be synchronized before downloading message bodies".to_owned(),
+                ))
+            }
+            InboxUidScope::Changed => {
+                self.repository
+                    .reset_mailbox(&self.config.account_id, mailbox)?;
+                *body_imap = None;
+                Err(MailError::Validation(
+                    "Mailbox UIDVALIDITY changed; synchronize the mailbox before downloading this message"
+                        .to_owned(),
+                ))
+            }
+        }
+    }
+
     /// Hydrates a keyset-page item without accepting an arbitrary mailbox name
     /// or UID from the desktop UI.
     pub async fn fetch_message_by_id(&self, public_id: &str, force: bool) -> Result<InboxMessage> {
@@ -3966,7 +4182,7 @@ impl MailBackend {
             .repository
             .get_message_by_uid(&self.config.account_id, mailbox, uid)
         {
-            Ok(message) if message.body_fetched && !force => {
+            Ok(message) if message.body_fetched && !message.raw_rfc822.is_empty() && !force => {
                 if lane == BodyFetchLane::Foreground {
                     self.repository.touch_message_body_access(message.id)?;
                 }
@@ -4006,6 +4222,7 @@ impl MailBackend {
                         self.repository
                             .get_message_by_uid(&self.config.account_id, mailbox, uid)
                     && message.body_fetched
+                    && !message.raw_rfc822.is_empty()
                 {
                     if lane == BodyFetchLane::Foreground {
                         self.repository.touch_message_body_access(message.id)?;
@@ -4057,6 +4274,7 @@ impl MailBackend {
                 self.repository
                     .get_message_by_uid(&self.config.account_id, mailbox, uid)
             && message.body_fetched
+            && !message.raw_rfc822.is_empty()
         {
             if lane == BodyFetchLane::Foreground {
                 self.repository.touch_message_body_access(message.id)?;
@@ -5537,6 +5755,11 @@ impl MailBackend {
         self.repository.list_outbox(&self.config.account_id)
     }
 
+    pub fn list_sent_outbox_fallbacks(&self) -> Result<Vec<OutboxItem>> {
+        self.repository
+            .list_sent_outbox_fallbacks(&self.config.account_id)
+    }
+
     /// Loads one immutable Outbox message for local body hydration while
     /// preserving the active-account boundary.
     pub fn outbox_message(&self, outbox_id: &str) -> Result<OutboxItem> {
@@ -5753,20 +5976,208 @@ impl MailBackend {
 fn public_attachment_meta(metadata: AttachmentPartMetadata) -> AttachmentMeta {
     AttachmentMeta {
         id: metadata.id,
-    pub fn list_sent_outbox_fallbacks(&self) -> Result<Vec<OutboxItem>> {
-        self.repository
-            .list_sent_outbox_fallbacks(&self.config.account_id)
-    }
-
         original_name: metadata.original_name,
         safe_display_name: metadata.safe_display_name,
         mime_type: metadata.mime_type,
         size_bytes: metadata.size_bytes,
+        size_is_estimate: false,
         disposition: match metadata.disposition {
             crate::mime::AttachmentDisposition::Attachment => AttachmentDisposition::Attachment,
             crate::mime::AttachmentDisposition::Inline => AttachmentDisposition::Inline,
         },
     }
+}
+
+fn remote_attachment_listing(
+    public_id: &str,
+    structure: &RemoteMessageStructure,
+) -> Vec<(AttachmentMeta, Vec<u32>)> {
+    structure
+        .parts
+        .iter()
+        .filter_map(|part| {
+            let disposition = remote_attachment_disposition(part)?;
+            let original_name = part
+                .original_name
+                .as_deref()
+                .and_then(bounded_original_attachment_name);
+            let safe_display_name = safe_attachment_filename(original_name.as_deref());
+            let (size_bytes, size_is_estimate) = remote_attachment_display_size(part);
+            Some((
+                AttachmentMeta {
+                    id: remote_attachment_id(
+                        public_id,
+                        &part.path,
+                        &part.mime_type,
+                        original_name.as_deref(),
+                        disposition,
+                        part.encoded_size_bytes,
+                    ),
+                    original_name,
+                    safe_display_name,
+                    mime_type: part.mime_type.clone(),
+                    size_bytes,
+                    size_is_estimate,
+                    disposition,
+                },
+                part.path.clone(),
+            ))
+        })
+        .take(MAX_ATTACHMENT_PARTS)
+        .collect()
+}
+
+fn remote_attachment_disposition(part: &RemoteMimePart) -> Option<AttachmentDisposition> {
+    match part.disposition.as_deref() {
+        Some(value) if value.eq_ignore_ascii_case("attachment") => {
+            Some(AttachmentDisposition::Attachment)
+        }
+        _ if matches!(part.mime_type.as_str(), "text/plain" | "text/html")
+            && part.original_name.is_none() =>
+        {
+            None
+        }
+        Some(value) if value.eq_ignore_ascii_case("inline") => Some(AttachmentDisposition::Inline),
+        _ if part.content_id.is_some() => Some(AttachmentDisposition::Inline),
+        _ if part.original_name.is_some() => Some(AttachmentDisposition::Attachment),
+        _ if !matches!(
+            part.mime_type.as_str(),
+            "text/plain" | "text/html" | "message/rfc822"
+        ) =>
+        {
+            Some(AttachmentDisposition::Attachment)
+        }
+        _ => None,
+    }
+}
+
+fn remote_attachment_display_size(part: &RemoteMimePart) -> (u64, bool) {
+    match part.transfer_encoding {
+        RemoteTransferEncoding::SevenBit
+        | RemoteTransferEncoding::EightBit
+        | RemoteTransferEncoding::Binary => (part.encoded_size_bytes, false),
+        RemoteTransferEncoding::Base64 => (part.encoded_size_bytes.saturating_mul(3) / 4, true),
+        RemoteTransferEncoding::QuotedPrintable | RemoteTransferEncoding::Other(_) => {
+            (part.encoded_size_bytes, true)
+        }
+    }
+}
+
+fn remote_attachment_id(
+    public_id: &str,
+    path: &[u32],
+    mime_type: &str,
+    original_name: Option<&str>,
+    disposition: AttachmentDisposition,
+    encoded_size_bytes: u64,
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"mine-mail-remote-attachment-v1\0");
+    hasher.update(public_id.as_bytes());
+    for segment in path {
+        hasher.update(segment.to_be_bytes());
+    }
+    hasher.update(mime_type.as_bytes());
+    if let Some(original_name) = original_name {
+        hasher.update(original_name.as_bytes());
+    }
+    hasher.update([match disposition {
+        AttachmentDisposition::Attachment => 1,
+        AttachmentDisposition::Inline => 2,
+    }]);
+    hasher.update(encoded_size_bytes.to_be_bytes());
+    let digest = hasher.finalize();
+    format!(
+        "{REMOTE_ATTACHMENT_ID_PREFIX}{}",
+        URL_SAFE_NO_PAD.encode(digest)
+    )
+}
+
+fn is_remote_attachment_id(value: &str) -> bool {
+    value
+        .strip_prefix(REMOTE_ATTACHMENT_ID_PREFIX)
+        .is_some_and(|digest| {
+            digest.len() == 43
+                && digest
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        })
+}
+
+fn selected_remote_body_paths(parts: &[RemoteMimePart]) -> Result<Vec<Vec<u32>>> {
+    let mut plain = None;
+    let mut html = None;
+    let mut saw_oversized_body = false;
+    for part in parts {
+        if remote_attachment_disposition(part).is_some() {
+            continue;
+        }
+        if !matches!(part.mime_type.as_str(), "text/plain" | "text/html") {
+            continue;
+        }
+        if part.encoded_size_bytes > MAX_SELECTED_BODY_SECTION_BYTES {
+            saw_oversized_body = true;
+            continue;
+        }
+        if part.mime_type == "text/plain" && plain.is_none() {
+            plain = Some(part.path.clone());
+        } else if part.mime_type == "text/html" && html.is_none() {
+            html = Some(part.path.clone());
+        }
+    }
+    let selected = plain.into_iter().chain(html).collect::<Vec<_>>();
+    if selected.is_empty() && saw_oversized_body {
+        return Err(MailError::Validation(
+            "message body exceeds the selective reader limit".to_owned(),
+        ));
+    }
+    Ok(selected)
+}
+
+fn hydrate_selected_message_body(
+    mut message: InboxMessage,
+    structure: &RemoteMessageStructure,
+    fetched_parts: Vec<RemoteBodyPart>,
+    attachments: &[AttachmentMeta],
+) -> Result<InboxMessage> {
+    let mut body_text = None;
+    let mut html_fallback_text = None;
+    let mut body_html = None;
+    for fetched in fetched_parts {
+        let Some(part) = structure
+            .parts
+            .iter()
+            .find(|part| part.path == fetched.path)
+        else {
+            return Err(MailError::Mime(
+                "selected MIME part no longer matches BODYSTRUCTURE".to_owned(),
+            ));
+        };
+        let decoded = decode_remote_mime_part(&fetched.mime_header, &fetched.encoded_body)?;
+        match part.mime_type.as_str() {
+            "text/plain" if body_text.is_none() => body_text = decoded.body_text,
+            "text/html" if body_html.is_none() => {
+                html_fallback_text = decoded.body_text;
+                body_html = decoded.body_html;
+            }
+            _ => {}
+        }
+    }
+    message.body_text = body_text.or(html_fallback_text);
+    message.body_html = body_html;
+    message.attachment_names = attachments
+        .iter()
+        .filter(|attachment| attachment.disposition == AttachmentDisposition::Attachment)
+        .map(|attachment| attachment.safe_display_name.clone())
+        .collect();
+    message.body_fetched = true;
+    message.synced_at = now();
+    if message.preview.trim().is_empty()
+        && let Some(body) = message.body_text.as_deref()
+    {
+        message.preview = body.chars().take(180).collect();
+    }
+    Ok(message)
 }
 
 fn attachment_save_error(
@@ -6266,24 +6677,29 @@ mod tests {
         classify_draft_reconciliation, classify_inbox_uid_scope,
         confirmed_created_mailbox_capability, discovered_mailbox_capability,
         draft_record_matches_remote, earlier_history_bound, mailbox_hint_changed,
-        normalized_message_page_size, remote_candidates_equivalent, remote_draft_candidate,
-        validate_delivery_unknown_attempt, validate_manual_retry,
+        normalized_message_page_size, remote_attachment_listing, remote_candidates_equivalent,
+        remote_draft_candidate, selected_remote_body_paths, validate_delivery_unknown_attempt,
+        validate_manual_retry,
     };
     use crate::{
         AccountConfig, ComposeFormat, ComposeRequest, ContactMessageDirection, Draft,
         DraftDeleteKind, DraftSaveKind, InboxMessage, MailAddress, MailError, MailboxRole,
         OutboxItem, OutboxStatus, ServerConfig, SmtpSecurity, StationeryTheme,
         database::{DraftRecord, MailboxState, Repository},
-        imap_client::{MailboxHint, MailboxMessageScope, RemoteMailbox, RemoteMessage},
+        imap_client::{
+            MailboxHint, MailboxMessageScope, RemoteMailbox, RemoteMessage, RemoteMessageStructure,
+            RemoteMimePart, RemoteTransferEncoding,
+        },
         mime::{
             MimeSourceCompleteness, build_outgoing_message_with_attachments,
             index_message_attachments, outbox_body_text, outbox_message_id, parse_draft_message,
             prepare_forward_source,
         },
         models::{
-            AttachmentSaveStatus, DraftAttachmentMutationKind, ForwardPreparationErrorKind,
-            ForwardPreparationOutcome, ForwardWarning, MailboxCapability, MailboxCapabilityStatus,
-            MailboxCapabilityUnavailableReason, MutationStatus, SystemFlagKind,
+            AttachmentDisposition, AttachmentSaveStatus, DraftAttachmentMutationKind,
+            ForwardPreparationErrorKind, ForwardPreparationOutcome, ForwardWarning,
+            MailboxCapability, MailboxCapabilityStatus, MailboxCapabilityUnavailableReason,
+            MutationStatus, SystemFlagKind,
         },
     };
 
@@ -6313,6 +6729,80 @@ mod tests {
         );
 
         assert_eq!(selected, vec!["first", "second"]);
+    }
+
+    #[test]
+    fn selected_reader_keeps_large_attachment_bytes_out_of_body_paths() {
+        let plain = RemoteMimePart {
+            path: vec![1],
+            mime_type: "text/plain".to_owned(),
+            original_name: None,
+            disposition: None,
+            content_id: None,
+            transfer_encoding: RemoteTransferEncoding::QuotedPrintable,
+            encoded_size_bytes: 512,
+        };
+        let attachment = RemoteMimePart {
+            path: vec![2],
+            mime_type: "application/zip".to_owned(),
+            original_name: Some("large.zip".to_owned()),
+            disposition: Some("attachment".to_owned()),
+            content_id: None,
+            transfer_encoding: RemoteTransferEncoding::Base64,
+            encoded_size_bytes: 40 * 1024 * 1024,
+        };
+        let structure = RemoteMessageStructure {
+            uid: 7,
+            parts: vec![plain, attachment],
+        };
+
+        assert_eq!(
+            selected_remote_body_paths(&structure.parts).expect("body paths"),
+            [vec![1]]
+        );
+        let listing = remote_attachment_listing("opaque-message", &structure);
+        assert_eq!(listing.len(), 1);
+        assert_eq!(listing[0].1, [2]);
+        assert_eq!(listing[0].0.safe_display_name, "large.zip");
+        assert_eq!(listing[0].0.disposition, AttachmentDisposition::Attachment);
+        assert!(listing[0].0.size_is_estimate);
+        assert_eq!(listing[0].0.size_bytes, 30 * 1024 * 1024);
+        assert!(!listing[0].0.id.contains("large.zip"));
+    }
+
+    #[test]
+    fn selected_reader_treats_an_inline_html_root_as_body_content() {
+        let html = RemoteMimePart {
+            path: vec![1],
+            mime_type: "text/html".to_owned(),
+            original_name: None,
+            disposition: Some("inline".to_owned()),
+            content_id: Some("<root@example.com>".to_owned()),
+            transfer_encoding: RemoteTransferEncoding::QuotedPrintable,
+            encoded_size_bytes: 1_024,
+        };
+        let inline_image = RemoteMimePart {
+            path: vec![2],
+            mime_type: "image/png".to_owned(),
+            original_name: None,
+            disposition: Some("inline".to_owned()),
+            content_id: Some("<hero@example.com>".to_owned()),
+            transfer_encoding: RemoteTransferEncoding::Base64,
+            encoded_size_bytes: 4_096,
+        };
+        let structure = RemoteMessageStructure {
+            uid: 8,
+            parts: vec![html, inline_image],
+        };
+
+        assert_eq!(
+            selected_remote_body_paths(&structure.parts).expect("body paths"),
+            [vec![1]]
+        );
+        let listing = remote_attachment_listing("opaque-message", &structure);
+        assert_eq!(listing.len(), 1);
+        assert_eq!(listing[0].0.disposition, AttachmentDisposition::Inline);
+        assert_eq!(listing[0].1, [2]);
     }
 
     #[test]
@@ -8166,6 +8656,51 @@ mod tests {
     }
 
     #[test]
+    fn runtime_backend_clone_does_not_recover_a_live_sending_attempt() {
+        let directory = tempdir().expect("tempdir");
+        let database_path = directory.path().join("mail.db");
+        let primary_config =
+            AccountConfig::from_163_lines(["demo@163.com", "not-a-real-secret"]).expect("config");
+        let backend = MailBackend::open(primary_config, &database_path).expect("primary backend");
+        backend.initialize().expect("initialize primary");
+        let queued = OutboxItem {
+            id: "live-send".to_owned(),
+            account_id: backend.config.account_id.clone(),
+            draft_id: None,
+            draft_revision: None,
+            draft_local_version: None,
+            recipients: vec!["receiver@example.com".to_owned()],
+            recipient_groups: Some(crate::OutboxRecipientGroups {
+                to: vec!["receiver@example.com".to_owned()],
+                cc: Vec::new(),
+                bcc: Vec::new(),
+            }),
+            status: OutboxStatus::Queued,
+            attempts: 0,
+            last_error: None,
+            created_at: "2026-07-28T00:00:00Z".to_owned(),
+            sent_at: None,
+            raw_rfc822: b"Message-ID: <live-send@example.com>\r\n\r\nBody".to_vec(),
+        };
+        backend
+            .repository
+            .enqueue_and_claim_outbox(&queued)
+            .expect("claim live SMTP attempt");
+
+        let clone_config =
+            AccountConfig::from_163_lines(["demo@163.com", "not-a-real-secret"]).expect("config");
+        let runtime_clone =
+            MailBackend::open(clone_config, &database_path).expect("runtime backend clone");
+        runtime_clone
+            .initialize_without_outbox_recovery()
+            .expect("initialize clone");
+        assert_eq!(
+            backend.repository.get_outbox(&queued.id).unwrap().status,
+            OutboxStatus::Sending
+        );
+    }
+
+    #[test]
     fn sent_fallback_keeps_exact_blob_until_cached_sent_reconciliation() {
         let directory = tempdir().expect("tempdir");
         let selected_directory = tempdir().expect("selected file");
@@ -8248,6 +8783,30 @@ mod tests {
                 .unwrap()
                 .len(),
             1
+        );
+
+        let message_id = outbox_message_id(&outbox.raw_rfc822).expect("outgoing Message-ID");
+        let mut cached = cached_message(
+            &backend.config.account_id,
+            77,
+            &message_id,
+            "draft",
+            &backend.config.email,
+            "receiver@example.com",
+        );
+        cached.mailbox = "Sent".to_owned();
+        backend
+            .repository
+            .upsert_message(&cached)
+            .expect("cache provider Sent copy");
+        assert_eq!(backend.reconcile_sent_outbox("Sent").unwrap(), 1);
+        assert!(backend.repository.get_outbox(&outbox.id).is_err());
+        assert!(
+            backend
+                .managed_attachments
+                .list_internal_names()
+                .unwrap()
+                .is_empty()
         );
     }
 
@@ -8737,75 +9296,6 @@ mod tests {
                 .as_deref(),
             Some(html.as_str())
         );
-
-        let message_id = outbox_message_id(&outbox.raw_rfc822).expect("outgoing Message-ID");
-        let mut cached = cached_message(
-            &backend.config.account_id,
-            77,
-            &message_id,
-            "draft",
-            &backend.config.email,
-            "receiver@example.com",
-        );
-        cached.mailbox = "Sent".to_owned();
-        backend
-            .repository
-            .upsert_message(&cached)
-            .expect("cache provider Sent copy");
-        assert_eq!(backend.reconcile_sent_outbox("Sent").unwrap(), 1);
-        assert!(backend.repository.get_outbox(&outbox.id).is_err());
-        assert!(
-            backend
-                .managed_attachments
-                .list_internal_names()
-                .unwrap()
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn runtime_backend_clone_does_not_recover_a_live_sending_attempt() {
-        let directory = tempdir().expect("tempdir");
-        let database_path = directory.path().join("mail.db");
-        let primary_config =
-            AccountConfig::from_163_lines(["demo@163.com", "not-a-real-secret"]).expect("config");
-        let backend = MailBackend::open(primary_config, &database_path).expect("primary backend");
-        backend.initialize().expect("initialize primary");
-        let queued = OutboxItem {
-            id: "live-send".to_owned(),
-            account_id: backend.config.account_id.clone(),
-            draft_id: None,
-            draft_revision: None,
-            draft_local_version: None,
-            recipients: vec!["receiver@example.com".to_owned()],
-            recipient_groups: Some(crate::OutboxRecipientGroups {
-                to: vec!["receiver@example.com".to_owned()],
-                cc: Vec::new(),
-                bcc: Vec::new(),
-            }),
-            status: OutboxStatus::Queued,
-            attempts: 0,
-            last_error: None,
-            created_at: "2026-07-28T00:00:00Z".to_owned(),
-            sent_at: None,
-            raw_rfc822: b"Message-ID: <live-send@example.com>\r\n\r\nBody".to_vec(),
-        };
-        backend
-            .repository
-            .enqueue_and_claim_outbox(&queued)
-            .expect("claim live SMTP attempt");
-
-        let clone_config =
-            AccountConfig::from_163_lines(["demo@163.com", "not-a-real-secret"]).expect("config");
-        let runtime_clone =
-            MailBackend::open(clone_config, &database_path).expect("runtime backend clone");
-        runtime_clone
-            .initialize_without_outbox_recovery()
-            .expect("initialize clone");
-        assert_eq!(
-            backend.repository.get_outbox(&queued.id).unwrap().status,
-            OutboxStatus::Sending
-        );
     }
 
     #[test]
@@ -9043,8 +9533,7 @@ mod tests {
         assert!(confirmed.request.format.send_stationery);
         let outgoing = crate::mime::build_outgoing_message("demo@163.com", &confirmed.request)
             .expect("outgoing stationery message");
-        let html =
-            crate::mime::outbox_body_html(&outgoing.raw_rfc822).expect("HTML alternative");
+        let html = crate::mime::outbox_body_html(&outgoing.raw_rfc822).expect("HTML alternative");
         assert!(html.contains(r#"data-mine-mail-stationery="lined""#));
     }
 

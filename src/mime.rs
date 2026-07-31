@@ -1772,7 +1772,7 @@ fn is_attachment_text_control(character: char) -> bool {
         )
 }
 
-fn bounded_original_attachment_name(value: &str) -> Option<String> {
+pub(crate) fn bounded_original_attachment_name(value: &str) -> Option<String> {
     let value = value.trim();
     if value.is_empty() {
         return None;
@@ -2376,6 +2376,52 @@ pub(crate) fn render_message_html(message: &InboxMessage) -> Option<String> {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DecodedRemoteMimePart {
+    pub body_text: Option<String>,
+    pub body_html: Option<String>,
+    pub contents: Vec<u8>,
+}
+
+/// Decodes one IMAP BODY section using its own MIME header. This keeps
+/// transfer decoding and charset handling inside the same parser used for full
+/// RFC822 messages without requiring sibling attachment bytes.
+pub(crate) fn decode_remote_mime_part(
+    mime_header: &[u8],
+    encoded_body: &[u8],
+) -> Result<DecodedRemoteMimePart> {
+    let mut raw = Vec::with_capacity(
+        mime_header
+            .len()
+            .saturating_add(encoded_body.len())
+            .saturating_add(4),
+    );
+    raw.extend_from_slice(mime_header);
+    if !raw.ends_with(b"\r\n\r\n") && !raw.ends_with(b"\n\n") {
+        if raw.ends_with(b"\r\n") {
+            raw.extend_from_slice(b"\r\n");
+        } else if raw.ends_with(b"\n") {
+            raw.extend_from_slice(b"\n");
+        } else {
+            raw.extend_from_slice(b"\r\n\r\n");
+        }
+    }
+    raw.extend_from_slice(encoded_body);
+    let parsed = MessageParser::default()
+        .parse(&raw)
+        .ok_or_else(|| MailError::Mime("selected MIME part could not be decoded".to_owned()))?;
+    let contents = parsed
+        .part(0)
+        .ok_or_else(|| MailError::Mime("selected MIME part is absent".to_owned()))?
+        .contents()
+        .to_vec();
+    Ok(DecodedRemoteMimePart {
+        body_text: parsed.body_text(0).map(|body| body.into_owned()),
+        body_html: extract_renderable_html(&parsed),
+        contents,
+    })
+}
+
 pub(crate) fn parse_incoming_message(
     raw: &[u8],
     metadata: IncomingMetadata<'_>,
@@ -2533,7 +2579,7 @@ mod tests {
         MAX_SAFE_ATTACHMENT_NAME_BYTES, ManagedMimeAttachment, MimeSourceCompleteness,
         add_managed_attachment_size, attachment_name_candidate, bounded_original_attachment_name,
         build_draft_message_revision, build_draft_message_revision_with_attachments,
-        build_outgoing_message, build_outgoing_message_with_attachments,
+        build_outgoing_message, build_outgoing_message_with_attachments, decode_remote_mime_part,
         draft_has_unsupported_content, extract_attachment, extract_renderable_html,
         index_message_attachments, is_unicode_direction_control, outbox_body_html,
         outbox_body_text, outbox_has_reply_headers, outbox_message_id, outbox_preview,
@@ -2557,6 +2603,19 @@ mod tests {
             format: Default::default(),
             reply_context: None,
         }
+    }
+
+    #[test]
+    fn selected_remote_part_uses_normal_mime_transfer_and_charset_decoding() {
+        let decoded = decode_remote_mime_part(
+            b"Content-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: base64\r\n\r\n",
+            b"5L2g5aW977yM5LiW55WM",
+        )
+        .expect("decode selected text part");
+
+        assert_eq!(decoded.body_text.as_deref(), Some("你好，世界"));
+        assert_eq!(decoded.contents, "你好，世界".as_bytes());
+        assert!(decoded.body_html.is_none());
     }
 
     fn rfc2047_base64_words(value: &str) -> String {

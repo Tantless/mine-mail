@@ -392,6 +392,31 @@ describe("MessageView received attachments", () => {
     expect(onSaveAttachment).toHaveBeenCalledWith("part-opaque-7", attachment);
   });
 
+  it("marks BODYSTRUCTURE transfer sizes as estimates", () => {
+    render(
+      <MessageView
+        message={messageFixture({
+          attachments: [
+            {
+              id: "remote-part",
+              safe_display_name: "archive.zip",
+              mime_type: "application/zip",
+              size_bytes: 31_457_280,
+              size_is_estimate: true,
+              disposition: "attachment",
+            },
+          ],
+        })}
+        onClose={vi.fn()}
+        onSaveAttachment={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.getByText("application/zip · 约 30 MB · 31,457,280 字节"),
+    ).toBeTruthy();
+  });
+
   it("renders saving, saved, canceled, and retryable error independently", async () => {
     const user = userEvent.setup();
     const onSaveAttachment = vi.fn();
