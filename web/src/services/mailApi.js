@@ -500,6 +500,11 @@ export const mailApi = {
     return callDemo("listOutbox");
   },
 
+  async listSentOutboxFallbacks() {
+    if (isTauri) return desktopInvoke("list_sent_outbox_fallbacks");
+    return callDemo("listSentOutboxFallbacks");
+  },
+
   async fetchOutboxMessage(outboxId) {
     if (isTauri) return desktopInvoke("fetch_outbox_message", { outboxId });
     return callDemo("fetchOutboxMessage", outboxId);

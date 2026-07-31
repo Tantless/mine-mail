@@ -56,6 +56,7 @@ const desktop = vi.hoisted(() => {
       completeExit: vi.fn(),
       cancelExit: vi.fn(),
       listOutbox: vi.fn(),
+      listSentOutboxFallbacks: vi.fn(),
       fetchOutboxMessage: vi.fn(),
       retryOutbox: vi.fn(),
       resolveDeliveryUnknown: vi.fn(),
@@ -335,6 +336,7 @@ describe("Mine Mail desktop state bridge", () => {
         sent_at: null,
       },
     ]);
+    desktop.mailApi.listSentOutboxFallbacks.mockResolvedValue([]);
     desktop.mailApi.getDesktopSettings.mockResolvedValue({
       pollingIntervalMinutes: 5,
       autostartEnabled: false,
@@ -3754,7 +3756,8 @@ describe("Mine Mail desktop state bridge", () => {
 
   it("shows the immutable reply subject and recipient for sent mail", async () => {
     desktop.mailApi.listDrafts.mockResolvedValue([]);
-    desktop.mailApi.listOutbox.mockResolvedValue([
+    desktop.mailApi.listOutbox.mockResolvedValue([]);
+    desktop.mailApi.listSentOutboxFallbacks.mockResolvedValue([
       {
         id: "sent-reply",
         draft_id: null,
@@ -3847,7 +3850,8 @@ describe("Mine Mail desktop state bridge", () => {
       remoteLegacy,
       remoteExact,
     ]);
-    desktop.mailApi.listOutbox.mockResolvedValue([
+    desktop.mailApi.listOutbox.mockResolvedValue([]);
+    desktop.mailApi.listSentOutboxFallbacks.mockResolvedValue([
       {
         id: "local-exact",
         recipients: ["friend@example.com"],
@@ -5244,7 +5248,12 @@ describe("Mine Mail desktop state bridge", () => {
       last_error: null,
       sent_at: "2026-07-14T09:01:00Z",
     };
-    desktop.mailApi.listOutbox.mockResolvedValue([unknown]);
+    desktop.mailApi.listOutbox
+      .mockResolvedValueOnce([unknown])
+      .mockResolvedValue([]);
+    desktop.mailApi.listSentOutboxFallbacks
+      .mockResolvedValueOnce([])
+      .mockResolvedValue([delivered]);
     desktop.mailApi.fetchOutboxMessage.mockResolvedValue({
       id: unknown.id,
       subject: unknown.subject,
@@ -5276,12 +5285,19 @@ describe("Mine Mail desktop state bridge", () => {
       }),
     );
     await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
-    const reader = screen.getByLabelText("邮件阅读区");
-    expect(within(reader).getByText("SENT")).toBeTruthy();
-    expect(within(reader).getByText("Unknown delivery body")).toBeTruthy();
+    expect(screen.queryByLabelText("邮件阅读区")).toBeNull();
     expect(
-      within(reader).queryByRole("button", { name: "仍要重试" }),
+      within(screen.getByLabelText("发件队列邮件列表")).queryByText(
+        unknown.subject,
+      ),
     ).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: /已发送/ }));
+    expect(
+      within(screen.getByLabelText("已发送邮件列表")).getByText(
+        unknown.subject,
+      ),
+    ).toBeTruthy();
     expect(desktop.mailApi.retryOutbox).not.toHaveBeenCalled();
   });
 
@@ -5335,9 +5351,7 @@ describe("Mine Mail desktop state bridge", () => {
       });
     });
     await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
-    expect(
-      within(screen.getByLabelText("邮件阅读区")).getByText("SENT"),
-    ).toBeTruthy();
+    expect(screen.queryByLabelText("邮件阅读区")).toBeNull();
   });
 
   it("refreshes a stale delivery-unknown generation and requires a new review", async () => {

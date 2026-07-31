@@ -6,7 +6,7 @@ use std::{
     path::Path,
     sync::{
         Mutex as StdMutex, RwLock,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -21,7 +21,7 @@ use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
-use tokio::sync::{Mutex as AsyncMutex, MutexGuard as AsyncMutexGuard, mpsc, watch};
+use tokio::sync::{Mutex as AsyncMutex, MutexGuard as AsyncMutexGuard, Notify, mpsc, watch};
 use tokio::time::Instant as TokioInstant;
 
 use crate::{
@@ -45,7 +45,7 @@ const IDLE_MAINTENANCE_INTERVAL: Duration = Duration::from_secs(28 * 60);
 const FOREGROUND_LIGHTWEIGHT_POLL_INTERVAL: Duration = Duration::from_secs(15);
 const BACKGROUND_LIGHTWEIGHT_POLL_INTERVAL: Duration = Duration::from_secs(30);
 const MONITOR_RECONNECT_BACKOFF_SECONDS: [u64; 7] = [2, 5, 15, 30, 60, 120, 300];
-const EXIT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
+const EXIT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(35);
 const SETTINGS_DATABASE_NAME: &str = "desktop-runtime.sqlite3";
 const NEW_MAIL_NOTIFICATION_WINDOW: &str = "new-mail-notification";
 const NEW_MAIL_NOTIFICATION_MARGIN: i32 = 18;
@@ -114,6 +114,23 @@ struct ExitHandshakeState {
     phase: ExitHandshakePhase,
 }
 
+pub(crate) struct SmtpOperationGuard<'a> {
+    runtime: &'a DesktopRuntime,
+}
+
+impl Drop for SmtpOperationGuard<'_> {
+    fn drop(&mut self) {
+        if self
+            .runtime
+            .smtp_operations_in_flight
+            .fetch_sub(1, Ordering::AcqRel)
+            == 1
+        {
+            self.runtime.smtp_idle.notify_waiters();
+        }
+    }
+}
+
 pub(crate) struct DesktopRuntime {
     settings: RwLock<StoredDesktopSettings>,
     store: Option<DesktopSettingsStore>,
@@ -125,6 +142,8 @@ pub(crate) struct DesktopRuntime {
     pending_inbox_syncs: StdMutex<HashSet<String>>,
     pending_notification_baselines: StdMutex<HashSet<String>>,
     exit_handshake: StdMutex<ExitHandshakeState>,
+    smtp_operations_in_flight: AtomicUsize,
+    smtp_idle: Notify,
     notification_sequence: AtomicU64,
     notification_popup: StdMutex<Option<PendingNewMailNotification>>,
 }
@@ -205,6 +224,8 @@ impl DesktopRuntime {
                 pending_inbox_syncs: StdMutex::new(HashSet::new()),
                 pending_notification_baselines: StdMutex::new(HashSet::new()),
                 exit_handshake: StdMutex::new(ExitHandshakeState::default()),
+                smtp_operations_in_flight: AtomicUsize::new(0),
+                smtp_idle: Notify::new(),
                 notification_sequence: AtomicU64::new(0),
                 notification_popup: StdMutex::new(None),
             },
@@ -538,6 +559,49 @@ impl DesktopRuntime {
             .lock()
             .map(|state| matches!(state.phase, ExitHandshakePhase::Committed(_)))
             .unwrap_or(false)
+    }
+
+    pub(crate) fn begin_smtp_operation(&self) -> Result<SmtpOperationGuard<'_>, String> {
+        let state = self
+            .exit_handshake
+            .lock()
+            .map_err(|_| "The exit coordinator is temporarily unavailable.".to_owned())?;
+        if state.phase != ExitHandshakePhase::Idle {
+            return Err("Mail sending cannot start while Mine Mail is exiting.".to_owned());
+        }
+        self.smtp_operations_in_flight
+            .fetch_add(1, Ordering::AcqRel);
+        drop(state);
+        Ok(SmtpOperationGuard { runtime: self })
+    }
+
+    fn awaiting_exit_ticket(&self, request_id: u64) -> Result<Option<ExitHandshakeTicket>, String> {
+        let state = self
+            .exit_handshake
+            .lock()
+            .map_err(|_| "The exit coordinator is temporarily unavailable.".to_owned())?;
+        let ExitHandshakePhase::Awaiting(ticket) = state.phase else {
+            return Ok(None);
+        };
+        Ok((ticket.request_id == request_id).then_some(ticket))
+    }
+
+    async fn wait_for_smtp_idle(&self, ticket: ExitHandshakeTicket) -> bool {
+        loop {
+            if self.smtp_operations_in_flight.load(Ordering::Acquire) == 0 {
+                return true;
+            }
+            let notified = self.smtp_idle.notified();
+            if self.smtp_operations_in_flight.load(Ordering::Acquire) == 0 {
+                return true;
+            }
+            if tokio::time::timeout_at(TokioInstant::from_std(ticket.deadline), notified)
+                .await
+                .is_err()
+            {
+                return self.smtp_operations_in_flight.load(Ordering::Acquire) == 0;
+            }
+        }
     }
 
     fn complete_quit_handshake(&self, request_id: u64) -> Result<bool, String> {
@@ -2307,10 +2371,28 @@ pub(crate) fn quit_app(app: &AppHandle) {
     });
 }
 
-pub(crate) fn complete_exit(app: &AppHandle, request_id: u64) -> Result<bool, String> {
+pub(crate) async fn complete_exit(app: &AppHandle, request_id: u64) -> Result<bool, String> {
     let Some(runtime) = app.try_state::<DesktopRuntime>() else {
         return Ok(false);
     };
+    let Some(ticket) = runtime.awaiting_exit_ticket(request_id)? else {
+        return Ok(false);
+    };
+    let smtp_idle = runtime.wait_for_smtp_idle(ticket).await;
+    if !smtp_idle {
+        if !runtime.commit_quit_timeout(ticket, Instant::now())? {
+            return Ok(false);
+        }
+        runtime.finish_quit();
+        diagnostics::warn(
+            "shutdown_committed",
+            Fields::default()
+                .operation("app_exit")
+                .outcome("smtp_timeout"),
+        );
+        app.exit(0);
+        return Ok(true);
+    }
     if !runtime.complete_quit_handshake(request_id)? {
         return Ok(false);
     }
@@ -2877,6 +2959,39 @@ mod tests {
             !runtime
                 .commit_quit_timeout(ticket, ticket.deadline)
                 .expect("timer cannot commit twice")
+        );
+    }
+
+    #[tokio::test]
+    async fn quit_waits_for_active_smtp_and_rejects_new_attempts() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let (runtime, _sync_rx, _shutdown_rx) = DesktopRuntime::open(directory.path());
+        let smtp = runtime
+            .begin_smtp_operation()
+            .expect("start SMTP operation");
+        let ticket = runtime
+            .start_quit_handshake_at(Instant::now(), Duration::from_secs(1))
+            .expect("start handshake")
+            .expect("exit ticket");
+
+        assert!(runtime.begin_smtp_operation().is_err());
+        let mut waiting = Box::pin(runtime.wait_for_smtp_idle(ticket));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), &mut waiting)
+                .await
+                .is_err()
+        );
+
+        drop(smtp);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), waiting)
+                .await
+                .expect("SMTP idle notification")
+        );
+        assert!(
+            runtime
+                .complete_quit_handshake(ticket.request_id)
+                .expect("commit current exit")
         );
     }
 

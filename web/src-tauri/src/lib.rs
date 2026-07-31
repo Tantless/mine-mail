@@ -1466,6 +1466,7 @@ async fn send_draft(
     backend: State<'_, BackendState>,
     draft_id: String,
     expected_local_version: u64,
+    desktop_runtime: State<'_, DesktopRuntime>,
     confirmed_recipients: Vec<String>,
 ) -> CommandResult<OutboxItemDto> {
     let started = Instant::now();
@@ -1482,6 +1483,7 @@ async fn send_draft(
     diagnostics::info("send_started", fields.clone());
     if let Err(error) = account.refresh_active_oauth_backend(&backend).await {
         diagnostics::error(
+    let _smtp_operation = desktop_runtime.begin_smtp_operation()?;
             "send_failed",
             fields
                 .clone()
@@ -1538,6 +1540,7 @@ async fn retry_outbox(
     backend: State<'_, BackendState>,
     outbox_id: String,
 ) -> CommandResult<OutboxItemDto> {
+    desktop_runtime: State<'_, DesktopRuntime>,
     let started = Instant::now();
     let operation_id = diagnostics::operation_id();
     let account_id = backend.active_account_id();
@@ -1551,6 +1554,7 @@ async fn retry_outbox(
     diagnostics::info("outbox_retry_started", fields.clone());
     if let Err(error) = account.refresh_active_oauth_backend(&backend).await {
         diagnostics::error(
+    let _smtp_operation = desktop_runtime.begin_smtp_operation()?;
             "outbox_retry_failed",
             fields
                 .clone()
@@ -1640,6 +1644,7 @@ async fn resolve_delivery_unknown(
     backend: State<'_, BackendState>,
     outbox_id: String,
     expected_attempts: u32,
+    desktop_runtime: State<'_, DesktopRuntime>,
     decision: DeliveryUnknownDecision,
     acknowledge_duplicate_risk: bool,
 ) -> CommandResult<OutboxItemDto> {
@@ -1670,6 +1675,7 @@ async fn resolve_delivery_unknown(
         DeliveryUnknownDecision::RetryOnce => {
             if let Err(error) = account.refresh_active_oauth_backend(&backend).await {
                 diagnostics::error(
+            let _smtp_operation = desktop_runtime.begin_smtp_operation()?;
                     "delivery_unknown_resolution_failed",
                     fields
                         .clone()
@@ -1748,6 +1754,17 @@ fn list_outbox(backend: State<'_, BackendState>) -> CommandResult<Vec<OutboxItem
 
 /// Hydrates only the selected local Outbox body. Raw RFC822 bytes never cross
 /// the desktop boundary, and list responses remain bounded summaries.
+#[tauri::command]
+fn list_sent_outbox_fallbacks(
+    backend: State<'_, BackendState>,
+) -> CommandResult<Vec<OutboxItemDto>> {
+    let backend = backend.local()?;
+    backend
+        .list_sent_outbox_fallbacks()
+        .map(|items| items.into_iter().map(Into::into).collect())
+        .map_err(safe_mail_error)
+}
+
 #[tauri::command]
 fn fetch_outbox_message(
     backend: State<'_, BackendState>,
@@ -1894,8 +1911,8 @@ fn requested_autostart_change(current: bool, requested: Option<bool>) -> Option<
 }
 
 #[tauri::command]
-fn complete_exit(app: AppHandle, request_id: u64) -> CommandResult<bool> {
-    desktop::complete_exit(&app, request_id)
+async fn complete_exit(app: AppHandle, request_id: u64) -> CommandResult<bool> {
+    desktop::complete_exit(&app, request_id).await
 }
 
 #[tauri::command]
@@ -2266,6 +2283,7 @@ pub fn run() {
             list_outbox,
             fetch_outbox_message,
             get_storage_status,
+            list_sent_outbox_fallbacks,
             prepare_storage_migration,
             cancel_storage_migration,
             get_desktop_settings,

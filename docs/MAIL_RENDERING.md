@@ -199,6 +199,11 @@ frontend code. An intentional threshold change must:
 
 - Forward preparation is a Rust operation over one fully hydrated cached message.
   It never substitutes a list preview for a complete body and never asks React to
+- Confirmed SMTP success retains the immutable Outbox attachment set only while
+  that row supplies the local Sent fallback. Once a synchronized provider Sent
+  message has the same normalized Message-ID, Rust retires the Outbox row,
+  cascades its attachment references, and lets ordinary orphan cleanup remove
+  blobs that have no remaining draft or Outbox owner.
   reconstruct sender content.
 - Rust captures original subject, From, To, Cc, and time as immutable structured
   metadata. It does not infer Bcc. The user's new authored text stays separate.

@@ -953,8 +953,13 @@ impl AccountRuntime {
             metadata.account_id = existing.account_id.clone();
         }
         let database_path = account_database_path(&self.app_data, &metadata);
-        let local_backend = open_local_backend(&metadata, &database_path)?;
-        let network_backend = open_backend(&metadata, &database_path, password.as_str())?;
+        let local_backend = if account_added {
+            open_local_backend(&metadata, &database_path)?
+        } else {
+            open_local_backend_without_outbox_recovery(&metadata, &database_path)?
+        };
+        let network_backend =
+            open_backend_without_outbox_recovery(&metadata, &database_path, password.as_str())?;
         verify_connections(&network_backend).await?;
 
         let entry = keyring_entry(&metadata)?;
@@ -1015,8 +1020,16 @@ impl AccountRuntime {
         }
 
         let database_path = account_database_path(&self.app_data, &metadata);
-        let local_backend = open_local_backend(&metadata, &database_path)?;
-        let network_backend = open_backend(&metadata, &database_path, &oauth.tokens.access_token)?;
+        let local_backend = if account_added {
+            open_local_backend(&metadata, &database_path)?
+        } else {
+            open_local_backend_without_outbox_recovery(&metadata, &database_path)?
+        };
+        let network_backend = open_backend_without_outbox_recovery(
+            &metadata,
+            &database_path,
+            &oauth.tokens.access_token,
+        )?;
         verify_connections(&network_backend).await?;
 
         let entry = keyring_entry(&metadata)?;
@@ -1312,9 +1325,10 @@ impl AccountRuntime {
         })?;
         let database_path = account_database_path(&self.app_data, metadata);
         let network =
-            open_backend(metadata, &database_path, &tokens.access_token).inspect_err(|_| {
-                log_oauth_refresh_failure(&metadata.account_id, started);
-            })?;
+            open_backend_without_outbox_recovery(metadata, &database_path, &tokens.access_token)
+                .inspect_err(|_| {
+                    log_oauth_refresh_failure(&metadata.account_id, started);
+                })?;
         match backend_state.replace_network(&metadata.account_id, network, true) {
             Ok(()) => {
                 diagnostics::info(
@@ -1394,12 +1408,28 @@ fn open_local_backend(
     metadata: &AccountMetadata,
     database_path: &Path,
 ) -> Result<MailBackend, String> {
+    open_local_backend_with_recovery(metadata, database_path, true)
+}
+
+fn open_local_backend_without_outbox_recovery(
+    metadata: &AccountMetadata,
+    database_path: &Path,
+) -> Result<MailBackend, String> {
+    open_local_backend_with_recovery(metadata, database_path, false)
+}
+
+fn open_local_backend_with_recovery(
+    metadata: &AccountMetadata,
+    database_path: &Path,
+    recover_outbox: bool,
+) -> Result<MailBackend, String> {
     let mut local_metadata = metadata.clone();
     local_metadata.authentication = AccountAuthentication::Password;
-    open_backend(
+    open_backend_with_recovery(
         &local_metadata,
         database_path,
         LOCAL_ONLY_PLACEHOLDER_SECRET,
+        recover_outbox,
     )
 }
 
@@ -1443,7 +1473,7 @@ fn load_network_backend(
 
     match metadata.authentication {
         AccountAuthentication::Password => {
-            open_backend(metadata, database_path, credential.as_str())
+            open_backend_without_outbox_recovery(metadata, database_path, credential.as_str())
                 .map(|backend| (Some(backend), true))
         }
         AccountAuthentication::GoogleOAuth => {
@@ -1452,24 +1482,36 @@ fn load_network_backend(
             if tokens.expires_at_unix <= unix_timestamp().saturating_add(60) {
                 Ok((None, true))
             } else {
-                open_backend(metadata, database_path, &tokens.access_token)
+                open_backend_without_outbox_recovery(metadata, database_path, &tokens.access_token)
                     .map(|backend| (Some(backend), true))
             }
         }
     }
 }
 
-fn open_backend(
+fn open_backend_without_outbox_recovery(
     metadata: &AccountMetadata,
     database_path: &Path,
     secret: &str,
 ) -> Result<MailBackend, String> {
+    open_backend_with_recovery(metadata, database_path, secret, false)
+}
+
+fn open_backend_with_recovery(
+    metadata: &AccountMetadata,
+    database_path: &Path,
+    secret: &str,
+    recover_outbox: bool,
+) -> Result<MailBackend, String> {
     let config = metadata.account_config(secret)?;
     let backend = MailBackend::open(config, database_path)
         .map_err(|_| "The local mail database could not be opened.".to_owned())?;
-    backend
-        .initialize()
-        .map_err(|_| "The local mail database could not be initialized.".to_owned())?;
+    let initialized = if recover_outbox {
+        backend.initialize()
+    } else {
+        backend.initialize_without_outbox_recovery()
+    };
+    initialized.map_err(|_| "The local mail database could not be initialized.".to_owned())?;
     Ok(backend)
 }
 

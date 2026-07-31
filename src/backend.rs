@@ -42,7 +42,7 @@ use crate::{
         MAX_MANAGED_ATTACHMENT_TOTAL_BYTES, ManagedMimeAttachment, MimeSourceCompleteness,
         build_draft_message_revision, build_draft_message_revision_with_attachments,
         build_outgoing_message, build_outgoing_message_with_attachments, extract_attachment,
-        index_message_attachments, parse_draft_message, parse_incoming_message,
+        index_message_attachments, outbox_message_id, parse_draft_message, parse_incoming_message,
         parse_incoming_summary_or_fallback, prepare_forward_source,
         prepare_forward_source_without_attachments, render_message_html, restore_outbox_envelope,
         sanitize_compose_html, validate_attachment_id,
@@ -600,11 +600,23 @@ impl MailBackend {
 
     pub fn initialize(&self) -> Result<()> {
         self.repository.initialize_account(&self.config)?;
-        // Current senders create queued and claim sending inside one SQLite
-        // transaction, so a visible queued row can only be a legacy/crashed
-        // item from an older lifecycle and is safe to expose for manual retry.
-        self.repository.recover_queued_as_retryable()?;
-        self.repository.recover_sending_as_delivery_unknown()?;
+        if recover_outbox {
+            // Current senders create queued and claim sending inside one SQLite
+            // transaction, so a visible queued row can only be a legacy/crashed
+            // item from an older lifecycle and is safe to expose for manual retry.
+            self.repository.recover_queued_as_retryable()?;
+            self.repository.recover_sending_as_delivery_unknown()?;
+        }
+        self.initialize_internal(true)
+    }
+
+    /// Initializes another runtime handle over an already-open account
+    /// database without interpreting a live SMTP attempt as abandoned.
+    pub fn initialize_without_outbox_recovery(&self) -> Result<()> {
+        self.initialize_internal(false)
+    }
+
+    fn initialize_internal(&self, recover_outbox: bool) -> Result<()> {
         self.cleanup_managed_attachments()?;
         Ok(())
     }
@@ -1023,9 +1035,34 @@ impl MailBackend {
     /// Synchronizes one semantic role while preserving the per-account backend
     /// boundary. Archive and Trash require a persisted available capability;
     /// no action is silently redirected to another folder.
+        self.reconcile_sent_outbox(&mailbox)?;
     pub async fn sync_mailbox(&self, account_id: &str, role: MailboxRole) -> Result<()> {
         self.ensure_account_scope(account_id)?;
         match role {
+    fn reconcile_sent_outbox(&self, sent_mailbox: &str) -> Result<usize> {
+        let mut retired = 0;
+        for candidate in self
+            .repository
+            .list_sent_reconciliation_candidates(&self.config.account_id)?
+        {
+            let Some(message_id) = outbox_message_id(&candidate.raw_rfc822) else {
+                continue;
+            };
+            if self.repository.reconcile_outbox_with_cached_sent(
+                &candidate.id,
+                &self.config.account_id,
+                sent_mailbox,
+                &message_id,
+            )? {
+                retired += 1;
+            }
+        }
+        if retired > 0 {
+            let _ = self.cleanup_managed_attachments();
+        }
+        Ok(retired)
+    }
+
             MailboxRole::Inbox => {
                 self.sync_inbox(DEFAULT_MESSAGE_PAGE_SIZE).await?;
             }
@@ -5716,6 +5753,11 @@ impl MailBackend {
 fn public_attachment_meta(metadata: AttachmentPartMetadata) -> AttachmentMeta {
     AttachmentMeta {
         id: metadata.id,
+    pub fn list_sent_outbox_fallbacks(&self) -> Result<Vec<OutboxItem>> {
+        self.repository
+            .list_sent_outbox_fallbacks(&self.config.account_id)
+    }
+
         original_name: metadata.original_name,
         safe_display_name: metadata.safe_display_name,
         mime_type: metadata.mime_type,
@@ -6235,7 +6277,7 @@ mod tests {
         imap_client::{MailboxHint, MailboxMessageScope, RemoteMailbox, RemoteMessage},
         mime::{
             MimeSourceCompleteness, build_outgoing_message_with_attachments,
-            index_message_attachments, outbox_body_text, parse_draft_message,
+            index_message_attachments, outbox_body_text, outbox_message_id, parse_draft_message,
             prepare_forward_source,
         },
         models::{
@@ -8124,7 +8166,7 @@ mod tests {
     }
 
     #[test]
-    fn sent_draft_releases_its_ref_while_outbox_keeps_the_exact_blob() {
+    fn sent_fallback_keeps_exact_blob_until_cached_sent_reconciliation() {
         let directory = tempdir().expect("tempdir");
         let selected_directory = tempdir().expect("selected file");
         let selected = selected_directory.path().join("note.txt");
@@ -8694,6 +8736,75 @@ mod tests {
                 .body_html
                 .as_deref(),
             Some(html.as_str())
+        );
+
+        let message_id = outbox_message_id(&outbox.raw_rfc822).expect("outgoing Message-ID");
+        let mut cached = cached_message(
+            &backend.config.account_id,
+            77,
+            &message_id,
+            "draft",
+            &backend.config.email,
+            "receiver@example.com",
+        );
+        cached.mailbox = "Sent".to_owned();
+        backend
+            .repository
+            .upsert_message(&cached)
+            .expect("cache provider Sent copy");
+        assert_eq!(backend.reconcile_sent_outbox("Sent").unwrap(), 1);
+        assert!(backend.repository.get_outbox(&outbox.id).is_err());
+        assert!(
+            backend
+                .managed_attachments
+                .list_internal_names()
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn runtime_backend_clone_does_not_recover_a_live_sending_attempt() {
+        let directory = tempdir().expect("tempdir");
+        let database_path = directory.path().join("mail.db");
+        let primary_config =
+            AccountConfig::from_163_lines(["demo@163.com", "not-a-real-secret"]).expect("config");
+        let backend = MailBackend::open(primary_config, &database_path).expect("primary backend");
+        backend.initialize().expect("initialize primary");
+        let queued = OutboxItem {
+            id: "live-send".to_owned(),
+            account_id: backend.config.account_id.clone(),
+            draft_id: None,
+            draft_revision: None,
+            draft_local_version: None,
+            recipients: vec!["receiver@example.com".to_owned()],
+            recipient_groups: Some(crate::OutboxRecipientGroups {
+                to: vec!["receiver@example.com".to_owned()],
+                cc: Vec::new(),
+                bcc: Vec::new(),
+            }),
+            status: OutboxStatus::Queued,
+            attempts: 0,
+            last_error: None,
+            created_at: "2026-07-28T00:00:00Z".to_owned(),
+            sent_at: None,
+            raw_rfc822: b"Message-ID: <live-send@example.com>\r\n\r\nBody".to_vec(),
+        };
+        backend
+            .repository
+            .enqueue_and_claim_outbox(&queued)
+            .expect("claim live SMTP attempt");
+
+        let clone_config =
+            AccountConfig::from_163_lines(["demo@163.com", "not-a-real-secret"]).expect("config");
+        let runtime_clone =
+            MailBackend::open(clone_config, &database_path).expect("runtime backend clone");
+        runtime_clone
+            .initialize_without_outbox_recovery()
+            .expect("initialize clone");
+        assert_eq!(
+            backend.repository.get_outbox(&queued.id).unwrap().status,
+            OutboxStatus::Sending
         );
     }
 

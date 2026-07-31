@@ -425,6 +425,18 @@ must be updated here when an intentional product change lands.
   Date and Outbox creation time remain available for display fallback.
   Alternatively, the user may explicitly acknowledge the duplicate-delivery
   risk and request one manual retry.
+- The active Outbox contains only work that is pending, retryable, rejected, or
+  requires delivery review. Confirmed `sent` rows leave Outbox immediately and
+  remain as local Sent fallbacks only until provider reconciliation completes.
+- After a successful Sent synchronization, Rust retires a local sent fallback
+  only when the cached message is in the discovered Sent mailbox and its
+  normalized RFC822 Message-ID exactly matches the immutable Outbox MIME.
+  Legacy rows without Message-ID remain as local fallbacks; subject, recipient,
+  body, and timestamp similarity never delete them.
+- The same exact cached Sent match is authoritative evidence for a
+  `delivery_unknown` attempt. Rust consumes only the bound draft version and
+  retires that Outbox row atomically. Removing the row releases its immutable
+  attachment references so ordinary orphan cleanup can remove unused blobs.
 - A duplicate-risk retry reuses the exact persisted RFC822 bytes and SMTP
   envelope; it never rebuilds MIME from the editable draft. Each decision is
   bound to the reviewed attempt generation so concurrent or repeated submission
@@ -441,6 +453,14 @@ must be updated here when an intentional product change lands.
 - Every message exposed through this boundary uses an account-bound, randomly
   generated opaque `public_id` that remains stable across restarts and ordinary
   upserts. SQLite row IDs never cross into React; deleting a mailbox epoch after
+- Outbox crash recovery runs once when the account's startup-local backend opens.
+  Creating network/runtime handles, refreshing OAuth, or reauthenticating an
+  already-open account must not reclassify another handle's live `sending`
+  attempt as abandoned.
+- Once desktop exit begins, no new SMTP operation may start. A graceful exit
+  waits for every in-flight SMTP operation to record its confirmed or uncertain
+  outcome before committing shutdown; the bounded forced-exit path preserves
+  the existing next-start `delivery_unknown` recovery rule.
   a UIDVALIDITY change and importing it again creates new message identities.
 - `InboxMessage.bcc` is an address list sourced only from an actual cached
   RFC822 `Bcc` header. `OutboxItem.recipient_groups` is either

@@ -4814,7 +4814,30 @@ impl Repository {
 
     pub(crate) fn list_outbox(&self, account_id: &str) -> Result<Vec<OutboxItem>> {
         self.query_outbox(
-            "WHERE account_id = ?1 ORDER BY created_at ASC, id ASC",
+            "WHERE account_id = ?1
+               AND status <> 'sent'
+             ORDER BY created_at ASC, id ASC",
+            account_id,
+        )
+    }
+
+    pub(crate) fn list_sent_outbox_fallbacks(&self, account_id: &str) -> Result<Vec<OutboxItem>> {
+        self.query_outbox(
+            "WHERE account_id = ?1
+               AND status = 'sent'
+             ORDER BY COALESCE(sent_at, created_at) DESC, id DESC",
+            account_id,
+        )
+    }
+
+    pub(crate) fn list_sent_reconciliation_candidates(
+        &self,
+        account_id: &str,
+    ) -> Result<Vec<OutboxItem>> {
+        self.query_outbox(
+            "WHERE account_id = ?1
+               AND status IN ('sent', 'delivery_unknown')
+             ORDER BY created_at ASC, id ASC",
             account_id,
         )
     }
@@ -5165,6 +5188,86 @@ impl Repository {
                 [],
             )
             .map_err(Into::into)
+    }
+
+    /// Retires one local Outbox lifecycle only after the provider's cached Sent
+    /// mailbox contains the same normalized RFC822 Message-ID. This is also an
+    /// authoritative resolution for `delivery_unknown`: no subject, recipient,
+    /// timestamp, or other heuristic can trigger the transition.
+    pub(crate) fn reconcile_outbox_with_cached_sent(
+        &self,
+        outbox_id: &str,
+        account_id: &str,
+        sent_mailbox: &str,
+        message_id: &str,
+    ) -> Result<bool> {
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let sql = format!("SELECT {OUTBOX_COLUMNS} FROM outbox WHERE id = ?1");
+        let Some(outbox) = transaction
+            .query_row(&sql, params![outbox_id], row_to_outbox)
+            .optional()?
+        else {
+            return Ok(false);
+        };
+        if outbox.account_id != account_id
+            || !matches!(
+                outbox.status,
+                OutboxStatus::Sent | OutboxStatus::DeliveryUnknown
+            )
+        {
+            return Ok(false);
+        }
+
+        let cached_match = transaction.query_row(
+            "SELECT EXISTS(
+                 SELECT 1
+                 FROM messages
+                 WHERE account_id = ?1
+                   AND mailbox = ?2
+                   AND message_id IS NOT NULL
+                   AND lower(trim(message_id, '<> ')) =
+                       lower(trim(?3, '<> '))
+             )",
+            params![account_id, sent_mailbox, message_id],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if !cached_match {
+            return Ok(false);
+        }
+
+        if outbox.status == OutboxStatus::DeliveryUnknown {
+            let changed = transaction.execute(
+                "UPDATE outbox SET
+                     status = 'sent',
+                     last_error = NULL,
+                     sent_at = COALESCE(
+                         sent_at,
+                         strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                     )
+                 WHERE id = ?1
+                   AND account_id = ?2
+                   AND status = 'delivery_unknown'",
+                params![outbox_id, account_id],
+            )?;
+            if changed != 1 {
+                return Ok(false);
+            }
+            finalize_outbox_draft_state(&transaction, &outbox)?;
+        }
+
+        let deleted = transaction.execute(
+            "DELETE FROM outbox
+             WHERE id = ?1
+               AND account_id = ?2
+               AND status = 'sent'",
+            params![outbox_id, account_id],
+        )?;
+        if deleted != 1 {
+            return Ok(false);
+        }
+        transaction.commit()?;
+        Ok(true)
     }
 }
 
@@ -11638,10 +11741,99 @@ mod tests {
 
         let mut stale_remote = sync_snapshot.clone();
         stale_remote.revision = 2;
+            0
+        );
+        assert_eq!(
+            repository
+                .list_sent_outbox_fallbacks(&account.account_id)
+                .unwrap()
+                .len(),
         stale_remote.synced_revision = 2;
         stale_remote.draft.subject = "remote replacement".to_owned();
         stale_remote.draft.raw_rfc822 = b"remote bytes".to_vec();
         let conflict_copy = draft_record(
+    #[test]
+    fn exact_cached_sent_message_retires_sent_and_unknown_outbox_rows() {
+        let (_directory, repository, account) = setup();
+        let base = OutboxItem {
+            id: "sent-fallback".to_owned(),
+            account_id: account.account_id.clone(),
+            draft_id: None,
+            draft_revision: None,
+            draft_local_version: None,
+            recipients: vec!["receiver@example.com".to_owned()],
+            recipient_groups: None,
+            status: OutboxStatus::Queued,
+            attempts: 0,
+            last_error: None,
+            created_at: "2026-07-14T03:01:00Z".to_owned(),
+            sent_at: None,
+            raw_rfc822: b"Message-ID: <same-message@example.com>\r\nSubject: Exact\r\n\r\nBody"
+                .to_vec(),
+        };
+        repository.enqueue_outbox(&base).expect("enqueue fallback");
+        repository
+            .finalize_outbox_sent(&base.id)
+            .expect("mark sent fallback");
+
+        assert!(
+            !repository
+                .reconcile_outbox_with_cached_sent(
+                    &base.id,
+                    &account.account_id,
+                    "Sent",
+                    "<same-message@example.com>",
+                )
+                .expect("no cached sent match")
+        );
+
+        let mut cached = message(&account.account_id, false);
+        cached.mailbox = "Sent".to_owned();
+        cached.uid = 77;
+        cached.message_id = Some("SAME-MESSAGE@EXAMPLE.COM".to_owned());
+        repository
+            .upsert_message(&cached)
+            .expect("cached Sent copy");
+        assert!(
+            repository
+                .reconcile_outbox_with_cached_sent(
+                    &base.id,
+                    &account.account_id,
+                    "Sent",
+                    "<same-message@example.com>",
+                )
+                .expect("retire sent fallback")
+        );
+        assert!(repository.get_outbox(&base.id).is_err());
+
+        let unknown = OutboxItem {
+            id: "unknown-fallback".to_owned(),
+            raw_rfc822: b"Message-ID: <same-message@example.com>\r\nSubject: Exact\r\n\r\nBody"
+                .to_vec(),
+            ..base
+        };
+        repository
+            .enqueue_outbox(&unknown)
+            .expect("enqueue unknown");
+        repository
+            .update_outbox_status(&unknown.id, OutboxStatus::Sending, None)
+            .expect("claim unknown");
+        repository
+            .recover_sending_as_delivery_unknown()
+            .expect("recover unknown");
+        assert!(
+            repository
+                .reconcile_outbox_with_cached_sent(
+                    &unknown.id,
+                    &account.account_id,
+                    "Sent",
+                    "same-message@example.com",
+                )
+                .expect("resolve unknown from exact Sent copy")
+        );
+        assert!(repository.get_outbox(&unknown.id).is_err());
+    }
+
             &account.account_id,
             "conflict-copy",
             "stale conflict copy",

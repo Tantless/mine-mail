@@ -799,7 +799,15 @@ function createDemoActions(
     },
 
     listOutbox() {
-      return structuredClone(state.outbox);
+      return structuredClone(
+        state.outbox.filter((candidate) => candidate.status !== "sent"),
+      );
+    },
+
+    listSentOutboxFallbacks() {
+      return structuredClone(
+        state.outbox.filter((candidate) => candidate.status === "sent"),
+      );
     },
 
     fetchOutboxMessage(outboxId) {
