@@ -235,6 +235,10 @@ family. Preserve the relative hierarchy when tuning optical values.
 
 ### Menus, tooltips, and scrolling
 
+- The desktop runtime suppresses the embedded WebView's browser-provided context
+  menu. Right-click may show only Mine Mail-owned contextual actions; while a
+  surface has none, it shows no menu. The explicit Vite demo keeps normal browser
+  context-menu behavior.
 - Use the shared portal tooltip for icon-only or unfamiliar actions. It appears
   after a short pointer delay, immediately for keyboard focus, stays inside the
   viewport, and never intercepts input.

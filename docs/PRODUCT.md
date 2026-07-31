@@ -14,6 +14,9 @@ must be updated here when an intentional product change lands.
   provider. Mine Mail does not add a server-side mailbox proxy.
 - The Vite demo uses explicit mock data and performs no real mail, credential,
   tray, notification, or operating-system work.
+- The desktop app suppresses the embedded WebView's browser-provided context
+  menu. Right-click exposes only Mine Mail-owned contextual actions when they
+  exist; the explicit Vite demo retains normal browser behavior.
 - SQLite is the immediate local source for renderable mailbox state. The server
   remains authoritative for remote messages and system flags once synchronization
   confirms them.

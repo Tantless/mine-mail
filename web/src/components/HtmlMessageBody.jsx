@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { installDesktopContextMenuGuard } from "../services/desktopContextMenu.js";
 
 const minimumFrameHeight = 220;
 const maximumFrameHeight = 250_000;
@@ -281,6 +282,7 @@ export function HtmlMessageBody({
       onOpenLink?.(anchor.getAttribute("href"));
     };
 
+    const removeContextMenuGuard = installDesktopContextMenuGuard(document);
     document.addEventListener("click", handleClick);
     const observer =
       typeof ResizeObserver === "undefined"
@@ -293,6 +295,7 @@ export function HtmlMessageBody({
 
     cleanupRef.current = () => {
       observer?.disconnect();
+      removeContextMenuGuard();
       document.removeEventListener("click", handleClick);
       frame.contentWindow?.removeEventListener("resize", updateHeight);
     };
