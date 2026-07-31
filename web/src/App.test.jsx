@@ -918,10 +918,20 @@ describe("Mine Mail MVP", () => {
     await screen.findAllByText("欢迎来到 Mine Mail");
 
     await user.click(screen.getByRole("button", { name: "设置" }));
-    await user.click(screen.getByRole("button", { name: "管理 demo@163.com" }));
-    await user.click(screen.getByRole("menuitem", { name: "添加备注" }));
-    await user.type(screen.getByRole("textbox", { name: "备注名" }), "工作邮箱");
-    await user.click(screen.getByRole("button", { name: "保存备注" }));
+    await user.click(
+      await screen.findByRole("button", { name: "管理 demo@163.com" }),
+    );
+    await user.click(await screen.findByRole("menuitem", { name: "添加备注" }));
+    const remarkEditor = await screen.findByRole("form", {
+      name: "demo@163.com 账户备注",
+    });
+    await user.type(
+      within(remarkEditor).getByRole("textbox", { name: "账户备注" }),
+      "工作邮箱",
+    );
+    await user.click(
+      within(remarkEditor).getByRole("button", { name: "保存" }),
+    );
 
     await waitFor(() =>
       expect(setAccountRemark).toHaveBeenCalledWith(

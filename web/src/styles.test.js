@@ -41,6 +41,36 @@ describe("text selection policy", () => {
   });
 });
 
+describe("settings overlay positioning", () => {
+  it("does not override fixed confirmation layers with workspace content positioning", () => {
+    const settingsChildren = declarationsFor(
+      "\\.settings-workspace > :not\\(\\.confirm-layer\\)",
+    );
+    const confirmLayer = declarationsFor("\\.confirm-layer");
+
+    expect(settingsChildren).toMatch(/position:\s*relative/);
+    expect(confirmLayer).toMatch(/position:\s*fixed/);
+  });
+
+  it("keeps account rows geometrically stable while remark fields open", () => {
+    const accountCard = declarationsFor("\\.settings-account-card");
+    const remarkEditor = declarationsFor("\\.settings-account-remark-editor");
+    const remarkError = declarationsFor(
+      "\\.settings-account-remark-editor__error",
+    );
+    expect(accountCard).toMatch(/height:\s*78px/);
+    expect(remarkEditor).toMatch(/grid-column:\s*3/);
+    expect(remarkEditor).toMatch(/min-height:\s*40px/);
+    expect(remarkError).toMatch(/position:\s*absolute/);
+    expect(styles).toMatch(
+      /\.settings-account-remark-editor\s*\{\s*position:\s*absolute/,
+    );
+    expect(styles).not.toMatch(
+      /\.settings-account-remark-editor\s*\{[^}]*grid-row:\s*2/,
+    );
+  });
+});
+
 describe("mail workspace motion contract", () => {
   it("uses center-anchored window motion without horizontal page travel", () => {
     const readerEntering = declarationsFor(

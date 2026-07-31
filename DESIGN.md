@@ -439,6 +439,13 @@ family. Preserve the relative hierarchy when tuning optical values.
 - Account avatar editing starts from the avatar. Secondary account actions use a
   compact icon/menu. Adding an account is a provider-first drill-in inside the
   detail pane.
+- Account remark editing starts from that account's local action menu. Opening it
+  reveals “备注”, the compact input, and the text “保存” action inside the row's
+  reserved remark slot; the resting account row shows no persistent remark
+  control. The row must not change height, width, border geometry, or list spacing.
+  Focus moves directly to the input, while cancellation, validation, and progress
+  remain tied to that row. Do not use a dialog or full-workspace scrim for this
+  routine edit.
 - The formal provider-first list contains 163, Gmail, and custom IMAP/SMTP.
   Outlook is absent until its supported Microsoft authentication flow is a
   complete product capability; do not show a disabled or “coming soon” card.

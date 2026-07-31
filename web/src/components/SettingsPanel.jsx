@@ -291,12 +291,12 @@ export function SettingsPanel({
   const accountMenuRef = useRef(null);
   const accountMenuTriggerRef = useRef(null);
   const previousAccountSubmitStatusRef = useRef(accountSubmitStatus);
-  const accountDialogReturnFocusRef = useRef(null);
+  const accountActionReturnFocusRef = useRef(null);
   const storageDialogReturnFocusRef = useRef(null);
   const updateDialogReturnFocusRef = useRef(null);
   const storageCancelRef = useRef(null);
   const updateCancelRef = useRef(null);
-  const accountRemarkCancelRef = useRef(null);
+  const accountRemarkInputRef = useRef(null);
 
   const accounts = connectedAccounts(accountStatus);
   const maxAccounts = accountStatus?.maxAccounts || 3;
@@ -432,6 +432,12 @@ export function SettingsPanel({
     return () => document.removeEventListener("pointerdown", handlePointerDown);
   }, [accountMenu]);
 
+  useEffect(() => {
+    if (!editingAccountRemark) return;
+    accountRemarkInputRef.current?.focus();
+    accountRemarkInputRef.current?.select();
+  }, [editingAccountRemark]);
+
   const updateSettings = (updater) => {
     const next = typeof updater === "function" ? updater(value) : updater;
     setValue(next);
@@ -452,9 +458,12 @@ export function SettingsPanel({
     setRepairingAccount(false);
   };
 
-  const openAccountRemarkEditor = (account) => {
+  const openAccountRemarkEditor = (account, returnFocusTarget) => {
     setAccountMenu(null);
     setPendingAccountRemoval(null);
+    if (returnFocusTarget) {
+      accountActionReturnFocusRef.current = returnFocusTarget;
+    }
     setEditingAccountRemark(account);
     setAccountRemarkValue(account.remark || "");
     setAccountRemarkError(null);
@@ -496,6 +505,7 @@ export function SettingsPanel({
         accountRemarkValue.trim(),
       );
       setEditingAccountRemark(null);
+      accountActionReturnFocusRef.current?.focus();
     } catch (error) {
       setAccountRemarkError(
         errorMessage(error, "邮箱备注没有保存，请重试。"),
@@ -648,8 +658,11 @@ export function SettingsPanel({
     );
   };
 
-  const closeAccountRemarkDialog = () => {
-    if (!isAccountRemarkSaving) setEditingAccountRemark(null);
+  const closeAccountRemarkEditor = () => {
+    if (isAccountRemarkSaving) return;
+    setEditingAccountRemark(null);
+    setAccountRemarkError(null);
+    accountActionReturnFocusRef.current?.focus();
   };
 
   const storageDialogFocus = useConfirmDialogFocus({
@@ -666,14 +679,6 @@ export function SettingsPanel({
     returnFocusRef: updateDialogReturnFocusRef,
     onCancel: closeUpdateDialog,
   });
-  const accountRemarkDialogFocus = useConfirmDialogFocus({
-    open: Boolean(editingAccountRemark),
-    isPending: isAccountRemarkSaving,
-    initialFocusRef: accountRemarkCancelRef,
-    returnFocusRef: accountDialogReturnFocusRef,
-    onCancel: closeAccountRemarkDialog,
-  });
-
   const saveStateLabel =
     saveStatus === "saving"
       ? "正在保存…"
@@ -795,10 +800,16 @@ export function SettingsPanel({
                         connectedAccount.credentialAvailable === false;
                       const legacyOutlook =
                         connectedAccount.provider === "outlook";
+                      const isEditingRemark =
+                        editingAccountRemark?.accountId ===
+                        connectedAccount.accountId;
+                      const remarkInputId = `account-remark-${connectedAccount.accountId}`;
+                      const remarkErrorId = `${remarkInputId}-error`;
                       return (
                         <div
                           className="settings-account-card"
                           data-active={active}
+                          data-remark-editing={isEditingRemark || undefined}
                           key={connectedAccount.accountId}
                         >
                           <EditableProfileAvatar
@@ -827,6 +838,78 @@ export function SettingsPanel({
                               <CredentialWarning />
                             ) : null}
                           </span>
+                          {isEditingRemark ? (
+                            <form
+                              className="settings-account-remark-editor"
+                              aria-label={`${connectedAccount.email} 账户备注`}
+                              aria-busy={isAccountRemarkSaving || undefined}
+                              onKeyDown={(event) => {
+                                if (event.key !== "Escape") return;
+                                event.preventDefault();
+                                event.stopPropagation();
+                                closeAccountRemarkEditor();
+                              }}
+                              onSubmit={(event) => {
+                                event.preventDefault();
+                                void saveAccountRemark();
+                              }}
+                            >
+                              <span className="settings-account-remark-editor__label">
+                                备注
+                              </span>
+                              <span
+                                id={`${remarkInputId}-fields`}
+                                className="settings-account-remark-editor__fields"
+                              >
+                                <input
+                                  ref={accountRemarkInputRef}
+                                  id={remarkInputId}
+                                  className="settings-account-remark-editor__input"
+                                  type="text"
+                                  aria-label="账户备注"
+                                  aria-describedby={
+                                    accountRemarkError ? remarkErrorId : undefined
+                                  }
+                                  aria-invalid={
+                                    accountRemarkError ? "true" : undefined
+                                  }
+                                  value={accountRemarkValue}
+                                  maxLength={40}
+                                  autoComplete="off"
+                                  disabled={isAccountRemarkSaving}
+                                  placeholder="输入备注"
+                                  onChange={(event) => {
+                                    setAccountRemarkValue(event.target.value);
+                                    setAccountRemarkError(null);
+                                  }}
+                                />
+                                <button
+                                  className="settings-account-remark-editor__save"
+                                  type="submit"
+                                  aria-busy={isAccountRemarkSaving || undefined}
+                                  disabled={isAccountRemarkSaving}
+                                >
+                                  {isAccountRemarkSaving ? "保存中…" : "保存"}
+                                </button>
+                              </span>
+                              {accountRemarkError ? (
+                                <span
+                                  id={remarkErrorId}
+                                  className="settings-account-remark-editor__error"
+                                  role="alert"
+                                  aria-live="assertive"
+                                  aria-atomic="true"
+                                >
+                                  {accountRemarkError}
+                                </span>
+                              ) : null}
+                              <ConfirmDialogStatus>
+                                {isAccountRemarkSaving
+                                  ? "正在保存邮箱备注…"
+                                  : null}
+                              </ConfirmDialogStatus>
+                            </form>
+                          ) : null}
                           {active ? (
                             <span className="settings-current-chip">当前</span>
                           ) : (
@@ -860,7 +943,7 @@ export function SettingsPanel({
                                   : undefined
                               }
                               onClick={(event) => {
-                                accountDialogReturnFocusRef.current =
+                                accountActionReturnFocusRef.current =
                                   event.currentTarget;
                                 accountMenuTriggerRef.current = event.currentTarget;
                                 setAccountMenu((current) =>
@@ -1555,102 +1638,10 @@ export function SettingsPanel({
         </div>
       ) : null}
 
-      {editingAccountRemark ? (
-        <div
-          className="confirm-layer"
-          data-pending={isAccountRemarkSaving || undefined}
-          onPointerDown={accountRemarkDialogFocus.onBackdropPointerDown}
-        >
-          <form
-            ref={accountRemarkDialogFocus.dialogRef}
-            className="confirm-dialog account-remark-dialog"
-            role="dialog"
-            tabIndex={-1}
-            aria-modal="true"
-            aria-busy={isAccountRemarkSaving || undefined}
-            aria-labelledby="account-remark-title"
-            aria-describedby="account-remark-description"
-            noValidate
-            onKeyDown={accountRemarkDialogFocus.onDialogKeyDown}
-            onSubmit={(event) => {
-              event.preventDefault();
-              void saveAccountRemark();
-            }}
-          >
-            <header>
-              <span className="confirm-dialog__icon" aria-hidden="true">
-                <NotePencil size={22} weight="duotone" />
-              </span>
-              <IconButton
-                label="关闭邮箱备注编辑"
-                onClick={closeAccountRemarkDialog}
-                disabled={isAccountRemarkSaving}
-              >
-                <X size={18} />
-              </IconButton>
-            </header>
-            <h2 id="account-remark-title">设置邮箱备注</h2>
-            <p id="account-remark-description">
-              备注会用于账户来源、收藏夹和新邮件通知；邮箱地址仍会同时显示。
-            </p>
-            <label className="settings-field account-remark-dialog__field">
-              <span>备注名</span>
-              <span className="settings-input-shell settings-input-shell--text inset-input-shell">
-                <input
-                  type="text"
-                  aria-label="备注名"
-                  value={accountRemarkValue}
-                  maxLength={40}
-                  autoComplete="off"
-                  disabled={isAccountRemarkSaving}
-                  placeholder="例如：工作邮箱"
-                  onChange={(event) => {
-                    setAccountRemarkValue(event.target.value);
-                    setAccountRemarkError(null);
-                  }}
-                />
-              </span>
-              <small>留空并保存可删除备注，最多 40 个字符。</small>
-            </label>
-            {accountRemarkError ? (
-              <p
-                className="settings-error"
-                role="alert"
-                aria-live="assertive"
-                aria-atomic="true"
-              >
-                {accountRemarkError}
-              </p>
-            ) : null}
-            <footer>
-              <button
-                ref={accountRemarkCancelRef}
-                type="button"
-                className="secondary-button"
-                onClick={closeAccountRemarkDialog}
-                disabled={isAccountRemarkSaving}
-              >
-                取消
-              </button>
-              <button
-                type="submit"
-                className="send-button"
-                disabled={isAccountRemarkSaving}
-              >
-                {isAccountRemarkSaving ? "正在保存…" : "保存备注"}
-              </button>
-            </footer>
-            <ConfirmDialogStatus>
-              {isAccountRemarkSaving ? "正在保存邮箱备注…" : null}
-            </ConfirmDialogStatus>
-          </form>
-        </div>
-      ) : null}
-
       <AccountRemovalDialog
         account={pendingAccountRemoval}
         isRemoving={accountSubmitStatus === "saving"}
-        returnFocusRef={accountDialogReturnFocusRef}
+        returnFocusRef={accountActionReturnFocusRef}
         onCancel={() => setPendingAccountRemoval(null)}
         onConfirm={(options) => {
           const accountToRemove = pendingAccountRemoval;

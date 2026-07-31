@@ -349,35 +349,35 @@ describe("SettingsPanel account flow", () => {
     const manageAccount = screen.getByRole("button", {
       name: "管理 first@163.com",
     });
+    expect(
+      screen.queryByRole("form", { name: "first@163.com 账户备注" }),
+    ).toBeNull();
+
     await user.click(manageAccount);
     await user.click(screen.getByRole("menuitem", { name: "添加备注" }));
 
-    const dialog = screen.getByRole("dialog", { name: "设置邮箱备注" });
-    expect(dialog.getAttribute("aria-describedby")).toBe(
-      "account-remark-description",
-    );
-    const cancel = within(dialog).getByRole("button", { name: "取消" });
-    const close = within(dialog).getByRole("button", {
-      name: "关闭邮箱备注编辑",
+    const editor = screen.getByRole("form", {
+      name: "first@163.com 账户备注",
     });
-    const save = within(dialog).getByRole("button", { name: "保存备注" });
-    expect(document.activeElement).toBe(cancel);
-    save.focus();
-    fireEvent.keyDown(save, { key: "Tab" });
-    expect(document.activeElement).toBe(close);
-    close.focus();
-    fireEvent.keyDown(close, { key: "Tab", shiftKey: true });
-    expect(document.activeElement).toBe(save);
+    expect(within(editor).getByText("备注")).toBeTruthy();
+    expect(screen.queryByRole("dialog", { name: "设置邮箱备注" })).toBeNull();
+    const input = within(editor).getByRole("textbox", { name: "账户备注" });
+    expect(input.getAttribute("maxLength")).toBe("40");
+    expect(input.getAttribute("placeholder")).toBe("输入备注");
+    expect(input.getAttribute("aria-describedby")).toBeNull();
+    expect(within(editor).queryByText("在账户来源与通知中优先显示；留空可删除。")).toBeNull();
+    expect(within(editor).queryByText("账户备注")).toBeNull();
+    expect(document.activeElement).toBe(input);
 
-    const input = within(dialog).getByRole("textbox", { name: "备注名" });
-    await user.type(input, "工作邮箱");
-    await user.click(save);
+    await user.type(input, "工作邮箱{Enter}");
 
     expect(onSaveAccountRemark).toHaveBeenCalledWith(
       "163-account",
       "工作邮箱",
     );
-    expect(screen.queryByRole("dialog", { name: "设置邮箱备注" })).toBeNull();
+    expect(
+      screen.queryByRole("form", { name: "first@163.com 账户备注" }),
+    ).toBeNull();
     expect(document.activeElement).toBe(manageAccount);
   });
 
@@ -433,20 +433,26 @@ describe("SettingsPanel account flow", () => {
     });
     await user.click(manageAccount);
     await user.click(screen.getByRole("menuitem", { name: "添加备注" }));
-    const dialog = screen.getByRole("dialog", { name: "设置邮箱备注" });
+    const editor = screen.getByRole("form", {
+      name: "first@163.com 账户备注",
+    });
     await user.click(
-      within(dialog).getByRole("button", { name: "保存备注" }),
+      within(editor).getByRole("button", { name: "保存" }),
     );
 
-    await waitFor(() => expect(dialog.getAttribute("aria-busy")).toBe("true"));
-    expect(document.activeElement).toBe(dialog);
+    await waitFor(() => expect(editor.getAttribute("aria-busy")).toBe("true"));
     expect(
-      within(dialog).getByText("正在保存邮箱备注…"),
+      within(editor).getByRole("textbox", { name: "账户备注" }).disabled,
+    ).toBe(true);
+    expect(
+      within(editor).getByText("正在保存邮箱备注…"),
     ).toBeTruthy();
-    fireEvent.keyDown(dialog, { key: "Escape" });
-    fireEvent.pointerDown(dialog.closest(".confirm-layer"));
     expect(
-      screen.getByRole("dialog", { name: "设置邮箱备注" }),
+      within(editor).getByRole("button", { name: "保存中…" }),
+    ).toBeTruthy();
+    fireEvent.keyDown(editor, { key: "Escape" });
+    expect(
+      within(editor).getByRole("textbox", { name: "账户备注" }),
     ).toBeTruthy();
 
     await act(async () => {
@@ -454,9 +460,44 @@ describe("SettingsPanel account flow", () => {
     });
     await waitFor(() =>
       expect(
-        screen.queryByRole("dialog", { name: "设置邮箱备注" }),
+        screen.queryByRole("form", { name: "first@163.com 账户备注" }),
       ).toBeNull(),
     );
+    expect(document.activeElement).toBe(manageAccount);
+  });
+
+  it("keeps account-remark errors in the edited row and supports Escape cancellation", async () => {
+    const onSaveAccountRemark = vi
+      .fn()
+      .mockRejectedValue(new Error("邮箱备注没有保存，请稍后重试。"));
+    const user = userEvent.setup();
+    render(<SettingsPanel {...panelProps({ onSaveAccountRemark })} />);
+
+    const manageAccount = screen.getByRole("button", {
+      name: "管理 first@163.com",
+    });
+    await user.click(manageAccount);
+    await user.click(screen.getByRole("menuitem", { name: "添加备注" }));
+    const editor = screen.getByRole("form", {
+      name: "first@163.com 账户备注",
+    });
+    const input = within(editor).getByRole("textbox", { name: "账户备注" });
+    await user.type(input, "工作邮箱");
+    await user.click(
+      within(editor).getByRole("button", { name: "保存" }),
+    );
+
+    const error = await within(editor).findByRole("alert");
+    expect(error.textContent).toBe("邮箱备注没有保存，请稍后重试。");
+    expect(input.getAttribute("aria-invalid")).toBe("true");
+    expect(document.activeElement).toBe(
+      within(editor).getByRole("button", { name: "保存" }),
+    );
+
+    fireEvent.keyDown(editor, { key: "Escape" });
+    expect(
+      screen.queryByRole("form", { name: "first@163.com 账户备注" }),
+    ).toBeNull();
     expect(document.activeElement).toBe(manageAccount);
   });
 
