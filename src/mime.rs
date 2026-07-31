@@ -1171,19 +1171,102 @@ fn forward_html_body(request: &ComposeRequest, context: &ForwardContext) -> Resu
 fn authored_html(request: &ComposeRequest) -> String {
     let fragment = sanitize_compose_html(request.format.body_html.as_deref())
         .unwrap_or_else(|| html_text(&request.body_text));
-    let marked = format!("{MINE_MAIL_AUTHORED_START}{fragment}{MINE_MAIL_AUTHORED_END}");
+    let marked =
+        if request.format.send_stationery && request.format.stationery != StationeryTheme::None {
+            let transport_fragment = apply_stationery_block_rhythm(&fragment);
+            format!("{MINE_MAIL_AUTHORED_START}{transport_fragment}{MINE_MAIL_AUTHORED_END}")
+        } else {
+            format!("{MINE_MAIL_AUTHORED_START}{fragment}{MINE_MAIL_AUTHORED_END}")
+        };
     if !request.format.send_stationery {
         return marked;
     }
     match request.format.stationery {
         StationeryTheme::None => marked,
         StationeryTheme::Lined => format!(
-            "<div data-mine-mail-stationery=\"lined\" style=\"box-sizing:border-box;min-height:168px;padding:24px 28px;border:1px solid #dbe4ec;border-radius:10px;background-color:#fbfcfe;background-image:repeating-linear-gradient(to bottom,transparent 0,transparent 27px,#dbe5ee 28px);color:#243342;font-family:Arial,sans-serif;font-size:14px;line-height:28px;\">{marked}</div>"
+            "<div data-mine-mail-stationery=\"lined\" style=\"box-sizing:border-box;min-height:168px;padding:28px;border:1px solid #dbe4ec;border-radius:10px;background-color:#fbfcfe;background-image:repeating-linear-gradient(to bottom,transparent 0,transparent 27px,#dbe5ee 28px);background-position:0 0;background-repeat:repeat;color:#243342;font-family:Arial,sans-serif;font-size:14px;line-height:28px;mso-line-height-rule:exactly;\">{marked}</div>"
         ),
         StationeryTheme::Grid => format!(
-            "<div data-mine-mail-stationery=\"grid\" style=\"box-sizing:border-box;min-height:196px;padding:22px 28px;border:1px solid #dbe4ec;border-radius:10px;background-color:#fbfcfe;background-image:linear-gradient(#e4ebf2 1px,transparent 1px),linear-gradient(90deg,#e4ebf2 1px,transparent 1px);background-size:28px 28px;color:#243342;font-family:Arial,sans-serif;font-size:14px;line-height:28px;\">{marked}</div>"
+            "<div data-mine-mail-stationery=\"grid\" style=\"box-sizing:border-box;min-height:196px;padding:28px;border:1px solid #dbe4ec;border-radius:10px;background-color:#fbfcfe;background-image:linear-gradient(#e4ebf2 1px,transparent 1px),linear-gradient(90deg,#e4ebf2 1px,transparent 1px);background-position:0 0;background-repeat:repeat;background-size:28px 28px;color:#243342;font-family:Arial,sans-serif;font-size:14px;line-height:28px;mso-line-height-rule:exactly;\">{marked}</div>"
         ),
     }
+}
+
+fn apply_stationery_block_rhythm(fragment: &str) -> String {
+    const BLOCK_RHYTHM: &str =
+        "margin:0;min-height:28px;line-height:28px;mso-line-height-rule:exactly";
+    const LIST_RHYTHM: &str =
+        "margin:0;padding-left:28px;line-height:28px;mso-line-height-rule:exactly";
+
+    let mut output = String::with_capacity(fragment.len().saturating_add(128));
+    let mut cursor = 0;
+    while let Some(relative_start) = fragment[cursor..].find('<') {
+        let start = cursor + relative_start;
+        output.push_str(&fragment[cursor..start]);
+        let Some(relative_end) = fragment[start..].find('>') else {
+            output.push_str(&fragment[start..]);
+            return output;
+        };
+        let end = start + relative_end + 1;
+        let tag = &fragment[start..end];
+        let tag_body = tag[1..].trim_start();
+        let name = tag_body
+            .chars()
+            .take_while(|character| {
+                character.is_ascii_alphanumeric() || matches!(character, '-' | '_')
+            })
+            .collect::<String>()
+            .to_ascii_lowercase();
+        let declarations = match name.as_str() {
+            "p" | "div" | "blockquote" | "li" => Some(BLOCK_RHYTHM),
+            "ol" | "ul" => Some(LIST_RHYTHM),
+            _ => None,
+        };
+        if let Some(declarations) = declarations {
+            output.push_str(&append_inline_style(tag, declarations));
+        } else {
+            output.push_str(tag);
+        }
+        cursor = end;
+    }
+    output.push_str(&fragment[cursor..]);
+    output
+}
+
+fn append_inline_style(tag: &str, declarations: &str) -> String {
+    let lower = tag.to_ascii_lowercase();
+    for quote in ['"', '\''] {
+        let needle = format!("style={quote}");
+        let Some(attribute_start) = lower.find(&needle) else {
+            continue;
+        };
+        let value_start = attribute_start + needle.len();
+        let Some(relative_end) = tag[value_start..].find(quote) else {
+            break;
+        };
+        let value_end = value_start + relative_end;
+        let separator = if tag[value_start..value_end].trim_end().ends_with(';') {
+            ""
+        } else {
+            ";"
+        };
+        return format!(
+            "{}{separator}{declarations}{}",
+            &tag[..value_end],
+            &tag[value_end..]
+        );
+    }
+
+    let insertion = if tag.ends_with("/>") {
+        tag.len().saturating_sub(2)
+    } else {
+        tag.len().saturating_sub(1)
+    };
+    format!(
+        "{} style=\"{declarations}\"{}",
+        &tag[..insertion],
+        &tag[insertion..]
+    )
 }
 
 fn extract_mine_mail_authored_html(source: &str) -> Option<String> {
@@ -2710,7 +2793,10 @@ JVBERi0xLjcK
 
         let mut sent_theme = compose();
         sent_theme.format = ComposeFormat {
-            body_html: Some("<div><u>Hello</u>, 世界</div>".to_owned()),
+            body_html: Some(
+                r#"<p><u>Hello</u>, 世界</p><p data-first-line-indent="tab" style="text-indent:2em">第二行</p><ol><li>第三行</li></ol>"#
+                    .to_owned(),
+            ),
             stationery: StationeryTheme::Grid,
             send_stationery: true,
         };
@@ -2724,11 +2810,57 @@ JVBERi0xLjcK
         assert!(themed_raw.contains("multipart/alternative"));
         assert!(html.contains("data-mine-mail-stationery=\"grid\""));
         assert!(html.contains("background-size:28px 28px"));
+        assert!(html.contains("padding:28px"));
+        assert!(html.contains(
+            r#"<p style="margin:0;min-height:28px;line-height:28px;mso-line-height-rule:exactly"><u>Hello</u>, 世界</p>"#
+        ));
+        assert!(html.contains(
+            r#"style="text-indent:2em;margin:0;min-height:28px;line-height:28px;mso-line-height-rule:exactly""#
+        ));
+        assert!(html.contains(
+            r#"<ol style="margin:0;padding-left:28px;line-height:28px;mso-line-height-rule:exactly">"#
+        ));
+        assert!(html.contains(
+            r#"<li style="margin:0;min-height:28px;line-height:28px;mso-line-height-rule:exactly">第三行</li>"#
+        ));
         assert!(html.contains("<u>Hello</u>"));
         assert_eq!(
             outbox_body_text(&themed.raw_rfc822).as_deref(),
             Some("Hello, 世界")
         );
+    }
+
+    #[test]
+    fn sent_stationery_transport_styles_do_not_pollute_editable_draft_html() {
+        let mut request = compose();
+        request.body_text = "第一行\n第二行".to_owned();
+        request.format = ComposeFormat {
+            body_html: Some(
+                r#"<p>第一行</p><p data-first-line-indent="tab" style="text-indent:2em">第二行</p>"#
+                    .to_owned(),
+            ),
+            stationery: StationeryTheme::Lined,
+            send_stationery: true,
+        };
+
+        let raw = build_draft_message_revision("sender@example.com", &request, "lined-draft", 2)
+            .expect("stationery draft");
+        let rendered = outbox_body_html(&raw).expect("stationery HTML");
+        assert!(rendered.contains("mso-line-height-rule:exactly"));
+
+        let parsed = parse_draft_message(&raw).expect("parse stationery draft");
+        let editable = parsed
+            .request
+            .format
+            .body_html
+            .as_deref()
+            .expect("editable authored HTML");
+        assert!(editable.contains("第一行"));
+        assert!(editable.contains("第二行"));
+        assert!(editable.contains(r#"data-first-line-indent="tab""#));
+        assert!(!editable.contains("margin:0"));
+        assert!(!editable.contains("line-height:28px"));
+        assert!(!editable.contains("mso-line-height-rule"));
     }
 
     #[test]

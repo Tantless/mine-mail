@@ -202,6 +202,26 @@ export function buildEmailDocument(fragment, allowRemoteImages = false) {
         overflow-wrap: anywhere;
         white-space: pre-wrap;
       }
+      [data-mine-mail-stationery="lined"] p,
+      [data-mine-mail-stationery="lined"] div,
+      [data-mine-mail-stationery="lined"] blockquote,
+      [data-mine-mail-stationery="lined"] li,
+      [data-mine-mail-stationery="grid"] p,
+      [data-mine-mail-stationery="grid"] div,
+      [data-mine-mail-stationery="grid"] blockquote,
+      [data-mine-mail-stationery="grid"] li {
+        min-height: 28px;
+        margin: 0 !important;
+        line-height: 28px !important;
+      }
+      [data-mine-mail-stationery="lined"] ol,
+      [data-mine-mail-stationery="lined"] ul,
+      [data-mine-mail-stationery="grid"] ol,
+      [data-mine-mail-stationery="grid"] ul {
+        margin: 0 !important;
+        padding-left: 28px;
+        line-height: 28px !important;
+      }
     </style>
   </head>
   <body data-mine-mail-document>${fragment}

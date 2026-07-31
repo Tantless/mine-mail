@@ -325,7 +325,13 @@ must be updated here when an intentional product change lands.
   **仅编辑** stores the selection but sends no paper decoration.
   **随信发送** is available only for a non-empty paper selection and asks Rust
   to wrap the sanitized authored HTML in the selected stationery when it builds
-  the exact MIME version. Grid paper visually groups up to three consecutive
+  the exact MIME version. The MIME-only presentation resets paragraph and list
+  spacing to the stationery rhythm so browser or mail-client defaults cannot
+  move authored rows off their rules; those transport styles never become
+  editable draft formatting. A received or local Outbox/Sent body with a valid
+  Mine Mail stationery marker always uses the isolated HTML reader so native
+  style degradation cannot silently remove the selected paper. Grid paper
+  visually groups up to three consecutive
   Latin letters or numbers in one cell, centers each Han character in one cell,
   and gives every whitespace or special character an independent cell so an
   authored Space advances by one complete blank cell; these editing decorations

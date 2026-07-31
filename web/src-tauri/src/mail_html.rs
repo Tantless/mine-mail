@@ -266,6 +266,7 @@ pub(crate) fn sanitize_mail_html(source: &str) -> SanitizedMailHtml {
             "cellpadding",
             "cellspacing",
             "class",
+            "data-mine-mail-stationery",
             "dir",
             "height",
             "id",
@@ -280,6 +281,11 @@ pub(crate) fn sanitize_mail_html(source: &str) -> SanitizedMailHtml {
         .link_rel(Some("noopener noreferrer"))
         .strip_comments(true)
         .attribute_filter(move |element, attribute, value| {
+            if attribute == "data-mine-mail-stationery"
+                && (element != "div" || !matches!(value, "lined" | "grid"))
+            {
+                return None;
+            }
             if (element, attribute) == ("img", "src")
                 && is_data_url(value)
                 && !is_safe_image_data_url(value)
@@ -309,6 +315,17 @@ pub(crate) fn sanitize_mail_html(source: &str) -> SanitizedMailHtml {
     ]
     .iter()
     .any(|needle| lower_fragment.contains(needle));
+    // Mine Mail stationery is a bounded, sanitizer-validated presentation
+    // contract. Native rendering intentionally drops sender style and custom
+    // attributes, which would turn short/plain stationery messages back into
+    // undecorated text. Keep every valid marker on the isolated path so Inbox,
+    // Sent, Outbox, and segmented reply rendering preserve the same paper.
+    let has_mine_mail_stationery = [
+        r#"data-mine-mail-stationery="lined""#,
+        r#"data-mine-mail-stationery="grid""#,
+    ]
+    .iter()
+    .any(|marker| lower_fragment.contains(marker));
     let analysis = analyze_html(&fragment);
     let structural_bytes = fragment.len().saturating_sub(analysis.inline_image_bytes);
     let native_candidate = sanitize_native_mail_html(source);
@@ -376,7 +393,9 @@ pub(crate) fn sanitize_mail_html(source: &str) -> SanitizedMailHtml {
         && analysis.tables == 0
         && !layout_requires_isolation
         && !style_dependent_layout;
-    let structure = if is_plain_equivalent {
+    let structure = if has_mine_mail_stationery {
+        MailHtmlStructure::Isolated
+    } else if is_plain_equivalent {
         MailHtmlStructure::PlainEquivalent
     } else if has_hard_source_tag
         || (table_requires_isolation && !text_dominant_template)
@@ -1642,6 +1661,47 @@ mod tests {
                 MailHtmlStructure::Isolated,
                 "source should remain isolated: {source}",
             );
+        }
+    }
+
+    #[test]
+    fn sent_stationery_keeps_its_transport_line_rhythm_when_isolated() {
+        let result = sanitize_mail_html(
+            r#"<div data-mine-mail-stationery="lined" style="min-height:168px;padding:28px;background-image:repeating-linear-gradient(to bottom,transparent 0,transparent 27px,#dbe5ee 28px);line-height:28px;mso-line-height-rule:exactly;"><p style="margin:0;min-height:28px;line-height:28px;mso-line-height-rule:exactly;">第一行</p><p style="margin:0;min-height:28px;line-height:28px;mso-line-height-rule:exactly;">第二行</p></div>"#,
+        );
+
+        assert_eq!(result.structure, MailHtmlStructure::Isolated);
+        assert!(result.fragment.contains("background-image:"));
+        assert!(
+            result
+                .fragment
+                .contains(r#"data-mine-mail-stationery="lined""#)
+        );
+        assert_eq!(result.fragment.matches("margin:0").count(), 2);
+        assert_eq!(result.fragment.matches("line-height:28px").count(), 3);
+        assert!(result.fragment.contains("mso-line-height-rule:exactly"));
+
+        let invalid_marker = sanitize_mail_html(
+            r#"<div data-mine-mail-stationery="unknown" style="background:#fff">正文</div>"#,
+        );
+        assert!(
+            !invalid_marker
+                .fragment
+                .contains("data-mine-mail-stationery")
+        );
+    }
+
+    #[test]
+    fn short_or_plain_stationery_never_loses_its_paper_to_native_degradation() {
+        for source in [
+            r#"<div data-mine-mail-stationery="lined">默认草稿<br>第二行</div>"#,
+            r#"<div data-mine-mail-stationery="grid"><strong>短正文</strong></div>"#,
+        ] {
+            let result = sanitize_mail_html(source);
+
+            assert_eq!(result.structure, MailHtmlStructure::Isolated);
+            assert!(result.native_fragment.is_none());
+            assert!(result.fragment.contains("data-mine-mail-stationery="));
         }
     }
 

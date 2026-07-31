@@ -8893,6 +8893,51 @@ mod tests {
     }
 
     #[test]
+    fn existing_plain_draft_keeps_selected_stationery_in_confirmed_send_snapshot() {
+        let directory = tempdir().expect("tempdir");
+        let config =
+            AccountConfig::from_163_lines(["demo@163.com", "not-a-real-secret"]).expect("config");
+        let backend = MailBackend::open(config, directory.path().join("mail.db")).expect("backend");
+        backend.initialize().expect("initialize");
+        let created = backend
+            .save_draft_optimistic(
+                None,
+                None,
+                compose("plain draft", "first line\nsecond line"),
+            )
+            .expect("create plain draft")
+            .draft;
+        assert!(created.format.body_html.is_none());
+
+        let mut themed_request = created.compose_request();
+        themed_request.format.stationery = StationeryTheme::Lined;
+        themed_request.format.send_stationery = true;
+        let themed = backend
+            .save_draft_optimistic(
+                Some(&created.id),
+                Some(created.local_version),
+                themed_request,
+            )
+            .expect("save stationery selection")
+            .draft;
+        let confirmed = backend
+            .confirmed_draft_snapshot(
+                &themed.id,
+                themed.local_version,
+                &["receiver@example.com".to_owned()],
+            )
+            .expect("confirmed draft snapshot");
+
+        assert_eq!(confirmed.request.format.stationery, StationeryTheme::Lined);
+        assert!(confirmed.request.format.send_stationery);
+        let outgoing = crate::mime::build_outgoing_message("demo@163.com", &confirmed.request)
+            .expect("outgoing stationery message");
+        let html =
+            crate::mime::outbox_body_html(&outgoing.raw_rfc822).expect("HTML alternative");
+        assert!(html.contains(r#"data-mine-mail-stationery="lined""#));
+    }
+
+    #[test]
     fn stale_optimistic_save_keeps_canonical_and_creates_conflict_copy() {
         let directory = tempdir().expect("tempdir");
         let config =

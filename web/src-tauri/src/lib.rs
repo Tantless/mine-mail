@@ -2420,6 +2420,30 @@ mod tests {
         item
     }
 
+    fn stationery_outbox_item() -> OutboxItem {
+        let mut item = outbox_item();
+        item.raw_rfc822 = concat!(
+            "From: sender@example.com\r\n",
+            "To: receiver@example.com\r\n",
+            "Subject: Stationery\r\n",
+            "MIME-Version: 1.0\r\n",
+            "Content-Type: multipart/alternative; boundary=\"stationery\"\r\n",
+            "\r\n",
+            "--stationery\r\n",
+            "Content-Type: text/plain; charset=utf-8\r\n",
+            "\r\n",
+            "Short body\r\n",
+            "--stationery\r\n",
+            "Content-Type: text/html; charset=utf-8\r\n",
+            "\r\n",
+            "<div data-mine-mail-stationery=\"lined\"><strong>Short body</strong></div>\r\n",
+            "--stationery--\r\n",
+        )
+        .as_bytes()
+        .to_vec();
+        item
+    }
+
     #[test]
     fn outbox_summaries_and_selected_bodies_cross_separate_safe_boundaries() {
         let summary = serde_json::to_value(OutboxItemDto::from(outbox_item()))
@@ -2467,6 +2491,32 @@ mod tests {
         assert!(legacy_selected["recipient_groups"].is_null());
         assert_no_private_mail_coordinates(&legacy_summary);
         assert_no_private_mail_coordinates(&legacy_selected);
+    }
+
+    #[test]
+    fn stationery_uses_the_isolated_reader_for_incoming_and_outbox_bodies() {
+        let outbox = serde_json::to_value(OutboxMessageDto::from(stationery_outbox_item()))
+            .expect("serialize stationery Outbox body");
+        assert_eq!(outbox["body_render_mode"], "isolated_html");
+        assert!(
+            outbox["body_html"]
+                .as_str()
+                .is_some_and(|html| html.contains(r#"data-mine-mail-stationery="lined""#))
+        );
+
+        let mut incoming = rich_message();
+        incoming.body_text = Some("Short body".to_owned());
+        incoming.body_html = Some(
+            r#"<div data-mine-mail-stationery="grid"><strong>Short body</strong></div>"#.to_owned(),
+        );
+        let incoming = serde_json::to_value(InboxMessageDto::full(incoming))
+            .expect("serialize incoming stationery body");
+        assert_eq!(incoming["body_render_mode"], "isolated_html");
+        assert!(
+            incoming["body_html"]
+                .as_str()
+                .is_some_and(|html| html.contains(r#"data-mine-mail-stationery="grid""#))
+        );
     }
 
     #[test]

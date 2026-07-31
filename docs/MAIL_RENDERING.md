@@ -147,8 +147,21 @@ frontend code. An intentional threshold change must:
 - **仅编辑** persists the selected lined/grid paper for the local editor while
   leaving the outgoing body undecorated. **随信发送** wraps the sanitized authored
   fragment in Mine Mail-generated inline stationery styles so common mail clients
-  can render it without external assets. The plain alternative never contains
-  paper decoration.
+  can render it without external assets. Before wrapping, Rust adds a
+  transport-only inline rhythm to authored paragraphs, list items, and lists:
+  client default margins are removed and their line boxes stay synchronized with
+  the paper rules. These compatibility declarations are discarded when an owned
+  draft is restored and never become editor formatting. The paper background is
+  progressive enhancement because a receiving client may remove CSS backgrounds;
+  the normalized text rhythm and complete plain alternative remain readable when
+  it does. The plain alternative never contains paper decoration.
+- The isolated reader retains only the bounded `lined` or `grid` Mine Mail
+  stationery marker and reapplies the same block rhythm when displaying older
+  owned messages that predate transport normalization. This is a presentation
+  repair only: cached HTML and the original RFC822 bytes are never rewritten.
+  A valid marker always selects isolated rendering, including for short or
+  plain-text-derived HTML; it must never enter native/plain degradation because
+  those paths intentionally remove sender styles and custom attributes.
 - Mine Mail draft headers and authored-boundary markers identify restricted rich
   content that the editor can round-trip. Parsing restores only the marked,
   re-sanitized authored fragment; stationery wrappers and immutable reply history

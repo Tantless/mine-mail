@@ -30,6 +30,22 @@ describe("HTML message body", () => {
     expect(document).toContain("overflow: visible");
   });
 
+  it("repairs the line rhythm of legacy Mine Mail stationery", () => {
+    const document = buildEmailDocument(
+      '<div data-mine-mail-stationery="lined"><p>第一行</p><p>第二行</p></div>',
+      false,
+    );
+
+    expect(document).toContain(
+      '[data-mine-mail-stationery="lined"] p',
+    );
+    expect(document).toContain(
+      '[data-mine-mail-stationery="grid"] p',
+    );
+    expect(document).toContain("margin: 0 !important");
+    expect(document).toContain("line-height: 28px !important");
+  });
+
   it("loads remote images automatically by default", () => {
     render(
       <HtmlMessageBody

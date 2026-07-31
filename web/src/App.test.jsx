@@ -895,6 +895,37 @@ describe("Mine Mail MVP", () => {
     );
   });
 
+  it("persists stationery delivery when sending an existing plain draft", async () => {
+    const user = userEvent.setup();
+    const saveDraft = vi
+      .spyOn(mailApi, "saveDraft")
+      .mockImplementation(async (request, draftId, expectedLocalVersion) =>
+        savedOutcome(request, draftId, expectedLocalVersion),
+      );
+    render(<App />);
+    await screen.findAllByText("欢迎来到 Mine Mail");
+
+    await user.click(screen.getByRole("button", { name: /草稿/ }));
+    await user.click(await screen.findByText("关于下周的主题评审"));
+    await user.click(screen.getByRole("button", { name: "启用信纸" }));
+    await user.click(
+      screen.getByRole("radio", { name: "将信纸随邮件发送" }),
+    );
+    await user.click(screen.getByRole("button", { name: "发送邮件" }));
+
+    await screen.findByRole("alertdialog", { name: "确认发送这封邮件？" });
+    expect(saveDraft).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        format: expect.objectContaining({
+          stationery: "lined",
+          send_stationery: true,
+        }),
+      }),
+      "draft-welcome",
+      1,
+    );
+  });
+
   it("persists an existing draft even after every field is cleared", async () => {
     const user = userEvent.setup();
     render(<App />);
