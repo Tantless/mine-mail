@@ -539,12 +539,24 @@ describe("Mine Mail MVP", () => {
   });
 
   it("saves authored content before minimizing without a success toast", async () => {
+    let persistedDraft = null;
+    const listDrafts = vi
+      .spyOn(mailApi, "listDrafts")
+      .mockImplementation(async () => (persistedDraft ? [persistedDraft] : []));
     const saveDraft = vi
       .spyOn(mailApi, "saveDraft")
-      .mockImplementation(async (request, draftId, expectedLocalVersion) =>
-        savedOutcome(request, draftId, expectedLocalVersion),
-      );
-    vi.spyOn(mailApi, "syncDrafts").mockResolvedValue(undefined);
+      .mockImplementation(async (request, draftId, expectedLocalVersion) => {
+        const outcome = savedOutcome(
+          request,
+          draftId,
+          expectedLocalVersion,
+        );
+        persistedDraft = outcome.draft;
+        return outcome;
+      });
+    const syncDrafts = vi
+      .spyOn(mailApi, "syncDrafts")
+      .mockResolvedValue(undefined);
     const user = userEvent.setup();
     render(<App />);
     await screen.findAllByText("欢迎来到 Mine Mail");
@@ -554,6 +566,10 @@ describe("Mine Mail MVP", () => {
     await user.click(screen.getByRole("button", { name: "保存并最小化" }));
 
     await waitFor(() => expect(saveDraft).toHaveBeenCalledOnce());
+    await waitFor(() => expect(syncDrafts).toHaveBeenCalledOnce());
+    await waitFor(() =>
+      expect(listDrafts.mock.calls.length).toBeGreaterThan(1),
+    );
     const minimizedDialog = await screen.findByRole("dialog", {
       name: "保存后缩略",
     });
