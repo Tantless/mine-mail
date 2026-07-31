@@ -757,7 +757,7 @@ describe("Mine Mail MVP", () => {
   it("syncs only the active semantic mailbox on manual refresh", async () => {
     const syncMailbox = vi
       .spyOn(mailApi, "syncMailbox")
-      .mockResolvedValue(undefined);
+      .mockResolvedValue({ synced: 3 });
     const user = userEvent.setup();
     render(<App />);
     await screen.findAllByText("欢迎来到 Mine Mail");
@@ -766,8 +766,14 @@ describe("Mine Mail MVP", () => {
     await waitFor(() =>
       expect(syncMailbox).toHaveBeenCalledWith("demo-primary", "inbox"),
     );
+    expect(await screen.findByText("同步成功，新增 3 封邮件")).toBeTruthy();
     expect(screen.queryByText("收件箱同步完成")).toBeNull();
     expect(document.querySelector(".toast")).toBeNull();
+    await waitFor(
+      () =>
+        expect(screen.queryByText("同步成功，新增 3 封邮件")).toBeNull(),
+      { timeout: 2_500 },
+    );
   });
 
   it("navigates the settings menu and saves function preferences", async () => {

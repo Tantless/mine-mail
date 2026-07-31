@@ -146,6 +146,47 @@ describe("mail workspace motion contract", () => {
   });
 });
 
+describe("mail synchronization feedback material contract", () => {
+  it("forms a full-width structural band instead of another floating card", () => {
+    const root = declarationsFor(":root");
+    const feedback = declarationsFor("\\.mail-sync-feedback");
+    const feedbackIcon = declarationsFor("\\.mail-sync-feedback svg");
+    const entrance = nestedBlockFor("@keyframes mail-sync-feedback-in");
+
+    expect(styles.match(/--sync-feedback-row-surface:/g)).toHaveLength(1);
+    expect(styles.match(/--sync-feedback-surface:/g)).toHaveLength(1);
+    expect(root).toMatch(
+      /--sync-feedback-row-surface:\s*color-mix\(\s*in srgb,\s*var\(--mail-list-surface\)\s*44%,\s*var\(--row-hover-surface\)\s*\)/,
+    );
+    expect(root).toMatch(
+      /--sync-feedback-surface:\s*color-mix\(\s*in srgb,\s*var\(--sync-feedback-row-surface\)\s*94%,\s*var\(--color-text\)\s*\)/,
+    );
+    expect(feedback).toMatch(/width:\s*calc\(100%\s*\+\s*2px\)/);
+    expect(feedback).toMatch(/margin:\s*0\s+-1px/);
+    expect(feedback).toMatch(/display:\s*grid/);
+    expect(feedback).toMatch(
+      /grid-template-columns:\s*34px\s+minmax\(0,\s*1fr\)\s+40px/,
+    );
+    expect(feedback).toMatch(/column-gap:\s*9px/);
+    expect(feedback).toMatch(/padding:\s*5px\s+16px\s+5px\s+19px/);
+    expect(feedback).toMatch(/border:\s*0/);
+    expect(feedback).toMatch(/border-radius:\s*0/);
+    expect(feedback).toMatch(/box-shadow:\s*none/);
+    expect(feedback).toMatch(
+      /background:\s*var\(--sync-feedback-surface\)/,
+    );
+    expect(feedback).toMatch(/min-height:\s*26px/);
+    expect(feedback).toMatch(/font-weight:\s*400/);
+    expect(feedback).toMatch(/color:\s*var\(--sync-feedback-text\)/);
+    expect(root).toMatch(
+      /--sync-feedback-text:\s*var\(--color-text-secondary\)/,
+    );
+    expect(feedbackIcon).toMatch(/justify-self:\s*start/);
+    expect(feedbackIcon).toMatch(/margin-inline-start:\s*9px/);
+    expect(entrance).not.toMatch(/transform/);
+  });
+});
+
 describe("brand avatar sizing policy", () => {
   it("scales the sidebar brand lockup without wrapping its wordmark", () => {
     expect(declarationsFor("\\.sidebar__content")).toMatch(

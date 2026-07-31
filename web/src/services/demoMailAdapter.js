@@ -503,6 +503,7 @@ function createDemoActions(
       if (!capability || capability.status !== "available") {
         throw new Error("此邮箱角色当前不可同步");
       }
+      return { synced: 0 };
     },
 
     fetchMailboxMessage(messageId) {

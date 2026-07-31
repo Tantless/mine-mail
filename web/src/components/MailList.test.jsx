@@ -121,6 +121,25 @@ describe("MailList folder contracts", () => {
     expect(sync.disabled).toBe(true);
     expect(sync.getAttribute("aria-busy")).toBe("true");
   });
+
+  it.each([
+    ["syncing", "正在同步收件箱…", "status"],
+    ["success", "同步成功，新增 3 封邮件", "status"],
+    ["error", "同步失败：请检查网络后重试", "alert"],
+  ])(
+    "renders %s synchronization feedback in the shared inline row",
+    (state, message, role) => {
+      const { container } = renderMailList({
+        syncFeedback: { state, message },
+      });
+
+      const feedback = container.querySelector(".mail-sync-feedback");
+      expect(feedback?.dataset.state).toBe(state);
+      expect(feedback?.textContent).toBe(message);
+      expect(feedback?.getAttribute("role")).toBe(role);
+      expect(feedback?.querySelector("svg")?.getAttribute("width")).toBe("14");
+    },
+  );
 });
 
 describe("MailList controlled controls", () => {

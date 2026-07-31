@@ -312,6 +312,18 @@ family. Preserve the relative hierarchy when tuning optical values.
   persistent end card. A compact bottom line remains visible while loading, then
   shows the loaded count or failure for two seconds before disappearing;
   appending or receiving mail preserves selection and scroll position.
+- Every explicit folder refresh deepens the list material into one full-width,
+  square-edged status band directly below the tabs. The compact band reaches
+  through the panel's inline edge seam and is only one tonal step deeper than the
+  surrounding list material, deriving from the list and row-hover surfaces. Its
+  compact three-column grid mirrors a mail row: a regular-weight status icon is
+  centered on the avatar column, the regular-weight secondary copy starts on the
+  sender/content line, and the trailing action column stays empty. It has no
+  inset margin, border, radius, or shadow: it is part of the list surface, not
+  another card layered above it. It reports progress, then success with the
+  bounded number of synchronized messages or a retryable failure. The completed
+  row disappears after two seconds and never duplicates routine success in a
+  lower-right toast.
 - Mail search uses the established search shell and identifies its bounded local
   scope as **搜索已同步邮件**. Search and folder tabs must not imply access to
   uncached server history.

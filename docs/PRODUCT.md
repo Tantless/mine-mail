@@ -89,6 +89,12 @@ must be updated here when an intentional product change lands.
   mailbox roles and perform bounded summary synchronization for Inbox, Sent,
   Drafts, Archive, and Trash when those roles are available; they do not download
   every body or attachment.
+- An explicit folder refresh shows nearby inline progress in the current mail
+  list. Completion states whether synchronization succeeded and reports the
+  bounded synchronized-message count; Drafts reports processed drafts and Outbox
+  reports its refreshed queue count. Success or failure disappears after two
+  seconds. Routine success never creates a lower-right toast, and background
+  synchronization does not create this foreground feedback row.
 - IMAP IDLE and lightweight arrival polling monitor Inbox only. A periodic
   reconciliation always flushes queued mutations; Archive and Trash participate
   when they have been initialized locally or have pending mutations.
@@ -577,7 +583,8 @@ must be updated here when an intentional product change lands.
   `get_mailbox_capabilities(account_id)`,
   `list_mailbox_page(account_id, role, cursor?, page_size, query?)`,
   `load_older_mailbox_page(account_id, role, cursor, page_size, query?)`, and
-  `sync_mailbox(account_id, role)`.
+  `sync_mailbox(account_id, role) -> { synced }`. The synchronization result
+  exposes only the bounded count and never provider mailbox coordinates.
 - After the user accepts the one-time creation confirmation, the UI calls
   `create_mailbox_role(account_id, role) -> MailboxCapability`. This command
   accepts only `archive` or `trash`, chooses the canonical `Archive` or `Trash`

@@ -1064,19 +1064,17 @@ impl MailBackend {
     }
 
     /// Synchronizes one semantic role while preserving the per-account backend
-    /// boundary. Archive and Trash require a persisted available capability;
-    /// no action is silently redirected to another folder.
-    pub async fn sync_mailbox(&self, account_id: &str, role: MailboxRole) -> Result<()> {
+    /// boundary and returns the bounded number of newly synchronized messages.
+    /// Archive and Trash require a persisted available capability; no action is
+    /// silently redirected to another folder.
+    pub async fn sync_mailbox(&self, account_id: &str, role: MailboxRole) -> Result<usize> {
         self.ensure_account_scope(account_id)?;
-        match role {
-            MailboxRole::Inbox => {
-                self.sync_inbox(DEFAULT_MESSAGE_PAGE_SIZE).await?;
-            }
-            MailboxRole::Sent => {
-                self.sync_sent(DEFAULT_MESSAGE_PAGE_SIZE).await?;
-            }
+        let synced = match role {
+            MailboxRole::Inbox => self.sync_inbox(DEFAULT_MESSAGE_PAGE_SIZE).await?.fetched,
+            MailboxRole::Sent => self.sync_sent(DEFAULT_MESSAGE_PAGE_SIZE).await?.fetched,
             MailboxRole::Drafts => {
-                self.sync_drafts(None).await?;
+                let report = self.sync_drafts(None).await?;
+                report.pulled.saturating_add(report.pushed)
             }
             MailboxRole::Archive | MailboxRole::Trash => {
                 let _ = self.flush_pending_message_mutations(account_id).await;
@@ -1104,13 +1102,13 @@ impl MailBackend {
                         &mut |_| {},
                     )
                     .await
-                    .map(|_| ())
+                    .map(|report| report.fetched)
                     .map_err(|error| privacy_safe_network_error(error, "mailbox synchronization"));
                 let _ = connection.logout().await;
-                result?;
+                result?
             }
-        }
-        Ok(())
+        };
+        Ok(synced)
     }
 
     fn validate_sync_limit(&self, initial_limit: usize) -> Result<()> {

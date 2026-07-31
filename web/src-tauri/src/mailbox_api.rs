@@ -24,6 +24,11 @@ const MAX_LOCAL_SEARCH_CHARS: usize = 256;
 const MAX_MESSAGE_PAGE_SIZE: usize = 100;
 
 #[derive(Clone, Debug, Serialize)]
+pub(crate) struct MailboxSyncReportDto {
+    synced: usize,
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub(crate) struct MailboxCapabilityDto {
     role: MailboxRole,
     status: MailboxCapabilityStatus,
@@ -586,19 +591,19 @@ pub(crate) async fn sync_mailbox(
     backend: State<'_, BackendState>,
     account_id: String,
     role: MailboxRole,
-) -> CommandResult<()> {
+) -> CommandResult<MailboxSyncReportDto> {
     validate_account_id(&account_id)?;
     backend.local_for(&account_id)?;
     let _ = account.refresh_oauth_backends(&backend).await;
     let network = backend.network_for(&account_id)?;
     let runtime = app.state::<desktop::DesktopRuntime>();
     let _guard = runtime.acquire_sync_gate().await;
-    network
+    let synced = network
         .sync_mailbox(&account_id, role)
         .await
         .map_err(safe_mail_error)?;
     emit_mailbox_updated(&app, &account_id, role);
-    Ok(())
+    Ok(MailboxSyncReportDto { synced })
 }
 
 #[tauri::command]
@@ -883,9 +888,10 @@ mod tests {
     };
 
     use super::{
-        MailboxBodySegmentDto, MailboxCapabilityDto, MailboxMessageDto, MessagePageDto,
-        is_offline_history_error, normalize_query, offline_page, parse_cursor, validate_account_id,
-        validate_attachment_id, validate_message_id, validate_page_role, validate_page_size,
+        MailboxBodySegmentDto, MailboxCapabilityDto, MailboxMessageDto, MailboxSyncReportDto,
+        MessagePageDto, is_offline_history_error, normalize_query, offline_page, parse_cursor,
+        validate_account_id, validate_attachment_id, validate_message_id, validate_page_role,
+        validate_page_size,
     };
     use crate::{
         AttachmentMetaDto, BodyRenderMode, BodySegmentConfidenceDto, BodySegmentDto,
@@ -1075,6 +1081,16 @@ mod tests {
         assert_eq!(json["status"], "available");
         assert!(json.get("display_name").is_none());
         assert!(!json.to_string().contains("所有邮件"));
+        assert_no_private_mail_coordinates(&json);
+    }
+
+    #[test]
+    fn mailbox_sync_report_exposes_only_the_bounded_count() {
+        let json = serde_json::to_value(MailboxSyncReportDto { synced: 4 })
+            .expect("serialize mailbox sync report");
+
+        assert_eq!(json["synced"], 4);
+        assert_eq!(json.as_object().map(|fields| fields.len()), Some(1));
         assert_no_private_mail_coordinates(&json);
     }
 

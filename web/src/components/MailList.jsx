@@ -1,11 +1,13 @@
 import {
   ArrowClockwise,
+  CheckCircle,
   CircleNotch,
   FunnelSimple,
   List,
   MagnifyingGlass,
   SidebarSimple,
   Star,
+  XCircle,
 } from "@phosphor-icons/react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { IconButton } from "./IconButton.jsx";
@@ -212,6 +214,32 @@ function PaginationControl({ phase, visibleCount }) {
   );
 }
 
+function SyncFeedbackRow({ feedback }) {
+  if (!feedback) return null;
+  const state = ["syncing", "success", "error"].includes(feedback.state)
+    ? feedback.state
+    : "syncing";
+  const Icon =
+    state === "success"
+      ? CheckCircle
+      : state === "error"
+        ? XCircle
+        : CircleNotch;
+
+  return (
+    <div
+      className="mail-sync-feedback"
+      data-state={state}
+      role={state === "error" ? "alert" : "status"}
+      aria-live={state === "error" ? "assertive" : "polite"}
+      aria-atomic="true"
+    >
+      <Icon size={14} weight="regular" aria-hidden="true" />
+      <span>{feedback.message}</span>
+    </div>
+  );
+}
+
 export function MailList({
   folderRole,
   folderLabel,
@@ -229,6 +257,7 @@ export function MailList({
   onCollapse = null,
   onSync = null,
   syncState = "idle",
+  syncFeedback = null,
   loadState = { phase: "ready", completed: 0, total: null },
   canSync = true,
   syncDisabledReason = null,
@@ -436,28 +465,31 @@ export function MailList({
         ) : null}
       </div>
 
-      <div className="mail-tabs" aria-label="邮件列表状态">
-        {visibleTabs.map((tab) => (
-          <button
-            key={tab.id}
-            type="button"
-            className="mail-tab"
-            data-selected={filter === tab.id}
-            aria-pressed={filter === tab.id}
-            onClick={() => onFilterChange(tab.id)}
+      <div className="mail-list-status-region">
+        <div className="mail-tabs" aria-label="邮件列表状态">
+          {visibleTabs.map((tab) => (
+            <button
+              key={tab.id}
+              type="button"
+              className="mail-tab"
+              data-selected={filter === tab.id}
+              aria-pressed={filter === tab.id}
+              onClick={() => onFilterChange(tab.id)}
+            >
+              {tab.label}
+            </button>
+          ))}
+          <span
+            className="mail-tabs__count"
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
+            aria-label={`${title}当前显示 ${messages.length} 封邮件`}
           >
-            {tab.label}
-          </button>
-        ))}
-        <span
-          className="mail-tabs__count"
-          role="status"
-          aria-live="polite"
-          aria-atomic="true"
-          aria-label={`${title}当前显示 ${messages.length} 封邮件`}
-        >
-          {messages.length} 封
-        </span>
+            {messages.length} 封
+          </span>
+        </div>
+        <SyncFeedbackRow feedback={syncFeedback} />
       </div>
 
       <div

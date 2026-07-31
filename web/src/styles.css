@@ -212,6 +212,22 @@
     var(--color-danger) 34%,
     var(--color-border)
   );
+  --sync-feedback-row-surface: color-mix(
+    in srgb,
+    var(--mail-list-surface) 44%,
+    var(--row-hover-surface)
+  );
+  --sync-feedback-surface: color-mix(
+    in srgb,
+    var(--sync-feedback-row-surface) 94%,
+    var(--color-text)
+  );
+  --sync-feedback-error-surface: color-mix(
+    in srgb,
+    var(--sync-feedback-row-surface) 82%,
+    var(--color-danger)
+  );
+  --sync-feedback-text: var(--color-text-secondary);
   --focus-ring: 0 0 0 2px var(--color-panel), 0 0 0 4px var(--color-primary);
 }
 
@@ -2022,6 +2038,72 @@ html[data-surface="new-mail-notification"] #root {
   margin-left: auto;
   color: var(--color-text-muted);
   font-size: 11px;
+}
+
+.mail-list-status-region {
+  min-width: 0;
+}
+
+.mail-sync-feedback {
+  display: grid;
+  width: calc(100% + 2px);
+  min-width: 0;
+  min-height: 26px;
+  grid-template-columns: 34px minmax(0, 1fr) 40px;
+  align-items: center;
+  column-gap: 9px;
+  margin: 0 -1px;
+  padding: 5px 16px 5px 19px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 0;
+  background: var(--sync-feedback-surface);
+  color: var(--sync-feedback-text);
+  box-shadow: none;
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.25;
+  animation: mail-sync-feedback-in var(--motion-fast) ease-out both;
+}
+
+.mail-sync-feedback[data-state="error"] {
+  background: var(--sync-feedback-error-surface);
+}
+
+.mail-sync-feedback svg {
+  justify-self: start;
+  margin-inline-start: 9px;
+  color: var(--color-text-muted);
+}
+
+.mail-sync-feedback[data-state="syncing"] svg {
+  color: var(--color-primary);
+  animation: spin 900ms linear infinite;
+}
+
+.mail-sync-feedback[data-state="success"] svg {
+  color: var(--color-success);
+}
+
+.mail-sync-feedback[data-state="error"] svg {
+  color: var(--color-danger);
+}
+
+.mail-sync-feedback span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@keyframes mail-sync-feedback-in {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
 }
 
 .message-list {
@@ -8093,8 +8175,13 @@ html[data-surface="new-mail-notification"] #root {
   }
 
   .mail-pagination-notice svg,
+  .mail-sync-feedback[data-state="syncing"] svg,
   .attachment-card[aria-busy="true"] > svg:last-child,
   .attachment-card[data-state="saving"] > svg:last-child {
+    animation: none !important;
+  }
+
+  .mail-sync-feedback {
     animation: none !important;
   }
 

@@ -72,6 +72,7 @@ const accountRepairDelayMs = 750;
 const toastVisibleMs = 3800;
 const importantToastVisibleMs = 8000;
 const toastExitMs = 180;
+const manualSyncFeedbackVisibleMs = 2000;
 const readerWindowMotionMs = 260;
 const readerFastExitMs = 120;
 const mailListWindowMotionMs = 260;
@@ -83,6 +84,54 @@ const mailboxFolders = [...paginatedMailboxRoles, "drafts", "outbox"];
 const mailboxPageSize = 50;
 const wideMailWorkspaceQuery = "(min-width: 941px)";
 const reducedMotionQuery = "(prefers-reduced-motion: reduce)";
+
+function nonNegativeSyncCount(value) {
+  return Number.isSafeInteger(value) && value >= 0 ? value : 0;
+}
+
+function synchronizedMessageCount(report) {
+  if (Array.isArray(report)) {
+    return report.reduce(
+      (total, item) => total + synchronizedMessageCount(item),
+      0,
+    );
+  }
+  if (Number.isSafeInteger(report)) return nonNegativeSyncCount(report);
+  if (!report || typeof report !== "object") return 0;
+  if (Number.isSafeInteger(report.synced)) {
+    return nonNegativeSyncCount(report.synced);
+  }
+  if (Number.isSafeInteger(report.fetched)) {
+    return nonNegativeSyncCount(report.fetched);
+  }
+  if (
+    Number.isSafeInteger(report.pulled) ||
+    Number.isSafeInteger(report.pushed)
+  ) {
+    return (
+      nonNegativeSyncCount(report.pulled) +
+      nonNegativeSyncCount(report.pushed)
+    );
+  }
+  if (Number.isSafeInteger(report.drafts_synced)) {
+    return nonNegativeSyncCount(report.drafts_synced);
+  }
+  return ["inbox", "sent", "drafts"].reduce(
+    (total, key) => total + synchronizedMessageCount(report[key]),
+    0,
+  );
+}
+
+function manualSyncProgressMessage(folder) {
+  if (folder === "outbox") return "正在刷新发件队列…";
+  return `正在同步${folderLabels[folder] || "邮箱"}…`;
+}
+
+function manualSyncSuccessMessage(folder, count) {
+  if (folder === "drafts") return `同步成功，处理 ${count} 封草稿`;
+  if (folder === "outbox") return `刷新成功，共 ${count} 封队列邮件`;
+  return `同步成功，新增 ${count} 封邮件`;
+}
 
 function mediaQueryMatches(query, fallback) {
   if (typeof window.matchMedia !== "function") return fallback;
@@ -643,6 +692,7 @@ export function App() {
   const [contactMessagesState, setContactMessagesState] = useState("idle");
   const [contactMessagesError, setContactMessagesError] = useState(null);
   const [syncState, setSyncState] = useState("idle");
+  const [manualSyncFeedback, setManualSyncFeedback] = useState(null);
   const [mailboxLoadStates, setMailboxLoadStates] = useState(() =>
     createMailboxLoadStates(),
   );
@@ -724,6 +774,8 @@ export function App() {
   const starStateRef = useRef(new Map());
   const settingsSaveRequestRef = useRef(0);
   const toastSequenceRef = useRef(0);
+  const syncFeedbackSequenceRef = useRef(0);
+  const syncFeedbackTimerRef = useRef(null);
   const drawerTriggerRef = useRef(null);
   const consequentialActionRef = useRef(null);
   const executeArchiveMessageRef = useRef(null);
@@ -852,6 +904,24 @@ export function App() {
         exiting: false,
         id: toastSequenceRef.current,
       });
+    },
+    [],
+  );
+
+  const publishManualSyncFeedback = useCallback(
+    (feedback, dismissAfterCompletion = false) => {
+      if (syncFeedbackTimerRef.current) {
+        window.clearTimeout(syncFeedbackTimerRef.current);
+        syncFeedbackTimerRef.current = null;
+      }
+      setManualSyncFeedback(feedback);
+      if (!feedback || !dismissAfterCompletion) return;
+      syncFeedbackTimerRef.current = window.setTimeout(() => {
+        setManualSyncFeedback((current) =>
+          current?.id === feedback.id ? null : current,
+        );
+        syncFeedbackTimerRef.current = null;
+      }, manualSyncFeedbackVisibleMs);
     },
     [],
   );
@@ -2605,6 +2675,15 @@ export function App() {
     );
     return () => window.clearTimeout(timer);
   }, [dismissToast, toast]);
+
+  useEffect(
+    () => () => {
+      if (syncFeedbackTimerRef.current) {
+        window.clearTimeout(syncFeedbackTimerRef.current);
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     if (!toast?.exiting) return undefined;
@@ -5070,45 +5149,66 @@ export function App() {
     }
     const accountId = activeAccountIdRef.current;
     if (!accountId) return;
+    const folder = activeFolderRef.current;
+    const feedbackId = syncFeedbackSequenceRef.current + 1;
+    syncFeedbackSequenceRef.current = feedbackId;
+    publishManualSyncFeedback({
+      id: feedbackId,
+      accountId,
+      folder,
+      state: "syncing",
+      message: manualSyncProgressMessage(folder),
+    });
     setSyncState("syncing");
-    if (mailboxFolders.includes(activeFolder)) {
-      updateMailboxLoadState(activeFolder, (current) => ({
+    if (mailboxFolders.includes(folder)) {
+      updateMailboxLoadState(folder, (current) => ({
         ...current,
         phase: "syncing",
       }));
     }
     try {
-      if (paginatedMailboxRoles.includes(activeFolder)) {
-        await mailApi.syncMailbox(accountId, activeFolder);
-        await loadMailboxRolePage({ accountId, role: activeFolder });
-        if (activeFolder === "sent") await refreshOutbox();
-      } else if (activeFolder === "starred") {
+      let synchronizedCount = 0;
+      if (paginatedMailboxRoles.includes(folder)) {
+        const report = await mailApi.syncMailbox(accountId, folder);
+        synchronizedCount = synchronizedMessageCount(report);
+        await loadMailboxRolePage({ accountId, role: folder });
+        if (folder === "sent") await refreshOutbox();
+      } else if (folder === "starred") {
         const roles = starredMailboxRoles.filter((role) =>
           capabilityAvailable(mailboxCapabilities, role),
         );
-        await Promise.all(
+        const reports = await Promise.all(
           roles.map((role) => mailApi.syncMailbox(accountId, role)),
         );
+        synchronizedCount = synchronizedMessageCount(reports);
         await Promise.all(
           roles.map((role) => loadMailboxRolePage({ accountId, role })),
         );
         if (roles.includes("sent")) await refreshOutbox();
-      } else if (activeFolder === "drafts") {
-        await mailApi.syncDrafts();
+      } else if (folder === "drafts") {
+        const report = await mailApi.syncDrafts();
+        synchronizedCount = synchronizedMessageCount(report);
         await Promise.all([refreshDrafts(), refreshOutbox()]);
-      } else if (activeFolder === "outbox") {
-        await Promise.all([refreshDrafts(), refreshOutbox()]);
+      } else if (folder === "outbox") {
+        const [, refreshedOutbox] = await Promise.all([
+          refreshDrafts(),
+          refreshOutbox(),
+        ]);
+        synchronizedCount = Array.isArray(refreshedOutbox)
+          ? refreshedOutbox.length
+          : 0;
       } else {
-        await mailApi.syncAll();
+        const report = await mailApi.syncAll();
+        synchronizedCount = synchronizedMessageCount(report);
       }
       if (normalizedMailboxQuery(query)) {
         await loadRemoteSearch({
           accountId,
-          folder: activeFolder,
+          folder,
           searchQuery: query,
         });
       }
-      if (activeFolder === "contacts") {
+      if (folder === "contacts") {
         await loadContacts({ accountId, silent: true });
         if (selectedContactEmail) {
           await loadContactMessages(selectedContactEmail, {
@@ -5118,16 +5218,34 @@ export function App() {
         }
       }
       setSyncState("done");
-      showToast(`${folderLabels[activeFolder] || "邮箱"}同步完成`);
+      publishManualSyncFeedback(
+        {
+          id: feedbackId,
+          accountId,
+          folder,
+          state: "success",
+          message: manualSyncSuccessMessage(folder, synchronizedCount),
+        },
+        true,
+      );
     } catch (error) {
       setSyncState("error");
-      if (mailboxFolders.includes(activeFolder)) {
-        updateMailboxLoadState(activeFolder, (current) => ({
+      if (mailboxFolders.includes(folder)) {
+        updateMailboxLoadState(folder, (current) => ({
           ...current,
           phase: "error",
         }));
       }
-      showToast(describeError(error, "同步失败，请检查网络"), "error");
+      publishManualSyncFeedback(
+        {
+          id: feedbackId,
+          accountId,
+          folder,
+          state: "error",
+          message: `同步失败：${describeError(error, "请检查网络后重试")}`,
+        },
+        true,
+      );
     }
   };
 
@@ -6684,6 +6802,12 @@ export function App() {
                     }
                     onSync={handleSync}
                     syncState={syncState}
+                    syncFeedback={
+                      manualSyncFeedback?.accountId === activeAccountId &&
+                      manualSyncFeedback.folder === activeFolder
+                        ? manualSyncFeedback
+                        : null
+                    }
                     loadState={activeMailboxLoadState}
                     canSync={networkActionsAvailable}
                     syncDisabledReason={
