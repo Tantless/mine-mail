@@ -73,6 +73,74 @@ describe("MessageView idle experience", () => {
   });
 });
 
+describe("MessageView body hydration", () => {
+  it("shows only the loading state until the selected body payload arrives", () => {
+    const summary = messageFixture({
+      subject: "正在切换的邮件",
+      preview: "缓存中的正文预览",
+      body_text: undefined,
+      body_html: undefined,
+      body_segments: undefined,
+      body_html_loaded: false,
+      body_fetched: true,
+    });
+    const { rerender } = render(
+      <MessageView message={summary} onClose={vi.fn()} />,
+    );
+
+    expect(screen.getByLabelText("正在加载正文")).toBeTruthy();
+    expect(screen.queryByText("缓存中的正文预览")).toBeNull();
+    expect(screen.queryByText("这封邮件没有纯文本正文。")).toBeNull();
+
+    rerender(
+      <MessageView
+        message={{
+          ...summary,
+          body_text: "加载完成后的实际正文",
+          body_html_loaded: true,
+        }}
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("加载完成后的实际正文")).toBeTruthy();
+    expect(screen.queryByLabelText("正在加载正文")).toBeNull();
+    expect(screen.queryByText("缓存中的正文预览")).toBeNull();
+  });
+
+  it("does not paint the plain alternative before the final HTML mode is ready", () => {
+    const pendingHtml = messageFixture({
+      body_text: "尚未确认排版的纯文本内容",
+      body_html: undefined,
+      body_segments: undefined,
+      body_html_available: true,
+      body_html_loaded: false,
+      body_fetched: true,
+    });
+    const { rerender } = render(
+      <MessageView message={pendingHtml} onClose={vi.fn()} />,
+    );
+
+    expect(screen.getByLabelText("正在加载正文")).toBeTruthy();
+    expect(screen.queryByText("尚未确认排版的纯文本内容")).toBeNull();
+
+    rerender(
+      <MessageView
+        message={{
+          ...pendingHtml,
+          body_html: "<p><strong>最终 HTML 排版</strong></p>",
+          body_render_mode: "native_html",
+          body_html_loaded: true,
+        }}
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("最终 HTML 排版")).toBeTruthy();
+    expect(screen.queryByText("尚未确认排版的纯文本内容")).toBeNull();
+  });
+});
+
 describe("MessageView window motion", () => {
   it("makes an exiting reader inert and completes only from its own animation", () => {
     const onMotionEnd = vi.fn();

@@ -3468,7 +3468,7 @@ describe("Mine Mail desktop state bridge", () => {
     ]);
   });
 
-  it("paints the local preview immediately while the full body hydrates", async () => {
+  it("shows only the reader loading state while the full body hydrates", async () => {
     Object.defineProperty(window, "innerWidth", {
       configurable: true,
       value: 600,
@@ -3486,10 +3486,10 @@ describe("Mine Mail desktop state bridge", () => {
     await user.click(await screen.findByText("Instant mail"));
 
     const reader = screen.getByLabelText("邮件阅读区");
+    expect(within(reader).getByLabelText("正在加载正文")).toBeTruthy();
     expect(
-      within(reader).getByText("Immediately visible local copy"),
-    ).toBeTruthy();
-    expect(within(reader).queryByLabelText("正在加载正文")).toBeNull();
+      within(reader).queryByText("Immediately visible local copy"),
+    ).toBeNull();
 
     await act(async () => {
       bodyResponse.resolve({
@@ -3499,6 +3499,7 @@ describe("Mine Mail desktop state bridge", () => {
       });
     });
     expect(await within(reader).findByText("Canonical full body")).toBeTruthy();
+    expect(within(reader).queryByLabelText("正在加载正文")).toBeNull();
   });
 
   it("hydrates cached HTML on selection and preserves it across summary refreshes", async () => {
@@ -3513,20 +3514,28 @@ describe("Mine Mail desktop state bridge", () => {
       body_html_available: true,
       body_html_loaded: false,
     };
+    const bodyResponse = deferred();
     desktop.fixtures.inboxPageSource.mockResolvedValue([richSummary]);
-    desktop.fixtures.inboxMessageSource.mockResolvedValue({
-      ...richSummary,
-      body_html:
-        '<table><tbody><tr><td class="desktop">Rich layout</td></tr></tbody></table>',
-      body_render_mode: "isolated_html",
-      body_html_loaded: true,
-      has_remote_images: false,
-    });
+    desktop.fixtures.inboxMessageSource.mockReturnValue(bodyResponse.promise);
     const user = userEvent.setup();
 
     render(<App />);
     await user.click(await screen.findByText("Rich mail"));
 
+    const reader = screen.getByLabelText("邮件阅读区");
+    expect(within(reader).getByLabelText("正在加载正文")).toBeTruthy();
+    expect(within(reader).queryByText("Flattened duplicate copy")).toBeNull();
+
+    await act(async () => {
+      bodyResponse.resolve({
+        ...richSummary,
+        body_html:
+          '<table><tbody><tr><td class="desktop">Rich layout</td></tr></tbody></table>',
+        body_render_mode: "isolated_html",
+        body_html_loaded: true,
+        has_remote_images: false,
+      });
+    });
     const frame = await screen.findByTitle("Rich mail HTML 正文");
     expect(desktop.fixtures.inboxMessageSource).toHaveBeenCalledWith(7);
     expect(frame.getAttribute("sandbox")).toBe("allow-same-origin");

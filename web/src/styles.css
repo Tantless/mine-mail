@@ -3440,6 +3440,17 @@ html[data-surface="new-mail-notification"] #root {
   font-size: 11px;
 }
 
+.html-message__document {
+  position: relative;
+  min-height: 220px;
+}
+
+.html-message__skeleton {
+  position: absolute;
+  z-index: 1;
+  inset: 26px 0 auto;
+}
+
 .html-message__frame {
   display: block;
   width: 100%;

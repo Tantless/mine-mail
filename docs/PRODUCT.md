@@ -120,13 +120,16 @@ must be updated here when an intentional product change lands.
 - The primary sidebar shows numeric badges only for unread Inbox messages and
   Outbox items not yet confirmed sent. Zero counts are omitted. Starred,
   Contacts, Sent, Drafts, Archive, and Trash never show numeric badges.
-- Selecting a message paints its cached preview immediately. If a complete MIME
-  is not cached, the foreground reader first fetches the server MIME structure
-  and then only the selected plain/HTML body sections; ordinary attachment bytes
-  must not block the body or attachment cards. Attachment bytes are fetched only
-  when the user saves that attachment. The foreground lane outranks queued
-  prefetch work; queued neighbors are promoted, and an identical complete-MIME
-  download is shared instead of requested twice.
+- Selecting a message keeps its bounded preview in the list only. The reader
+  shows a body loading state until the complete selected body payload and final
+  plain/native/isolated render mode are ready; it never presents the preview or
+  an intermediate fallback layout as the opened body. If a complete MIME is not
+  cached, the foreground reader first fetches the server MIME structure and then
+  only the selected plain/HTML body sections; ordinary attachment bytes must not
+  block the body or attachment cards. Attachment bytes are fetched only when the
+  user saves that attachment. The foreground lane outranks queued prefetch work;
+  queued neighbors are promoted, and an identical complete-MIME download is
+  shared instead of requested twice.
 - Returning a mailbox page schedules its uncached bodies as background candidates
   in visible order. The default 50-message page may cache at most 16 MiB and skips
   individual messages larger than 2 MiB; synchronization may additionally

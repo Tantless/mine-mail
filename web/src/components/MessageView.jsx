@@ -513,9 +513,19 @@ export function MessageView({
   const renderKey = messageNavigationKey(message) || "reader-message";
   const isOutgoing = role === "outbox" || role === "sent";
   const remoteMailbox = REMOTE_MAILBOX_ROLES.has(role);
-  const body = message.body_fetched
+  const bodyPayloadHydrated =
+    !(
+      message.body_html_available === true &&
+      message.body_html_loaded !== true
+    ) &&
+    (message.body_html_loaded === true ||
+      typeof message.body_text === "string" ||
+      typeof message.body_html === "string" ||
+      Boolean(message.body_segments?.length));
+  const body = bodyPayloadHydrated
     ? message.body_text || "这封邮件没有纯文本正文。"
-    : message.preview || "这封邮件没有纯文本正文。";
+    : "";
+  const bodyIsPending = Boolean(isLoading) || (!error && !bodyPayloadHydrated);
   const bodyRenderMode =
     message.body_render_mode || (message.body_html ? "isolated_html" : "plain");
   const hasBodySegments = Boolean(message.body_segments?.length);
@@ -807,9 +817,9 @@ export function MessageView({
                   ? " message-body--native-html"
                   : ""
           }`}
-          aria-busy={isLoading}
+          aria-busy={bodyIsPending}
         >
-          {isLoading ? (
+          {bodyIsPending ? (
             <div className="body-skeleton" aria-label="正在加载正文">
               <span />
               <span />

@@ -414,6 +414,22 @@ function bodySnapshot(message) {
   );
 }
 
+function messageBodyIsReady(message) {
+  if (!message?.body_fetched) return false;
+  if (
+    message.body_html_available === true &&
+    message.body_html_loaded !== true
+  ) {
+    return false;
+  }
+  return Boolean(
+    message.body_html_loaded === true ||
+      typeof message.body_text === "string" ||
+      typeof message.body_html === "string" ||
+      message.body_segments?.length,
+  );
+}
+
 function getInitialTheme() {
   const saved = window.localStorage.getItem("mine-mail-theme");
   return validThemes.has(saved) ? saved : "daylight";
@@ -1328,6 +1344,15 @@ export function App() {
       const displayMessage = shouldMarkRead
         ? withSeenFlag(cachedDisplayMessage)
         : cachedDisplayMessage;
+      const bodyIsReady = messageBodyIsReady(displayMessage);
+      const needsHtmlHydration =
+        displayMessage.body_html_available === true &&
+        displayMessage.body_html_loaded !== true;
+      const needsAttachmentHydration =
+        isRemoteMailboxMessage &&
+        !Array.isArray(displayMessage.attachments) &&
+        Array.isArray(displayMessage.attachment_names) &&
+        displayMessage.attachment_names.length > 0;
       const requestId = selectionRequestRef.current + 1;
       selectionRequestRef.current = requestId;
       const previousSelectionId = selectedMessageIdRef.current;
@@ -1346,6 +1371,7 @@ export function App() {
       } else if (previousSelectionId !== nextSelectionId) {
         presentReader("open");
       }
+      setIsMessageLoading(forceFetch || !bodyIsReady);
       selectedMessageIdRef.current = nextSelectionId;
       setSelectedMessageId(nextSelectionId);
       setSelectedMessage(displayMessage);
@@ -1365,22 +1391,9 @@ export function App() {
           });
       }
 
-      const needsHtmlHydration =
-        displayMessage.body_html_available === true &&
-        displayMessage.body_html_loaded !== true;
-      const hasHydratedBodyPayload =
-        Object.prototype.hasOwnProperty.call(displayMessage, "body_text") ||
-        Object.prototype.hasOwnProperty.call(displayMessage, "body_html") ||
-        Object.prototype.hasOwnProperty.call(displayMessage, "body_segments");
-      const needsAttachmentHydration =
-        isRemoteMailboxMessage &&
-        !Array.isArray(displayMessage.attachments) &&
-        Array.isArray(displayMessage.attachment_names) &&
-        displayMessage.attachment_names.length > 0;
       if (
         !forceFetch &&
-        displayMessage.body_fetched &&
-        hasHydratedBodyPayload &&
+        bodyIsReady &&
         !needsHtmlHydration &&
         !needsAttachmentHydration
       ) {
@@ -1389,7 +1402,7 @@ export function App() {
       }
 
       if (displayMessage.kind === "outbox") {
-        setIsMessageLoading(!displayMessage.preview?.trim());
+        setIsMessageLoading(true);
         try {
           const hydrated = {
             ...displayMessage,
@@ -1400,6 +1413,9 @@ export function App() {
             selectedMessageIdRef.current !== nextSelectionId
           ) {
             return;
+          }
+          if (!messageBodyIsReady(hydrated)) {
+            throw new Error("邮件正文加载结果不完整，请重新加载。");
           }
           messageBodyCacheRef.current.set(
             messageCacheKey(message, accountId),
@@ -1424,15 +1440,6 @@ export function App() {
         return;
       }
 
-      // The list response always contains either locally cached text or a
-      // metadata preview. Paint that immediately while the full body is
-      // hydrated in the background instead of replacing it with a skeleton.
-      const hasImmediateCopy = Boolean(
-        displayMessage.body_html ||
-        displayMessage.body_text?.trim() ||
-        displayMessage.preview?.trim(),
-      );
-      setIsMessageLoading(!hasImmediateCopy);
       try {
         const fetchedMessage =
           displayMessage.contactHistory || isRemoteMailboxMessage
@@ -1451,6 +1458,15 @@ export function App() {
         if (shouldMarkRead && fullMessage) {
           fullMessage = withSeenFlag(fullMessage);
         }
+        if (
+          selectionRequestRef.current !== requestId ||
+          selectedMessageIdRef.current !== nextSelectionId
+        ) {
+          return;
+        }
+        if (!messageBodyIsReady(fullMessage)) {
+          throw new Error("邮件正文加载结果不完整，请重新加载。");
+        }
         const fullMessageStarKey = scopedRemoteFlagKey(fullMessage, accountId);
         if (
           fullMessageStarKey &&
@@ -1461,13 +1477,6 @@ export function App() {
             "\\Flagged",
             starStateRef.current.get(fullMessageStarKey),
           );
-        }
-        if (
-          !fullMessage ||
-          selectionRequestRef.current !== requestId ||
-          selectedMessageIdRef.current !== nextSelectionId
-        ) {
-          return;
         }
         messageBodyCacheRef.current.set(
           messageCacheKey(fullMessage, accountId),

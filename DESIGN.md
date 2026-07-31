@@ -260,7 +260,9 @@ family. Preserve the relative hierarchy when tuning optical values.
 ### Mail and reader
 
 - The message list paints cached summaries immediately. Selecting a message keeps
-  list position stable and hydrates the body silently.
+  list position stable while the reader body shows its quiet loading state until
+  the complete content and final render mode are ready. List preview text and an
+  intermediate plain fallback never appear as the opened body.
 - Each account and folder remembers its own message-list scroll position.
   Opening a folder without a remembered position starts at the top; switching
   back restores that account-and-folder position.

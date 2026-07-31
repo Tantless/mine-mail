@@ -57,6 +57,8 @@ describe("HTML message body", () => {
     );
 
     const frame = screen.getByTitle("Automatic remote mail HTML 正文");
+    expect(screen.getByLabelText("正在加载正文")).toBeTruthy();
+    expect(frame.dataset.ready).toBe("false");
     expect(frame.getAttribute("sandbox")).toBe("allow-same-origin");
     expect(frame.getAttribute("scrolling")).toBe("no");
     expect(frame.getAttribute("srcdoc")).toContain(

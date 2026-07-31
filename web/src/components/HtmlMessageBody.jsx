@@ -243,9 +243,7 @@ export function HtmlMessageBody({
   const configuredDocumentRef = useRef(null);
   const initialHeight = rememberedHeights.get(cacheKey) || minimumFrameHeight;
   const [frameHeight, setFrameHeight] = useState(initialHeight);
-  const [isFrameReady, setIsFrameReady] = useState(
-    rememberedHeights.has(cacheKey),
-  );
+  const [readyDocument, setReadyDocument] = useState(null);
   const [remotePermissionFor, setRemotePermissionFor] = useState(null);
   const normalizedMode = ["automatic", "ask", "blocked"].includes(remoteImageMode)
     ? remoteImageMode
@@ -257,6 +255,11 @@ export function HtmlMessageBody({
     () => buildEmailDocument(html, allowRemoteImages),
     [allowRemoteImages, html],
   );
+  const documentRenderKey = useMemo(
+    () => ({ cacheKey, source }),
+    [cacheKey, source],
+  );
+  const isFrameReady = readyDocument === documentRenderKey;
 
   useEffect(() => () => cleanupRef.current(), []);
 
@@ -265,7 +268,6 @@ export function HtmlMessageBody({
     cleanupRef.current();
     const rememberedHeight = rememberedHeights.get(cacheKey);
     setFrameHeight(rememberedHeight || minimumFrameHeight);
-    setIsFrameReady(Boolean(rememberedHeight));
   }, [cacheKey, source]);
 
   const configureFrame = useCallback(() => {
@@ -292,7 +294,7 @@ export function HtmlMessageBody({
       const nextHeight = Math.min(height, maximumFrameHeight);
       rememberHeight(cacheKey, nextHeight);
       setFrameHeight(nextHeight);
-      setIsFrameReady(true);
+      setReadyDocument(documentRenderKey);
     };
     const handleClick = (event) => {
       const anchor = event.target?.closest?.("a[href]");
@@ -320,7 +322,7 @@ export function HtmlMessageBody({
       frame.contentWindow?.removeEventListener("resize", updateHeight);
     };
     return true;
-  }, [cacheKey, onOpenLink]);
+  }, [cacheKey, documentRenderKey, onOpenLink]);
 
   // iframe load waits for remote images. Attach sizing as soon as the srcdoc
   // DOM exists so the app owns the only scrollbar from the first visible
@@ -363,17 +365,30 @@ export function HtmlMessageBody({
           ) : null}
         </div>
       ) : null}
-      <iframe
-        ref={frameRef}
-        className="html-message__frame"
-        data-ready={isFrameReady}
-        title={`${title || "邮件"} HTML 正文`}
-        sandbox="allow-same-origin"
-        scrolling="no"
-        srcDoc={source}
-        style={{ height: `${frameHeight}px` }}
-        onLoad={configureFrame}
-      />
+      <div className="html-message__document">
+        {!isFrameReady ? (
+          <div
+            className="body-skeleton html-message__skeleton"
+            aria-label="正在加载正文"
+          >
+            <span />
+            <span />
+            <span />
+            <span />
+          </div>
+        ) : null}
+        <iframe
+          ref={frameRef}
+          className="html-message__frame"
+          data-ready={isFrameReady}
+          title={`${title || "邮件"} HTML 正文`}
+          sandbox="allow-same-origin"
+          scrolling="no"
+          srcDoc={source}
+          style={{ height: `${frameHeight}px` }}
+          onLoad={configureFrame}
+        />
+      </div>
     </div>
   );
 }
