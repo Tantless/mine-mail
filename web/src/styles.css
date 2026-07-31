@@ -1448,6 +1448,28 @@ html[data-surface="new-mail-notification"] #root {
   text-align: center;
 }
 
+.folder-nav__activity {
+  display: grid;
+  flex: 0 0 auto;
+  margin-left: auto;
+  place-items: center;
+  color: var(--sidebar-count-text);
+}
+
+.folder-nav__activity--outbox svg {
+  animation: spin 900ms linear infinite;
+}
+
+.folder-nav__new-dot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  margin-left: auto;
+  border-radius: 50%;
+  background: var(--color-unread);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-unread) 14%, transparent);
+}
+
 .account-switcher {
   --account-selection-lift: 0px;
   --account-selection-scale: 1;
@@ -7542,7 +7564,7 @@ html[data-surface="new-mail-notification"] #root {
 
   .brand__name,
   .compose-button span,
-  .folder-nav__item > span:not(.folder-nav__count),
+  .folder-nav__label,
   .folder-nav__count,
   .account-card__copy,
   .sidebar-action span {
@@ -7563,6 +7585,14 @@ html[data-surface="new-mail-notification"] #root {
   .sidebar-action {
     justify-content: center;
     padding: 0;
+  }
+
+  .folder-nav__activity,
+  .folder-nav__new-dot {
+    position: absolute;
+    top: 8px;
+    right: 7px;
+    margin-left: 0;
   }
 
   .account-card {
@@ -7672,7 +7702,7 @@ html[data-surface="new-mail-notification"] #root {
 
   .brand__name,
   .compose-button span,
-  .folder-nav__item > span:not(.folder-nav__count),
+  .folder-nav__label,
   .folder-nav__count,
   .account-card__copy,
   .sidebar-action span {

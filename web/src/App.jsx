@@ -20,7 +20,6 @@ import { Sidebar } from "./components/Sidebar.jsx";
 import { MailList } from "./components/MailList.jsx";
 import { MessageView } from "./components/MessageView.jsx";
 import { ComposePanel } from "./components/ComposePanel.jsx";
-import { SendConfirmDialog } from "./components/SendConfirmDialog.jsx";
 import { ConsequentialConfirmDialog } from "./components/ConsequentialConfirmDialog.jsx";
 import { AccountEmptyWorkspace } from "./components/AccountEmptyWorkspace.jsx";
 import { MailboxRoleSetupDialog } from "./components/MailboxRoleSetupDialog.jsx";
@@ -727,8 +726,8 @@ export function App() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [composer, setComposer] = useState(null);
   const [composeRestoreRequest, setComposeRestoreRequest] = useState(0);
-  const [pendingSend, setPendingSend] = useState(null);
-  const [isSending, setIsSending] = useState(false);
+  const [backgroundSendCounts, setBackgroundSendCounts] = useState({});
+  const [sentAttentionByAccount, setSentAttentionByAccount] = useState({});
   const [retryingOutboxId, setRetryingOutboxId] = useState(null);
   const [deliveryUnknownDecision, setDeliveryUnknownDecision] = useState(null);
   const [settings, setSettings] = useState(defaultSettings);
@@ -820,6 +819,9 @@ export function App() {
   const accountNeedsRepair = shouldRepairAccount(accountStatus);
   const activeAccountId =
     accountStatus.activeAccountId || accountStatus.accountId || null;
+  const activeBackgroundSendCount = activeAccountId
+    ? backgroundSendCounts[activeAccountId] || 0
+    : 0;
   const mailListScrollStateKey = JSON.stringify([
     activeAccountId,
     activeFolder,
@@ -831,6 +833,29 @@ export function App() {
   activeFolderRef.current = activeFolder;
   selectedContactEmailRef.current = selectedContactEmail;
   selectedContactAccountIdRef.current = selectedContactAccountId;
+
+  const markSentAttention = useCallback((accountId) => {
+    if (!accountId) return;
+    if (
+      activeAccountIdRef.current === accountId &&
+      activeFolderRef.current === "sent"
+    ) {
+      return;
+    }
+    setSentAttentionByAccount((current) =>
+      current[accountId] ? current : { ...current, [accountId]: true },
+    );
+  }, []);
+
+  useEffect(() => {
+    if (!activeAccountId || activeFolder !== "sent") return;
+    setSentAttentionByAccount((current) => {
+      if (!current[activeAccountId]) return current;
+      const next = { ...current };
+      delete next[activeAccountId];
+      return next;
+    });
+  }, [activeAccountId, activeFolder]);
 
   const getMailListScrollTop = useCallback(
     (key) => mailListScrollPositionsRef.current.get(key) ?? 0,
@@ -1114,7 +1139,6 @@ export function App() {
       : null;
     composerRef.current = next;
     setComposer(next);
-    setPendingSend(null);
     return next;
   }, []);
 
@@ -1127,7 +1151,6 @@ export function App() {
     ) => {
       if (composerRef.current) return composerRef.current;
       replyPreparationRequestRef.current += 1;
-      setPendingSend(null);
       return commitComposer(
         createComposer(value, draftId, persistedDraft, options),
       );
@@ -3203,6 +3226,16 @@ export function App() {
         const sentUnlisten = await mailApi.onMailEvent(
           "mail:sent-updated",
           (event) => {
+            const payload = event?.payload || {};
+            const progress = mailboxProgress(payload);
+            if (
+              progress.complete &&
+              synchronizedMessageCount(payload.report) > 0
+            ) {
+              markSentAttention(
+                eventAccountId(payload) || activeAccountIdRef.current,
+              );
+            }
             handleMailboxUpdate(
               "sent",
               event,
@@ -3450,6 +3483,7 @@ export function App() {
     invalidateForwardPreparationsForAccount,
     loadAccountView,
     loadMailboxRolePage,
+    markSentAttention,
     prepareComposerForAccountSwitch,
     refreshDrafts,
     refreshInbox,
@@ -3497,7 +3531,6 @@ export function App() {
     const onKeyDown = (event) => {
       if (
         !composerRef.current &&
-        !pendingSend &&
         event.key.toLowerCase() === "n" &&
         !event.metaKey &&
         !event.ctrlKey &&
@@ -3513,7 +3546,7 @@ export function App() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [openComposer, pendingSend]);
+  }, [openComposer]);
 
   const outboxMessages = useMemo(
     () =>
@@ -4030,9 +4063,8 @@ export function App() {
   const folderCounts = useMemo(
     () => ({
       inbox: messages.filter((message) => !hasFlag(message, "\\Seen")).length,
-      outbox: outbox.length,
     }),
-    [messages, outbox],
+    [messages],
   );
 
   const beginMailboxSetup = useCallback((role, pendingMessage = null) => {
@@ -5607,73 +5639,83 @@ export function App() {
     try {
       const draft = await saveDraftNow({ force: true });
       if (!draft?.id) throw new Error("请先保存草稿再发送。");
-      setPendingSend({
+      const sendAccountId = activeAccountIdRef.current;
+      if (!sendAccountId) throw new Error("当前没有可用的发件账户。");
+      const sendRequest = {
         ...draftToRequest(draft),
         draftId: draft.id,
         expectedLocalVersion: draft.local_version,
-      });
+      };
+      const confirmedRecipients = [
+        ...sendRequest.to,
+        ...sendRequest.cc,
+        ...sendRequest.bcc,
+      ];
+
+      // The exact draft version is stable now. Release the composer before
+      // SMTP finishes; Rust persists and owns the immutable Outbox attempt.
+      commitComposer(null);
+      setBackgroundSendCounts((current) => ({
+        ...current,
+        [sendAccountId]: (current[sendAccountId] || 0) + 1,
+      }));
+
+      void (async () => {
+        try {
+          const result = await mailApi.sendDraft(
+            sendRequest.draftId,
+            sendRequest.expectedLocalVersion,
+            confirmedRecipients,
+          );
+          if (activeAccountIdRef.current === sendAccountId) {
+            await Promise.all([refreshDrafts(), refreshOutbox()]);
+          }
+
+          if (result.status !== "sent") {
+            const deliveryMessages = {
+              retryable: "邮件保留在发件队列，请稍后查看状态",
+              rejected: "服务器拒绝了这封邮件，请查看发件队列",
+              delivery_unknown:
+                "投递结果未知，请先到邮箱服务器确认，切勿立即重发",
+            };
+            showToast(
+              deliveryMessages[result.status] ||
+                "邮件尚未发送，已保留在发件队列",
+              "error",
+              result.status === "delivery_unknown",
+            );
+            return;
+          }
+
+          markSentAttention(sendAccountId);
+          if (activeAccountIdRef.current === sendAccountId) {
+            reconcileSentAfterDelivery();
+          }
+        } catch (error) {
+          if (activeAccountIdRef.current === sendAccountId) {
+            await Promise.allSettled([refreshDrafts(), refreshOutbox()]);
+          }
+          showToast(
+            describeError(error, "邮件未能进入发件队列，已保存的草稿仍然保留"),
+            "error",
+          );
+        } finally {
+          setBackgroundSendCounts((current) => {
+            const remaining = (current[sendAccountId] || 1) - 1;
+            if (remaining > 0) {
+              return { ...current, [sendAccountId]: remaining };
+            }
+            const next = { ...current };
+            delete next[sendAccountId];
+            return next;
+          });
+        }
+      })();
     } catch (error) {
       commitComposer((current) =>
         current ? { ...current, locked: false, saveStatus: "error" } : current,
       );
       showToast(describeError(error, "发送前保存草稿失败"), "error");
-    }
-  };
-
-  const handleCancelSend = () => {
-    setPendingSend(null);
-    commitComposer((current) =>
-      current
-        ? {
-            ...current,
-            locked: false,
-            saveStatus: current.dirty ? "dirty" : "saved",
-          }
-        : current,
-    );
-  };
-
-  const handleConfirmSend = async () => {
-    if (!pendingSend) return;
-    setIsSending(true);
-    try {
-      const confirmedRecipients = [
-        ...pendingSend.to,
-        ...pendingSend.cc,
-        ...pendingSend.bcc,
-      ];
-      const result = await mailApi.sendDraft(
-        pendingSend.draftId,
-        pendingSend.expectedLocalVersion,
-        confirmedRecipients,
-      );
-      await Promise.all([refreshDrafts(), refreshOutbox()]);
-      setPendingSend(null);
-      commitComposer(null);
-
-      if (result.status !== "sent") {
-        const deliveryMessages = {
-          retryable: "邮件保留在发件队列，请稍后查看状态",
-          rejected: "服务器拒绝了这封邮件，请查看发件队列",
-          delivery_unknown: "投递结果未知，请先到邮箱服务器确认，切勿立即重发",
-        };
-        showToast(
-          deliveryMessages[result.status] || "邮件尚未发送，已保留在发件队列",
-          "error",
-          result.status === "delivery_unknown",
-        );
-        return;
-      }
-      showToast("邮件已经发送");
-      reconcileSentAfterDelivery();
-    } catch (error) {
-      showToast(describeError(error, "邮件发送失败"), "error");
-      setPendingSend(null);
-      commitComposer((current) =>
-        current ? { ...current, locked: false } : current,
-      );
-    } finally {
-      setIsSending(false);
     }
   };
 
@@ -6639,6 +6681,10 @@ export function App() {
           onThemeMenuToggle={() => setIsThemeMenuOpen((open) => !open)}
           onThemeMenuClose={() => setIsThemeMenuOpen(false)}
           counts={folderCounts}
+          outboxActive={outbox.length > 0 || activeBackgroundSendCount > 0}
+          sentHasNew={Boolean(
+            activeAccountId && sentAttentionByAccount[activeAccountId]
+          )}
           accountStatus={accountStatus}
           isSettingsOpen={isSettingsOpen}
           accountAvatarFor={(email) => profileAvatarFor("account", email)}
@@ -6858,7 +6904,6 @@ export function App() {
           draft={composer.persistedDraft}
           draftId={composer.draftId}
           saveStatus={composer.saveStatus}
-          isSending={isSending}
           locked={composer.locked}
           readOnly={composer.readOnlyUnsupported}
           initiallyMinimized={composer.startMinimized}
@@ -6882,13 +6927,6 @@ export function App() {
           }
         />
       ) : null}
-
-      <SendConfirmDialog
-        request={pendingSend}
-        isSending={isSending}
-        onCancel={handleCancelSend}
-        onConfirm={handleConfirmSend}
-      />
 
       {mailboxSetup ? (
         <MailboxRoleSetupDialog

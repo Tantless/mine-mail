@@ -226,9 +226,14 @@ family. Preserve the relative hierarchy when tuning optical values.
 - Background refreshes preserve the visible rows and selection. Loading must not
   flash usable local content away.
 - Pending Archive, Trash, read/unread, or delete mutations keep the row layout
-  stable. Background queue state never appears as a sidebar badge. Archive and
-  Trash may use compact reader feedback when the user must act; read/unread
-  remains visually implicit after the local row state updates.
+  stable. Those background mutation queues never appear as sidebar badges.
+  Archive and Trash may use compact reader feedback when the user must act;
+  read/unread remains visually implicit after the local row state updates.
+- The sidebar keeps a numeric badge only for unread Inbox mail. An active Outbox
+  uses one small rotating Phosphor status mark at the trailing edge while it
+  contains mail not yet confirmed sent; reduced-motion mode keeps the mark
+  static. Sent uses an account-scoped, non-numeric dot when new sent mail is
+  added while that destination is not open, and opening Sent clears the dot.
 - Folder lists retain true-empty, search, filter, synchronization, offline,
   retry, and confirmed-end distinctions in their state model without rendering
   large explanatory cards. An empty list stays visually quiet.
@@ -532,6 +537,11 @@ family. Preserve the relative hierarchy when tuning optical values.
   locally before entering the standard minimized bar; an untouched empty session
   enters the same bar without creating an empty draft. A local save failure keeps
   the expanded composer visible and actionable.
+- The expanded **发送** action is the one exact-recipient confirmation for the
+  visible To, Cc, and Bcc fields. It first stabilizes the current local draft
+  version, then closes the composer as soon as the background send begins. It
+  never opens a second confirmation dialog or waits in the composer for SMTP;
+  Outbox and Sent sidebar state communicate the continuing result.
 - Minimizing and restoring use one restrained 260 ms window-style geometry and
   material transition; the compact bar highlights as one complete surface on
   hover or keyboard focus. Reduced-motion mode collapses the transition.

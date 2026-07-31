@@ -2,7 +2,6 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AccountRemovalDialog } from "./AccountRemovalDialog.jsx";
-import { SendConfirmDialog } from "./SendConfirmDialog.jsx";
 
 function triggerRef(label) {
   const button = document.createElement("button");
@@ -19,78 +18,6 @@ afterEach(() => {
   cleanup();
   document.querySelectorAll("[data-dialog-trigger]").forEach((element) => {
     element.remove();
-  });
-});
-
-describe("SendConfirmDialog accessibility contract", () => {
-  const request = {
-    to: ["to@example.com"],
-    cc: ["cc@example.com"],
-    bcc: [],
-    subject: "发送前确认",
-  };
-
-  it("starts on the safe action, traps focus, supports Escape, and restores focus", () => {
-    const trigger = triggerRef("发送邮件");
-    trigger.button.dataset.dialogTrigger = "true";
-    const onCancel = vi.fn();
-    const view = render(
-      <SendConfirmDialog
-        request={request}
-        isSending={false}
-        returnFocusRef={trigger.ref}
-        onCancel={onCancel}
-        onConfirm={vi.fn()}
-      />,
-    );
-
-    const dialog = screen.getByRole("alertdialog", {
-      name: "确认发送这封邮件？",
-    });
-    expect(dialog.getAttribute("aria-describedby")).toBe(
-      "send-confirm-description",
-    );
-    const cancel = screen.getByRole("button", { name: "返回修改" });
-    const close = screen.getByRole("button", { name: "取消发送" });
-    const confirm = screen.getByRole("button", { name: "确认发送" });
-    expect(document.activeElement).toBe(cancel);
-
-    confirm.focus();
-    fireEvent.keyDown(confirm, { key: "Tab" });
-    expect(document.activeElement).toBe(close);
-    close.focus();
-    fireEvent.keyDown(close, { key: "Tab", shiftKey: true });
-    expect(document.activeElement).toBe(confirm);
-
-    fireEvent.keyDown(dialog, { key: "Escape" });
-    expect(onCancel).toHaveBeenCalledOnce();
-    view.unmount();
-    expect(document.activeElement).toBe(trigger.button);
-  });
-
-  it("locks dismissal and announces progress while SMTP is pending", () => {
-    const onCancel = vi.fn();
-    const onConfirm = vi.fn();
-    const { container } = render(
-      <SendConfirmDialog
-        request={request}
-        isSending
-        onCancel={onCancel}
-        onConfirm={onConfirm}
-      />,
-    );
-
-    const dialog = screen.getByRole("alertdialog");
-    expect(dialog.getAttribute("aria-busy")).toBe("true");
-    expect(document.activeElement).toBe(dialog);
-    const status = screen.getByRole("status");
-    expect(status.textContent).toBe("正在发送邮件…");
-    expect(status.getAttribute("aria-live")).toBe("polite");
-
-    fireEvent.keyDown(dialog, { key: "Escape" });
-    fireEvent.pointerDown(container.querySelector(".confirm-layer"));
-    expect(onCancel).not.toHaveBeenCalled();
-    expect(onConfirm).not.toHaveBeenCalled();
   });
 });
 

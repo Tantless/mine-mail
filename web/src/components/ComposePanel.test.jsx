@@ -40,7 +40,6 @@ function renderCompose(overrides = {}) {
     draft: baseDraft,
     draftId: baseDraft.id,
     saveStatus: "saved",
-    isSending: false,
     onClose: vi.fn(),
     onDiscard: vi.fn(),
     onChange: vi.fn(),

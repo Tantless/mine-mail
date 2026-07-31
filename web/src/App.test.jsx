@@ -347,7 +347,11 @@ describe("Mine Mail MVP", () => {
     expect(screen.queryByRole("menu", { name: "选择主题" })).toBeNull();
   });
 
-  it("requires recipient confirmation before sending", async () => {
+  it("confirms the exact recipients once and releases the composer while Outbox sends", async () => {
+    const delivery = deferred();
+    const sendDraft = vi
+      .spyOn(mailApi, "sendDraft")
+      .mockReturnValue(delivery.promise);
     const user = userEvent.setup();
     render(<App />);
     await screen.findAllByText("欢迎来到 Mine Mail");
@@ -358,12 +362,46 @@ describe("Mine Mail MVP", () => {
     await user.type(screen.getByLabelText("邮件正文"), "这是一封仅用于界面测试的邮件。");
     await user.click(screen.getByRole("button", { name: "发送邮件" }));
 
-    const confirmation = await screen.findByRole("alertdialog");
-    expect(within(confirmation).getByText("friend@example.com")).toBeTruthy();
-    expect(within(confirmation).getByText("MVP 测试邮件")).toBeTruthy();
-
-    await user.click(screen.getByRole("button", { name: "返回修改" }));
+    await waitFor(() => expect(sendDraft).toHaveBeenCalledOnce());
+    expect(sendDraft).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.any(Number),
+      ["friend@example.com"],
+    );
     expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(screen.queryByRole("dialog", { name: /邮件|草稿/ })).toBeNull();
+    expect(
+      screen
+        .getByRole("button", { name: "发件队列，有邮件正在队列中处理" })
+        .querySelector(".folder-nav__activity--outbox"),
+    ).toBeTruthy();
+
+    await act(async () => {
+      delivery.resolve({ status: "sent" });
+      await delivery.promise;
+    });
+
+    const sent = await screen.findByRole("button", {
+      name: "已发送，有新增邮件",
+    });
+    expect(sent.querySelector(".folder-nav__new-dot")).toBeTruthy();
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("button", {
+          name: "发件队列，有邮件正在队列中处理",
+        }),
+      ).toBeNull(),
+    );
+
+    await user.click(sent);
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "已发送" })).toBeTruthy(),
+    );
+    expect(
+      screen
+        .getByRole("button", { name: "已发送" })
+        .querySelector(".folder-nav__new-dot"),
+    ).toBeNull();
   });
 
   it("keeps the stationery controls in the footer and controls send behavior", async () => {
@@ -658,11 +696,12 @@ describe("Mine Mail MVP", () => {
     await user.type(screen.getByLabelText("收件人"), "friend@example.com");
     await user.type(screen.getByLabelText("主题"), "不确定投递测试");
     await user.click(screen.getByRole("button", { name: "发送邮件" }));
-    await screen.findByRole("alertdialog");
-    await user.click(screen.getByRole("button", { name: "确认发送" }));
 
     expect(await screen.findByText(/投递结果未知/)).toBeTruthy();
-    expect(screen.queryByText("邮件已经发送")).toBeNull();
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "已发送，有新增邮件" }),
+    ).toBeNull();
   });
 
   it("debounces local draft persistence and reuses the returned draft id", async () => {
@@ -722,6 +761,9 @@ describe("Mine Mail MVP", () => {
       .spyOn(mailApi, "saveDraft")
       .mockImplementationOnce(() => firstSave.promise)
       .mockImplementationOnce(() => secondSave.promise);
+    const sendDraft = vi
+      .spyOn(mailApi, "sendDraft")
+      .mockResolvedValue({ status: "sent" });
 
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: /写信/ }));
@@ -766,8 +808,14 @@ describe("Mine Mail MVP", () => {
       await Promise.resolve();
     });
 
-    expect(await screen.findByRole("alertdialog")).toBeTruthy();
-    expect(screen.getByText("最终持久化主题")).toBeTruthy();
+    await waitFor(() => expect(sendDraft).toHaveBeenCalledOnce());
+    expect(sendDraft).toHaveBeenCalledWith(
+      "stable-draft-id",
+      expect.any(Number),
+      ["friend@example.com"],
+    );
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(screen.queryByLabelText("主题")).toBeNull();
   });
 
   it("syncs only the active semantic mailbox on manual refresh", async () => {
@@ -919,6 +967,9 @@ describe("Mine Mail MVP", () => {
 
   it("persists stationery delivery when sending an existing plain draft", async () => {
     const user = userEvent.setup();
+    const sendDraft = vi
+      .spyOn(mailApi, "sendDraft")
+      .mockResolvedValue({ status: "sent" });
     const saveDraft = vi
       .spyOn(mailApi, "saveDraft")
       .mockImplementation(async (request, draftId, expectedLocalVersion) =>
@@ -935,7 +986,8 @@ describe("Mine Mail MVP", () => {
     );
     await user.click(screen.getByRole("button", { name: "发送邮件" }));
 
-    await screen.findByRole("alertdialog", { name: "确认发送这封邮件？" });
+    await waitFor(() => expect(sendDraft).toHaveBeenCalledOnce());
+    expect(screen.queryByRole("alertdialog")).toBeNull();
     expect(saveDraft).toHaveBeenLastCalledWith(
       expect.objectContaining({
         format: expect.objectContaining({

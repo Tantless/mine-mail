@@ -117,9 +117,12 @@ must be updated here when an intentional product change lands.
   `Delivered-To`, another transport header, or an SMTP envelope.
 - Synchronization derives bounded list previews without requiring the user to
   select each message. Preview readiness is independent from full-body caching.
-- The primary sidebar shows numeric badges only for unread Inbox messages and
-  Outbox items not yet confirmed sent. Zero counts are omitted. Starred,
-  Contacts, Sent, Drafts, Archive, and Trash never show numeric badges.
+- The primary sidebar shows a numeric badge only for unread Inbox messages, and
+  omits it at zero. Outbox shows a rotating, non-numeric activity mark while it
+  contains items not yet confirmed sent. Sent shows an account-scoped,
+  non-numeric new-mail dot after sent mail is added outside the open Sent view;
+  opening Sent clears it. Starred, Contacts, Drafts, Archive, and Trash show no
+  badge.
 - Selecting a message keeps its bounded preview in the list only. The reader
   shows a body loading state until the complete selected body payload and final
   plain/native/isolated render mode are ready; it never presents the preview or
@@ -412,9 +415,14 @@ must be updated here when an intentional product change lands.
 
 ## Sending and Outbox
 
-- Sending always presents exact-recipient confirmation.
+- The composer's single **发送** action confirms the exact visible To, Cc, and
+  Bcc recipient set. There is no follow-up send-confirmation dialog.
 - Recipient confirmation, draft state, and the created Outbox item bind to one
   exact `local_version`, including its exact managed attachment set.
+- Once that exact draft version is saved, the composer closes without waiting
+  for SMTP. The frontend reflects active work through Outbox immediately; Rust
+  owns the continuing immutable attempt and its final state. A failure before
+  Outbox persistence leaves the saved draft recoverable.
 - After confirmation, Rust constructs and persists one immutable MIME message and
   envelope in Outbox. Later body, recipient, or attachment edits cannot alter that
   attempt.

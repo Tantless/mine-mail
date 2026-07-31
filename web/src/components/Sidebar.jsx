@@ -14,6 +14,7 @@ import {
   Palette,
   PaperPlaneTilt,
   PencilSimple,
+  SpinnerGap,
   Star,
   Trash,
 } from "@phosphor-icons/react";
@@ -33,7 +34,7 @@ const folders = [
   { id: "trash", label: "垃圾箱", icon: Trash },
 ];
 
-const foldersWithCounts = new Set(["inbox", "outbox"]);
+const foldersWithCounts = new Set(["inbox"]);
 const capabilityFolderRoles = new Set(["archive", "trash"]);
 const drawerFocusableSelector = [
   "a[href]",
@@ -140,6 +141,8 @@ export function Sidebar({
   onThemeMenuToggle,
   onThemeMenuClose,
   counts = {},
+  outboxActive = false,
+  sentHasNew = false,
   accountStatus,
   isSettingsOpen = false,
   isMailListExpanded = true,
@@ -363,7 +366,11 @@ export function Sidebar({
                   : capabilityAction;
               const accessibleLabel = capabilityAction
                 ? capabilityState.actionLabel
-                : folder.label;
+                : folder.id === "outbox" && outboxActive
+                  ? `${folder.label}，有邮件正在队列中处理`
+                  : folder.id === "sent" && sentHasNew
+                    ? `${folder.label}，有新增邮件`
+                    : folder.label;
               return (
                 <button
                   key={folder.id}
@@ -382,9 +389,20 @@ export function Sidebar({
                   }
                 >
                   <FolderIcon size={19} weight={selected ? "fill" : "regular"} />
-                  <span>{folder.label}</span>
+                  <span className="folder-nav__label">{folder.label}</span>
                   {foldersWithCounts.has(folder.id) && counts[folder.id] ? (
                     <span className="folder-nav__count">{counts[folder.id]}</span>
+                  ) : null}
+                  {folder.id === "outbox" && outboxActive ? (
+                    <span
+                      className="folder-nav__activity folder-nav__activity--outbox"
+                      aria-hidden="true"
+                    >
+                      <SpinnerGap size={16} weight="bold" />
+                    </span>
+                  ) : null}
+                  {folder.id === "sent" && sentHasNew ? (
+                    <span className="folder-nav__new-dot" aria-hidden="true" />
                   ) : null}
                 </button>
               );

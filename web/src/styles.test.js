@@ -201,6 +201,19 @@ describe("mail unread indicator contract", () => {
   });
 });
 
+describe("sidebar delivery indicators", () => {
+  it("uses motion for active Outbox work and a non-numeric dot for new Sent mail", () => {
+    const outbox = declarationsFor("\\.folder-nav__activity--outbox svg");
+    const sent = declarationsFor("\\.folder-nav__new-dot");
+
+    expect(outbox).toMatch(/animation:\s*spin 900ms linear infinite/);
+    expect(sent).toMatch(/width:\s*7px/);
+    expect(sent).toMatch(/height:\s*7px/);
+    expect(sent).toMatch(/border-radius:\s*50%/);
+    expect(sent).not.toMatch(/font-size|font-variant-numeric/);
+  });
+});
+
 describe("brand avatar sizing policy", () => {
   it("scales the sidebar brand lockup without wrapping its wordmark", () => {
     expect(declarationsFor("\\.sidebar__content")).toMatch(

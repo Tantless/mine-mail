@@ -418,7 +418,6 @@ export function ComposePanel({
   draft = null,
   draftId,
   saveStatus,
-  isSending,
   locked = false,
   readOnly = false,
   initiallyMinimized = false,
@@ -661,7 +660,7 @@ export function ComposePanel({
     const recipients = [...value.to, ...value.cc, ...value.bcc];
     return recipients.length > 0 && recipients.every(Boolean);
   }, [value.bcc, value.cc, value.to]);
-  const isBusy = locked || isSending;
+  const isBusy = locked;
   const authoritativeDraft = draft || value;
   const attachments = Array.isArray(authoritativeDraft?.attachments)
     ? authoritativeDraft.attachments
@@ -1296,7 +1295,7 @@ export function ComposePanel({
                   onClick={onRequestSend}
                 >
                   <PaperPlaneTilt size={18} weight="fill" />
-                  {isSending ? "正在发送…" : locked ? "正在准备…" : readOnly ? "只读" : "发送"}
+                  {locked ? "正在准备…" : readOnly ? "只读" : "发送"}
                   <kbd>{sendShortcut}</kbd>
                 </button>
                 {onAddAttachments ? (

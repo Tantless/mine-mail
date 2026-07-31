@@ -193,7 +193,7 @@ describe("Sidebar account switcher", () => {
     }
   });
 
-  it("shows counts only for the inbox and outbox", () => {
+  it("keeps the Inbox count numeric and uses semantic Outbox and Sent indicators", () => {
     renderSidebar(1, {
       counts: {
         inbox: 5,
@@ -205,6 +205,8 @@ describe("Sidebar account switcher", () => {
         archive: 6,
         trash: 7,
       },
+      outboxActive: true,
+      sentHasNew: true,
     });
 
     expect(
@@ -215,14 +217,24 @@ describe("Sidebar account switcher", () => {
       screen
         .getByText("发件队列")
         .closest("button")
-        .querySelector(".folder-nav__count")?.textContent,
-    ).toBe("2");
+        .querySelector(".folder-nav__count"),
+    ).toBeNull();
+    expect(
+      screen
+        .getByRole("button", { name: "发件队列，有邮件正在队列中处理" })
+        .querySelector(".folder-nav__activity--outbox"),
+    ).toBeTruthy();
+    expect(
+      screen
+        .getByRole("button", { name: "已发送，有新增邮件" })
+        .querySelector(".folder-nav__new-dot"),
+    ).toBeTruthy();
 
     for (const label of [
       "已收藏",
       "通讯录",
-      "已发送",
       "草稿",
+      "发件队列",
       "归档",
       "垃圾箱",
     ]) {
