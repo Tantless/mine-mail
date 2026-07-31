@@ -3,9 +3,10 @@ mod settings;
 use std::{
     collections::{HashMap, HashSet},
     fs,
+    future::Future,
     path::Path,
     sync::{
-        Mutex as StdMutex, RwLock,
+        Arc, Mutex as StdMutex, RwLock,
         atomic::{AtomicU64, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
@@ -21,7 +22,10 @@ use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
-use tokio::sync::{Mutex as AsyncMutex, MutexGuard as AsyncMutexGuard, Notify, mpsc, watch};
+use tokio::sync::{
+    Mutex as AsyncMutex, Notify, RwLock as AsyncRwLock, RwLockReadGuard,
+    RwLockWriteGuard, mpsc, watch,
+};
 use tokio::time::Instant as TokioInstant;
 
 use crate::{
@@ -88,7 +92,10 @@ struct PendingNewMailNotification {
 #[derive(Clone, Debug)]
 pub(crate) enum BackgroundRequest {
     Sync { force: bool, trigger: &'static str },
-    InboxChanged { account_id: String },
+    InboxChanged {
+        account_id: String,
+        trigger: &'static str,
+    },
     ScheduleChanged,
 }
 
@@ -114,6 +121,52 @@ struct ExitHandshakeState {
     phase: ExitHandshakePhase,
 }
 
+#[derive(Default)]
+struct InboxSyncFlightState {
+    running: bool,
+    generation: u64,
+    result: Option<Result<SyncReport, String>>,
+}
+
+#[derive(Default)]
+struct InboxSyncFlight {
+    state: StdMutex<InboxSyncFlightState>,
+    settled: Notify,
+}
+
+struct InboxSyncLeader {
+    flight: Arc<InboxSyncFlight>,
+    settled: bool,
+}
+
+impl InboxSyncLeader {
+    fn settle(&mut self, result: Result<SyncReport, String>) {
+        if let Ok(mut state) = self.flight.state.lock() {
+            state.running = false;
+            state.generation = state.generation.wrapping_add(1);
+            state.result = Some(result);
+            self.settled = true;
+        }
+        self.flight.settled.notify_waiters();
+    }
+}
+
+impl Drop for InboxSyncLeader {
+    fn drop(&mut self) {
+        if self.settled {
+            return;
+        }
+        if let Ok(mut state) = self.flight.state.lock() {
+            state.running = false;
+            state.generation = state.generation.wrapping_add(1);
+            state.result = Some(Err(
+                "Inbox synchronization was interrupted and can be retried.".to_owned(),
+            ));
+        }
+        self.flight.settled.notify_waiters();
+    }
+}
+
 pub(crate) struct SmtpOperationGuard<'a> {
     runtime: &'a DesktopRuntime,
 }
@@ -137,9 +190,11 @@ pub(crate) struct DesktopRuntime {
     startup_error: RwLock<Option<String>>,
     sync_tx: mpsc::Sender<BackgroundRequest>,
     shutdown_tx: watch::Sender<bool>,
-    sync_gate: AsyncMutex<()>,
+    lifecycle_gate: AsyncRwLock<()>,
+    batch_sync_gate: AsyncMutex<()>,
     last_sync_started: StdMutex<Option<Instant>>,
     pending_inbox_syncs: StdMutex<HashSet<String>>,
+    inbox_sync_flights: StdMutex<HashMap<String, Arc<InboxSyncFlight>>>,
     pending_notification_baselines: StdMutex<HashSet<String>>,
     exit_handshake: StdMutex<ExitHandshakeState>,
     smtp_operations_in_flight: AtomicUsize,
@@ -219,9 +274,11 @@ impl DesktopRuntime {
                 startup_error: RwLock::new(startup_error),
                 sync_tx,
                 shutdown_tx,
-                sync_gate: AsyncMutex::new(()),
+                lifecycle_gate: AsyncRwLock::new(()),
+                batch_sync_gate: AsyncMutex::new(()),
                 last_sync_started: StdMutex::new(None),
                 pending_inbox_syncs: StdMutex::new(HashSet::new()),
+                inbox_sync_flights: StdMutex::new(HashMap::new()),
                 pending_notification_baselines: StdMutex::new(HashSet::new()),
                 exit_handshake: StdMutex::new(ExitHandshakeState::default()),
                 smtp_operations_in_flight: AtomicUsize::new(0),
@@ -474,7 +531,7 @@ impl DesktopRuntime {
             .try_send(BackgroundRequest::Sync { force, trigger });
     }
 
-    fn request_incremental_inbox_sync(&self, account_id: String) {
+    fn request_incremental_inbox_sync(&self, account_id: String, trigger: &'static str) {
         let Ok(mut pending) = self.pending_inbox_syncs.lock() else {
             return;
         };
@@ -485,6 +542,7 @@ impl DesktopRuntime {
             .sync_tx
             .try_send(BackgroundRequest::InboxChanged {
                 account_id: account_id.clone(),
+                trigger,
             })
             .is_err()
         {
@@ -653,8 +711,85 @@ impl DesktopRuntime {
         Ok(true)
     }
 
-    pub(crate) async fn acquire_sync_gate(&self) -> AsyncMutexGuard<'_, ()> {
-        self.sync_gate.lock().await
+    /// Prevent account replacement/removal while a network operation retains
+    /// one of its backend handles.
+    pub(crate) async fn acquire_sync_access(&self) -> RwLockReadGuard<'_, ()> {
+        self.lifecycle_gate.read().await
+    }
+
+    /// Account lifecycle changes wait for every in-flight network operation,
+    /// then exclude new work until the backend slots are settled.
+    pub(crate) async fn acquire_sync_gate(&self) -> RwLockWriteGuard<'_, ()> {
+        self.lifecycle_gate.write().await
+    }
+
+    async fn coordinate_inbox_sync<F, Fut>(
+        &self,
+        account_id: &str,
+        requested_operation: &'static str,
+        operation: F,
+    ) -> Result<SyncReport, String>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = Result<SyncReport, String>>,
+    {
+        let flight = {
+            let mut flights = self
+                .inbox_sync_flights
+                .lock()
+                .map_err(|_| "The Inbox sync coordinator is temporarily unavailable.".to_owned())?;
+            flights
+                .entry(account_id.to_owned())
+                .or_insert_with(|| Arc::new(InboxSyncFlight::default()))
+                .clone()
+        };
+        let mut operation = Some(operation);
+        loop {
+            let settled = flight.settled.notified();
+            let observed_generation = {
+                let mut state = flight.state.lock().map_err(|_| {
+                    "The Inbox sync coordinator is temporarily unavailable.".to_owned()
+                })?;
+                if !state.running {
+                    state.running = true;
+                    None
+                } else {
+                    Some(state.generation)
+                }
+            };
+            let Some(observed_generation) = observed_generation else {
+                let mut leader = InboxSyncLeader {
+                    flight: flight.clone(),
+                    settled: false,
+                };
+                let result = operation
+                    .take()
+                    .expect("only the elected Inbox sync leader runs the operation")()
+                    .await;
+                leader.settle(result.clone());
+                return result;
+            };
+
+            settled.await;
+            let joined = {
+                let state = flight.state.lock().map_err(|_| {
+                    "The Inbox sync coordinator is temporarily unavailable.".to_owned()
+                })?;
+                (state.generation != observed_generation)
+                    .then(|| state.result.clone())
+                    .flatten()
+            };
+            if let Some(result) = joined {
+                diagnostics::info(
+                    "account_sync_joined",
+                    Fields::default()
+                        .account(account_id)
+                        .operation(requested_operation)
+                        .outcome("joined"),
+                );
+                return result;
+            }
+        }
     }
 
     fn poll_duration(&self) -> Duration {
@@ -1075,7 +1210,7 @@ async fn run_inbox_monitor(
                 match changed {
                     Ok(true) => app
                         .state::<DesktopRuntime>()
-                        .request_incremental_inbox_sync(account_id.clone()),
+                        .request_incremental_inbox_sync(account_id.clone(), "monitor"),
                     // Reconnect before the RFC 2177 29-minute ceiling. This
                     // also picks up a refreshed OAuth backend instance.
                     Ok(false) => break Ok(()),
@@ -1096,7 +1231,7 @@ async fn run_inbox_monitor(
                 match monitor.poll_for_change().await {
                     Ok(true) => app
                         .state::<DesktopRuntime>()
-                        .request_incremental_inbox_sync(account_id.clone()),
+                        .request_incremental_inbox_sync(account_id.clone(), "monitor"),
                     Ok(false) => {}
                     Err(error) => break Err(error),
                 }
@@ -1174,10 +1309,10 @@ pub(crate) fn start_background_loop(
                         Some(BackgroundRequest::ScheduleChanged) => {
                             inbox_deadline = TokioInstant::now() + app.state::<DesktopRuntime>().poll_duration();
                         }
-                        Some(BackgroundRequest::InboxChanged { account_id }) => {
+                        Some(BackgroundRequest::InboxChanged { account_id, trigger }) => {
                             app.state::<DesktopRuntime>().begin_incremental_inbox_sync(&account_id);
                             if let Err(error) = perform_incremental_inbox_sync(&app, &account_id).await {
-                                emit_sync_error(&app, "inbox", "monitor", error);
+                                emit_sync_error(&app, "inbox", trigger, error);
                             }
                         }
                         None => break,
@@ -1281,7 +1416,8 @@ pub(crate) async fn perform_sync_all(
 ) -> Result<Option<SyncAllReport>, String> {
     let started = Instant::now();
     let runtime = app.state::<DesktopRuntime>();
-    let _guard = runtime.sync_gate.lock().await;
+    let _batch_guard = runtime.batch_sync_gate.lock().await;
+    let _access_guard = runtime.acquire_sync_access().await;
     if !force && runtime.should_skip_automatic_sync()? {
         return Ok(None);
     }
@@ -1489,7 +1625,8 @@ fn prioritize_active_account(
 
 async fn perform_inbox_reconciliation_all(app: &AppHandle) -> Result<(), String> {
     let runtime = app.state::<DesktopRuntime>();
-    let _guard = runtime.sync_gate.lock().await;
+    let _batch_guard = runtime.batch_sync_gate.lock().await;
+    let _access_guard = runtime.acquire_sync_access().await;
     runtime.record_sync_start()?;
     let account_runtime = app.state::<AccountRuntime>();
     let backend_state = app.state::<BackendState>();
@@ -1574,7 +1711,8 @@ async fn perform_inbox_reconciliation_all(app: &AppHandle) -> Result<(), String>
 
 async fn perform_draft_sync_all(app: &AppHandle) -> Result<(), String> {
     let runtime = app.state::<DesktopRuntime>();
-    let _guard = runtime.sync_gate.lock().await;
+    let _batch_guard = runtime.batch_sync_gate.lock().await;
+    let _access_guard = runtime.acquire_sync_access().await;
     let account_runtime = app.state::<AccountRuntime>();
     let backend_state = app.state::<BackendState>();
     let refresh_error = account_runtime
@@ -1610,7 +1748,7 @@ async fn perform_incremental_inbox_sync(
     account_id: &str,
 ) -> Result<SyncReport, String> {
     let runtime = app.state::<DesktopRuntime>();
-    let _guard = runtime.sync_gate.lock().await;
+    let _access_guard = runtime.acquire_sync_access().await;
     let account_runtime = app.state::<AccountRuntime>();
     let backend_state = app.state::<BackendState>();
     // Usually a no-op; it ensures a monitor event near OAuth expiry uses the
@@ -1622,7 +1760,7 @@ async fn perform_incremental_inbox_sync(
 
 pub(crate) async fn perform_sent_sync(app: &AppHandle) -> Result<SyncReport, String> {
     let runtime = app.state::<DesktopRuntime>();
-    let _guard = runtime.sync_gate.lock().await;
+    let _access_guard = runtime.acquire_sync_access().await;
     runtime.record_sync_start()?;
     let account_runtime = app.state::<AccountRuntime>();
     let backend_state = app.state::<BackendState>();
@@ -1639,7 +1777,7 @@ pub(crate) async fn perform_sent_sync(app: &AppHandle) -> Result<SyncReport, Str
 
 pub(crate) async fn perform_draft_sync(app: &AppHandle) -> Result<DraftSyncReport, String> {
     let runtime = app.state::<DesktopRuntime>();
-    let _guard = runtime.sync_gate.lock().await;
+    let _access_guard = runtime.acquire_sync_access().await;
     let account_runtime = app.state::<AccountRuntime>();
     let backend_state = app.state::<BackendState>();
     let refresh_result = account_runtime
@@ -1657,7 +1795,40 @@ async fn sync_inbox_for(app: &AppHandle, account_id: &str) -> Result<SyncReport,
     sync_inbox_with_operation(app, account_id, false).await
 }
 
+pub(crate) async fn perform_inbox_mailbox_sync(
+    app: &AppHandle,
+    account_id: &str,
+) -> Result<usize, String> {
+    let backend = app.state::<BackendState>().network_for(account_id)?;
+    app.state::<DesktopRuntime>()
+        .coordinate_inbox_sync(account_id, "inbox_reconciliation", || async move {
+            backend
+                .sync_inbox(crate::INBOX_SYNC_LIMIT)
+                .await
+                .map_err(crate::safe_mail_error)
+        })
+        .await
+        .map(|report| report.fetched)
+}
+
 async fn sync_inbox_with_operation(
+    app: &AppHandle,
+    account_id: &str,
+    incremental: bool,
+) -> Result<SyncReport, String> {
+    let operation = if incremental {
+        "inbox_incremental"
+    } else {
+        "inbox_reconciliation"
+    };
+    app.state::<DesktopRuntime>()
+        .coordinate_inbox_sync(account_id, operation, || {
+            sync_inbox_network_with_operation(app, account_id, incremental)
+        })
+        .await
+}
+
+async fn sync_inbox_network_with_operation(
     app: &AppHandle,
     account_id: &str,
     incremental: bool,
@@ -2338,6 +2509,28 @@ pub(crate) fn request_sync(app: &AppHandle, force: bool, trigger: &'static str) 
     }
 }
 
+/// Window visibility changes need fresh Inbox counters, not a multi-account,
+/// all-role reconciliation. Each account is still checked, and the existing
+/// pending set coalesces a simultaneous monitor notification.
+pub(crate) fn request_incremental_inbox_refresh(app: &AppHandle, trigger: &'static str) {
+    let Some(runtime) = app.try_state::<DesktopRuntime>() else {
+        return;
+    };
+    let Some(accounts) = app.try_state::<AccountRuntime>() else {
+        return;
+    };
+    let Some(backends) = app.try_state::<BackendState>() else {
+        return;
+    };
+    for account_id in accounts
+        .account_ids()
+        .into_iter()
+        .filter(|account_id| backends.network_ready_for(account_id))
+    {
+        runtime.request_incremental_inbox_sync(account_id, trigger);
+    }
+}
+
 pub(crate) fn quit_app(app: &AppHandle) {
     let Some(runtime) = app.try_state::<DesktopRuntime>() else {
         app.exit(0);
@@ -2445,6 +2638,10 @@ fn complete_exit_on_timeout(app: &AppHandle, ticket: ExitHandshakeTicket) {
 mod tests {
     use std::{
         cell::Cell,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
         time::{Duration, Instant},
     };
 
@@ -2452,6 +2649,7 @@ mod tests {
         DraftSyncReport, InboxMessage, MailAddress, MailboxCapability, MailboxCapabilityStatus,
         MailboxRole, SyncReport,
     };
+    use tokio::sync::Notify;
 
     use super::settings::NotificationSound;
     use super::settings::{NotificationBaseline, StoredDesktopSettings};
@@ -2493,6 +2691,69 @@ mod tests {
             raw_rfc822: vec![],
             synced_at: "2026-07-14T00:00:00Z".to_owned(),
         }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn concurrent_inbox_requests_join_one_account_flight() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let (runtime, _sync_rx, _shutdown_rx) = DesktopRuntime::open(directory.path());
+        let runtime = Arc::new(runtime);
+        let executions = Arc::new(AtomicUsize::new(0));
+        let started = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let started_wait = started.notified();
+        let expected = SyncReport {
+            mailbox: "INBOX".to_owned(),
+            remote_total: 4,
+            fetched: 1,
+            updated_flags: 0,
+            removed: 0,
+            cached_total: 4,
+            uid_validity_reset: false,
+        };
+
+        let first = {
+            let runtime = runtime.clone();
+            let executions = executions.clone();
+            let started = started.clone();
+            let release = release.clone();
+            let expected = expected.clone();
+            tokio::spawn(async move {
+                runtime
+                    .coordinate_inbox_sync("account-a", "inbox_reconciliation", || async move {
+                        executions.fetch_add(1, Ordering::SeqCst);
+                        started.notify_one();
+                        release.notified().await;
+                        Ok(expected)
+                    })
+                    .await
+            })
+        };
+        started_wait.await;
+        let second = {
+            let runtime = runtime.clone();
+            let executions = executions.clone();
+            tokio::spawn(async move {
+                runtime
+                    .coordinate_inbox_sync("account-a", "inbox_reconciliation", || async move {
+                        executions.fetch_add(1, Ordering::SeqCst);
+                        Ok(SyncReport::default())
+                    })
+                    .await
+            })
+        };
+        for _ in 0..4 {
+            tokio::task::yield_now().await;
+        }
+        assert!(!second.is_finished());
+        release.notify_one();
+
+        assert_eq!(first.await.expect("first task").expect("first sync"), expected);
+        assert_eq!(
+            second.await.expect("second task").expect("joined sync"),
+            expected
+        );
+        assert_eq!(executions.load(Ordering::SeqCst), 1);
     }
 
     #[test]

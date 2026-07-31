@@ -553,6 +553,8 @@ pub struct MailBackend {
     managed_attachments: ManagedAttachmentStore,
     general_imap_gate: Mutex<()>,
     inbox_imap_gate: Mutex<()>,
+    inbox_sync_imap: Mutex<Option<ImapConnection>>,
+    inbox_sync_state: StdMutex<(u64, Option<SyncReport>)>,
     sent_imap_gate: Mutex<()>,
     draft_imap_gate: Mutex<()>,
     body_imap: Mutex<Option<BodyImapSession>>,
@@ -589,6 +591,8 @@ impl MailBackend {
             managed_attachments,
             general_imap_gate: Mutex::new(()),
             inbox_imap_gate: Mutex::new(()),
+            inbox_sync_imap: Mutex::new(None),
+            inbox_sync_state: StdMutex::new((0, None)),
             sent_imap_gate: Mutex::new(()),
             draft_imap_gate: Mutex::new(()),
             body_imap: Mutex::new(None),
@@ -974,6 +978,47 @@ impl MailBackend {
         Ok(names)
     }
 
+    fn inbox_sync_generation(&self) -> Result<u64> {
+        self.inbox_sync_state
+            .lock()
+            .map(|state| state.0)
+            .map_err(|_| MailError::Io(std::io::Error::other("Inbox sync state is unavailable")))
+    }
+
+    fn inbox_sync_completed_after(&self, observed_generation: u64) -> Result<Option<SyncReport>> {
+        let state = self
+            .inbox_sync_state
+            .lock()
+            .map_err(|_| MailError::Io(std::io::Error::other("Inbox sync state is unavailable")))?;
+        Ok((state.0 != observed_generation)
+            .then(|| state.1.clone())
+            .flatten())
+    }
+
+    fn record_inbox_sync_completion(&self, report: &SyncReport) -> Result<()> {
+        let mut state = self
+            .inbox_sync_state
+            .lock()
+            .map_err(|_| MailError::Io(std::io::Error::other("Inbox sync state is unavailable")))?;
+        state.0 = state.0.wrapping_add(1);
+        state.1 = Some(report.clone());
+        Ok(())
+    }
+
+    async fn take_inbox_sync_connection(&self) -> Result<ImapConnection> {
+        let cached = self.inbox_sync_imap.lock().await.take();
+        if let Some(mut connection) = cached
+            && connection.noop().await.is_ok()
+        {
+            return Ok(connection);
+        }
+        ImapConnection::connect(&self.config).await
+    }
+
+    async fn store_inbox_sync_connection(&self, connection: ImapConnection) {
+        *self.inbox_sync_imap.lock().await = Some(connection);
+    }
+
     /// Synchronize Inbox metadata without downloading message bodies.
     ///
     /// On the first run only the newest `initial_limit` messages are cached.
@@ -992,16 +1037,23 @@ impl MailBackend {
         F: FnMut(SyncBatchProgress) + Send,
     {
         self.validate_sync_limit(initial_limit)?;
+        let observed_generation = self.inbox_sync_generation()?;
 
         let _ = self
             .flush_pending_message_mutations(&self.config.account_id)
             .await;
         let _guard = self.inbox_imap_gate.lock().await;
-        let mut connection = ImapConnection::connect(&self.config).await?;
+        if let Some(report) = self.inbox_sync_completed_after(observed_generation)? {
+            return Ok(report);
+        }
+        let mut connection = self.take_inbox_sync_connection().await?;
         let report = self
             .sync_selected_mailbox(&mut connection, INBOX, initial_limit, &mut on_progress)
             .await;
-        let _ = connection.logout().await;
+        if let Ok(completed) = report.as_ref() {
+            self.store_inbox_sync_connection(connection).await;
+            self.record_inbox_sync_completion(completed)?;
+        }
         report
     }
 
@@ -1276,17 +1328,29 @@ impl MailBackend {
 
         let existing_remote_uids: Vec<u32> =
             cached_uids.intersection(&remote_uids).copied().collect();
+        let changed_since = changed_flags_cursor(
+            connection.supports_condstore(),
+            uid_validity_reset,
+            previous_state
+                .as_ref()
+                .and_then(|state| state.highest_modseq),
+            snapshot.highest_modseq,
+        );
         let mut updated_flags = 0;
         for batch in existing_remote_uids.chunks(FLAG_BATCH_SIZE) {
-            for (uid, flags) in connection.fetch_flags(batch).await? {
-                self.repository.update_message_flags(
-                    &self.config.account_id,
-                    mailbox,
-                    uid,
-                    &flags,
-                )?;
-                updated_flags += 1;
-            }
+            let updates = match changed_since {
+                Some(highest_modseq) => {
+                    connection
+                        .fetch_flags_changed_since(batch, highest_modseq)
+                        .await?
+                }
+                None => connection.fetch_flags(batch).await?,
+            };
+            updated_flags += self.repository.update_message_flags_batch(
+                &self.config.account_id,
+                mailbox,
+                &updates,
+            )?;
         }
 
         self.repository.upsert_mailbox_state(&MailboxState {
@@ -1369,8 +1433,12 @@ impl MailBackend {
             ));
         }
 
+        let observed_generation = self.inbox_sync_generation()?;
         let guard = self.inbox_imap_gate.lock().await;
-        let mut connection = ImapConnection::connect(&self.config).await?;
+        if let Some(report) = self.inbox_sync_completed_after(observed_generation)? {
+            return Ok(report);
+        }
+        let mut connection = self.take_inbox_sync_connection().await?;
         let hint = connection.select_inbox_hint().await?;
         let previous_state = self
             .repository
@@ -1381,7 +1449,7 @@ impl MailBackend {
                     != InboxUidScope::Current
         });
         if needs_full_sync {
-            let _ = connection.logout().await;
+            self.store_inbox_sync_connection(connection).await;
             drop(guard);
             return self
                 .sync_inbox_with_progress(initial_limit, on_progress)
@@ -1442,9 +1510,7 @@ impl MailBackend {
         let cached_total = self
             .repository
             .count_messages(&self.config.account_id, INBOX)?;
-        let _ = connection.logout().await;
-
-        Ok(SyncReport {
+        let report = SyncReport {
             mailbox: INBOX.to_owned(),
             remote_total: hint.exists,
             fetched,
@@ -1452,7 +1518,10 @@ impl MailBackend {
             removed: 0,
             cached_total,
             uid_validity_reset: false,
-        })
+        };
+        self.store_inbox_sync_connection(connection).await;
+        self.record_inbox_sync_completion(&report)?;
+        Ok(report)
     }
 
     pub fn list_inbox(&self, limit: usize) -> Result<Vec<InboxMessage>> {
@@ -6525,6 +6594,20 @@ fn normalize_recipient_set<'a>(
     Ok(normalized)
 }
 
+fn changed_flags_cursor(
+    supports_condstore: bool,
+    uid_validity_reset: bool,
+    previous_highest_modseq: Option<u64>,
+    current_highest_modseq: Option<u64>,
+) -> Option<u64> {
+    if !supports_condstore || uid_validity_reset {
+        return None;
+    }
+    previous_highest_modseq
+        .filter(|previous| *previous > 0)
+        .filter(|previous| current_highest_modseq.is_some_and(|current| current >= *previous))
+}
+
 fn classify_inbox_uid_scope(
     local_uid_validity: Option<u32>,
     selected_uid_validity: Option<u32>,
@@ -6672,7 +6755,7 @@ mod tests {
         BODY_PREFETCH_PRIORITY_RECENT, BodyDownloadKey, BodyDownloadOwner, BodyPrefetchQueue,
         DraftReconciliation, INBOX, InboxUidScope, MailBackend, RemoteDraftCandidate,
         RemoteForkPreservation, advance_draft_sync_progress, bounded_body_prefetch_ids,
-        classify_draft_reconciliation, classify_inbox_uid_scope,
+        changed_flags_cursor, classify_draft_reconciliation, classify_inbox_uid_scope,
         confirmed_created_mailbox_capability, discovered_mailbox_capability,
         draft_record_matches_remote, earlier_history_bound, mailbox_hint_changed,
         normalized_message_page_size, remote_attachment_listing, remote_candidates_equivalent,
@@ -6682,7 +6765,7 @@ mod tests {
     use crate::{
         AccountConfig, ComposeFormat, ComposeRequest, ContactMessageDirection, Draft,
         DraftDeleteKind, DraftSaveKind, InboxMessage, MailAddress, MailError, MailboxRole,
-        OutboxItem, OutboxStatus, ServerConfig, SmtpSecurity, StationeryTheme,
+        OutboxItem, OutboxStatus, ServerConfig, SmtpSecurity, StationeryTheme, SyncReport,
         database::{DraftRecord, MailboxState, Repository},
         imap_client::{
             MailboxHint, MailboxMessageScope, RemoteMailbox, RemoteMessage, RemoteMessageStructure,
@@ -7094,6 +7177,66 @@ mod tests {
     fn gmail_all_mail_adapter_is_provider_scoped() {
         let mut localized_all_mail = remote_mailbox("[Gmail]/所有邮件", false, false, true);
         localized_all_mail.is_all = true;
+    #[test]
+    fn completed_inbox_sync_is_reused_only_by_an_existing_waiter() {
+        let directory = tempdir().expect("tempdir");
+        let config =
+            AccountConfig::from_163_lines(["demo@163.com", "not-a-real-secret"]).expect("config");
+        let backend = MailBackend::open(config, directory.path().join("mail.db")).expect("backend");
+        let waiting_generation = backend.inbox_sync_generation().expect("generation");
+        let report = SyncReport {
+            mailbox: INBOX.to_owned(),
+            remote_total: 12,
+            fetched: 2,
+            updated_flags: 3,
+            removed: 1,
+            cached_total: 11,
+            uid_validity_reset: false,
+        };
+
+        assert!(
+            backend
+                .inbox_sync_completed_after(waiting_generation)
+                .expect("no completion")
+                .is_none()
+        );
+        backend
+            .record_inbox_sync_completion(&report)
+            .expect("record completion");
+        assert_eq!(
+            backend
+                .inbox_sync_completed_after(waiting_generation)
+                .expect("joined completion"),
+            Some(report)
+        );
+        let next_generation = backend.inbox_sync_generation().expect("next generation");
+        assert!(
+            backend
+                .inbox_sync_completed_after(next_generation)
+                .expect("new request")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn condstore_cursor_requires_a_current_monotonic_mailbox_epoch() {
+        assert_eq!(
+            changed_flags_cursor(true, false, Some(100), Some(120)),
+            Some(100)
+        );
+        assert_eq!(
+            changed_flags_cursor(false, false, Some(100), Some(120)),
+            None
+        );
+        assert_eq!(changed_flags_cursor(true, true, Some(100), Some(120)), None);
+        assert_eq!(changed_flags_cursor(true, false, None, Some(120)), None);
+        assert_eq!(changed_flags_cursor(true, false, Some(0), Some(120)), None);
+        assert_eq!(
+            changed_flags_cursor(true, false, Some(120), Some(100)),
+            None
+        );
+    }
+
         let all_mail = [localized_all_mail];
         assert_eq!(
             discovered_mailbox_capability(MailboxRole::Archive, &all_mail, true).status,

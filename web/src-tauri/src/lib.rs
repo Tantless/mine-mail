@@ -2238,7 +2238,7 @@ pub fn run() {
                 }
             }
             WindowEvent::Focused(true) if window.label() == "main" => {
-                desktop::request_sync(window.app_handle(), false, "window_focus")
+                desktop::request_incremental_inbox_refresh(window.app_handle(), "window_focus")
             }
             _ => {}
         })

@@ -1231,6 +1231,7 @@ impl Repository {
     }
 
     pub(crate) fn update_message_flags(
+    #[cfg(test)]
         &self,
         account_id: &str,
         mailbox: &str,
@@ -1248,6 +1249,34 @@ impl Repository {
     }
 
     pub(crate) fn queue_system_flag_mutation(
+    /// Apply one server FLAGS batch with a single SQLite connection and
+    /// transaction. Pending local Seen/Flagged intent is merged per row before
+    /// writing so batching cannot regress optimistic UI state.
+    pub(crate) fn update_message_flags_batch(
+        &self,
+        account_id: &str,
+        mailbox: &str,
+        updates: &[(u32, Vec<String>)],
+    ) -> Result<usize> {
+        if updates.is_empty() {
+            return Ok(0);
+        }
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        for (uid, remote_flags) in updates {
+            let flags =
+                flags_with_pending_updates(&transaction, account_id, mailbox, *uid, remote_flags)?;
+            let changed = transaction.execute(
+                "UPDATE messages SET flags_json = ?4
+                 WHERE account_id = ?1 AND mailbox = ?2 AND uid = ?3",
+                params![account_id, mailbox, uid, encode_json(&flags)?],
+            )?;
+            ensure_changed(changed, "message", format!("{account_id}:{mailbox}/{uid}"))?;
+        }
+        transaction.commit()?;
+        Ok(updates.len())
+    }
+
         &self,
         expected_account_id: &str,
         mailbox: &str,
@@ -9629,6 +9658,79 @@ mod tests {
                 "INBOX",
                 unread.uid,
                 SystemFlagKind::Seen,
+    #[test]
+    fn flag_batches_are_atomic_and_preserve_pending_local_intent() {
+        let (_directory, repository, account) = setup();
+        initialize_mailbox(
+            &repository,
+            &account.account_id,
+            MailboxRole::Inbox,
+            "INBOX",
+            70,
+        );
+        let first = message_with_identity(
+            &account.account_id,
+            "INBOX",
+            42,
+            "2026-07-14T01:00:01Z",
+            "First",
+        );
+        let second = message_with_identity(
+            &account.account_id,
+            "INBOX",
+            43,
+            "2026-07-14T01:00:02Z",
+            "Second",
+        );
+        let first_id = repository.upsert_message(&first).expect("first message");
+        let second_id = repository.upsert_message(&second).expect("second message");
+        repository
+            .set_message_flagged_pending(&account.account_id, "INBOX", first.uid, true)
+            .expect("pending star");
+
+        assert_eq!(
+            repository
+                .update_message_flags_batch(
+                    &account.account_id,
+                    "INBOX",
+                    &[
+                        (first.uid, vec!["\\Seen".to_owned()]),
+                        (second.uid, vec!["\\Flagged".to_owned()]),
+                    ],
+                )
+                .expect("flag batch"),
+            2
+        );
+        assert_eq!(
+            repository.get_message(first_id).expect("first flags").flags,
+            ["\\Seen", "\\Flagged"]
+        );
+        assert_eq!(
+            repository
+                .get_message(second_id)
+                .expect("second flags")
+                .flags,
+            ["\\Flagged"]
+        );
+
+        assert!(
+            repository
+                .update_message_flags_batch(
+                    &account.account_id,
+                    "INBOX",
+                    &[(first.uid, Vec::new()), (999, Vec::new())],
+                )
+                .is_err()
+        );
+        assert_eq!(
+            repository
+                .get_message(first_id)
+                .expect("rolled back flags")
+                .flags,
+            ["\\Seen", "\\Flagged"]
+        );
+    }
+
                 false,
             )
             .expect("later unread intent");

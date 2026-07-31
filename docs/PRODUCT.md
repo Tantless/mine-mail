@@ -76,6 +76,9 @@ must be updated here when an intentional product change lands.
   afterward.
 - Immediate synchronization is triggered by startup, explicit in-app refresh,
   tray **刷新**, and supported resume/wake events.
+- Returning focus to an already running main window performs only a lightweight
+  Inbox update for every network-ready account. It coalesces with an existing
+  Inbox monitor event and does not start an all-account, all-role reconciliation.
 - Runtime capability detection prefers standard IMAP IDLE. Reconnect before the
   server's 29-minute window expires.
 - A server that does not advertise IDLE keeps an authenticated connection and
@@ -97,6 +100,10 @@ must be updated here when an intentional product change lands.
   settles. Routine success never creates a lower-right toast, and background or
   event-driven reconciliation does not restart foreground synchronization
   feedback.
+- Concurrent Inbox requests for the same account share one in-flight result,
+  including an explicit refresh that overlaps event-driven synchronization.
+  Synchronization for another account or mailbox role does not block that
+  request; account replacement and removal remain exclusive lifecycle changes.
 - IMAP IDLE and lightweight arrival polling monitor Inbox only. A periodic
   reconciliation always flushes queued mutations; Archive and Trash participate
   when they have been initialized locally or have pending mutations.

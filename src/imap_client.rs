@@ -226,6 +226,7 @@ pub(crate) struct ImapConnection {
     supports_uidplus: bool,
     supports_special_use: bool,
     supports_idle: bool,
+    supports_condstore: bool,
 }
 
 impl ImapConnection {
@@ -331,17 +332,23 @@ impl ImapConnection {
         let supports_uidplus = has_capability(&capabilities, "UIDPLUS");
         let supports_special_use = has_capability(&capabilities, "SPECIAL-USE");
         let supports_idle = has_capability(&capabilities, "IDLE");
+        let supports_condstore = has_capability(&capabilities, "CONDSTORE");
         Ok(Self {
             session,
             supports_move,
             supports_uidplus,
             supports_special_use,
             supports_idle,
+            supports_condstore,
         })
     }
 
     pub fn supports_idle(&self) -> bool {
         self.supports_idle
+    }
+
+    pub fn supports_condstore(&self) -> bool {
+        self.supports_condstore
     }
 
     pub fn message_move_method(&self) -> MessageMoveMethod {
@@ -403,12 +410,15 @@ impl ImapConnection {
         mailbox: &str,
         scope: MailboxMessageScope,
     ) -> Result<MailboxSnapshot> {
-        let selected = timeout(COMMAND_TIMEOUT, self.session.select(mailbox))
-            .await
-            .map_err(|_| MailError::Timeout {
-                operation: "IMAP SELECT mailbox",
-            })?
-            .map_err(|error| MailError::Imap(error.to_string()))?;
+        let selected = if self.supports_condstore {
+            timeout(COMMAND_TIMEOUT, self.session.select_condstore(mailbox)).await
+        } else {
+            timeout(COMMAND_TIMEOUT, self.session.select(mailbox)).await
+        }
+        .map_err(|_| MailError::Timeout {
+            operation: "IMAP SELECT mailbox",
+        })?
+        .map_err(|error| MailError::Imap(error.to_string()))?;
         let all_uids = self.search_uids(scope.search_query()).await?;
         let exists = match scope {
             MailboxMessageScope::All => selected.exists,
@@ -566,6 +576,7 @@ impl ImapConnection {
         let supports_uidplus = self.supports_uidplus;
         let supports_special_use = self.supports_special_use;
         let supports_idle = self.supports_idle;
+        let supports_condstore = self.supports_condstore;
         if !supports_idle {
             return Err(MailError::Validation(
                 "the IMAP server does not advertise IDLE".to_owned(),
@@ -597,6 +608,7 @@ impl ImapConnection {
                 supports_uidplus,
                 supports_special_use,
                 supports_idle,
+                supports_condstore,
             },
             matches!(response, IdleResponse::NewData(_)),
         ))
@@ -852,6 +864,44 @@ impl ImapConnection {
             .await
             .map_err(|_| MailError::Timeout {
                 operation: "IMAP flag response",
+            })?
+            .map_err(|error| MailError::Imap(error.to_string()))?;
+
+        Ok(fetched
+            .into_iter()
+            .filter_map(|message| {
+                let uid = message.uid?;
+                let flags = message.flags().map(flag_name).collect();
+                Some((uid, flags))
+            })
+            .collect())
+    }
+
+    /// Fetch only flags whose per-message modification sequence advanced
+    /// after the last committed mailbox snapshot (RFC 7162 CONDSTORE).
+    pub async fn fetch_flags_changed_since(
+        &mut self,
+        uids: &[u32],
+        highest_modseq: u64,
+    ) -> Result<Vec<(u32, Vec<String>)>> {
+        if uids.is_empty() {
+            return Ok(Vec::new());
+        }
+        if !self.supports_condstore || highest_modseq == 0 {
+            return self.fetch_flags(uids).await;
+        }
+        let sequence_set = required_uid_set(uids)?;
+        let query = format!("(UID FLAGS) (CHANGEDSINCE {highest_modseq})");
+        let stream = timeout(COMMAND_TIMEOUT, self.session.uid_fetch(sequence_set, query))
+            .await
+            .map_err(|_| MailError::Timeout {
+                operation: "IMAP changed flag fetch",
+            })?
+            .map_err(|error| MailError::Imap(error.to_string()))?;
+        let fetched = timeout(COMMAND_TIMEOUT, stream.try_collect::<Vec<_>>())
+            .await
+            .map_err(|_| MailError::Timeout {
+                operation: "IMAP changed flag response",
             })?
             .map_err(|error| MailError::Imap(error.to_string()))?;
 

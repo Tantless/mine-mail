@@ -1249,6 +1249,15 @@ impl AccountRuntime {
         let account_id = backend_state
             .active_account_id()
             .ok_or_else(|| "No mail account is selected.".to_owned())?;
+        self.refresh_oauth_backend_for(backend_state, &account_id)
+            .await
+    }
+
+    pub(crate) async fn refresh_oauth_backend_for(
+        &self,
+        backend_state: &BackendState,
+        account_id: &str,
+    ) -> Result<(), String> {
         let metadata = self
             .stored
             .read()

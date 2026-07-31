@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use mine_mail::{
     AttachmentMeta, AttachmentSaveErrorKind, ForwardPreparationErrorKind,
     ForwardPreparationOutcome, InboxMessage, MailBackend, MailError, MailboxCapability,
@@ -15,7 +17,9 @@ use crate::{
     BodySegmentDto, BodySegmentKindDto, BodySegmentMetadataDto, CommandResult,
     ForwardPreparationOutcomeDto, InboxMessageDto, MailAddressDto, MessageNavigationTargetDto,
     account::{AccountRuntime, BackendState},
-    desktop, full_message_dto, safe_mail_error,
+    desktop,
+    diagnostics::{self, Fields},
+    full_message_dto, safe_mail_error,
 };
 
 const MAX_ACCOUNT_ID_CHARS: usize = 128;
@@ -593,18 +597,112 @@ pub(crate) async fn sync_mailbox(
     account_id: String,
     role: MailboxRole,
 ) -> CommandResult<MailboxSyncReportDto> {
+    let started = Instant::now();
     validate_account_id(&account_id)?;
     backend.local_for(&account_id)?;
-    let _ = account.refresh_oauth_backends(&backend).await;
-    let network = backend.network_for(&account_id)?;
+    let role_name = mailbox_role_name(role);
+    let operation_id = diagnostics::operation_id();
+    diagnostics::info(
+        "mailbox_sync_started",
+        Fields::default()
+            .operation_id(operation_id.clone())
+            .account(&account_id)
+            .operation("mailbox_sync")
+            .mode(role_name),
+    );
+
     let runtime = app.state::<desktop::DesktopRuntime>();
-    let _guard = runtime.acquire_sync_gate().await;
-    let synced = network
-        .sync_mailbox(&account_id, role)
-        .await
-        .map_err(safe_mail_error)?;
+    let access_started = Instant::now();
+    let _access_guard = runtime.acquire_sync_access().await;
+    diagnostics::info(
+        "mailbox_sync_stage_completed",
+        Fields::default()
+            .operation_id(operation_id.clone())
+            .account(&account_id)
+            .operation("lifecycle_wait")
+            .mode(role_name)
+            .duration(access_started.elapsed()),
+    );
+
+    let oauth_started = Instant::now();
+    let oauth_result = account.refresh_oauth_backend_for(&backend, &account_id).await;
+    diagnostics::info(
+        "mailbox_sync_stage_completed",
+        Fields::default()
+            .operation_id(operation_id.clone())
+            .account(&account_id)
+            .operation("oauth_refresh_check")
+            .mode(role_name)
+            .outcome(if oauth_result.is_ok() {
+                "completed"
+            } else {
+                "degraded"
+            })
+            .duration(oauth_started.elapsed()),
+    );
+    let network = backend.network_for(&account_id)?;
+    let backend_started = Instant::now();
+    let sync_result = match role {
+        MailboxRole::Inbox => desktop::perform_inbox_mailbox_sync(&app, &account_id)
+            .await
+            .map_err(|message| (message, diagnostics::ErrorKind::Runtime)),
+        _ => network
+            .sync_mailbox(&account_id, role)
+            .await
+            .map_err(|error| {
+                let kind = diagnostics::mail_error_kind(&error);
+                (safe_mail_error(error), kind)
+            }),
+    };
+    let synced = match sync_result {
+        Ok(synced) => synced,
+        Err((message, error_kind)) => {
+            diagnostics::error(
+                "mailbox_sync_completed",
+                Fields::default()
+                    .operation_id(operation_id)
+                    .account(&account_id)
+                    .operation("mailbox_sync")
+                    .mode(role_name)
+                    .outcome("failed")
+                    .error(error_kind)
+                    .duration(started.elapsed()),
+            );
+            return Err(message);
+        }
+    };
+    diagnostics::info(
+        "mailbox_sync_stage_completed",
+        Fields::default()
+            .operation_id(operation_id.clone())
+            .account(&account_id)
+            .operation("backend_sync")
+            .mode(role_name)
+            .outcome("completed")
+            .duration(backend_started.elapsed()),
+    );
     emit_mailbox_updated(&app, &account_id, role);
+    diagnostics::info(
+        "mailbox_sync_completed",
+        Fields::default()
+            .operation_id(operation_id)
+            .account(&account_id)
+            .operation("mailbox_sync")
+            .mode(role_name)
+            .outcome("completed")
+            .duration(started.elapsed()),
+    );
     Ok(MailboxSyncReportDto { synced })
+}
+
+fn mailbox_role_name(role: MailboxRole) -> &'static str {
+    match role {
+        MailboxRole::Inbox => "inbox",
+        MailboxRole::Sent => "sent",
+        MailboxRole::Drafts => "drafts",
+        MailboxRole::Archive => "archive",
+        MailboxRole::Trash => "trash",
+    }
 }
 
 #[tauri::command]
