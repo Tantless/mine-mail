@@ -58,6 +58,7 @@ const BODY_CACHE_TOTAL_BYTES: u64 = 512 * 1024 * 1024;
 const SENT_SYNC_LIMIT: usize = 250;
 const CONTACT_MESSAGE_LIST_LIMIT: usize = 250;
 const MAX_OUTBOX_ID_BYTES: usize = 128;
+const EXTERNAL_LINK_OPEN_FAILED_EVENT: &str = "mail:external-link-open-failed";
 
 type CommandResult<T> = Result<T, String>;
 
@@ -1182,6 +1183,10 @@ fn set_contact_remark(
 #[tauri::command]
 fn open_external_url(url: String) -> CommandResult<()> {
     let url = validate_external_url(&url)?;
+    open_validated_external_url(&url)
+}
+
+fn open_validated_external_url(url: &Url) -> CommandResult<()> {
     open::that(url.as_str())
         .map_err(|_| "The link could not be opened in the system browser.".to_owned())
 }
@@ -1202,6 +1207,57 @@ fn validate_external_url(value: &str) -> CommandResult<Url> {
         _ => return Err("This link type is not supported.".to_owned()),
     }
     Ok(url)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum WebviewNavigationDecision {
+    AllowInternal,
+    OpenExternal(Url),
+    Deny,
+}
+
+fn same_webview_origin(url: &Url, app_origin: &Url) -> bool {
+    url.scheme() == app_origin.scheme()
+        && url.host_str() == app_origin.host_str()
+        && url.port_or_known_default() == app_origin.port_or_known_default()
+        && url.username().is_empty()
+        && url.password().is_none()
+}
+
+fn is_isolated_document_url(url: &Url) -> bool {
+    url.scheme() == "about" && matches!(url.path(), "blank" | "srcdoc") && url.query().is_none()
+}
+
+fn classify_webview_navigation(url: &Url, app_origin: &Url) -> WebviewNavigationDecision {
+    if same_webview_origin(url, app_origin) || is_isolated_document_url(url) {
+        return WebviewNavigationDecision::AllowInternal;
+    }
+
+    match validate_external_url(url.as_str()) {
+        Ok(url) => WebviewNavigationDecision::OpenExternal(url),
+        Err(_) => WebviewNavigationDecision::Deny,
+    }
+}
+
+fn configured_webview_app_origin(use_https_scheme: bool, dev_url: Option<&Url>) -> Url {
+    if cfg!(debug_assertions)
+        && let Some(dev_url) = dev_url
+    {
+        return dev_url.clone();
+    }
+
+    #[cfg(any(windows, target_os = "android"))]
+    {
+        let scheme = if use_https_scheme { "https" } else { "http" };
+        Url::parse(&format!("{scheme}://tauri.localhost"))
+            .expect("the Tauri application origin must be valid")
+    }
+
+    #[cfg(not(any(windows, target_os = "android")))]
+    {
+        let _ = use_https_scheme;
+        Url::parse("tauri://localhost").expect("the Tauri application origin must be valid")
+    }
 }
 
 #[tauri::command]
@@ -2085,7 +2141,28 @@ fn build_configured_windows(
     runtime_data_root: &std::path::Path,
 ) -> tauri::Result<()> {
     for window_config in &app.config().app.windows {
-        let builder = WebviewWindowBuilder::from_config(app.handle(), window_config)?;
+        let app_origin = configured_webview_app_origin(
+            window_config.use_https_scheme,
+            app.config().build.dev_url.as_ref(),
+        );
+        let app_handle = app.handle().clone();
+        let builder = WebviewWindowBuilder::from_config(app.handle(), window_config)?
+            .on_navigation(
+                move |url| match classify_webview_navigation(url, &app_origin) {
+                    WebviewNavigationDecision::AllowInternal => true,
+                    WebviewNavigationDecision::OpenExternal(url) => {
+                        if open_validated_external_url(&url).is_err() {
+                            diagnostics::warn(
+                                "external_link_open_failed",
+                                DiagnosticFields::default().error(DiagnosticErrorKind::Runtime),
+                            );
+                            let _ = app_handle.emit_to("main", EXTERNAL_LINK_OPEN_FAILED_EVENT, ());
+                        }
+                        false
+                    }
+                    WebviewNavigationDecision::Deny => false,
+                },
+            );
         #[cfg(target_os = "windows")]
         let builder = builder.data_directory(runtime_data_root.join("EBWebView"));
         builder.build()?;
@@ -2249,7 +2326,8 @@ mod tests {
     use super::{
         AttachmentSaveResultDto, ContactMessageDto, DraftAttachmentMutationOutcomeDto, DraftDto,
         ForwardPreparationOutcomeDto, InboxMessageDto, MessageNavigationTargetDto, OutboxItemDto,
-        OutboxMessageDto, ReplyContextDto, assert_no_private_mail_coordinates,
+        OutboxMessageDto, ReplyContextDto, Url, WebviewNavigationDecision,
+        assert_no_private_mail_coordinates, classify_webview_navigation,
         delivery_unknown_decision_name, requested_autostart_change, sanitize_compose_request,
         validate_delivery_unknown_request, validate_external_url, validate_outbox_id,
     };
@@ -2968,5 +3046,63 @@ mod tests {
         assert!(validate_external_url("javascript:alert(1)").is_err());
         assert!(validate_external_url("file:///C:/Windows/system.ini").is_err());
         assert!(validate_external_url("https://user:pass@example.com/").is_err());
+    }
+
+    #[test]
+    fn webview_navigation_keeps_only_app_and_isolated_documents_internal() {
+        let app_origin = Url::parse("http://tauri.localhost").expect("app origin");
+
+        for internal in [
+            "http://tauri.localhost/index.html",
+            "http://tauri.localhost/index.html?surface=new-mail-notification",
+            "about:blank",
+            "about:srcdoc",
+        ] {
+            let url = Url::parse(internal).expect("internal URL");
+            assert_eq!(
+                classify_webview_navigation(&url, &app_origin),
+                WebviewNavigationDecision::AllowInternal,
+                "{internal} should remain inside the application webview"
+            );
+        }
+
+        for denied in [
+            "javascript:alert(1)",
+            "data:text/html,unsafe",
+            "file:///tmp/private",
+            "about:config",
+        ] {
+            let url = Url::parse(denied).expect("denied URL");
+            assert_eq!(
+                classify_webview_navigation(&url, &app_origin),
+                WebviewNavigationDecision::Deny,
+                "{denied} must never navigate or launch externally"
+            );
+        }
+    }
+
+    #[test]
+    fn webview_navigation_routes_safe_external_urls_outside_the_app() {
+        let app_origin = Url::parse("tauri://localhost").expect("app origin");
+
+        for external in [
+            "https://help.steampowered.com/",
+            "http://example.com/message",
+            "mailto:friend@example.com",
+        ] {
+            let url = Url::parse(external).expect("external URL");
+            assert_eq!(
+                classify_webview_navigation(&url, &app_origin),
+                WebviewNavigationDecision::OpenExternal(url),
+                "{external} should use the system-owned handler"
+            );
+        }
+
+        let credentialed =
+            Url::parse("https://user:password@example.com/").expect("credentialed URL");
+        assert_eq!(
+            classify_webview_navigation(&credentialed, &app_origin),
+            WebviewNavigationDecision::Deny
+        );
     }
 }

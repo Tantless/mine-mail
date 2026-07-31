@@ -1593,6 +1593,31 @@ describe("Mine Mail desktop state bridge", () => {
     ).toBeTruthy();
   });
 
+  it("reports a native external-link launch failure without exposing the URL", async () => {
+    render(<App />);
+    await waitFor(() =>
+      expect(
+        desktop.listeners.has("mail:external-link-open-failed"),
+      ).toBe(true),
+    );
+
+    act(() => {
+      desktop.listeners.get("mail:external-link-open-failed")?.({
+        payload: {
+          url: "https://private.example.test/message?token=secret",
+        },
+      });
+    });
+
+    const message = screen.getByText(
+      "无法打开邮件中的链接，请检查系统默认浏览器设置后重试",
+    );
+    const alert = message.closest('[role="alert"]');
+    expect(alert).not.toBeNull();
+    expect(alert.textContent).not.toContain("private.example.test");
+    expect(alert.textContent).not.toContain("secret");
+  });
+
   it("removes the repair notice when OAuth refresh restores the account backend", async () => {
     const degradedStatus = {
       configured: true,

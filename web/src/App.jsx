@@ -3189,6 +3189,18 @@ export function App() {
         if (cancelled) syncErrorUnlisten();
         else disposers.push(syncErrorUnlisten);
 
+        const externalLinkOpenFailedUnlisten = await mailApi.onMailEvent(
+          "mail:external-link-open-failed",
+          () => {
+            showToast(
+              "无法打开邮件中的链接，请检查系统默认浏览器设置后重试",
+              "error",
+            );
+          },
+        );
+        if (cancelled) externalLinkOpenFailedUnlisten();
+        else disposers.push(externalLinkOpenFailedUnlisten);
+
         const exitUnlisten = await mailApi.onMailEvent(
           "mail:before-exit",
           (event) => {
