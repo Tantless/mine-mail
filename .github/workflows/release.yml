@@ -90,7 +90,9 @@ jobs:
     timeout-minutes: 90
     strategy:
       fail-fast: false
-      max-parallel: 1
+      # tauri-action merges each platform into latest.json. The publish job
+      # validates every required platform before making the draft public.
+      max-parallel: 3
       matrix:
         include:
           - label: macOS Apple Silicon
@@ -171,7 +173,7 @@ jobs:
 
   build-windows-release:
     name: Build Windows x64
-    needs: build-release
+    needs: prepare-release
     runs-on: windows-latest
     timeout-minutes: 120
     steps:
