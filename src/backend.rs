@@ -6583,6 +6583,17 @@ fn normalize_recipient_set<'a>(
     Ok(normalized)
 }
 
+fn classify_inbox_uid_scope(
+    local_uid_validity: Option<u32>,
+    selected_uid_validity: Option<u32>,
+) -> InboxUidScope {
+    match (local_uid_validity, selected_uid_validity) {
+        (Some(local), Some(remote)) if local == remote => InboxUidScope::Current,
+        (Some(_), _) => InboxUidScope::Changed,
+        (None, _) => InboxUidScope::NeedsSync,
+    }
+}
+
 fn changed_flags_cursor(
     supports_condstore: bool,
     uid_validity_reset: bool,
@@ -6595,17 +6606,6 @@ fn changed_flags_cursor(
     previous_highest_modseq
         .filter(|previous| *previous > 0)
         .filter(|previous| current_highest_modseq.is_some_and(|current| current >= *previous))
-}
-
-fn classify_inbox_uid_scope(
-    local_uid_validity: Option<u32>,
-    selected_uid_validity: Option<u32>,
-) -> InboxUidScope {
-    match (local_uid_validity, selected_uid_validity) {
-        (Some(local), Some(remote)) if local == remote => InboxUidScope::Current,
-        (Some(_), _) => InboxUidScope::Changed,
-        (None, _) => InboxUidScope::NeedsSync,
-    }
 }
 
 fn mailbox_hint_changed(previous: MailboxHint, current: MailboxHint) -> bool {
@@ -7166,6 +7166,17 @@ mod tests {
     fn gmail_all_mail_adapter_is_provider_scoped() {
         let mut localized_all_mail = remote_mailbox("[Gmail]/所有邮件", false, false, true);
         localized_all_mail.is_all = true;
+        let all_mail = [localized_all_mail];
+        assert_eq!(
+            discovered_mailbox_capability(MailboxRole::Archive, &all_mail, true).status,
+            MailboxCapabilityStatus::Available
+        );
+        assert_eq!(
+            discovered_mailbox_capability(MailboxRole::Archive, &all_mail, false).status,
+            MailboxCapabilityStatus::NeedsCreationConfirmation
+        );
+    }
+
     #[test]
     fn completed_inbox_sync_is_reused_only_by_an_existing_waiter() {
         let directory = tempdir().expect("tempdir");
@@ -7223,17 +7234,6 @@ mod tests {
         assert_eq!(
             changed_flags_cursor(true, false, Some(120), Some(100)),
             None
-        );
-    }
-
-        let all_mail = [localized_all_mail];
-        assert_eq!(
-            discovered_mailbox_capability(MailboxRole::Archive, &all_mail, true).status,
-            MailboxCapabilityStatus::Available
-        );
-        assert_eq!(
-            discovered_mailbox_capability(MailboxRole::Archive, &all_mail, false).status,
-            MailboxCapabilityStatus::NeedsCreationConfirmation
         );
     }
 
@@ -9663,8 +9663,7 @@ mod tests {
         assert!(confirmed.request.format.send_stationery);
         let outgoing = crate::mime::build_outgoing_message("demo@163.com", &confirmed.request)
             .expect("outgoing stationery message");
-        let html =
-            crate::mime::outbox_body_html(&outgoing.raw_rfc822).expect("HTML alternative");
+        let html = crate::mime::outbox_body_html(&outgoing.raw_rfc822).expect("HTML alternative");
         assert!(html.contains(r#"data-mine-mail-stationery="lined""#));
     }
 
