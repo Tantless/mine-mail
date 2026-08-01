@@ -101,16 +101,23 @@
   display: grid;
 }
 
+.contacts-list.mail-list::before {
+  z-index: 2;
+}
+
 .contacts-row {
+  position: relative;
+  z-index: 3;
   display: grid;
   min-height: 82px;
+  contain: layout paint style;
+  contain-intrinsic-size: auto 82px;
+  content-visibility: auto;
   grid-template-columns: minmax(0, 1fr) 34px;
   align-items: center;
   border: 1px solid transparent;
   border-bottom-color: var(--color-divider);
   border-radius: 0;
-  animation: row-in 240ms ease-out both;
-  animation-delay: calc(var(--row-index) * 22ms);
   transition:
     background var(--motion-fast),
     border-color var(--motion-fast),
@@ -141,12 +148,14 @@
   background: var(--row-hover-surface);
 }
 
-.contacts-row[data-selected="true"] {
-  border-color: var(--row-selection-edge);
+.contacts-row[data-selected="true"],
+.contacts-row[data-selected="true"]:hover,
+.contacts-row[data-selected="true"][data-favorite="true"],
+.contacts-row[data-selected="true"][data-favorite="true"]:hover {
+  border-color: transparent;
   border-radius: var(--row-radius);
-  background: var(--row-selection-surface);
-  box-shadow: inset 0 1px 0
-    color-mix(in srgb, var(--surface-highlight) 54%, transparent);
+  background: transparent;
+  box-shadow: none;
 }
 
 .contacts-row__select {
@@ -711,6 +720,9 @@
 
 .contacts-message-list > article {
   min-width: 0;
+  contain: layout paint style;
+  contain-intrinsic-size: auto 82px;
+  content-visibility: auto;
 }
 
 .contacts-message-row {
@@ -895,7 +907,6 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .contacts-row,
   .contacts-skeleton,
   .contacts-correspondence-spinner,
   .contacts-remark-editor__fields {

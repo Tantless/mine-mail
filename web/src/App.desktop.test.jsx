@@ -2986,6 +2986,72 @@ describe("Mine Mail desktop state bridge", () => {
     ).toBeTruthy();
   });
 
+  it("removes the previous correspondence before loading another contact", async () => {
+    const friend = {
+      accountId: "desktop-account",
+      email: "friend@example.com",
+      displayName: "Friend",
+      isFavorite: false,
+      messageCount: 1,
+    };
+    const colleague = {
+      ...friend,
+      email: "colleague@example.com",
+      displayName: "Colleague",
+    };
+    const friendMessage = {
+      ...summary(71, "Friend history"),
+      mailbox_role: "inbox",
+      direction: "incoming",
+    };
+    const colleagueMessage = {
+      ...summary(72, "Colleague history"),
+      mailbox_role: "sent",
+      direction: "outgoing",
+    };
+    const colleagueMessages = deferred();
+    desktop.mailApi.listContacts.mockResolvedValue({
+      contacts: [friend, colleague],
+      favorites: [],
+    });
+    desktop.mailApi.listContactMessages.mockImplementation(
+      async (_accountId, email) =>
+        email === friend.email
+          ? [friendMessage]
+          : colleagueMessages.promise,
+    );
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: "通讯录" }));
+    await user.click(
+      await screen.findByRole("button", { name: "查看联系人 Friend" }),
+    );
+    expect(
+      await screen.findByRole("button", { name: "打开邮件：Friend history" }),
+    ).toBeTruthy();
+
+    await user.click(
+      screen.getByRole("button", { name: "查看联系人 Colleague" }),
+    );
+
+    expect(
+      screen.queryByRole("button", { name: "打开邮件：Friend history" }),
+    ).toBeNull();
+    expect(screen.getByText("正在加载往来邮件…")).toBeTruthy();
+    expect(screen.getByLabelText("Colleague 的联系人详情")).toBeTruthy();
+
+    await act(async () => {
+      colleagueMessages.resolve([colleagueMessage]);
+      await colleagueMessages.promise;
+    });
+    expect(
+      await screen.findByRole("button", {
+        name: "打开邮件：Colleague history",
+      }),
+    ).toBeTruthy();
+  });
+
   it("shows only the active account in all and labels every app-wide favorite", async () => {
     desktop.mailApi.getAccountStatus.mockResolvedValue({
       configured: true,

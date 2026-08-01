@@ -572,6 +572,7 @@ impl Repository {
         migrate_bcc_and_outbox_recipient_groups_v16(&connection)?;
         migrate_managed_attachment_digests_v17(&connection)?;
         migrate_message_body_cache_v18(&connection)?;
+        migrate_message_contact_emails_v19(&connection)?;
         connection.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_drafts_remote_identity
                  ON drafts(account_id, remote_mailbox, remote_uid);
@@ -581,7 +582,7 @@ impl Repository {
              CREATE INDEX IF NOT EXISTS idx_messages_body_cache_lru
                  ON messages(account_id, body_last_accessed_at, id)
                  WHERE body_fetched = 1;
-             PRAGMA user_version = 18;",
+             PRAGMA user_version = 19;",
         )?;
         Ok(repository)
     }
@@ -3003,6 +3004,36 @@ impl Repository {
         );
         let mut statement = connection.prepare(&sql)?;
         let rows = statement.query_map(params![account_id], |row| {
+            Ok(ContactMessageSource {
+                public_id: row.get(23)?,
+                message: row_to_message(row)?,
+            })
+        })?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    /// Returns only the newest body-free summaries involving one normalized
+    /// address. Filtering and limiting in SQLite avoids decoding every cached
+    /// message into Rust whenever the selected contact changes.
+    pub(crate) fn list_contact_source_messages_for_email(
+        &self,
+        account_id: &str,
+        email: &str,
+        limit: usize,
+    ) -> Result<Vec<ContactMessageSource>> {
+        let connection = self.connection()?;
+        let sql = format!(
+            "SELECT {CONTACT_MESSAGE_SUMMARY_COLUMNS}, public_id FROM messages
+             WHERE id IN (
+                 SELECT message_id FROM message_contact_emails
+                 WHERE account_id = ?1 AND email = ?2
+             )
+             ORDER BY COALESCE(internal_date, sent_at, synced_at) DESC, uid DESC, id DESC
+             LIMIT ?3"
+        );
+        let mut statement = connection.prepare(&sql)?;
+        let rows = statement.query_map(params![account_id, email, usize_to_i64(limit)], |row| {
             Ok(ContactMessageSource {
                 public_id: row.get(23)?,
                 message: row_to_message(row)?,
@@ -6353,6 +6384,104 @@ fn migrate_message_body_cache_v18(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn migrate_message_contact_emails_v19(connection: &Connection) -> Result<()> {
+    let schema_version: u32 =
+        connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    connection.execute_batch(
+        "CREATE TABLE IF NOT EXISTS message_contact_emails (
+             message_id INTEGER NOT NULL,
+             account_id TEXT NOT NULL,
+             email TEXT NOT NULL CHECK (
+                 length(email) > 0 AND email = lower(trim(email))
+             ),
+             PRIMARY KEY (message_id, email),
+             FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE
+         );
+         CREATE INDEX IF NOT EXISTS idx_message_contact_emails_lookup
+             ON message_contact_emails(account_id, email, message_id);
+
+         CREATE TRIGGER IF NOT EXISTS trg_messages_contact_emails_insert
+         AFTER INSERT ON messages
+         BEGIN
+             INSERT OR IGNORE INTO message_contact_emails (message_id, account_id, email)
+             SELECT NEW.id, NEW.account_id,
+                    lower(trim(json_extract(NEW.sender_json, '$.email')))
+             WHERE json_valid(NEW.sender_json)
+               AND length(trim(COALESCE(json_extract(NEW.sender_json, '$.email'), ''))) > 0;
+             INSERT OR IGNORE INTO message_contact_emails (message_id, account_id, email)
+             SELECT NEW.id, NEW.account_id,
+                    lower(trim(json_extract(recipient.value, '$.email')))
+             FROM json_each(CASE
+                 WHEN json_valid(NEW.to_json) THEN NEW.to_json ELSE '[]'
+             END) AS recipient
+             WHERE length(trim(COALESCE(json_extract(recipient.value, '$.email'), ''))) > 0;
+             INSERT OR IGNORE INTO message_contact_emails (message_id, account_id, email)
+             SELECT NEW.id, NEW.account_id,
+                    lower(trim(json_extract(recipient.value, '$.email')))
+             FROM json_each(CASE
+                 WHEN json_valid(NEW.cc_json) THEN NEW.cc_json ELSE '[]'
+             END) AS recipient
+             WHERE length(trim(COALESCE(json_extract(recipient.value, '$.email'), ''))) > 0;
+         END;
+
+         CREATE TRIGGER IF NOT EXISTS trg_messages_contact_emails_update
+         AFTER UPDATE OF account_id, sender_json, to_json, cc_json ON messages
+         BEGIN
+             DELETE FROM message_contact_emails WHERE message_id = OLD.id;
+             INSERT OR IGNORE INTO message_contact_emails (message_id, account_id, email)
+             SELECT NEW.id, NEW.account_id,
+                    lower(trim(json_extract(NEW.sender_json, '$.email')))
+             WHERE json_valid(NEW.sender_json)
+               AND length(trim(COALESCE(json_extract(NEW.sender_json, '$.email'), ''))) > 0;
+             INSERT OR IGNORE INTO message_contact_emails (message_id, account_id, email)
+             SELECT NEW.id, NEW.account_id,
+                    lower(trim(json_extract(recipient.value, '$.email')))
+             FROM json_each(CASE
+                 WHEN json_valid(NEW.to_json) THEN NEW.to_json ELSE '[]'
+             END) AS recipient
+             WHERE length(trim(COALESCE(json_extract(recipient.value, '$.email'), ''))) > 0;
+             INSERT OR IGNORE INTO message_contact_emails (message_id, account_id, email)
+             SELECT NEW.id, NEW.account_id,
+                    lower(trim(json_extract(recipient.value, '$.email')))
+             FROM json_each(CASE
+                 WHEN json_valid(NEW.cc_json) THEN NEW.cc_json ELSE '[]'
+             END) AS recipient
+             WHERE length(trim(COALESCE(json_extract(recipient.value, '$.email'), ''))) > 0;
+         END;",
+    )?;
+
+    if schema_version >= 19 {
+        return Ok(());
+    }
+
+    let transaction = connection.unchecked_transaction()?;
+    transaction.execute_batch(
+        "INSERT OR IGNORE INTO message_contact_emails (message_id, account_id, email)
+         SELECT id, account_id, lower(trim(json_extract(sender_json, '$.email')))
+         FROM messages
+         WHERE json_valid(sender_json)
+           AND length(trim(COALESCE(json_extract(sender_json, '$.email'), ''))) > 0;
+         INSERT OR IGNORE INTO message_contact_emails (message_id, account_id, email)
+         SELECT messages.id, messages.account_id,
+                lower(trim(json_extract(recipient.value, '$.email')))
+         FROM messages
+         JOIN json_each(CASE
+             WHEN json_valid(messages.to_json) THEN messages.to_json ELSE '[]'
+         END) AS recipient
+         WHERE length(trim(COALESCE(json_extract(recipient.value, '$.email'), ''))) > 0;
+         INSERT OR IGNORE INTO message_contact_emails (message_id, account_id, email)
+         SELECT messages.id, messages.account_id,
+                lower(trim(json_extract(recipient.value, '$.email')))
+         FROM messages
+         JOIN json_each(CASE
+             WHEN json_valid(messages.cc_json) THEN messages.cc_json ELSE '[]'
+         END) AS recipient
+         WHERE length(trim(COALESCE(json_extract(recipient.value, '$.email'), ''))) > 0;",
+    )?;
+    transaction.commit()?;
+    Ok(())
+}
+
 fn flags_with_pending_updates(
     connection: &Connection,
     account_id: &str,
@@ -9251,6 +9380,74 @@ mod tests {
                 .expect("account-bound public lookup")
                 .subject,
             "Refreshed without replacing identity"
+        );
+    }
+
+    #[test]
+    fn contact_email_index_tracks_message_participants_updates_and_limits() {
+        let (_directory, repository, account) = setup();
+        let mut first = message(&account.account_id, false);
+        first.uid = 1;
+        first.message_id = Some("contact-index-first@example.com".to_owned());
+        first.bcc = vec![MailAddress {
+            name: None,
+            email: "blind@example.com".to_owned(),
+        }];
+        repository.upsert_message(&first).expect("first message");
+
+        let mut second = message(&account.account_id, false);
+        second.uid = 2;
+        second.message_id = Some("contact-index-second@example.com".to_owned());
+        second.sender = Some(MailAddress {
+            name: Some("Bob".to_owned()),
+            email: "bob@example.com".to_owned(),
+        });
+        second.to = vec![MailAddress {
+            name: Some("Alice".to_owned()),
+            email: "ALICE@example.com".to_owned(),
+        }];
+        second.internal_date = Some("2026-07-15T01:00:01Z".to_owned());
+        repository.upsert_message(&second).expect("second message");
+
+        let newest = repository
+            .list_contact_source_messages_for_email(&account.account_id, "alice@example.com", 1)
+            .expect("indexed contact lookup");
+        assert_eq!(newest.len(), 1);
+        assert_eq!(newest[0].message.uid, 2);
+        assert!(
+            repository
+                .list_contact_source_messages_for_email(
+                    &account.account_id,
+                    "blind@example.com",
+                    10,
+                )
+                .expect("Bcc-excluded lookup")
+                .is_empty()
+        );
+
+        second.to = vec![MailAddress {
+            name: Some("Carol".to_owned()),
+            email: "carol@example.com".to_owned(),
+        }];
+        repository
+            .upsert_message(&second)
+            .expect("updated participants");
+        let alice = repository
+            .list_contact_source_messages_for_email(&account.account_id, "alice@example.com", 10)
+            .expect("updated Alice lookup");
+        assert_eq!(alice.len(), 1);
+        assert_eq!(alice[0].message.uid, 1);
+        assert_eq!(
+            repository
+                .list_contact_source_messages_for_email(
+                    &account.account_id,
+                    "carol@example.com",
+                    10,
+                )
+                .expect("updated Carol lookup")[0]
+                .message
+                .uid,
+            2
         );
     }
 
@@ -12998,6 +13195,12 @@ mod tests {
         let path = directory.path().join("real-v13-public-id.sqlite3");
         let legacy = create_legacy_core_fixture(&path);
         legacy
+            .execute(
+                "UPDATE messages SET sender_json = ?1 WHERE id = 1",
+                params![r#"{"name":"Alice","email":"ALICE@example.com"}"#],
+            )
+            .expect("legacy contact header");
+        legacy
             .pragma_update(None, "user_version", 13)
             .expect("v13 marker");
         drop(legacy);
@@ -13019,6 +13222,13 @@ mod tests {
                 .id,
             1
         );
+        assert_eq!(
+            upgraded
+                .list_contact_source_messages_for_email("fixture", "alice@example.com", 10,)
+                .expect("backfilled contact index")
+                .len(),
+            1
+        );
         drop(upgraded);
 
         let reopened = Repository::open(&path).expect("normal v14 reopen");
@@ -13032,7 +13242,7 @@ mod tests {
         let version: u32 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("schema version");
-        assert_eq!(version, 18);
+        assert_eq!(version, 19);
         assert!(
             connection
                 .execute(
@@ -13089,7 +13299,7 @@ mod tests {
         let version: u32 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("schema version");
-        assert_eq!(version, 18);
+        assert_eq!(version, 19);
         assert!(super::table_has_column(&connection, "messages", "bcc_json").unwrap());
         let seen_targets = {
             let mut statement = connection
@@ -13236,7 +13446,7 @@ mod tests {
                     .expect("schema version connection")
                     .pragma_query_value(None, "user_version", |row| row.get::<_, u32>(0))
                     .expect("schema version"),
-                18
+                19
             );
 
             assert_eq!(
@@ -13975,7 +14185,7 @@ mod tests {
         let version: u32 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("schema version");
-        assert_eq!(version, 18);
+        assert_eq!(version, 19);
         for column in ["source_cleanup_pending", "destination_reconciled"] {
             assert!(
                 super::table_has_column(&connection, "pending_message_actions", column).unwrap()
@@ -14092,7 +14302,7 @@ mod tests {
         let version: u32 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("schema version");
-        assert_eq!(version, 18);
+        assert_eq!(version, 19);
         for column in [
             "operation_id",
             "source_uid_validity",
@@ -14241,7 +14451,7 @@ Body' AS BLOB)
         let version: u32 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("schema version");
-        assert_eq!(version, 18);
+        assert_eq!(version, 19);
         for column in [
             "local_version",
             "has_unsupported_content",

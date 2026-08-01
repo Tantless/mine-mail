@@ -3,6 +3,10 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const styles = readFileSync(resolve(process.cwd(), "src/styles.css"), "utf8");
+const contactsStyles = readFileSync(
+  resolve(process.cwd(), "src/components/ContactsWorkspace.css"),
+  "utf8",
+);
 
 function declarationsFor(selectorPattern) {
   return styles.match(new RegExp(`${selectorPattern}\\s*\\{([^}]*)\\}`, "s"))?.[1];
@@ -591,8 +595,9 @@ describe("release-state semantic styling", () => {
   it("paints refreshed mail rows immediately when loading finishes", () => {
     const mailRow = declarationsFor("\\.mail-row");
     expect(mailRow).not.toMatch(/animation(?:-delay)?:/);
-    expect(styles).not.toMatch(/@keyframes\s+row-in/);
-    expect(styles).not.toContain("--row-index");
+    const workspaceStyles = `${styles}\n${contactsStyles}`;
+    expect(workspaceStyles).not.toMatch(/@keyframes\s+row-in/);
+    expect(workspaceStyles).not.toContain("--row-index");
   });
 });
 

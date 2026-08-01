@@ -11,8 +11,9 @@ import {
   UsersThree,
   WarningCircle,
 } from "@phosphor-icons/react";
-import { useState } from "react";
+import { memo, useMemo, useRef, useState } from "react";
 import { formatFullDate, formatMailTime } from "../utils/formatters.js";
+import { useSlidingSelection } from "../hooks/useSlidingSelection.js";
 import { EditableProfileAvatar, ProfileAvatar } from "./ProfileAvatar.jsx";
 import { TooltipTarget } from "./Tooltip.jsx";
 import "./ContactsWorkspace.css";
@@ -133,7 +134,102 @@ function ContactsListState({ error, query, filter, onRetry }) {
   );
 }
 
-function ContactList({
+const ContactRow = memo(function ContactRow({
+  contact,
+  selected,
+  showAccountScope,
+  onSelectContact,
+  onToggleFavorite,
+}) {
+  const key = contactKey(contact);
+  const label = contactLabel(contact);
+  const messageCount = Number(contact.messageCount) || 0;
+  const accountLabel = contact.accountLabel || contact.accountId || "";
+  const canInteract =
+    typeof contact?.email === "string" &&
+    Boolean(contact.email.trim()) &&
+    typeof contact?.accountId === "string" &&
+    Boolean(contact.accountId.trim());
+  const scopedLabel =
+    showAccountScope && accountLabel
+      ? `${label}（${accountLabel}）`
+      : label;
+
+  return (
+    <article
+      className="contacts-row"
+      data-contact-key={key}
+      data-selected={selected}
+      data-favorite={Boolean(contact.isFavorite)}
+      role="listitem"
+    >
+      <button
+        type="button"
+        className="contacts-row__select"
+        data-contact-key={key}
+        aria-label={`查看联系人 ${scopedLabel}`}
+        aria-current={selected ? "true" : undefined}
+        disabled={!canInteract}
+        onClick={() => {
+          if (canInteract) onSelectContact(contact);
+        }}
+      >
+        <ProfileAvatar
+          className="contacts-row__avatar"
+          email={contact.email}
+          label={label}
+          customSrc={contact.avatarSrc}
+        />
+        <span className="contacts-row__copy">
+          <span className="contacts-row__heading">
+            <strong>{label}</strong>
+            {contact.lastMessageAt ? (
+              <TooltipTarget label={formatFullDate(contact.lastMessageAt)}>
+                <time dateTime={contact.lastMessageAt}>
+                  {formatMailTime(contact.lastMessageAt)}
+                </time>
+              </TooltipTarget>
+            ) : null}
+          </span>
+          <span className="contacts-row__email">{contact.email}</span>
+          <span className="contacts-row__meta">
+            {showAccountScope && accountLabel ? (
+              <span
+                className="contacts-account-badge"
+                aria-label={`收藏账号：${accountLabel}`}
+              >
+                {accountLabel}
+              </span>
+            ) : null}
+            {messageCount} 封往来
+            {contact.lastSubject ? ` · ${contact.lastSubject}` : ""}
+          </span>
+        </span>
+      </button>
+      <TooltipTarget label={contact.isFavorite ? "取消收藏" : "收藏联系人"}>
+        <button
+          type="button"
+          className="contacts-row__favorite"
+          data-active={Boolean(contact.isFavorite)}
+          aria-label={
+            contact.isFavorite
+              ? `取消收藏 ${scopedLabel}`
+              : `收藏 ${scopedLabel}`
+          }
+          aria-pressed={Boolean(contact.isFavorite)}
+          disabled={!canInteract}
+          onClick={() => {
+            if (canInteract) onToggleFavorite(contact);
+          }}
+        >
+          <Star size={18} weight={contact.isFavorite ? "fill" : "regular"} />
+        </button>
+      </TooltipTarget>
+    </article>
+  );
+});
+
+const ContactList = memo(function ContactList({
   contacts,
   selectedContact,
   showAccountScope,
@@ -141,107 +237,178 @@ function ContactList({
   onToggleFavorite,
 }) {
   const selectedKey = contactKey(selectedContact);
+  const contactsRef = useRef(null);
+  const contactsLayoutKey = useMemo(
+    () =>
+      contacts
+        .map((contact, index) => contactKey(contact) || `contact-${index}`)
+        .join("|"),
+    [contacts],
+  );
+  const {
+    motionReady: rowSelectionMotionReady,
+    selectionStyle: rowSelectionStyle,
+    selectionVisible: rowSelectionVisible,
+  } = useSlidingSelection({
+    containerRef: contactsRef,
+    layoutKey: contactsLayoutKey,
+    selectedKey,
+  });
 
   return (
-    <div className="contacts-list" role="list" aria-label="联系人">
+    <div
+      ref={contactsRef}
+      className="contacts-list mail-list"
+      role="list"
+      aria-label="联系人"
+      data-selection-visible={rowSelectionVisible || undefined}
+      data-selection-motion-ready={rowSelectionMotionReady || undefined}
+      style={rowSelectionStyle}
+    >
       {contacts.map((contact, index) => {
         const key = contactKey(contact) || `contact-${index}`;
         const selected = Boolean(selectedKey) && key === selectedKey;
-        const label = contactLabel(contact);
-        const messageCount = Number(contact.messageCount) || 0;
-        const accountLabel = contact.accountLabel || contact.accountId || "";
-        const canInteract =
-          typeof contact?.email === "string" &&
-          Boolean(contact.email.trim()) &&
-          typeof contact?.accountId === "string" &&
-          Boolean(contact.accountId.trim());
-        const scopedLabel =
-          showAccountScope && accountLabel
-            ? `${label}（${accountLabel}）`
-            : label;
 
         return (
-          <article
-            className="contacts-row"
-            data-selected={selected}
-            data-favorite={Boolean(contact.isFavorite)}
-            role="listitem"
-            style={{ "--row-index": index }}
+          <ContactRow
             key={key}
-          >
-            <button
-              type="button"
-              className="contacts-row__select"
-              data-contact-key={key}
-              aria-label={`查看联系人 ${scopedLabel}`}
-              aria-current={selected ? "true" : undefined}
-              disabled={!canInteract}
-              onClick={() => {
-                if (canInteract) onSelectContact(contact);
-              }}
-            >
-              <ProfileAvatar
-                className="contacts-row__avatar"
-                email={contact.email}
-                label={label}
-                customSrc={contact.avatarSrc}
-              />
-              <span className="contacts-row__copy">
-                <span className="contacts-row__heading">
-                  <strong>{label}</strong>
-                  {contact.lastMessageAt ? (
-                    <TooltipTarget label={formatFullDate(contact.lastMessageAt)}>
-                      <time dateTime={contact.lastMessageAt}>
-                        {formatMailTime(contact.lastMessageAt)}
-                      </time>
-                    </TooltipTarget>
-                  ) : null}
-                </span>
-                <span className="contacts-row__email">{contact.email}</span>
-                <span className="contacts-row__meta">
-                  {showAccountScope && accountLabel ? (
-                    <span
-                      className="contacts-account-badge"
-                      aria-label={`收藏账号：${accountLabel}`}
-                    >
-                      {accountLabel}
-                    </span>
-                  ) : null}
-                  {messageCount} 封往来
-                  {contact.lastSubject ? ` · ${contact.lastSubject}` : ""}
-                </span>
-              </span>
-            </button>
-            <TooltipTarget
-              label={contact.isFavorite ? "取消收藏" : "收藏联系人"}
-            >
-              <button
-                type="button"
-                className="contacts-row__favorite"
-                data-active={Boolean(contact.isFavorite)}
-                aria-label={
-                  contact.isFavorite
-                    ? `取消收藏 ${scopedLabel}`
-                    : `收藏 ${scopedLabel}`
-                }
-                aria-pressed={Boolean(contact.isFavorite)}
-                disabled={!canInteract}
-                onClick={() => {
-                  if (canInteract) onToggleFavorite(contact);
-                }}
-              >
-                <Star
-                  size={18}
-                  weight={contact.isFavorite ? "fill" : "regular"}
-                />
-              </button>
-            </TooltipTarget>
-          </article>
+            contact={contact}
+            selected={selected}
+            showAccountScope={showAccountScope}
+            onSelectContact={onSelectContact}
+            onToggleFavorite={onToggleFavorite}
+          />
         );
       })}
     </div>
   );
-}
+});
+
+const ContactMessageRow = memo(function ContactMessageRow({
+  message,
+  onOpenMessage,
+}) {
+  const outgoing = isOutgoingMessage(message);
+  const subject = message.subject || "（无主题）";
+  const timestamp = messageTime(message);
+  const mailboxLabel = mailboxRoleLabel(message);
+  const canOpen =
+    typeof message?.id === "string" && Boolean(message.id.trim());
+
+  return (
+    <article role="listitem">
+      <button
+        type="button"
+        className="contacts-message-row"
+        aria-label={`打开邮件：${subject}`}
+        disabled={!canOpen}
+        onClick={() => {
+          if (canOpen) onOpenMessage(message);
+        }}
+      >
+        <span
+          className="contacts-message-row__direction"
+          data-outgoing={outgoing}
+          aria-hidden="true"
+        >
+          {outgoing ? (
+            <ArrowUpRight size={18} />
+          ) : (
+            <ArrowDownLeft size={18} />
+          )}
+        </span>
+        <span className="contacts-message-row__copy">
+          <span className="contacts-message-row__topline">
+            <strong>{subject}</strong>
+            {timestamp ? (
+              <TooltipTarget label={formatFullDate(timestamp)}>
+                <time dateTime={timestamp}>{formatMailTime(timestamp)}</time>
+              </TooltipTarget>
+            ) : null}
+          </span>
+          <span className="contacts-message-row__preview">
+            {message.preview || "暂无摘要"}
+          </span>
+          <span className="contacts-message-row__meta">
+            {outgoing ? "发给对方" : "对方发来"}
+            {mailboxLabel ? ` · ${mailboxLabel}` : ""}
+          </span>
+        </span>
+      </button>
+    </article>
+  );
+});
+
+const ContactCorrespondence = memo(function ContactCorrespondence({
+  label,
+  messages,
+  isMessagesLoading,
+  messagesError,
+  onRetryMessages,
+  onOpenMessage,
+}) {
+  const sortedMessages = useMemo(() => newestFirst(messages), [messages]);
+
+  return (
+    <section
+      className="contacts-correspondence"
+      aria-labelledby="contacts-correspondence-title"
+    >
+      <div className="contacts-correspondence__heading">
+        <div>
+          <p className="eyebrow">CORRESPONDENCE</p>
+          <h2 id="contacts-correspondence-title">往来邮件</h2>
+        </div>
+        <span>{sortedMessages.length} 封</span>
+      </div>
+
+      {isMessagesLoading && !messages.length ? (
+        <div className="contacts-correspondence-state" role="status">
+          <span
+            className="contacts-correspondence-spinner"
+            aria-hidden="true"
+          />
+          正在加载往来邮件…
+        </div>
+      ) : messagesError ? (
+        <div className="contacts-correspondence-state" role="alert">
+          <WarningCircle size={24} weight="duotone" aria-hidden="true" />
+          <strong>往来邮件加载失败</strong>
+          <span>{errorMessage(messagesError, "暂时无法读取往来记录。")}</span>
+          {onRetryMessages ? (
+            <button
+              type="button"
+              className="contacts-secondary-button"
+              onClick={onRetryMessages}
+            >
+              重新加载
+            </button>
+          ) : null}
+        </div>
+      ) : sortedMessages.length ? (
+        <div
+          className="contacts-message-list"
+          role="list"
+          aria-label={`与 ${label} 的往来邮件`}
+        >
+          {sortedMessages.map((message, index) => (
+            <ContactMessageRow
+              key={messageKey(message, index)}
+              message={message}
+              onOpenMessage={onOpenMessage}
+            />
+          ))}
+        </div>
+      ) : (
+        <div className="contacts-correspondence-state" role="status">
+          <EnvelopeSimple size={26} weight="duotone" aria-hidden="true" />
+          <strong>还没有往来邮件</strong>
+          <span>写一封邮件，开始你们的对话。</span>
+        </div>
+      )}
+    </section>
+  );
+});
 
 function ContactDetails({
   contact,
@@ -280,7 +447,6 @@ function ContactDetails({
 
   const label = contactLabel(contact);
   const originalName = contactOriginalName(contact);
-  const sortedMessages = newestFirst(messages);
   const accountLabel = contact.accountLabel || contact.accountId || "";
   const canManageFavorite =
     typeof contact?.email === "string" &&
@@ -378,111 +544,14 @@ function ContactDetails({
           />
         </div>
 
-        <section
-          className="contacts-correspondence"
-          aria-labelledby="contacts-correspondence-title"
-        >
-          <div className="contacts-correspondence__heading">
-            <div>
-              <p className="eyebrow">CORRESPONDENCE</p>
-              <h2 id="contacts-correspondence-title">往来邮件</h2>
-            </div>
-            <span>{sortedMessages.length} 封</span>
-          </div>
-
-          {isMessagesLoading && !messages.length ? (
-            <div className="contacts-correspondence-state" role="status">
-              <span
-                className="contacts-correspondence-spinner"
-                aria-hidden="true"
-              />
-              正在加载往来邮件…
-            </div>
-          ) : messagesError ? (
-            <div className="contacts-correspondence-state" role="alert">
-              <WarningCircle size={24} weight="duotone" aria-hidden="true" />
-              <strong>往来邮件加载失败</strong>
-              <span>
-                {errorMessage(messagesError, "暂时无法读取往来记录。")}
-              </span>
-              {onRetryMessages ? (
-                <button
-                  type="button"
-                  className="contacts-secondary-button"
-                  onClick={onRetryMessages}
-                >
-                  重新加载
-                </button>
-              ) : null}
-            </div>
-          ) : sortedMessages.length ? (
-            <div
-              className="contacts-message-list"
-              role="list"
-              aria-label={`与 ${label} 的往来邮件`}
-            >
-              {sortedMessages.map((message, index) => {
-                const outgoing = isOutgoingMessage(message);
-                const subject = message.subject || "（无主题）";
-                const timestamp = messageTime(message);
-                const mailboxLabel = mailboxRoleLabel(message);
-                const canOpen =
-                  typeof message?.id === "string" &&
-                  Boolean(message.id.trim());
-                return (
-                  <article role="listitem" key={messageKey(message, index)}>
-                    <button
-                      type="button"
-                      className="contacts-message-row"
-                      aria-label={`打开邮件：${subject}`}
-                      disabled={!canOpen}
-                      onClick={() => {
-                        if (canOpen) onOpenMessage(message);
-                      }}
-                    >
-                      <span
-                        className="contacts-message-row__direction"
-                        data-outgoing={outgoing}
-                        aria-hidden="true"
-                      >
-                        {outgoing ? (
-                          <ArrowUpRight size={18} />
-                        ) : (
-                          <ArrowDownLeft size={18} />
-                        )}
-                      </span>
-                      <span className="contacts-message-row__copy">
-                        <span className="contacts-message-row__topline">
-                          <strong>{subject}</strong>
-                          {timestamp ? (
-                            <TooltipTarget label={formatFullDate(timestamp)}>
-                              <time dateTime={timestamp}>
-                                {formatMailTime(timestamp)}
-                              </time>
-                            </TooltipTarget>
-                          ) : null}
-                        </span>
-                        <span className="contacts-message-row__preview">
-                          {message.preview || "暂无摘要"}
-                        </span>
-                        <span className="contacts-message-row__meta">
-                          {outgoing ? "发给对方" : "对方发来"}
-                          {mailboxLabel ? ` · ${mailboxLabel}` : ""}
-                        </span>
-                      </span>
-                    </button>
-                  </article>
-                );
-              })}
-            </div>
-          ) : (
-            <div className="contacts-correspondence-state" role="status">
-              <EnvelopeSimple size={26} weight="duotone" aria-hidden="true" />
-              <strong>还没有往来邮件</strong>
-              <span>写一封邮件，开始你们的对话。</span>
-            </div>
-          )}
-        </section>
+        <ContactCorrespondence
+          label={label}
+          messages={messages}
+          isMessagesLoading={isMessagesLoading}
+          messagesError={messagesError}
+          onRetryMessages={onRetryMessages}
+          onOpenMessage={onOpenMessage}
+        />
       </div>
     </section>
   );
@@ -590,7 +659,7 @@ function ContactRemarkEditor({ contact, onSaveRemark }) {
  * Controlled contacts workspace. Render it directly inside `.mail-workspace`
  * so its two sibling panels occupy the existing middle and reader grid columns.
  */
-export function ContactsWorkspace({
+export const ContactsWorkspace = memo(function ContactsWorkspace({
   contacts = [],
   selectedContact = null,
   messages = [],
@@ -722,4 +791,4 @@ export function ContactsWorkspace({
       )}
     </>
   );
-}
+});

@@ -87,6 +87,131 @@ describe("ContactsWorkspace", () => {
     expect(callbacks.onSelectContact).toHaveBeenCalledWith(contact);
   });
 
+  it("does not rerender an untouched contact row when selection moves", () => {
+    const colleague = {
+      ...contact,
+      email: "colleague@example.com",
+      displayName: "同事",
+    };
+    let untouchedLabelReads = 0;
+    const untouched = {
+      ...contact,
+      email: "untouched@example.com",
+    };
+    Object.defineProperty(untouched, "displayName", {
+      configurable: true,
+      enumerable: true,
+      get() {
+        untouchedLabelReads += 1;
+        return "未选联系人";
+      },
+    });
+    const contacts = [contact, colleague, untouched];
+    const view = renderWorkspace({ contacts });
+    const readsAfterInitialRender = untouchedLabelReads;
+
+    view.rerender(
+      <ContactsWorkspace
+        contacts={contacts}
+        selectedContact={colleague}
+        messages={messages}
+        query=""
+        filter="all"
+        onSearchChange={view.onSearchChange}
+        onFilterChange={view.onFilterChange}
+        onSelectContact={view.onSelectContact}
+        onBackToContacts={view.onBackToContacts}
+        onToggleFavorite={view.onToggleFavorite}
+        onCompose={view.onCompose}
+        onOpenMessage={view.onOpenMessage}
+        onSaveRemark={view.onSaveRemark}
+      />,
+    );
+
+    expect(untouchedLabelReads).toBe(readsAfterInitialRender);
+    expect(
+      screen
+        .getByRole("button", { name: "查看联系人 同事" })
+        .getAttribute("aria-current"),
+    ).toBe("true");
+  });
+
+  it("moves the shared mail-list selection surface between contacts", () => {
+    const colleague = {
+      ...contact,
+      email: "colleague@example.com",
+      displayName: "同事",
+    };
+    const contacts = [contact, colleague];
+    const rect = (top, left, width, height) => ({
+      bottom: top + height,
+      height,
+      left,
+      right: left + width,
+      top,
+      width,
+      x: left,
+      y: top,
+      toJSON: () => ({}),
+    });
+    const boundsSpy = vi
+      .spyOn(Element.prototype, "getBoundingClientRect")
+      .mockImplementation(function getBoundingClientRect() {
+        if (this.classList?.contains("contacts-list")) {
+          return rect(200, 100, 420, 164);
+        }
+        if (this.dataset?.contactKey === "account-a:friend@example.com") {
+          return rect(200, 100, 420, 82);
+        }
+        if (
+          this.dataset?.contactKey === "account-a:colleague@example.com"
+        ) {
+          return rect(282, 100, 420, 82);
+        }
+        return rect(0, 0, 0, 0);
+      });
+
+    try {
+      const view = renderWorkspace({ contacts });
+      const list = screen.getByRole("list", { name: "联系人" });
+
+      expect(list.classList.contains("mail-list")).toBe(true);
+      expect(list.dataset.selectionVisible).toBe("true");
+      expect(
+        list.style.getPropertyValue("--sliding-selection-y"),
+      ).toBe("0px");
+
+      view.rerender(
+        <ContactsWorkspace
+          contacts={contacts}
+          selectedContact={colleague}
+          messages={messages}
+          query=""
+          filter="all"
+          onSearchChange={view.onSearchChange}
+          onFilterChange={view.onFilterChange}
+          onSelectContact={view.onSelectContact}
+          onBackToContacts={view.onBackToContacts}
+          onToggleFavorite={view.onToggleFavorite}
+          onCompose={view.onCompose}
+          onOpenMessage={view.onOpenMessage}
+          onSaveRemark={view.onSaveRemark}
+        />,
+      );
+
+      expect(
+        list.style.getPropertyValue("--sliding-selection-y"),
+      ).toBe("82px");
+      expect(
+        screen
+          .getByRole("button", { name: "查看联系人 同事" })
+          .getAttribute("aria-current"),
+      ).toBe("true");
+    } finally {
+      boundsSpy.mockRestore();
+    }
+  });
+
   it("keeps row favorite independent and exposes detail actions", async () => {
     const user = userEvent.setup();
     const callbacks = renderWorkspace();

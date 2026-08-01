@@ -1762,9 +1762,11 @@ impl MailBackend {
         }
         let target_email = normalize_contact_email(email)?;
         let own_email = normalize_contact_email(&self.config.email)?;
-        let messages = self
-            .repository
-            .list_contact_source_messages(&self.config.account_id)?;
+        let messages = self.repository.list_contact_source_messages_for_email(
+            &self.config.account_id,
+            &target_email,
+            limit,
+        )?;
         let sent_mailbox = match self
             .repository
             .mailbox_for_role(&self.config.account_id, "sent")
@@ -1776,8 +1778,6 @@ impl MailBackend {
 
         Ok(messages
             .into_iter()
-            .filter(|source| message_has_contact(&source.message, &target_email))
-            .take(limit)
             .map(|source| {
                 let message = source.message;
                 let direction = if message
@@ -6451,17 +6451,6 @@ fn contact_participants(message: &InboxMessage, own_email: &str) -> Vec<(String,
         }
     }
     participants
-}
-
-fn message_has_contact(message: &InboxMessage, target_email: &str) -> bool {
-    message
-        .sender
-        .iter()
-        .chain(message.to.iter())
-        .chain(message.cc.iter())
-        .any(|address| {
-            normalize_contact_email(&address.email).is_ok_and(|email| email == target_email)
-        })
 }
 
 fn validate_manual_retry(item: &OutboxItem, account_id: &str) -> Result<()> {

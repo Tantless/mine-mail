@@ -422,7 +422,9 @@ family. Preserve the relative hierarchy when tuning optical values.
   selected contact enters the existing third column with the same centered
   260 ms window transition as mail, and Back reverses it before restoring the
   quiet unselected detail pane. Changing from one open contact to another
-  replaces the detail immediately without replaying the entrance. Leaving
+  replaces the detail immediately without replaying the entrance, while the
+  contact list's shared selection surface moves between rows with the same
+  timing and easing as the mail list. Leaving
   Contacts first completes a fast `--motion-fast` detail exit before the middle
   workspace changes context. Opening a correspondence message reuses the mail
   reader and provides a separate return to contact history; leaving Contacts

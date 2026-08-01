@@ -176,6 +176,12 @@ function useMediaQuery(query, fallback) {
   return matches;
 }
 
+function useLiveCallback(callback) {
+  const callbackRef = useRef(callback);
+  callbackRef.current = callback;
+  return useCallback((...args) => callbackRef.current?.(...args), []);
+}
+
 function SecondaryWorkspaceLoading({ label }) {
   return (
     <main
@@ -4961,6 +4967,12 @@ export function App() {
       clearContactSelection();
       return;
     }
+    if (previousKey !== nextKey) {
+      contactMessagesRequestRef.current += 1;
+      setContactMessages([]);
+      setContactMessagesState("loading");
+      setContactMessagesError(null);
+    }
     selectedContactEmailRef.current = nextEmail;
     selectedContactAccountIdRef.current = nextAccountId;
     setSelectedContactEmail(nextEmail);
@@ -6436,17 +6448,50 @@ export function App() {
     mailListMotion,
   );
   const mailListIsInteractive = mailListMotion === "expanded";
-  const mailListMotionFrameProps = {
-    inert: !mailListIsInteractive ? true : undefined,
-    "aria-hidden": mailListIsRetracted || undefined,
-    "aria-busy":
-      !["expanded", "collapsed"].includes(mailListMotion) || undefined,
-    onAnimationEnd: (event) => {
-      if (event.target === event.currentTarget) {
-        completeMailListMotion();
-      }
-    },
-  };
+  const mailListMotionFrameProps = useMemo(
+    () => ({
+      inert: !mailListIsInteractive ? true : undefined,
+      "aria-hidden": mailListIsRetracted || undefined,
+      "aria-busy":
+        !["expanded", "collapsed"].includes(mailListMotion) || undefined,
+      onAnimationEnd: (event) => {
+        if (event.target === event.currentTarget) {
+          completeMailListMotion();
+        }
+      },
+    }),
+    [
+      completeMailListMotion,
+      mailListIsInteractive,
+      mailListIsRetracted,
+      mailListMotion,
+    ],
+  );
+  const retryContacts = useLiveCallback(() => {
+    if (activeAccountId) void loadContacts({ accountId: activeAccountId });
+  });
+  const retryContactMessages = useLiveCallback(() => {
+    if (selectedContactAccountId && selectedContactEmail) {
+      void loadContactMessages(selectedContactEmail, {
+        accountId: selectedContactAccountId,
+      });
+    }
+  });
+  const openContactsMobileNav = useLiveCallback(openSidebarDrawer);
+  const selectContact = useLiveCallback(handleSelectContact);
+  const backToContacts = useLiveCallback(handleBackToContacts);
+  const toggleContactFavorite = useLiveCallback((contact) => {
+    void handleToggleContactFavorite(contact);
+  });
+  const composeToContact = useLiveCallback(handleComposeToContact);
+  const openContactMessage = useLiveCallback(handleOpenContactMessage);
+  const saveContactRemark = useLiveCallback(handleSaveContactRemark);
+  const setContactAvatar = useLiveCallback((contact, file) =>
+    handleSaveProfileAvatar("contact", contact.email, file),
+  );
+  const removeContactAvatar = useLiveCallback((contact) =>
+    handleDeleteProfileAvatar("contact", contact.email),
+  );
   const visibleReaderMessage = mailListIsRetracted
     ? null
     : selectedMessage;
@@ -6745,38 +6790,19 @@ export function App() {
                   detailExitSpeed={contactDetailExitSpeed}
                   onDetailMotionEnd={completeContactDetailMotion}
                   listMotionFrameProps={mailListMotionFrameProps}
-                  onRetry={() =>
-                    activeAccountId &&
-                    void loadContacts({ accountId: activeAccountId })
-                  }
-                  onRetryMessages={() =>
-                    selectedContactAccountId &&
-                    selectedContactEmail &&
-                    void loadContactMessages(selectedContactEmail, {
-                      accountId: selectedContactAccountId,
-                    })
-                  }
-                  onOpenMobileNav={openSidebarDrawer}
+                  onRetry={retryContacts}
+                  onRetryMessages={retryContactMessages}
+                  onOpenMobileNav={openContactsMobileNav}
                   onSearchChange={setContactQuery}
                   onFilterChange={setContactFilter}
-                  onSelectContact={handleSelectContact}
-                  onBackToContacts={handleBackToContacts}
-                  onToggleFavorite={(contact) =>
-                    void handleToggleContactFavorite(contact)
-                  }
-                  onCompose={handleComposeToContact}
-                  onOpenMessage={handleOpenContactMessage}
-                  onSaveRemark={handleSaveContactRemark}
-                  onSetAvatar={(contact, file) =>
-                    handleSaveProfileAvatar(
-                      "contact",
-                      contact.email,
-                      file,
-                    )
-                  }
-                  onRemoveAvatar={(contact) =>
-                    handleDeleteProfileAvatar("contact", contact.email)
-                  }
+                  onSelectContact={selectContact}
+                  onBackToContacts={backToContacts}
+                  onToggleFavorite={toggleContactFavorite}
+                  onCompose={composeToContact}
+                  onOpenMessage={openContactMessage}
+                  onSaveRemark={saveContactRemark}
+                  onSetAvatar={setContactAvatar}
+                  onRemoveAvatar={removeContactAvatar}
                 />
               </Suspense>
             ) : (
