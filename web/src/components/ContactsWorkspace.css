@@ -784,12 +784,12 @@
   place-items: center;
   border: 0;
   background: transparent;
-  color: var(--color-primary);
+  color: var(--correspondence-incoming-icon);
   box-shadow: none;
 }
 
 .contacts-message-row__direction[data-outgoing="true"] {
-  color: var(--color-primary);
+  color: var(--correspondence-outgoing-icon);
 }
 
 .contacts-message-row__copy {

@@ -271,10 +271,28 @@ describe("contact correspondence history material contract", () => {
     expect(direction).toMatch(/background:\s*transparent/);
     expect(direction).toMatch(/border:\s*0/);
     expect(direction).toMatch(/box-shadow:\s*none/);
-    expect(direction).toMatch(/color:\s*var\(--color-primary\)/);
-    expect(outgoing).toMatch(/color:\s*var\(--color-primary\)/);
+    expect(direction).toMatch(
+      /color:\s*var\(--correspondence-incoming-icon\)/,
+    );
+    expect(outgoing).toMatch(
+      /color:\s*var\(--correspondence-outgoing-icon\)/,
+    );
     expect(direction).not.toMatch(/var\(--color-success\)/);
   });
+
+  it.each(["daylight", "night", "dusk", "forest"])(
+    "declares distinct accessible direction colors for the %s theme",
+    (theme) => {
+      const themeBlock = declarationsFor(`:root\\[data-theme="${theme}"\\]`);
+      expect(themeBlock).toMatch(/--correspondence-incoming-icon:\s*#[0-9a-f]{6}/i);
+      expect(themeBlock).toMatch(/--correspondence-outgoing-icon:\s*#[0-9a-f]{6}/i);
+      expect(
+        themeBlock.match(/--correspondence-incoming-icon:\s*(#[0-9a-f]{6})/i)?.[1],
+      ).not.toBe(
+        themeBlock.match(/--correspondence-outgoing-icon:\s*(#[0-9a-f]{6})/i)?.[1],
+      );
+    },
+  );
 });
 
 describe("mail unread indicator contract", () => {

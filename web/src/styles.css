@@ -62,6 +62,8 @@
   --color-warning: #aa6a13;
   --color-danger: #d34747;
   --color-on-danger: #fff;
+  --correspondence-incoming-icon: #2563b8;
+  --correspondence-outgoing-icon: #237a49;
   --color-favorite: #e4a82c;
   --storage-category-mail: #2f80dd;
   --storage-category-webview: #2f9f98;
@@ -231,6 +233,8 @@
 }
 
 :root[data-theme="daylight"] {
+  --correspondence-incoming-icon: #2563b8;
+  --correspondence-outgoing-icon: #237a49;
   --theme-menu-surface: rgba(229, 241, 248, 0.78);
   --theme-menu-tint: rgba(43, 126, 181, 0.16);
   --reader-idle-ink: #17394b;
@@ -278,6 +282,8 @@
   --color-primary: #72aefc;
   --color-primary-hover: #8abdff;
   --color-primary-pressed: #5a9cf4;
+  --correspondence-incoming-icon: #79b8ff;
+  --correspondence-outgoing-icon: #5fd08a;
   --color-on-primary: #10243c;
   --color-selection: #23344b;
   --color-selection-border: #315278;
@@ -357,6 +363,8 @@
   --color-primary: #b95848;
   --color-primary-hover: #a64b3d;
   --color-primary-pressed: #913f34;
+  --correspondence-incoming-icon: #356f9f;
+  --correspondence-outgoing-icon: #2f7a4f;
   --color-selection: #fae9df;
   --color-selection-border: #eccfc1;
   --color-hover: #fbf1eb;
@@ -422,6 +430,8 @@
   --color-primary: #357a55;
   --color-primary-hover: #2d6c4a;
   --color-primary-pressed: #255d3f;
+  --correspondence-incoming-icon: #306ba6;
+  --correspondence-outgoing-icon: #2b744b;
   --color-selection: #e1eee5;
   --color-selection-border: #c6decf;
   --color-hover: #eaf0e9;

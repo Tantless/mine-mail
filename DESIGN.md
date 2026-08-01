@@ -428,9 +428,11 @@ family. Preserve the relative hierarchy when tuning optical values.
 - Correspondence history is one quiet continuous list with subtle row dividers,
   not a stack of individually framed cards. Incoming mail uses the regular
   Phosphor `Tray` mark and outgoing mail uses `PaperPlaneTilt`; both marks sit
-  directly on the row without an icon tile, derive their stroke color from the
-  active theme accent, and pair with only the semantic **收件箱 / 已发送** label;
-  do not repeat the direction as **对方发来 / 我发出** copy.
+  directly on the row without an icon tile. Incoming uses the theme's accessible
+  blue direction token and outgoing uses its accessible green direction token;
+  each theme owns the exact tones so both remain legible on its relationship
+  surface. Pair them with only the semantic **收件箱 / 已发送** label; do not
+  repeat the direction as **对方发来 / 我发出** copy.
   Hover and keyboard focus belong to the complete row rather than the icon.
 - The unselected detail pane uses the current quiet, theme-owned “选择一个联系人”
   placeholder rather than inventing a new illustration or card system.
