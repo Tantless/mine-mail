@@ -45,6 +45,20 @@ describe("text selection policy", () => {
   });
 });
 
+describe("isolated mail sizing contract", () => {
+  it("uses the placeholder height only until the measured document is ready", () => {
+    expect(declarationsFor("\\.html-message__document")).toMatch(
+      /min-height:\s*220px/,
+    );
+    expect(
+      declarationsFor('\\.html-message__document\\[data-ready="true"\\]'),
+    ).toMatch(/min-height:\s*0/);
+    expect(
+      declarationsFor('\\.html-message__frame\\[data-ready="true"\\]'),
+    ).toMatch(/min-height:\s*0/);
+  });
+});
+
 describe("settings overlay positioning", () => {
   it("does not override fixed confirmation layers with workspace content positioning", () => {
     const settingsChildren = declarationsFor(

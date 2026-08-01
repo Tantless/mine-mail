@@ -3438,6 +3438,10 @@ html[data-surface="new-mail-notification"] #root {
   min-height: 220px;
 }
 
+.html-message__document[data-ready="true"] {
+  min-height: 0;
+}
+
 .html-message__skeleton {
   position: absolute;
   z-index: 1;
@@ -3458,6 +3462,7 @@ html[data-surface="new-mail-notification"] #root {
 }
 
 .html-message__frame[data-ready="true"] {
+  min-height: 0;
   opacity: 1;
 }
 

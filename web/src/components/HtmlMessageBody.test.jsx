@@ -163,6 +163,24 @@ describe("HTML message body", () => {
     expect(document.body.dataset.mineMailWidthFit).toBeUndefined();
   });
 
+  it("shrinks sent stationery below the loading placeholder height", () => {
+    const document = new DOMParser().parseFromString(
+      '<div data-mine-mail-stationery="lined" style="box-sizing:border-box;min-height:168px">正文</div>',
+      "text/html",
+    );
+    setLayoutMetric(document.documentElement, "clientHeight", 220);
+    setLayoutMetric(document.documentElement, "scrollWidth", 620);
+    setLayoutMetric(document.documentElement, "scrollHeight", 220);
+    setLayoutMetric(document.body, "scrollWidth", 620);
+    setLayoutMetric(document.body, "scrollHeight", 168);
+    setLayoutMetric(document.body, "offsetHeight", 168);
+
+    expect(fitEmailDocumentToWidth(document, 620)).toEqual({
+      height: 168,
+      scale: 1,
+    });
+  });
+
   it("leaves documents unchanged when the reader is wide enough", () => {
     const document = new DOMParser().parseFromString(
       '<table width="740"><tbody><tr><td>Poster</td></tr></tbody></table>',

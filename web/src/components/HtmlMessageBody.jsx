@@ -143,10 +143,16 @@ export function fitEmailDocumentToWidth(document, availableWidth) {
   const contentHeight = Math.max(
     body.scrollHeight || 0,
     body.offsetHeight || 0,
-    shouldFit ? 0 : root.scrollHeight || 0,
+    shouldFit || root.scrollHeight <= root.clientHeight
+      ? 0
+      : root.scrollHeight || 0,
   );
   return {
-    height: Math.max(minimumFrameHeight, Math.ceil(contentHeight * scale)),
+    // The 220px frame is only a loading placeholder. Once the document is
+    // measurable, let short bodies (including 168px/196px Mine Mail paper)
+    // report their actual height instead of feeding the iframe viewport back
+    // into its own content measurement.
+    height: Math.max(1, Math.ceil(contentHeight * scale)),
     scale,
   };
 }
@@ -365,7 +371,7 @@ export function HtmlMessageBody({
           ) : null}
         </div>
       ) : null}
-      <div className="html-message__document">
+      <div className="html-message__document" data-ready={isFrameReady}>
         {!isFrameReady ? (
           <div
             className="body-skeleton html-message__skeleton"
