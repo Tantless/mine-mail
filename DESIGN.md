@@ -432,6 +432,11 @@ family. Preserve the relative hierarchy when tuning optical values.
   Hover and keyboard focus belong to the complete row rather than the icon.
 - The unselected detail pane uses the current quiet, theme-owned “选择一个联系人”
   placeholder rather than inventing a new illustration or card system.
+- Long contact directories keep the same continuous fixed-density list while
+  windowing offscreen rows. Search, filtering, selection, keyboard semantics,
+  and the shared moving selection surface continue to represent the complete
+  result set; data size must not turn workspace entry or exit into a full-DOM
+  mount or teardown.
 - Contact detail has a persistent back action. In the wide workspace, the first
   selected contact enters the existing third column with the same centered
   260 ms window transition as mail, and Back reverses it before restoring the

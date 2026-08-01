@@ -12,7 +12,13 @@ import {
   UsersThree,
   WarningCircle,
 } from "@phosphor-icons/react";
-import { memo, useMemo, useRef, useState } from "react";
+import {
+  memo,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { formatFullDate, formatMailTime } from "../utils/formatters.js";
 import { useSlidingSelection } from "../hooks/useSlidingSelection.js";
 import { EditableProfileAvatar, ProfileAvatar } from "./ProfileAvatar.jsx";
@@ -23,6 +29,26 @@ const contactFilters = [
   { id: "all", label: "全部" },
   { id: "favorite", label: "收藏" },
 ];
+
+const contactRowHeight = 82;
+const contactVirtualizationThreshold = 60;
+const contactVirtualOverscan = 5;
+const contactViewportHeightEstimate = 720;
+
+function contactVirtualWindow(count, scrollTop, viewportHeight) {
+  const firstVisibleIndex = Math.min(
+    Math.max(0, count - 1),
+    Math.floor(scrollTop / contactRowHeight),
+  );
+  const visibleRowCount = Math.ceil(viewportHeight / contactRowHeight) + 1;
+  return {
+    start: Math.max(0, firstVisibleIndex - contactVirtualOverscan),
+    end: Math.min(
+      count,
+      firstVisibleIndex + visibleRowCount + contactVirtualOverscan,
+    ),
+  };
+}
 
 function contactLabel(contact) {
   return contact?.displayName?.trim() || contact?.email || "未知联系人";
@@ -36,6 +62,60 @@ function contactKey(contact) {
   const email = contact?.email?.trim().toLowerCase() || "";
   if (!email) return "";
   return contact?.accountId ? `${contact.accountId}:${email}` : email;
+}
+
+function useContactVirtualWindow({ count, scrollContainerRef }) {
+  const virtualized = count > contactVirtualizationThreshold;
+  const [windowRange, setWindowRange] = useState(() =>
+    contactVirtualWindow(count, 0, contactViewportHeightEstimate),
+  );
+
+  useLayoutEffect(() => {
+    if (!virtualized) return undefined;
+    const scrollContainer = scrollContainerRef.current;
+    if (!scrollContainer) return undefined;
+
+    const measureViewport = () => {
+      const nextRange = contactVirtualWindow(
+        count,
+        Math.max(0, scrollContainer.scrollTop || 0),
+        scrollContainer.clientHeight || contactViewportHeightEstimate,
+      );
+      setWindowRange((current) =>
+        current.start === nextRange.start && current.end === nextRange.end
+          ? current
+          : nextRange,
+      );
+    };
+
+    measureViewport();
+    scrollContainer.addEventListener("scroll", measureViewport, {
+      passive: true,
+    });
+    const resizeObserver =
+      typeof ResizeObserver === "function"
+        ? new ResizeObserver(measureViewport)
+        : null;
+    resizeObserver?.observe(scrollContainer);
+
+    return () => {
+      scrollContainer.removeEventListener("scroll", measureViewport);
+      resizeObserver?.disconnect();
+    };
+  }, [count, scrollContainerRef, virtualized]);
+
+  if (!virtualized) {
+    return {
+      end: count,
+      start: 0,
+      virtualized: false,
+    };
+  }
+
+  return {
+    ...windowRange,
+    virtualized: true,
+  };
 }
 
 function errorMessage(error, fallback) {
@@ -138,6 +218,8 @@ function ContactsListState({ error, query, filter, onRetry }) {
 const ContactRow = memo(function ContactRow({
   contact,
   selected,
+  positionInSet,
+  setSize,
   showAccountScope,
   onSelectContact,
   onToggleFavorite,
@@ -163,6 +245,8 @@ const ContactRow = memo(function ContactRow({
       data-selected={selected}
       data-favorite={Boolean(contact.isFavorite)}
       role="listitem"
+      aria-posinset={positionInSet}
+      aria-setsize={setSize}
     >
       <button
         type="button"
@@ -233,18 +317,21 @@ const ContactRow = memo(function ContactRow({
 const ContactList = memo(function ContactList({
   contacts,
   selectedContact,
+  virtualWindow,
   showAccountScope,
   onSelectContact,
   onToggleFavorite,
 }) {
   const selectedKey = contactKey(selectedContact);
   const contactsRef = useRef(null);
+  const { end, start, virtualized } = virtualWindow;
+  const renderedContacts = useMemo(
+    () => contacts.slice(start, end),
+    [contacts, end, start],
+  );
   const contactsLayoutKey = useMemo(
-    () =>
-      contacts
-        .map((contact, index) => contactKey(contact) || `contact-${index}`)
-        .join("|"),
-    [contacts],
+    () => ({ contacts, end, start }),
+    [contacts, end, start],
   );
   const {
     motionReady: rowSelectionMotionReady,
@@ -262,11 +349,22 @@ const ContactList = memo(function ContactList({
       className="contacts-list mail-list"
       role="list"
       aria-label="联系人"
+      data-virtualized={virtualized || undefined}
+      data-rendered-count={renderedContacts.length}
       data-selection-visible={rowSelectionVisible || undefined}
       data-selection-motion-ready={rowSelectionMotionReady || undefined}
       style={rowSelectionStyle}
     >
-      {contacts.map((contact, index) => {
+      {start > 0 ? (
+        <div
+          className="contacts-list__spacer"
+          style={{ height: `${start * contactRowHeight}px` }}
+          role="presentation"
+          aria-hidden="true"
+        />
+      ) : null}
+      {renderedContacts.map((contact, renderedIndex) => {
+        const index = start + renderedIndex;
         const key = contactKey(contact) || `contact-${index}`;
         const selected = Boolean(selectedKey) && key === selectedKey;
 
@@ -275,12 +373,22 @@ const ContactList = memo(function ContactList({
             key={key}
             contact={contact}
             selected={selected}
+            positionInSet={index + 1}
+            setSize={contacts.length}
             showAccountScope={showAccountScope}
             onSelectContact={onSelectContact}
             onToggleFavorite={onToggleFavorite}
           />
         );
       })}
+      {end < contacts.length ? (
+        <div
+          className="contacts-list__spacer"
+          style={{ height: `${(contacts.length - end) * contactRowHeight}px` }}
+          role="presentation"
+          aria-hidden="true"
+        />
+      ) : null}
     </div>
   );
 });
@@ -694,6 +802,12 @@ export const ContactsWorkspace = memo(function ContactsWorkspace({
   onSetAvatar = () => {},
   onRemoveAvatar = () => {},
 }) {
+  const contactsScrollRef = useRef(null);
+  const contactWindow = useContactVirtualWindow({
+    count: contacts.length,
+    scrollContainerRef: contactsScrollRef,
+  });
+
   return (
     <>
       <div
@@ -752,7 +866,10 @@ export const ContactsWorkspace = memo(function ContactsWorkspace({
             <span>{contacts.length} 人</span>
           </div>
 
-          <div className="contacts-list-body vertical-scroll-surface">
+          <div
+            ref={contactsScrollRef}
+            className="contacts-list-body vertical-scroll-surface"
+          >
             {isLoading && !contacts.length ? (
               <ContactsLoadingState />
             ) : error || !contacts.length ? (
@@ -766,6 +883,7 @@ export const ContactsWorkspace = memo(function ContactsWorkspace({
               <ContactList
                 contacts={contacts}
                 selectedContact={selectedContact}
+                virtualWindow={contactWindow}
                 showAccountScope={filter === "favorite"}
                 onSelectContact={onSelectContact}
                 onToggleFavorite={onToggleFavorite}

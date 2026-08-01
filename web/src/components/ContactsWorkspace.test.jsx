@@ -3,6 +3,7 @@ import {
   fireEvent,
   render,
   screen,
+  waitFor,
   within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -209,6 +210,76 @@ describe("ContactsWorkspace", () => {
       ).toBe("true");
     } finally {
       boundsSpy.mockRestore();
+    }
+  });
+
+  it("windows a large contact directory without mounting every row", async () => {
+    const contacts = Array.from({ length: 1000 }, (_, index) => ({
+      ...contact,
+      email: `friend-${index}@example.com`,
+      displayName: `联系人 ${index}`,
+    }));
+    const view = renderWorkspace({
+      contacts,
+      selectedContact: null,
+      messages: [],
+    });
+    try {
+      const list = screen.getByRole("list", { name: "联系人" });
+      const scrollContainer = view.container.querySelector(
+        ".contacts-list-body",
+      );
+
+      expect(list.dataset.virtualized).toBe("true");
+      expect(within(list).getAllByRole("listitem").length).toBeLessThan(30);
+      expect(
+        screen.getByRole("button", { name: "查看联系人 联系人 0" }),
+      ).toBeTruthy();
+      expect(
+        screen.queryByRole("button", { name: "查看联系人 联系人 999" }),
+      ).toBeNull();
+
+      Object.defineProperty(scrollContainer, "clientHeight", {
+        configurable: true,
+        value: 410,
+      });
+      Object.defineProperty(scrollContainer, "scrollTop", {
+        configurable: true,
+        value: 500 * 82,
+        writable: true,
+      });
+      fireEvent.scroll(scrollContainer);
+
+      const middleRow = await waitFor(() =>
+        screen.getByRole("button", { name: "查看联系人 联系人 500" }),
+      );
+      expect(
+        screen.queryByRole("button", { name: "查看联系人 联系人 0" }),
+      ).toBeNull();
+      expect(within(list).getAllByRole("listitem").length).toBeLessThan(30);
+      expect(
+        middleRow.closest('[role="listitem"]').getAttribute("aria-posinset"),
+      ).toBe("501");
+      expect(
+        middleRow.closest('[role="listitem"]').getAttribute("aria-setsize"),
+      ).toBe("1000");
+
+      view.rerender(
+        <ContactsWorkspace
+          contacts={contacts.slice(0, 100)}
+          selectedContact={null}
+          messages={[]}
+        />,
+      );
+      await waitFor(() =>
+        screen.getByRole("button", { name: "查看联系人 联系人 99" }),
+      );
+      expect(within(list).getAllByRole("listitem").length).toBeLessThan(30);
+      expect(
+        screen.queryByRole("button", { name: "查看联系人 联系人 500" }),
+      ).toBeNull();
+    } finally {
+      view.unmount();
     }
   });
 

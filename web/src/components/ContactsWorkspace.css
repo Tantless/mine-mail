@@ -101,6 +101,15 @@
   display: grid;
 }
 
+.contacts-list[data-virtualized="true"] {
+  overflow-anchor: none;
+}
+
+.contacts-list__spacer {
+  min-height: 0;
+  pointer-events: none;
+}
+
 .contacts-list.mail-list::before {
   z-index: 2;
 }
@@ -109,6 +118,7 @@
   position: relative;
   z-index: 3;
   display: grid;
+  height: 82px;
   min-height: 82px;
   contain: layout paint style;
   contain-intrinsic-size: auto 82px;
