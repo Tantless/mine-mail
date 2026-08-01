@@ -865,7 +865,8 @@ fn split_plain_reply(
     {
         let authored = lines[..separator].join("\n").trim().to_owned();
         let (quoted, quote_metadata) = extract_quoted_metadata(&lines[separator + 1..]);
-        if !authored.is_empty() && quoted.iter().any(|line| !line.trim().is_empty()) {
+        let has_quoted_body = quoted.iter().any(|line| !line.trim().is_empty());
+        if !authored.is_empty() && (has_quoted_body || quote_metadata.is_some()) {
             let mut segments = vec![PlainBodySegment {
                 kind: MailBodySegmentKind::Authored,
                 content: authored,
@@ -1083,6 +1084,15 @@ fn append_quoted_history(
     loop {
         let content = remaining.join("\n").trim().to_owned();
         if content.is_empty() {
+            if let Some(metadata) = current_metadata.take() {
+                segments.push(PlainBodySegment {
+                    kind: MailBodySegmentKind::Quoted,
+                    content,
+                    quote_depth: current_depth,
+                    confidence: MailBodySegmentConfidence::High,
+                    quote_metadata: Some(metadata),
+                });
+            }
             return;
         }
 
@@ -1155,6 +1165,19 @@ fn extract_quoted_metadata<'a>(
             parse_table_metadata_line(lines[start], &mut metadata);
             start += 1;
         }
+    } else {
+        let metadata_start = start;
+        while start < lines.len() && !lines[start].trim().is_empty() {
+            if !parse_labeled_metadata_line(lines[start], &mut metadata) {
+                break;
+            }
+            start += 1;
+        }
+        if metadata.is_empty() {
+            start = metadata_start;
+        }
+    }
+    if !metadata.is_empty() {
         while start < lines.len() && lines[start].trim().is_empty() {
             start += 1;
         }
@@ -1175,12 +1198,47 @@ fn parse_table_metadata_line(line: &str, metadata: &mut MailBodySegmentMetadata)
     assign_quote_metadata(metadata, cells[0], &cells[1..].join(" | "));
 }
 
-fn assign_quote_metadata(metadata: &mut MailBodySegmentMetadata, raw_label: &str, raw_value: &str) {
-    let label = raw_label
+fn parse_labeled_metadata_line(line: &str, metadata: &mut MailBodySegmentMetadata) -> bool {
+    let Some((label, value)) = line.split_once([':', '：']) else {
+        return false;
+    };
+    if !is_quote_metadata_label(label) {
+        return false;
+    }
+    assign_quote_metadata(metadata, label, value);
+    true
+}
+
+fn is_quote_metadata_label(raw_label: &str) -> bool {
+    matches!(
+        normalized_quote_metadata_label(raw_label).as_str(),
+        "主题"
+            | "subject"
+            | "发件人"
+            | "发信人"
+            | "from"
+            | "收件人"
+            | "to"
+            | "发送日期"
+            | "日期"
+            | "时间"
+            | "sent"
+            | "date"
+            | "抄送"
+            | "cc"
+    )
+}
+
+fn normalized_quote_metadata_label(raw_label: &str) -> String {
+    raw_label
         .trim()
         .trim_end_matches([':', '：'])
         .trim()
-        .to_lowercase();
+        .to_lowercase()
+}
+
+fn assign_quote_metadata(metadata: &mut MailBodySegmentMetadata, raw_label: &str, raw_value: &str) {
+    let label = normalized_quote_metadata_label(raw_label);
     let limit = if matches!(label.as_str(), "主题" | "subject") {
         240
     } else {
@@ -1374,6 +1432,10 @@ fn split_html_reply(
     has_reply_headers: bool,
     parent_metadata: Option<&MailBodySegmentMetadata>,
 ) -> Option<Vec<SanitizedMailBodySegment>> {
+    if let Some(segments) = split_mine_mail_forward_html(source, parent_metadata) {
+        return Some(segments);
+    }
+
     if let Some((authored, quoted)) = split_outlook_html_suffix(source) {
         return html_segments(
             authored,
@@ -1465,6 +1527,107 @@ fn split_html_reply(
         .map(|body| body.inner_html())
         .unwrap_or_else(|| authored_document.root_element().inner_html());
     html_segments(&authored, &quoted, confidence, quote_metadata)
+}
+
+fn split_mine_mail_forward_html(
+    source: &str,
+    parent_metadata: Option<&MailBodySegmentMetadata>,
+) -> Option<Vec<SanitizedMailBodySegment>> {
+    let document = Html::parse_fragment(source);
+    let forward_selector = Selector::parse(".mine-mail-forward").expect("static forward selector");
+    let quote_selector = Selector::parse("blockquote").expect("static blockquote selector");
+    let forward = document.select(&forward_selector).find(|candidate| {
+        !candidate
+            .ancestors()
+            .skip(1)
+            .filter_map(ElementRef::wrap)
+            .any(is_quote_container)
+    })?;
+    if forward
+        .next_siblings()
+        .any(|sibling| node_has_visible_content(sibling))
+    {
+        return None;
+    }
+
+    let quoted = forward.select(&quote_selector).next()?;
+    let mut metadata = MailBodySegmentMetadata::default();
+    let mut has_forward_separator = false;
+    for child in forward.children() {
+        if child.id() == quoted.id() {
+            break;
+        }
+        let Some(element) = ElementRef::wrap(child) else {
+            continue;
+        };
+        let text = element.text().collect::<String>();
+        for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
+            has_forward_separator |= is_strong_reply_separator(line);
+            parse_labeled_metadata_line(line, &mut metadata);
+        }
+    }
+    if !has_forward_separator {
+        return None;
+    }
+
+    let quoted = quoted.inner_html();
+    let mut authored_document = document.clone();
+    let sink = HtmlTreeSink::new(authored_document);
+    sink.remove_from_parent(&forward.id());
+    authored_document = sink.finish();
+    let body_selector = Selector::parse("body").expect("static body selector");
+    let authored = authored_document
+        .select(&body_selector)
+        .next()
+        .map(|body| body.inner_html())
+        .unwrap_or_else(|| authored_document.root_element().inner_html());
+    let quote_metadata =
+        merge_cached_quote_metadata(parent_metadata, (!metadata.is_empty()).then_some(metadata));
+    if html_has_visible_content(&quoted) {
+        return html_segments(
+            &authored,
+            &quoted,
+            MailBodySegmentConfidence::High,
+            quote_metadata,
+        );
+    }
+
+    let quote_metadata = quote_metadata?;
+    if !html_has_visible_content(&authored) {
+        return None;
+    }
+    let authored = sanitize_html_segment(
+        MailBodySegmentKind::Authored,
+        &authored,
+        0,
+        MailBodySegmentConfidence::High,
+    );
+    Some(vec![
+        authored,
+        SanitizedMailBodySegment {
+            kind: MailBodySegmentKind::Quoted,
+            content: String::new(),
+            is_html: false,
+            structure: MailHtmlStructure::PlainEquivalent,
+            quote_depth: 1,
+            confidence: MailBodySegmentConfidence::High,
+            quote_metadata: Some(quote_metadata),
+        },
+    ])
+}
+
+fn is_quote_container(element: ElementRef<'_>) -> bool {
+    element.value().name() == "blockquote"
+        || element.value().classes().any(|class| {
+            matches!(
+                class,
+                "mine-mail-forward" | "ntes-mailmaster-quote" | "gmail_quote"
+            )
+        })
+        || element
+            .value()
+            .attr("id")
+            .is_some_and(|id| id.to_ascii_lowercase().starts_with("divrplyfwdmsg"))
 }
 
 fn split_outlook_html_suffix(source: &str) -> Option<(&str, &str)> {
@@ -1862,6 +2025,115 @@ mod tests {
             Some("receiver@example.com")
         );
         assert!(!segments[2].content.starts_with('|'));
+    }
+
+    #[test]
+    fn mine_mail_plain_forward_keeps_a_metadata_card_when_the_body_is_empty() {
+        let text = "Forwarding this for reference.\n\n---------- Forwarded message ----------\nSubject: Original subject\nFrom: \"Original Sender\" <sender@example.com>\nDate: 2026-07-31T04:06:14Z\nTo: <receiver@example.com>\nCc: copy@example.com\n";
+
+        let segments = segment_mail_body(Some(text), None, false);
+
+        assert_eq!(segments.len(), 2);
+        assert_eq!(segments[0].kind, MailBodySegmentKind::Authored);
+        assert_eq!(segments[0].content, "Forwarding this for reference.");
+        assert_eq!(segments[1].kind, MailBodySegmentKind::Quoted);
+        assert!(segments[1].content.is_empty());
+        let metadata = segments[1]
+            .quote_metadata
+            .as_ref()
+            .expect("forward metadata");
+        assert_eq!(metadata.subject.as_deref(), Some("Original subject"));
+        assert_eq!(
+            metadata.sender.as_deref(),
+            Some("\"Original Sender\" <sender@example.com>")
+        );
+        assert_eq!(
+            metadata.recipient.as_deref(),
+            Some("<receiver@example.com>")
+        );
+        assert_eq!(metadata.sent_at.as_deref(), Some("2026-07-31T04:06:14Z"));
+    }
+
+    #[test]
+    fn mine_mail_multipart_forward_keeps_a_metadata_card_when_the_body_is_empty() {
+        let text = "Forwarding this for reference.\n\n---------- Forwarded message ----------\nSubject: Original subject\nFrom: \"Original Sender\" <sender@example.com>\nDate: 2026-07-31T04:06:14Z\nTo: <receiver@example.com>\n";
+        let html = r#"<div class="mine-mail-authored"><p>Forwarding this for reference.</p></div><br>
+            <div class="mine-mail-forward">
+              <div>---------- Forwarded message ----------</div>
+              <div><strong>Subject:</strong> Original subject</div>
+              <div><strong>From:</strong> &quot;Original Sender&quot; &lt;sender@example.com&gt;</div>
+              <div><strong>Date:</strong> 2026-07-31T04:06:14Z</div>
+              <div><strong>To:</strong> &lt;receiver@example.com&gt;</div><br>
+              <blockquote type="cite"></blockquote>
+            </div>"#;
+
+        let segments = segment_mail_body(Some(text), Some(html), false);
+
+        assert_eq!(segments.len(), 2);
+        assert_eq!(segments[0].kind, MailBodySegmentKind::Authored);
+        assert_eq!(segments[1].kind, MailBodySegmentKind::Quoted);
+        assert!(segments[1].content.is_empty());
+        assert!(!segments[1].is_html);
+        let metadata = segments[1]
+            .quote_metadata
+            .as_ref()
+            .expect("metadata-only forward card");
+        assert_eq!(metadata.subject.as_deref(), Some("Original subject"));
+        assert_eq!(
+            metadata.sender.as_deref(),
+            Some("\"Original Sender\" <sender@example.com>")
+        );
+        assert_eq!(
+            metadata.recipient.as_deref(),
+            Some("<receiver@example.com>")
+        );
+        assert_eq!(metadata.sent_at.as_deref(), Some("2026-07-31T04:06:14Z"));
+        assert_eq!(segments[1].confidence, MailBodySegmentConfidence::High);
+    }
+
+    #[test]
+    fn mine_mail_html_forward_extracts_metadata_and_keeps_only_the_quoted_body() {
+        let text = "Forwarding this for reference.\n\n---------- Forwarded message ----------\nSubject: Original subject\nFrom: \"Original Sender\" <sender@example.com>\nDate: 2026-07-31T04:06:14Z\nTo: <receiver@example.com>\n\nOriginal rich body.";
+        let html = r#"<div class="mine-mail-authored"><p>Forwarding this for reference.</p></div><br>
+            <div class="mine-mail-forward">
+              <div>---------- Forwarded message ----------</div>
+              <div><strong>Subject:</strong> Original subject</div>
+              <div><strong>From:</strong> &quot;Original Sender&quot; &lt;sender@example.com&gt;</div>
+              <div><strong>Date:</strong> 2026-07-31T04:06:14Z</div>
+              <div><strong>To:</strong> &lt;receiver@example.com&gt;</div><br>
+              <blockquote type="cite"><p>Original <strong>rich</strong> body.</p></blockquote>
+            </div>"#;
+
+        let segments = segment_mail_body(Some(text), Some(html), false);
+
+        assert_eq!(segments.len(), 2);
+        assert_eq!(segments[0].kind, MailBodySegmentKind::Authored);
+        assert!(
+            segments[0]
+                .content
+                .contains("Forwarding this for reference.")
+        );
+        assert!(!segments[0].content.contains("Forwarded message"));
+        assert_eq!(segments[1].kind, MailBodySegmentKind::Quoted);
+        assert!(segments[1].is_html);
+        assert!(segments[1].content.contains("Original"));
+        assert!(segments[1].content.contains("<strong>rich</strong>"));
+        assert!(!segments[1].content.contains("Subject:"));
+        let metadata = segments[1]
+            .quote_metadata
+            .as_ref()
+            .expect("forward metadata");
+        assert_eq!(metadata.subject.as_deref(), Some("Original subject"));
+        assert_eq!(
+            metadata.sender.as_deref(),
+            Some("\"Original Sender\" <sender@example.com>")
+        );
+        assert_eq!(
+            metadata.recipient.as_deref(),
+            Some("<receiver@example.com>")
+        );
+        assert_eq!(metadata.sent_at.as_deref(), Some("2026-07-31T04:06:14Z"));
+        assert_eq!(segments[1].confidence, MailBodySegmentConfidence::High);
     }
 
     #[test]
