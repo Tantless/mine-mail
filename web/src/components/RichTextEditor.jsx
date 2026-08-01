@@ -89,6 +89,8 @@ const composePaperBlockInset = 10;
 const latinGridCharacter = /[\p{Script=Latin}\p{Number}]/u;
 const hanGridCharacter = /\p{Script=Han}/u;
 const gridWhitespaceCharacter = /\s/u;
+const authoredEditorHtmlNeedsNormalization =
+  /<(?:a|div|font|span)\b|\s(?:align|data-first-line-indent|href|start|style|value)=/i;
 const paragraphIndentAttribute = "data-first-line-indent";
 const paragraphIndentValue = "tab";
 const paragraphIndentStyle = "2em";
@@ -384,11 +386,17 @@ const ComposeParagraphIndent = Extension.create({
 
 const ComposeGridCellTokens = Extension.create({
   name: "composeGridCellTokens",
+  addOptions() {
+    return {
+      isEnabled: () => true,
+    };
+  },
   addProseMirrorPlugins() {
     return [
       new Plugin({
         props: {
           decorations: (state) => {
+            if (!this.options.isEnabled()) return null;
             const decorations = [];
             state.doc.descendants((node, position) => {
               if (!node.isText || !node.text) return;
@@ -468,7 +476,9 @@ const ComposeGridCellTokens = Extension.create({
 
 export const composeInputRuleExtensions = ["composeListInputRules"];
 
-export function createComposeEditorExtensions() {
+export function createComposeEditorExtensions({
+  isGridEnabled = () => true,
+} = {}) {
   return [
     StarterKit.configure({
       blockquote: false,
@@ -504,7 +514,7 @@ export function createComposeEditorExtensions() {
     }),
     ComposeListInputRules,
     ComposeParagraphIndent,
-    ComposeGridCellTokens,
+    ComposeGridCellTokens.configure({ isEnabled: isGridEnabled }),
   ];
 }
 
@@ -864,14 +874,23 @@ function RichTextEditorCore({
     () => composeHtmlToEditorHtml(incomingHtml),
     [incomingHtml],
   );
+  const stationeryRef = useRef(stationery);
   const latestFormatRef = useRef(format);
   const onChangeRef = useRef(onChange);
   const lastObservedHtmlRef = useRef(incomingHtml);
+  stationeryRef.current = stationery;
   latestFormatRef.current = format;
   onChangeRef.current = onChange;
+  const editorExtensions = useMemo(
+    () =>
+      createComposeEditorExtensions({
+        isGridEnabled: () => stationeryRef.current === "grid",
+      }),
+    [],
+  );
 
   const editor = useEditor({
-    extensions: createComposeEditorExtensions(),
+    extensions: editorExtensions,
     enableInputRules: composeInputRuleExtensions,
     content: incomingEditorHtml,
     editable: !disabled,
@@ -891,10 +910,22 @@ function RichTextEditorCore({
       ) {
         return;
       }
-      const html = normalizeComposeHtml(currentEditor.getHTML());
+      // Tiptap's schema and paste transform already constrain ordinary text.
+      // Avoid reparsing the full document for plain IME input, while retaining
+      // canonical output for links, alignment, fonts, and paragraph metadata.
+      const editorHtml = currentEditor.isEmpty ? "" : currentEditor.getHTML();
+      const html = authoredEditorHtmlNeedsNormalization.test(editorHtml)
+        ? normalizeComposeHtml(editorHtml)
+        : editorHtml;
       if (html === lastObservedHtmlRef.current) return;
       lastObservedHtmlRef.current = html;
       pendingEmittedHtmlRef.current.push(html);
+      if (pendingEmittedHtmlRef.current.length > 32) {
+        pendingEmittedHtmlRef.current.splice(
+          0,
+          pendingEmittedHtmlRef.current.length - 32,
+        );
+      }
       onChangeRef.current?.({
         body_text: plainTextFromDocument(currentEditor.getJSON()),
         format: {
@@ -932,6 +963,13 @@ function RichTextEditorCore({
       ?.querySelector('[role="textbox"]')
       ?.setAttribute("aria-readonly", String(disabled));
   }, [disabled, editor]);
+
+  useEffect(() => {
+    if (!editorIsUsable(editor)) return;
+    editor.view.dispatch(
+      editor.state.tr.setMeta("compose-grid-stationery", stationery),
+    );
+  }, [editor, stationery]);
 
   useEffect(() => {
     if (!editorIsUsable(editor) || !onEditorReady) return undefined;

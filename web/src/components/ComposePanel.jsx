@@ -427,6 +427,7 @@ export function ComposePanel({
   onClose,
   onDiscard,
   onChange,
+  onBodyChange = onChange,
   onSaveDraft,
   onRequestSend,
   sendShortcut,
@@ -969,7 +970,7 @@ export function ComposePanel({
                 stationery={composeFormat.stationery}
                 disabled={controlsDisabled}
                 onChange={(next) =>
-                  onChange((current) => ({
+                  onBodyChange((current) => ({
                     ...current,
                     body_text: next.body_text,
                     format: next.format,

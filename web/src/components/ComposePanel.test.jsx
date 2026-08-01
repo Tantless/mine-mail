@@ -236,6 +236,22 @@ it("uses compact icon controls for enabling, choosing, and sending stationery", 
   expect(sendUpdate(linedValue).format.send_stationery).toBe(true);
 });
 
+it("routes editor body updates through the dedicated high-frequency callback", async () => {
+  const onChange = vi.fn();
+  const onBodyChange = vi.fn();
+  const user = userEvent.setup();
+  renderCompose({ onChange, onBodyChange });
+
+  const editor = await screen.findByRole("textbox", { name: "邮件正文" });
+  await user.click(editor);
+  await user.keyboard("补充");
+
+  await waitFor(() => expect(onBodyChange).toHaveBeenCalled());
+  const update = onBodyChange.mock.calls.at(-1)[0];
+  expect(update(baseValue).body_text).toContain("补充");
+  expect(onChange).not.toHaveBeenCalled();
+});
+
 it("renders only authoritative draft attachments and passes the exact local version", async () => {
   const onAddAttachments = vi.fn();
   const onRemoveAttachment = vi.fn();

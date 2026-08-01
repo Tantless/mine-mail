@@ -394,6 +394,7 @@ function readFileAsDataUrl(file) {
   });
 }
 const localDraftDebounceMs = 900;
+const composeBodyPublishDelayMs = 160;
 
 const cachedBodyFields = [
   "body_text",
@@ -757,6 +758,8 @@ export function App() {
 
   const composerRef = useRef(null);
   const composerSessionsRef = useRef(new Map());
+  const composeBodyPublishTimerRef = useRef(null);
+  const composeBodyAutosaveTimerRef = useRef(null);
   const switchMinimizedComposerDraftRef = useRef(null);
   const draftSaveRef = useRef(null);
   const exitFlushRef = useRef(null);
@@ -1121,11 +1124,27 @@ export function App() {
   );
 
   const commitComposer = useCallback((valueOrUpdater) => {
+    if (composeBodyPublishTimerRef.current !== null) {
+      window.clearTimeout(composeBodyPublishTimerRef.current);
+      composeBodyPublishTimerRef.current = null;
+    }
     const previous = composerRef.current;
     const next =
       typeof valueOrUpdater === "function"
         ? valueOrUpdater(previous)
         : valueOrUpdater;
+    if (
+      composeBodyAutosaveTimerRef.current !== null &&
+      (!next ||
+        next.sessionId !== previous?.sessionId ||
+        next.dirty !== previous?.dirty ||
+        next.locked !== previous?.locked ||
+        next.revision !== previous?.revision ||
+        next.saveStatus !== previous?.saveStatus)
+    ) {
+      window.clearTimeout(composeBodyAutosaveTimerRef.current);
+      composeBodyAutosaveTimerRef.current = null;
+    }
     const accountId = activeAccountIdRef.current;
     if (accountId) {
       if (next) composerSessionsRef.current.set(accountId, next);
@@ -1140,6 +1159,14 @@ export function App() {
   }, []);
 
   const activateComposerForAccount = useCallback((accountId) => {
+    if (composeBodyPublishTimerRef.current !== null) {
+      window.clearTimeout(composeBodyPublishTimerRef.current);
+      composeBodyPublishTimerRef.current = null;
+    }
+    if (composeBodyAutosaveTimerRef.current !== null) {
+      window.clearTimeout(composeBodyAutosaveTimerRef.current);
+      composeBodyAutosaveTimerRef.current = null;
+    }
     const next = accountId
       ? composerSessionsRef.current.get(accountId) || null
       : null;
@@ -1147,6 +1174,18 @@ export function App() {
     setComposer(next);
     return next;
   }, []);
+
+  useEffect(
+    () => () => {
+      if (composeBodyPublishTimerRef.current !== null) {
+        window.clearTimeout(composeBodyPublishTimerRef.current);
+      }
+      if (composeBodyAutosaveTimerRef.current !== null) {
+        window.clearTimeout(composeBodyAutosaveTimerRef.current);
+      }
+    },
+    [],
+  );
 
   const openComposer = useCallback(
     (
@@ -3507,7 +3546,8 @@ export function App() {
     if (
       !composer?.dirty ||
       composer.locked ||
-      composer.saveStatus === "saving"
+      composer.saveStatus === "saving" ||
+      composeBodyAutosaveTimerRef.current !== null
     ) {
       return undefined;
     }
@@ -3526,6 +3566,7 @@ export function App() {
     return () => window.clearTimeout(timer);
   }, [
     composer?.dirty,
+    composer?.locked,
     composer?.revision,
     composer?.saveStatus,
     composer?.sessionId,
@@ -5276,6 +5317,45 @@ export function App() {
     });
   };
 
+  const handleComposeBodyChange = (updater) => {
+    const current = composerRef.current;
+    if (!current || current.locked || current.readOnlyUnsupported) return;
+    const nextValue =
+      typeof updater === "function" ? updater(current.value) : updater;
+    const next = {
+      ...current,
+      value: nextValue,
+      dirty: true,
+      revision: current.revision + 1,
+      saveStatus: "dirty",
+    };
+    const accountId = activeAccountIdRef.current;
+    if (accountId) composerSessionsRef.current.set(accountId, next);
+    composerRef.current = next;
+
+    if (composeBodyPublishTimerRef.current !== null) {
+      window.clearTimeout(composeBodyPublishTimerRef.current);
+    }
+    const sessionId = next.sessionId;
+    composeBodyPublishTimerRef.current = window.setTimeout(() => {
+      composeBodyPublishTimerRef.current = null;
+      const latest = composerRef.current;
+      if (latest?.sessionId === sessionId) setComposer(latest);
+    }, composeBodyPublishDelayMs);
+
+    if (composeBodyAutosaveTimerRef.current !== null) {
+      window.clearTimeout(composeBodyAutosaveTimerRef.current);
+    }
+    composeBodyAutosaveTimerRef.current = window.setTimeout(() => {
+      composeBodyAutosaveTimerRef.current = null;
+      const latest = composerRef.current;
+      if (latest?.sessionId !== sessionId || latest.locked) return;
+      void saveDraftNow().catch((error) => {
+        showToast(describeError(error, "草稿自动保存失败"), "error");
+      });
+    }, localDraftDebounceMs);
+  };
+
   const handleComposeMinimizedChange = useCallback(
     (minimized) => {
       commitComposer((current) =>
@@ -6886,6 +6966,7 @@ export function App() {
           onClose={() => void handleCloseComposer()}
           onDiscard={() => void handleDiscardComposer()}
           onChange={handleComposeChange}
+          onBodyChange={handleComposeBodyChange}
           onSaveDraft={handleSaveDraftAndMinimize}
           onRequestSend={() => void handleRequestSend()}
           sendShortcut={platform === "mac" ? "⌘ ↵" : "Ctrl ↵"}

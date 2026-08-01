@@ -521,6 +521,7 @@ it("keeps a long legacy-indented paragraph cell-aligned after switching to grid 
   );
   const editor = screen.getByRole("textbox", { name: "邮件正文" });
   expect(editor.querySelector("p")?.style.textIndent).toBe("2em");
+  expect(editor.querySelectorAll(".compose-grid-cell-token")).toHaveLength(0);
 
   view.rerender(
     <RichTextEditor
