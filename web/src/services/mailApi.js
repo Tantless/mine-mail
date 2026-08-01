@@ -315,6 +315,58 @@ export const mailApi = {
     );
   },
 
+  async listStarredMailboxPage(
+    accountId,
+    role,
+    cursor = null,
+    pageSize = 50,
+    query = null,
+  ) {
+    if (isTauri) {
+      return desktopInvoke("list_starred_mailbox_page", {
+        accountId,
+        role,
+        cursor,
+        pageSize,
+        query,
+      });
+    }
+    return callDemo(
+      "listStarredMailboxPage",
+      accountId,
+      role,
+      cursor,
+      pageSize,
+      query,
+    );
+  },
+
+  async loadOlderStarredMailboxPage(
+    accountId,
+    role,
+    cursor,
+    pageSize = 50,
+    query = null,
+  ) {
+    if (isTauri) {
+      return desktopInvoke("load_older_starred_mailbox_page", {
+        accountId,
+        role,
+        cursor,
+        pageSize,
+        query,
+      });
+    }
+    return callDemo(
+      "loadOlderStarredMailboxPage",
+      accountId,
+      role,
+      cursor,
+      pageSize,
+      query,
+    );
+  },
+
   async syncMailbox(accountId, role) {
     if (isTauri) {
       return desktopInvoke("sync_mailbox", { accountId, role });

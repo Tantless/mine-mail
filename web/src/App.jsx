@@ -215,6 +215,15 @@ function createMailboxPageStates() {
   );
 }
 
+function createStarredMailboxPageStates() {
+  return Object.fromEntries(
+    starredMailboxRoles.map((role) => [
+      role,
+      emptyMailboxPageState({ items: [] }),
+    ]),
+  );
+}
+
 function createMailboxLoadStates(phase = "loading") {
   return Object.fromEntries(
     mailboxFolders.map((folder) => [
@@ -722,6 +731,9 @@ export function App() {
   const [mailboxPageStates, setMailboxPageStates] = useState(
     createMailboxPageStates,
   );
+  const [starredMailboxPageStates, setStarredMailboxPageStates] = useState(
+    createStarredMailboxPageStates,
+  );
   const [mailboxCapabilities, setMailboxCapabilities] = useState(null);
   const [remoteSearch, setRemoteSearch] = useState(null);
   const [mailboxSetup, setMailboxSetup] = useState(null);
@@ -928,6 +940,7 @@ export function App() {
       selectedMessageId,
       selectedMessage,
       mailboxPageStates,
+      starredMailboxPageStates,
       mailboxCapabilities,
     });
   }, [
@@ -940,6 +953,7 @@ export function App() {
     selectedMessage,
     selectedMessageId,
     sentMessages,
+    starredMailboxPageStates,
     trashMessages,
   ]);
 
@@ -1308,6 +1322,39 @@ export function App() {
     [],
   );
 
+  const commitStarredMailboxPageState = useCallback(
+    (role, update, accountId = activeAccountIdRef.current) => {
+      if (!accountId) return;
+      const apply = (current) =>
+        typeof update === "function"
+          ? update(current || emptyMailboxPageState({ items: [] }))
+          : update;
+      if (activeAccountIdRef.current !== accountId) {
+        const view = accountViewsRef.current.get(accountId) || {};
+        const pages =
+          view.starredMailboxPageStates || createStarredMailboxPageStates();
+        accountViewsRef.current.set(accountId, {
+          ...view,
+          starredMailboxPageStates: {
+            ...pages,
+            [role]: apply(pages[role]),
+          },
+        });
+        return;
+      }
+      setStarredMailboxPageStates((current) => {
+        const next = { ...current, [role]: apply(current[role]) };
+        const view = accountViewsRef.current.get(accountId) || {};
+        accountViewsRef.current.set(accountId, {
+          ...view,
+          starredMailboxPageStates: next,
+        });
+        return next;
+      });
+    },
+    [],
+  );
+
   const mergeRemoteMessage = useCallback(
     (target, update, accountId = activeAccountIdRef.current) => {
       const targetId = localMessageId(target);
@@ -1316,6 +1363,16 @@ export function App() {
         localMessageId(message) === targetId ? update(message) : message;
       for (const role of paginatedMailboxRoles) {
         commitRoleItems(role, (items) => items.map(apply), accountId);
+      }
+      for (const role of starredMailboxRoles) {
+        commitStarredMailboxPageState(
+          role,
+          (state) => ({
+            ...state,
+            items: (state.items || []).map(apply),
+          }),
+          accountId,
+        );
       }
       setRemoteSearch((current) =>
         current?.accountId === accountId
@@ -1334,7 +1391,7 @@ export function App() {
         );
       }
     },
-    [commitRoleItems],
+    [commitRoleItems, commitStarredMailboxPageState],
   );
 
   const handleSelect = useCallback(
@@ -1821,6 +1878,117 @@ export function App() {
     ],
   );
 
+  const loadStarredMailboxRolePage = useCallback(
+    async ({
+      accountId = activeAccountIdRef.current,
+      role,
+      cursor = null,
+      query: pageQuery = null,
+      append = false,
+    }) => {
+      if (!accountId || !starredMailboxRoles.includes(role)) return null;
+      const normalizedQuery = normalizedMailboxQuery(pageQuery);
+      const requestKey = `starred:${accountId}:${role}:${normalizedQuery || ""}`;
+      const requestToken = Symbol(requestKey);
+      mailboxPageRequestsRef.current.set(requestKey, requestToken);
+      if (!normalizedQuery) {
+        commitStarredMailboxPageState(
+          role,
+          (current) => ({
+            ...current,
+            ...(append ? {} : { nextCursor: null }),
+            loadMorePhase: "loading",
+            loadMoreError: null,
+          }),
+          accountId,
+        );
+      }
+
+      try {
+        const response = cursor
+          ? await mailApi.loadOlderStarredMailboxPage(
+              accountId,
+              role,
+              cursor,
+              mailboxPageSize,
+              normalizedQuery,
+            )
+          : await mailApi.listStarredMailboxPage(
+              accountId,
+              role,
+              null,
+              mailboxPageSize,
+              normalizedQuery,
+            );
+        if (mailboxPageRequestsRef.current.get(requestKey) !== requestToken) {
+          return null;
+        }
+        const normalized = normalizeMailboxPage(
+          response,
+          role,
+          normalizedQuery,
+        );
+        normalized.items = normalized.items.map((message) => {
+          const cachedBody = messageBodyCacheRef.current.get(
+            messageCacheKey(message, accountId),
+          );
+          let resolved = cachedBody ? { ...message, ...cachedBody } : message;
+          const key = scopedRemoteFlagKey(resolved, accountId);
+          const pending = key ? starRequestRef.current.get(key) : null;
+          const starred = pending?.starred ?? hasFlag(resolved, "\\Flagged");
+          if (key) starStateRef.current.set(key, starred);
+          if (pending) {
+            resolved = withSystemFlag(resolved, "\\Flagged", starred);
+          }
+          return resolved;
+        });
+
+        if (normalizedQuery) return normalized;
+
+        const existingView = accountViewsRef.current.get(accountId) || {};
+        const existingPages =
+          existingView.starredMailboxPageStates ||
+          createStarredMailboxPageStates();
+        const existingItems = existingPages[role]?.items || [];
+        const committedItems = append
+          ? appendMailboxItems(existingItems, normalized.items)
+          : normalized.items;
+        commitStarredMailboxPageState(
+          role,
+          {
+            ...normalized.state,
+            items: committedItems,
+            loadMorePhase: "idle",
+            loadMoreError: null,
+          },
+          accountId,
+        );
+        return { ...normalized, items: committedItems };
+      } catch (error) {
+        if (
+          mailboxPageRequestsRef.current.get(requestKey) === requestToken &&
+          !normalizedQuery
+        ) {
+          commitStarredMailboxPageState(
+            role,
+            (current) => ({
+              ...current,
+              loadMorePhase: "retry",
+              loadMoreError: describeError(error, "收藏邮件暂时无法加载"),
+            }),
+            accountId,
+          );
+        }
+        throw error;
+      } finally {
+        if (mailboxPageRequestsRef.current.get(requestKey) === requestToken) {
+          mailboxPageRequestsRef.current.delete(requestKey);
+        }
+      }
+    },
+    [commitStarredMailboxPageState],
+  );
+
   const refreshInbox = useCallback(
     ({
       selectFirst = false,
@@ -2084,6 +2252,9 @@ export function App() {
           selectedMessage: previous.selectedMessage ?? null,
           mailboxPageStates:
             previous.mailboxPageStates || createMailboxPageStates(),
+          starredMailboxPageStates:
+            previous.starredMailboxPageStates ||
+            createStarredMailboxPageStates(),
           mailboxCapabilities: capabilities,
         };
         accountViewsRef.current.set(accountId, view);
@@ -2139,6 +2310,13 @@ export function App() {
             emptyMailboxPageState(),
             accountId,
           );
+          if (starredMailboxRoles.includes(role)) {
+            commitStarredMailboxPageState(
+              role,
+              emptyMailboxPageState({ items: [] }),
+              accountId,
+            );
+          }
           if (activeAccountIdRef.current === accountId) {
             updateMailboxLoadState(role, {
               phase: "ready",
@@ -2157,6 +2335,17 @@ export function App() {
           }),
         ),
       );
+      const starredPageResults =
+        activeAccountIdRef.current === accountId &&
+        activeFolderRef.current === "starred"
+          ? await Promise.allSettled(
+              starredMailboxRoles
+                .filter((role) => capabilityAvailable(capabilities, role))
+                .map((role) =>
+                  loadStarredMailboxRolePage({ accountId, role }),
+                ),
+            )
+          : [];
       const activeLocalResults =
         activeAccountIdRef.current === accountId
           ? await Promise.allSettled([
@@ -2177,11 +2366,14 @@ export function App() {
         selectedMessage: previous.selectedMessage ?? null,
         mailboxPageStates:
           previous.mailboxPageStates || createMailboxPageStates(),
+        starredMailboxPageStates:
+          previous.starredMailboxPageStates ||
+          createStarredMailboxPageStates(),
         mailboxCapabilities: capabilities,
       };
       accountViewsRef.current.set(accountId, view);
       if (
-        [...pageResults, ...activeLocalResults].some(
+        [...pageResults, ...starredPageResults, ...activeLocalResults].some(
           (result) => result.status === "rejected",
         ) &&
         activeAccountIdRef.current === accountId
@@ -2195,7 +2387,9 @@ export function App() {
       refreshOutbox,
       refreshMailboxCapabilities,
       loadMailboxRolePage,
+      loadStarredMailboxRolePage,
       commitMailboxPageState,
+      commitStarredMailboxPageState,
       commitRoleItems,
       showToast,
       updateMailboxLoadState,
@@ -2225,9 +2419,10 @@ export function App() {
         folder === "starred"
           ? appendMailboxItems(
               [],
-              starredMailboxRoles.flatMap(
-                (role) => accountView[mailboxViewField(role)] || [],
-              ),
+              starredMailboxRoles.flatMap((role) => [
+                ...(accountView.starredMailboxPageStates?.[role]?.items || []),
+                ...(accountView[mailboxViewField(role)] || []),
+              ]),
             ).filter((message) => hasFlag(message, "\\Flagged"))
           : accountView[mailboxViewField(folder)] || [];
       setRemoteSearch((previous) => {
@@ -2273,7 +2468,11 @@ export function App() {
             }
             const cursor = append ? previousSource?.nextCursor : null;
             if (append && !cursor) return [role, previousSource];
-            const page = await loadMailboxRolePage({
+            const loadPage =
+              folder === "starred"
+                ? loadStarredMailboxRolePage
+                : loadMailboxRolePage;
+            const page = await loadPage({
               accountId,
               role,
               cursor,
@@ -2379,7 +2578,11 @@ export function App() {
         throw error;
       }
     },
-    [loadMailboxRolePage, mailboxCapabilities],
+    [
+      loadMailboxRolePage,
+      loadStarredMailboxRolePage,
+      mailboxCapabilities,
+    ],
   );
 
   const restoreAccountView = useCallback(
@@ -2395,6 +2598,7 @@ export function App() {
         selectedMessageId: null,
         selectedMessage: null,
         mailboxPageStates: createMailboxPageStates(),
+        starredMailboxPageStates: createStarredMailboxPageStates(),
         mailboxCapabilities: null,
       };
       activeAccountIdRef.current = accountId;
@@ -2410,6 +2614,9 @@ export function App() {
       setSentOutboxFallbacks(restored.sentOutboxFallbacks || []);
       setMailboxPageStates(
         restored.mailboxPageStates || createMailboxPageStates(),
+      );
+      setStarredMailboxPageStates(
+        restored.starredMailboxPageStates || createStarredMailboxPageStates(),
       );
       setMailboxCapabilities(restored.mailboxCapabilities || null);
       setRemoteSearch(null);
@@ -3318,6 +3525,17 @@ export function App() {
             }).catch((error) =>
               reportEventError(error, `${folderLabels[role]}刷新失败`),
             );
+            if (
+              activeFolderRef.current === "starred" &&
+              starredMailboxRoles.includes(role)
+            ) {
+              void loadStarredMailboxRolePage({
+                accountId: targetAccountId,
+                role,
+              }).catch((error) =>
+                reportEventError(error, "收藏邮件刷新失败"),
+              );
+            }
           },
         );
         if (cancelled) mailboxUnlisten();
@@ -3528,6 +3746,7 @@ export function App() {
     invalidateForwardPreparationsForAccount,
     loadAccountView,
     loadMailboxRolePage,
+    loadStarredMailboxRolePage,
     markSentAttention,
     prepareComposerForAccountSwitch,
     refreshDrafts,
@@ -3819,9 +4038,14 @@ export function App() {
     if (activeFolder === "starred") {
       return appendMailboxItems(
         [],
-        [...messages, ...sentMessages, ...archiveMessages].filter((message) =>
-          hasFlag(message, "\\Flagged"),
-        ),
+        [
+          ...starredMailboxRoles.flatMap(
+            (role) => starredMailboxPageStates[role]?.items || [],
+          ),
+          ...messages,
+          ...sentMessages,
+          ...archiveMessages,
+        ].filter((message) => hasFlag(message, "\\Flagged")),
       );
     }
     if (activeFolder === "drafts") {
@@ -3845,6 +4069,7 @@ export function App() {
     query,
     remoteSearch,
     sentMessages,
+    starredMailboxPageStates,
     trashMessages,
   ]);
 
@@ -3915,7 +4140,8 @@ export function App() {
           .filter((role) => capabilityAvailable(mailboxCapabilities, role))
           .map((role) => [
             role,
-            mailboxPageStates[role] || emptyMailboxPageState(),
+            starredMailboxPageStates[role] ||
+              emptyMailboxPageState({ items: [] }),
           ]),
       );
       const states = Object.values(sources);
@@ -3955,6 +4181,7 @@ export function App() {
     mailboxPageStates,
     query,
     remoteSearch,
+    starredMailboxPageStates,
   ]);
 
   const canLoadOlder = useMemo(() => {
@@ -4023,7 +4250,7 @@ export function App() {
           Object.entries(sources)
             .filter(([, source]) => source?.nextCursor && !source.endReached)
             .map(([role, source]) =>
-              loadMailboxRolePage({
+              loadStarredMailboxRolePage({
                 accountId,
                 role,
                 cursor: source.nextCursor,
@@ -4050,6 +4277,7 @@ export function App() {
     activePagination,
     canLoadOlder,
     loadMailboxRolePage,
+    loadStarredMailboxRolePage,
     loadRemoteSearch,
     query,
     remoteSearch,
@@ -4256,12 +4484,21 @@ export function App() {
           ? mailboxCapabilities
           : null);
       void Promise.allSettled(
-        roles
-          .filter((role) => capabilityAvailable(targetCapabilities, role))
-          .map((role) => loadMailboxRolePage({ accountId, role })),
+        roles.flatMap((role) => {
+          if (!capabilityAvailable(targetCapabilities, role)) return [];
+          const refreshes = [loadMailboxRolePage({ accountId, role })];
+          if (starredMailboxRoles.includes(role)) {
+            refreshes.push(loadStarredMailboxRolePage({ accountId, role }));
+          }
+          return refreshes;
+        }),
       );
     },
-    [loadMailboxRolePage, mailboxCapabilities],
+    [
+      loadMailboxRolePage,
+      loadStarredMailboxRolePage,
+      mailboxCapabilities,
+    ],
   );
 
   const executeArchiveMessage = useCallback(async (message, accountId) => {
@@ -4892,6 +5129,18 @@ export function App() {
           )
           .catch(() => {});
       }
+    } else if (folder === "starred" && activeAccountId) {
+      const roles = starredMailboxRoles.filter((role) =>
+        capabilityAvailable(mailboxCapabilities, role),
+      );
+      void Promise.allSettled(
+        roles.map((role) =>
+          loadStarredMailboxRolePage({
+            accountId: activeAccountId,
+            role,
+          }),
+        ),
+      );
     }
   };
   commitFolderChangeRef.current = commitFolderChange;
@@ -5224,7 +5473,10 @@ export function App() {
         );
         synchronizedCount = synchronizedMessageCount(reports);
         await Promise.all(
-          roles.map((role) => loadMailboxRolePage({ accountId, role })),
+          roles.flatMap((role) => [
+            loadMailboxRolePage({ accountId, role }),
+            loadStarredMailboxRolePage({ accountId, role }),
+          ]),
         );
         if (roles.includes("sent")) await refreshOutbox();
       } else if (folder === "drafts") {
@@ -5978,6 +6230,7 @@ export function App() {
         setOutbox([]);
         setSentOutboxFallbacks([]);
         setMailboxPageStates(createMailboxPageStates());
+        setStarredMailboxPageStates(createStarredMailboxPageStates());
         setMailboxCapabilities(null);
         setRemoteSearch(null);
       }
@@ -6026,6 +6279,7 @@ export function App() {
       setOutbox([]);
       setSentOutboxFallbacks([]);
       setMailboxPageStates(createMailboxPageStates());
+      setStarredMailboxPageStates(createStarredMailboxPageStates());
       setMailboxCapabilities(null);
       setRemoteSearch(null);
     }
@@ -6111,6 +6365,7 @@ export function App() {
         selectedMessageId,
         selectedMessage,
         mailboxPageStates,
+        starredMailboxPageStates,
         mailboxCapabilities,
       });
     }

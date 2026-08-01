@@ -463,6 +463,56 @@ describe("MailList pagination and semantics", () => {
     ).toBeNull();
     expect(screen.getByText("会议安排")).toBeTruthy();
     expect(screen.queryByText("已加载 1 封")).toBeNull();
+
+    fireEvent.scroll(surface);
+    expect(onLoadMore).toHaveBeenCalledOnce();
+    Object.defineProperty(surface, "scrollTop", {
+      configurable: true,
+      value: 100,
+    });
+    fireEvent.scroll(surface);
+    Object.defineProperty(surface, "scrollTop", {
+      configurable: true,
+      value: 350,
+    });
+    fireEvent.scroll(surface);
+    expect(onLoadMore).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not retrigger while a still-visible sentinel reconnects after loading", () => {
+    const callbacks = [];
+    const onLoadMore = vi.fn();
+    class MockIntersectionObserver {
+      constructor(callback) {
+        callbacks.push(callback);
+      }
+
+      observe() {}
+
+      disconnect() {}
+    }
+    vi.stubGlobal("IntersectionObserver", MockIntersectionObserver);
+    try {
+      const { rerenderMailList } = renderMailList({
+        messages: [firstMessage],
+        onLoadMore,
+        loadMoreState: "idle",
+        scrollStateKey: "account-a:starred",
+      });
+      act(() => callbacks[0]([{ isIntersecting: true }]));
+      expect(onLoadMore).toHaveBeenCalledOnce();
+
+      rerenderMailList({ loadMoreState: "loading" });
+      rerenderMailList({ loadMoreState: "idle" });
+      act(() => callbacks.at(-1)([{ isIntersecting: true }]));
+      expect(onLoadMore).toHaveBeenCalledOnce();
+
+      act(() => callbacks.at(-1)([{ isIntersecting: false }]));
+      act(() => callbacks.at(-1)([{ isIntersecting: true }]));
+      expect(onLoadMore).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("keeps pagination state silent after a failed automatic attempt", () => {

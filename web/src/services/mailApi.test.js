@@ -307,6 +307,57 @@ describe("mailApi desktop IPC contract", () => {
     ]);
   });
 
+  it("maps dedicated Starred source pages to their narrow desktop commands", async () => {
+    const page = {
+      items: [{ id: OPAQUE_MESSAGE_ID, flags: ["\\Flagged"] }],
+      end_reached: true,
+    };
+    ipc.invoke.mockResolvedValue(page);
+    const { mailApi } = await import("./mailApi.js");
+
+    await expect(
+      mailApi.listStarredMailboxPage(
+        "account-a",
+        "inbox",
+        null,
+        25,
+        "needle",
+      ),
+    ).resolves.toEqual(page);
+    await expect(
+      mailApi.loadOlderStarredMailboxPage(
+        "account-a",
+        "inbox",
+        "starred-cursor-1",
+        25,
+        "needle",
+      ),
+    ).resolves.toEqual(page);
+
+    expect(ipc.invoke.mock.calls).toEqual([
+      [
+        "list_starred_mailbox_page",
+        {
+          accountId: "account-a",
+          role: "inbox",
+          cursor: null,
+          pageSize: 25,
+          query: "needle",
+        },
+      ],
+      [
+        "load_older_starred_mailbox_page",
+        {
+          accountId: "account-a",
+          role: "inbox",
+          cursor: "starred-cursor-1",
+          pageSize: 25,
+          query: "needle",
+        },
+      ],
+    ]);
+  });
+
   it("passes mailbox bcc and explicit outbox recipient groups through unchanged", async () => {
     const mailboxPage = {
       items: [
@@ -850,6 +901,35 @@ describe("mailApi desktop IPC contract", () => {
     expect(inbox.items[0]).not.toHaveProperty("mailbox");
     expect(inbox.items[0]).not.toHaveProperty("uid");
     expect(inbox.items[0]).not.toHaveProperty("body_text");
+
+    const firstStarredPage = await mailApi.listStarredMailboxPage(
+      "demo-primary",
+      "inbox",
+      null,
+      1,
+      null,
+    );
+    expect(firstStarredPage.items).toHaveLength(1);
+    expect(firstStarredPage.items[0].flags).toContain("\\Flagged");
+    expect(firstStarredPage.next_cursor).toBeTruthy();
+    const secondStarredPage = await mailApi.loadOlderStarredMailboxPage(
+      "demo-primary",
+      "inbox",
+      firstStarredPage.next_cursor,
+      1,
+      null,
+    );
+    expect(secondStarredPage.items).toHaveLength(1);
+    expect(secondStarredPage.items[0].flags).toContain("\\Flagged");
+    await expect(
+      mailApi.loadOlderMailboxPage(
+        "demo-primary",
+        "inbox",
+        firstStarredPage.next_cursor,
+        1,
+        null,
+      ),
+    ).rejects.toThrow("分页游标");
 
     await expect(
       mailApi.setMessageSeen("demo-message-01", true),

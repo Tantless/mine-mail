@@ -63,10 +63,13 @@ impl MailboxMessageScope {
         }
     }
 
-    fn bounded_search_query(self, window: UidSearchWindow) -> String {
+    fn bounded_search_query(self, window: UidSearchWindow, flagged_only: bool) -> String {
+        let flag = if flagged_only { " FLAGGED" } else { "" };
         match self {
-            Self::All => window.query(),
-            Self::GmailArchive => format!("{} {GMAIL_ARCHIVE_SEARCH}", window.query()),
+            Self::All => format!("{}{flag}", window.query()),
+            Self::GmailArchive => {
+                format!("{} {GMAIL_ARCHIVE_SEARCH}{flag}", window.query())
+            }
         }
     }
 }
@@ -500,6 +503,27 @@ impl ImapConnection {
         page_size: usize,
         scope: MailboxMessageScope,
     ) -> Result<OlderUidSearchPage> {
+        self.search_uids_before_with_filter(before_uid, page_size, scope, false)
+            .await
+    }
+
+    pub async fn search_flagged_uids_before_with_scope(
+        &mut self,
+        before_uid: u32,
+        page_size: usize,
+        scope: MailboxMessageScope,
+    ) -> Result<OlderUidSearchPage> {
+        self.search_uids_before_with_filter(before_uid, page_size, scope, true)
+            .await
+    }
+
+    async fn search_uids_before_with_filter(
+        &mut self,
+        before_uid: u32,
+        page_size: usize,
+        scope: MailboxMessageScope,
+        flagged_only: bool,
+    ) -> Result<OlderUidSearchPage> {
         validate_history_page_size(page_size)?;
         let Some(window) = older_uid_search_window(before_uid) else {
             return Ok(OlderUidSearchPage {
@@ -510,7 +534,8 @@ impl ImapConnection {
         };
         let uids = timeout(
             COMMAND_TIMEOUT,
-            self.session.uid_search(scope.bounded_search_query(window)),
+            self.session
+                .uid_search(scope.bounded_search_query(window, flagged_only)),
         )
         .await
         .map_err(|_| MailError::Timeout {
@@ -1827,11 +1852,24 @@ mod tests {
             r#"X-GM-RAW "in:archive -in:sent -in:drafts -in:spam -in:trash""#
         );
         assert_eq!(
-            scope.bounded_search_query(UidSearchWindow {
-                lower: 4_001,
-                upper: 5_000,
-            }),
+            scope.bounded_search_query(
+                UidSearchWindow {
+                    lower: 4_001,
+                    upper: 5_000,
+                },
+                false,
+            ),
             r#"UID 4001:5000 X-GM-RAW "in:archive -in:sent -in:drafts -in:spam -in:trash""#
+        );
+        assert_eq!(
+            scope.bounded_search_query(
+                UidSearchWindow {
+                    lower: 4_001,
+                    upper: 5_000,
+                },
+                true,
+            ),
+            r#"UID 4001:5000 X-GM-RAW "in:archive -in:sent -in:drafts -in:spam -in:trash" FLAGGED"#
         );
     }
 

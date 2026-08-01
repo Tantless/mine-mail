@@ -4,6 +4,7 @@ const demoPageSizeMax = 100;
 const demoQueryCharsMax = 256;
 const demoAccountId = "demo-primary";
 const demoPageRoles = new Set(["inbox", "sent", "archive", "trash"]);
+const demoStarredPageRoles = new Set(["inbox", "sent", "archive"]);
 const demoSyncRoles = new Set([
   "inbox",
   "sent",
@@ -187,9 +188,10 @@ function demoMailboxPage(
   cursor = null,
   pageSize = 50,
   query = null,
+  flaggedOnly = false,
 ) {
   requireDemoAccount(accountId);
-  requireDemoRole(role, demoPageRoles);
+  requireDemoRole(role, flaggedOnly ? demoStarredPageRoles : demoPageRoles);
   const normalizedQuery = normalizeDemoPageInput(pageSize, query);
   let offset = 0;
   if (cursor) {
@@ -198,7 +200,8 @@ function demoMailboxPage(
       !context ||
       context.accountId !== accountId ||
       context.role !== role ||
-      context.query !== normalizedQuery
+      context.query !== normalizedQuery ||
+      context.flaggedOnly !== flaggedOnly
     ) {
       throw new Error("分页游标无效或已过期");
     }
@@ -206,6 +209,13 @@ function demoMailboxPage(
   }
   const candidates = state.messages
     .filter((message) => demoRoleForMessage(message) === role)
+    .filter(
+      (message) =>
+        !flaggedOnly ||
+        (message.flags || []).some(
+          (flag) => flag.toLocaleLowerCase() === "\\flagged".toLocaleLowerCase(),
+        ),
+    )
     .filter((message) => demoMessageMatchesQuery(message, normalizedQuery));
   const selected = candidates.slice(offset, offset + pageSize);
   const nextOffset = offset + selected.length;
@@ -215,6 +225,7 @@ function demoMailboxPage(
         accountId,
         role,
         query: normalizedQuery,
+        flaggedOnly,
         offset: nextOffset,
       })
     : null;
@@ -497,6 +508,30 @@ function createDemoActions(
         cursor,
         pageSize,
         query,
+      );
+    },
+
+    listStarredMailboxPage(accountId, role, cursor, pageSize, query) {
+      return demoMailboxPage(
+        state,
+        accountId,
+        role,
+        cursor,
+        pageSize,
+        query,
+        true,
+      );
+    },
+
+    loadOlderStarredMailboxPage(accountId, role, cursor, pageSize, query) {
+      return demoMailboxPage(
+        state,
+        accountId,
+        role,
+        cursor,
+        pageSize,
+        query,
+        true,
       );
     },
 

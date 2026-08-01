@@ -96,6 +96,12 @@ pub(crate) struct MailboxHistory {
     pub remote_total: Option<u32>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct StarredMailboxHistory {
+    pub before_uid: Option<u32>,
+    pub complete: bool,
+}
+
 /// One durable move/delete intent. It intentionally has no foreign key to
 /// `messages`, so UIDVALIDITY reset and cache reconciliation cannot erase an
 /// operation that still needs remote reconciliation.
@@ -152,6 +158,7 @@ struct MessageCursorPayload {
     uid: Option<u32>,
     id: Option<i64>,
     remote_before_uid: u32,
+    flagged_only: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -161,6 +168,7 @@ pub(crate) struct MessagePageCursorContext {
     pub role: MailboxRole,
     pub uid_validity: Option<u32>,
     pub remote_before_uid: Option<u32>,
+    pub flagged_only: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -281,6 +289,9 @@ impl Repository {
                  history_before_uid INTEGER,
                  history_complete INTEGER NOT NULL DEFAULT 0
                      CHECK (history_complete IN (0, 1)),
+                 starred_history_before_uid INTEGER,
+                 starred_history_complete INTEGER NOT NULL DEFAULT 0
+                     CHECK (starred_history_complete IN (0, 1)),
                  remote_total INTEGER,
                  PRIMARY KEY (account_id, name),
                  FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
@@ -493,6 +504,8 @@ impl Repository {
                  message_row_id INTEGER,
                  remote_before_uid INTEGER NOT NULL CHECK (remote_before_uid > 0),
                  query_normalized TEXT NOT NULL,
+                 flagged_only INTEGER NOT NULL DEFAULT 0
+                     CHECK (flagged_only IN (0, 1)),
                  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
                  CHECK (
                      (sort_at IS NULL AND uid IS NULL AND message_row_id IS NULL)
@@ -573,6 +586,7 @@ impl Repository {
         migrate_managed_attachment_digests_v17(&connection)?;
         migrate_message_body_cache_v18(&connection)?;
         migrate_message_contact_emails_v19(&connection)?;
+        migrate_starred_history_v20(&connection)?;
         connection.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_drafts_remote_identity
                  ON drafts(account_id, remote_mailbox, remote_uid);
@@ -582,7 +596,7 @@ impl Repository {
              CREATE INDEX IF NOT EXISTS idx_messages_body_cache_lru
                  ON messages(account_id, body_last_accessed_at, id)
                  WHERE body_fetched = 1;
-             PRAGMA user_version = 19;",
+             PRAGMA user_version = 20;",
         )?;
         Ok(repository)
     }
@@ -744,6 +758,29 @@ impl Repository {
             .map_err(Into::into)
     }
 
+    pub(crate) fn starred_mailbox_history(
+        &self,
+        account_id: &str,
+        mailbox: &str,
+    ) -> Result<Option<StarredMailboxHistory>> {
+        let connection = self.connection()?;
+        connection
+            .query_row(
+                "SELECT starred_history_before_uid, starred_history_complete
+                 FROM mailboxes
+                 WHERE account_id = ?1 AND name = ?2",
+                params![account_id, mailbox],
+                |row| {
+                    Ok(StarredMailboxHistory {
+                        before_uid: row.get(0)?,
+                        complete: row.get(1)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
     #[cfg(test)]
     pub(crate) fn update_mailbox_history(
         &self,
@@ -789,26 +826,13 @@ impl Repository {
         complete: bool,
         remote_total: Option<u32>,
     ) -> Result<bool> {
-        if expected_uid_validity == 0
-            || expected_before_uid == Some(0)
-            || next_before_uid == Some(0)
-        {
-            return Err(MailError::Validation(
-                "the mailbox history cursor is invalid".to_owned(),
-            ));
-        }
-        if let (Some(expected), Some(next)) = (expected_before_uid, next_before_uid)
-            && next >= expected
-        {
-            return Err(MailError::Validation(
-                "the mailbox history cursor must move to an older UID bound".to_owned(),
-            ));
-        }
-        if expected_before_uid.is_some() && next_before_uid.is_none() && !complete {
-            return Err(MailError::Validation(
-                "an unfinished mailbox history scan cannot discard its UID bound".to_owned(),
-            ));
-        }
+        validate_history_advance(
+            expected_uid_validity,
+            expected_before_uid,
+            next_before_uid,
+            complete,
+            "mailbox history",
+        )?;
         let connection = self.connection()?;
         let changed = connection.execute(
             "UPDATE mailboxes
@@ -830,6 +854,48 @@ impl Repository {
                 next_before_uid,
                 complete,
                 remote_total,
+            ],
+        )?;
+        Ok(changed == 1)
+    }
+
+    /// Advances the independent remote `\Flagged` discovery boundary. A
+    /// starred scan must never mark ordinary message history as complete.
+    pub(crate) fn advance_starred_mailbox_history(
+        &self,
+        expected_account_id: &str,
+        mailbox: &str,
+        expected_uid_validity: u32,
+        expected_before_uid: Option<u32>,
+        next_before_uid: Option<u32>,
+        complete: bool,
+    ) -> Result<bool> {
+        validate_history_advance(
+            expected_uid_validity,
+            expected_before_uid,
+            next_before_uid,
+            complete,
+            "starred mailbox history",
+        )?;
+        let connection = self.connection()?;
+        let changed = connection.execute(
+            "UPDATE mailboxes
+             SET starred_history_before_uid = CASE
+                     WHEN starred_history_complete = 1 THEN starred_history_before_uid
+                     ELSE ?5
+                 END,
+                 starred_history_complete = MAX(starred_history_complete, ?6)
+             WHERE account_id = ?1 AND name = ?2
+               AND uid_validity = ?3
+               AND starred_history_before_uid IS ?4
+               AND (starred_history_complete = 0 OR ?6 = 1)",
+            params![
+                expected_account_id,
+                mailbox,
+                expected_uid_validity,
+                expected_before_uid,
+                next_before_uid,
+                complete,
             ],
         )?;
         Ok(changed == 1)
@@ -1014,7 +1080,9 @@ impl Repository {
         transaction.execute(
             "UPDATE mailboxes SET uid_validity = NULL, uid_next = NULL,
                  highest_uid = NULL, highest_modseq = NULL, last_synced_at = NULL,
-                 history_before_uid = NULL, history_complete = 0, remote_total = NULL
+                 history_before_uid = NULL, history_complete = 0,
+                 starred_history_before_uid = NULL, starred_history_complete = 0,
+                 remote_total = NULL
              WHERE account_id = ?1 AND name = ?2",
             params![account_id, mailbox],
         )?;
@@ -2787,6 +2855,29 @@ impl Repository {
         page_size: usize,
         query: Option<&str>,
     ) -> Result<MessagePage> {
+        self.list_mailbox_page_filtered(account_id, role, cursor, page_size, query, false)
+    }
+
+    pub(crate) fn list_starred_mailbox_page(
+        &self,
+        account_id: &str,
+        role: MailboxRole,
+        cursor: Option<&MessagePageCursor>,
+        page_size: usize,
+        query: Option<&str>,
+    ) -> Result<MessagePage> {
+        self.list_mailbox_page_filtered(account_id, role, cursor, page_size, query, true)
+    }
+
+    fn list_mailbox_page_filtered(
+        &self,
+        account_id: &str,
+        role: MailboxRole,
+        cursor: Option<&MessagePageCursor>,
+        page_size: usize,
+        query: Option<&str>,
+        flagged_only: bool,
+    ) -> Result<MessagePage> {
         let page_size = validate_page_size(page_size)?;
         let query = normalize_search_query(query)?;
         let capability = self.mailbox_capability(account_id, role)?;
@@ -2811,9 +2902,17 @@ impl Repository {
                     entity: "mailbox",
                     id: format!("{account_id}:{}", bounded_diagnostic_id(&mailbox)),
                 })?;
-        let history = self
-            .mailbox_history(account_id, &mailbox)?
-            .unwrap_or_default();
+        let (history_before_uid, history_complete) = if flagged_only {
+            let history = self
+                .starred_mailbox_history(account_id, &mailbox)?
+                .unwrap_or_default();
+            (history.before_uid, history.complete)
+        } else {
+            let history = self
+                .mailbox_history(account_id, &mailbox)?
+                .unwrap_or_default();
+            (history.before_uid, history.complete)
+        };
         let connection = self.connection()?;
         let decoded_cursor = cursor
             .map(|cursor| {
@@ -2825,6 +2924,7 @@ impl Repository {
                     role,
                     state.uid_validity,
                     query.as_deref().unwrap_or_default(),
+                    flagged_only,
                 )
             })
             .transpose()?;
@@ -2839,6 +2939,7 @@ impl Repository {
             decoded_cursor.as_ref(),
             search_pattern.as_deref(),
             fetch_limit,
+            flagged_only,
         )?;
         candidates.extend(query_pending_page_candidates(
             &connection,
@@ -2847,6 +2948,7 @@ impl Repository {
             decoded_cursor.as_ref(),
             search_pattern.as_deref(),
             fetch_limit,
+            flagged_only,
         )?);
         candidates.sort_by(compare_page_candidates);
         let has_more_local = candidates.len() > page_size;
@@ -2857,7 +2959,7 @@ impl Repository {
             .collect::<Vec<_>>();
         let remote_history_state = if has_more_local {
             RemoteHistoryState::NotChecked
-        } else if history.complete {
+        } else if history_complete {
             RemoteHistoryState::Complete
         } else {
             RemoteHistoryState::MayHaveMore
@@ -2879,8 +2981,7 @@ impl Repository {
                     .map(|cursor| (cursor.sort_at.clone(), cursor.uid, cursor.id))
                     .unwrap_or((None, None, None))
             });
-            let remote_before_uid = history
-                .before_uid
+            let remote_before_uid = history_before_uid
                 .or(state.uid_next)
                 .or_else(|| state.highest_uid.and_then(|uid| uid.checked_add(1)))
                 .unwrap_or(1);
@@ -2896,6 +2997,7 @@ impl Repository {
                     uid,
                     id,
                     remote_before_uid,
+                    flagged_only,
                 },
             )?)
         };
@@ -2921,6 +3023,17 @@ impl Repository {
         self.list_mailbox_page(account_id, role, Some(cursor), page_size, query)
     }
 
+    pub(crate) fn load_older_starred_mailbox_page(
+        &self,
+        account_id: &str,
+        role: MailboxRole,
+        cursor: &MessagePageCursor,
+        page_size: usize,
+        query: Option<&str>,
+    ) -> Result<MessagePage> {
+        self.list_starred_mailbox_page(account_id, role, Some(cursor), page_size, query)
+    }
+
     /// Extracts only the bounded server-history context needed by the backend.
     /// Callers still validate the cursor again through `list_mailbox_page` after
     /// synchronizing older summaries.
@@ -2936,6 +3049,7 @@ impl Repository {
             role: payload.role,
             uid_validity: payload.uid_validity,
             remote_before_uid: Some(payload.remote_before_uid),
+            flagged_only: payload.flagged_only,
         })
     }
 
@@ -6482,6 +6596,31 @@ fn migrate_message_contact_emails_v19(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn migrate_starred_history_v20(connection: &Connection) -> Result<()> {
+    let mailbox_columns = [
+        ("starred_history_before_uid", "INTEGER"),
+        (
+            "starred_history_complete",
+            "INTEGER NOT NULL DEFAULT 0 CHECK (starred_history_complete IN (0, 1))",
+        ),
+    ];
+    for (column, declaration) in mailbox_columns {
+        if !table_has_column(connection, "mailboxes", column)? {
+            connection.execute_batch(&format!(
+                "ALTER TABLE mailboxes ADD COLUMN {column} {declaration};"
+            ))?;
+        }
+    }
+    if !table_has_column(connection, "message_page_cursors", "flagged_only")? {
+        connection.execute_batch(
+            "ALTER TABLE message_page_cursors
+             ADD COLUMN flagged_only INTEGER NOT NULL DEFAULT 0
+             CHECK (flagged_only IN (0, 1));",
+        )?;
+    }
+    Ok(())
+}
+
 fn flags_with_pending_updates(
     connection: &Connection,
     account_id: &str,
@@ -7051,6 +7190,33 @@ fn unavailable_message_page(remote_history_state: RemoteHistoryState) -> Message
     }
 }
 
+fn validate_history_advance(
+    expected_uid_validity: u32,
+    expected_before_uid: Option<u32>,
+    next_before_uid: Option<u32>,
+    complete: bool,
+    label: &str,
+) -> Result<()> {
+    if expected_uid_validity == 0 || expected_before_uid == Some(0) || next_before_uid == Some(0) {
+        return Err(MailError::Validation(format!(
+            "the {label} cursor is invalid"
+        )));
+    }
+    if let (Some(expected), Some(next)) = (expected_before_uid, next_before_uid)
+        && next >= expected
+    {
+        return Err(MailError::Validation(format!(
+            "the {label} cursor must move to an older UID bound"
+        )));
+    }
+    if expected_before_uid.is_some() && next_before_uid.is_none() && !complete {
+        return Err(MailError::Validation(format!(
+            "an unfinished {label} scan cannot discard its UID bound"
+        )));
+    }
+    Ok(())
+}
+
 fn issue_message_cursor(
     connection: &Connection,
     payload: MessageCursorPayload,
@@ -7065,8 +7231,9 @@ fn issue_message_cursor(
     connection.execute(
         "INSERT INTO message_page_cursors (
              token, account_id, role, mailbox, uid_validity,
-             sort_at, uid, message_row_id, remote_before_uid, query_normalized
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+             sort_at, uid, message_row_id, remote_before_uid, query_normalized,
+             flagged_only
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         params![
             token,
             payload.account_id,
@@ -7078,6 +7245,7 @@ fn issue_message_cursor(
             payload.id,
             payload.remote_before_uid,
             payload.query_normalized,
+            payload.flagged_only,
         ],
     )?;
     Ok(MessagePageCursor::new(token))
@@ -7091,7 +7259,7 @@ fn load_message_cursor(
     let payload = connection
         .query_row(
             "SELECT account_id, mailbox, role, uid_validity, query_normalized,
-                    sort_at, uid, message_row_id, remote_before_uid
+                    sort_at, uid, message_row_id, remote_before_uid, flagged_only
              FROM message_page_cursors
              WHERE token = ?1
                AND created_at >= unixepoch() - ?2",
@@ -7107,6 +7275,7 @@ fn load_message_cursor(
                     uid: row.get(6)?,
                     id: row.get(7)?,
                     remote_before_uid: row.get(8)?,
+                    flagged_only: row.get(9)?,
                 })
             },
         )
@@ -7124,6 +7293,7 @@ fn load_and_validate_message_cursor(
     role: MailboxRole,
     uid_validity: Option<u32>,
     query_normalized: &str,
+    flagged_only: bool,
 ) -> Result<MessageCursorPayload> {
     let payload = load_message_cursor(connection, cursor)?;
     if payload.account_id != account_id
@@ -7131,6 +7301,7 @@ fn load_and_validate_message_cursor(
         || payload.role != role
         || payload.uid_validity != uid_validity
         || payload.query_normalized != query_normalized
+        || payload.flagged_only != flagged_only
     {
         return Err(invalid_message_cursor());
     }
@@ -7197,6 +7368,7 @@ fn query_regular_page_candidates(
     cursor: Option<&MessageCursorPayload>,
     search_pattern: Option<&str>,
     limit: usize,
+    flagged_only: bool,
 ) -> Result<Vec<PageCandidate>> {
     let sql = format!(
         "SELECT {ALIASED_MESSAGE_SUMMARY_COLUMNS}, m.public_id,
@@ -7211,6 +7383,16 @@ fn query_regular_page_candidates(
                  AND p.source_mailbox = m.mailbox
                  AND p.source_uid = m.uid
                  AND p.source_uid_validity = :uid_validity
+           )
+           AND (
+               :flagged_only = 0
+               OR EXISTS (
+                   SELECT 1
+                   FROM json_each(CASE
+                       WHEN json_valid(m.flags_json) THEN m.flags_json ELSE '[]'
+                   END) AS message_flag
+                   WHERE lower(CAST(message_flag.value AS TEXT)) = lower(:flagged_name)
+               )
            )
            AND (
                :search_pattern IS NULL
@@ -7242,6 +7424,8 @@ fn query_regular_page_candidates(
         ":mailbox": mailbox,
         ":uid_validity": uid_validity,
         ":search_pattern": search_pattern,
+        ":flagged_only": flagged_only,
+        ":flagged_name": "\\Flagged",
         ":cursor_sort": cursor.and_then(|cursor| cursor.sort_at.as_deref()),
         ":cursor_uid": cursor.and_then(|cursor| cursor.uid),
         ":cursor_id": cursor.and_then(|cursor| cursor.id),
@@ -7274,6 +7458,7 @@ fn query_pending_page_candidates(
     cursor: Option<&MessageCursorPayload>,
     search_pattern: Option<&str>,
     limit: usize,
+    flagged_only: bool,
 ) -> Result<Vec<PageCandidate>> {
     let sql = format!(
         "SELECT {ALIASED_MESSAGE_SUMMARY_COLUMNS}, m.public_id,
@@ -7294,6 +7479,16 @@ fn query_pending_page_candidates(
            AND p.destination_reconciled = 0
            AND p.status IN (
                'pending', 'in_flight', 'confirmed', 'needs_attention', 'outcome_unknown'
+           )
+           AND (
+               :flagged_only = 0
+               OR EXISTS (
+                   SELECT 1
+                   FROM json_each(CASE
+                       WHEN json_valid(m.flags_json) THEN m.flags_json ELSE '[]'
+                   END) AS message_flag
+                   WHERE lower(CAST(message_flag.value AS TEXT)) = lower(:flagged_name)
+               )
            )
            AND (
                :search_pattern IS NULL
@@ -7324,6 +7519,8 @@ fn query_pending_page_candidates(
         ":account_id": account_id,
         ":destination_role": role.as_str(),
         ":search_pattern": search_pattern,
+        ":flagged_only": flagged_only,
+        ":flagged_name": "\\Flagged",
         ":cursor_sort": cursor.and_then(|cursor| cursor.sort_at.as_deref()),
         ":cursor_uid": cursor.and_then(|cursor| cursor.uid),
         ":cursor_id": cursor.and_then(|cursor| cursor.id),
@@ -8744,7 +8941,7 @@ mod tests {
 
     use super::{
         DraftRecord, MailboxHistory, MailboxState, NewDraftAttachment, Repository,
-        migrate_message_previews_v10,
+        StarredMailboxHistory, migrate_message_previews_v10,
     };
     use crate::{
         AccountConfig, AttachmentDisposition, AttachmentMeta, ComposeFormat, Draft, ForwardContext,
@@ -11478,6 +11675,125 @@ mod tests {
     }
 
     #[test]
+    fn starred_pages_filter_flags_and_keep_their_cursor_and_history_isolated() {
+        let (_directory, repository, account) = setup();
+        initialize_mailbox(
+            &repository,
+            &account.account_id,
+            MailboxRole::Inbox,
+            "INBOX",
+            91,
+        );
+        repository
+            .update_mailbox_history(
+                &account.account_id,
+                "INBOX",
+                &MailboxHistory {
+                    before_uid: Some(1),
+                    complete: true,
+                    remote_total: Some(6),
+                },
+            )
+            .expect("ordinary history");
+        for uid in 1..=6 {
+            let mut message = message_with_identity(
+                &account.account_id,
+                "INBOX",
+                uid,
+                "2026-07-21T09:00:00Z",
+                &format!("Message {uid}"),
+            );
+            if uid % 2 == 0 {
+                message.flags = vec!["\\Flagged".to_owned()];
+            }
+            repository.upsert_message(&message).expect("message");
+        }
+
+        let first = repository
+            .list_starred_mailbox_page(&account.account_id, MailboxRole::Inbox, None, 1, None)
+            .expect("first starred page");
+        assert_eq!(first.items[0].message.uid, 6);
+        let starred_cursor = first.next_cursor.as_ref().expect("starred cursor");
+        assert!(
+            repository
+                .message_page_cursor_context(starred_cursor)
+                .expect("starred cursor context")
+                .flagged_only
+        );
+        let second = repository
+            .load_older_starred_mailbox_page(
+                &account.account_id,
+                MailboxRole::Inbox,
+                starred_cursor,
+                1,
+                None,
+            )
+            .expect("second starred page");
+        assert_eq!(second.items[0].message.uid, 4);
+        assert!(
+            repository
+                .load_older_mailbox_page(
+                    &account.account_id,
+                    MailboxRole::Inbox,
+                    starred_cursor,
+                    1,
+                    None,
+                )
+                .is_err()
+        );
+
+        let ordinary = repository
+            .list_mailbox_page(&account.account_id, MailboxRole::Inbox, None, 1, None)
+            .expect("ordinary page");
+        let ordinary_cursor = ordinary.next_cursor.as_ref().expect("ordinary cursor");
+        assert!(
+            repository
+                .load_older_starred_mailbox_page(
+                    &account.account_id,
+                    MailboxRole::Inbox,
+                    ordinary_cursor,
+                    1,
+                    None,
+                )
+                .is_err()
+        );
+
+        assert!(
+            repository
+                .advance_starred_mailbox_history(
+                    &account.account_id,
+                    "INBOX",
+                    91,
+                    None,
+                    Some(50),
+                    false,
+                )
+                .expect("advance starred history")
+        );
+        assert_eq!(
+            repository
+                .mailbox_history(&account.account_id, "INBOX")
+                .expect("ordinary history query")
+                .expect("ordinary history row"),
+            MailboxHistory {
+                before_uid: Some(1),
+                complete: true,
+                remote_total: Some(6),
+            }
+        );
+        assert_eq!(
+            repository
+                .starred_mailbox_history(&account.account_id, "INBOX")
+                .expect("starred history query")
+                .expect("starred history row"),
+            StarredMailboxHistory {
+                before_uid: Some(50),
+                complete: false,
+            }
+        );
+    }
+
+    #[test]
     fn page_cursor_rejects_cross_account_folder_epoch_and_search_reuse() {
         let (_directory, repository, account) = setup();
         initialize_mailbox(
@@ -13242,7 +13558,7 @@ mod tests {
         let version: u32 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("schema version");
-        assert_eq!(version, 19);
+        assert_eq!(version, 20);
         assert!(
             connection
                 .execute(
@@ -13299,7 +13615,17 @@ mod tests {
         let version: u32 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("schema version");
-        assert_eq!(version, 19);
+        assert_eq!(version, 20);
+        assert!(
+            super::table_has_column(&connection, "mailboxes", "starred_history_before_uid")
+                .unwrap()
+        );
+        assert!(
+            super::table_has_column(&connection, "mailboxes", "starred_history_complete").unwrap()
+        );
+        assert!(
+            super::table_has_column(&connection, "message_page_cursors", "flagged_only").unwrap()
+        );
         assert!(super::table_has_column(&connection, "messages", "bcc_json").unwrap());
         let seen_targets = {
             let mut statement = connection
@@ -13446,7 +13772,7 @@ mod tests {
                     .expect("schema version connection")
                     .pragma_query_value(None, "user_version", |row| row.get::<_, u32>(0))
                     .expect("schema version"),
-                19
+                20
             );
 
             assert_eq!(
@@ -14185,7 +14511,7 @@ mod tests {
         let version: u32 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("schema version");
-        assert_eq!(version, 19);
+        assert_eq!(version, 20);
         for column in ["source_cleanup_pending", "destination_reconciled"] {
             assert!(
                 super::table_has_column(&connection, "pending_message_actions", column).unwrap()
@@ -14302,7 +14628,7 @@ mod tests {
         let version: u32 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("schema version");
-        assert_eq!(version, 19);
+        assert_eq!(version, 20);
         for column in [
             "operation_id",
             "source_uid_validity",
@@ -14451,7 +14777,7 @@ Body' AS BLOB)
         let version: u32 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("schema version");
-        assert_eq!(version, 19);
+        assert_eq!(version, 20);
         for column in [
             "local_version",
             "has_unsupported_content",

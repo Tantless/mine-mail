@@ -291,8 +291,8 @@ export function MailList({
   }, [referenceJump]);
 
   useEffect(() => {
-    if (paginationPhase !== "idle") autoLoadRequestedRef.current = false;
-  }, [paginationPhase]);
+    autoLoadRequestedRef.current = false;
+  }, [scrollStateKey]);
 
   useEffect(() => {
     const root = messageListRef.current;
@@ -308,7 +308,12 @@ export function MailList({
     }
     const observer = new IntersectionObserver(
       (entries) => {
-        if (entries.some((entry) => entry.isIntersecting)) requestOlderPage();
+        const isIntersecting = entries.some((entry) => entry.isIntersecting);
+        if (!isIntersecting) {
+          autoLoadRequestedRef.current = false;
+          return;
+        }
+        requestOlderPage();
       },
       {
         root,
@@ -439,7 +444,11 @@ export function MailList({
           }
           const remaining =
             surface.scrollHeight - surface.scrollTop - surface.clientHeight;
-          if (remaining <= 64) requestOlderPage();
+          if (remaining > 64) {
+            autoLoadRequestedRef.current = false;
+          } else {
+            requestOlderPage();
+          }
         }}
       >
         {messages.length ? (

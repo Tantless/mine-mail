@@ -32,6 +32,8 @@ const desktop = vi.hoisted(() => {
       createMailboxRole: vi.fn(),
       listMailboxPage: vi.fn(),
       loadOlderMailboxPage: vi.fn(),
+      listStarredMailboxPage: vi.fn(),
+      loadOlderStarredMailboxPage: vi.fn(),
       syncMailbox: vi.fn(),
       fetchMailboxMessage: vi.fn(),
       saveMessageAttachment: vi.fn(),
@@ -1504,6 +1506,35 @@ describe("Mine Mail desktop state bridge", () => {
         summary(index + 1, `Progress mail ${index + 1}`),
       ),
     );
+    desktop.mailApi.listStarredMailboxPage.mockImplementation(
+      async (accountId, role, cursor, pageSize, query) => {
+        const page = await desktop.mailApi.listMailboxPage(
+          accountId,
+          role,
+          cursor,
+          pageSize,
+          query,
+        );
+        return {
+          ...page,
+          items: page.items.filter((item) =>
+            (item.flags || []).some(
+              (flag) => flag.toLocaleLowerCase() === "\\flagged",
+            ),
+          ),
+        };
+      },
+    );
+    desktop.mailApi.loadOlderStarredMailboxPage.mockImplementation(
+      async (accountId, role, cursor, pageSize, query) =>
+        desktop.mailApi.listStarredMailboxPage(
+          accountId,
+          role,
+          cursor,
+          pageSize,
+          query,
+        ),
+    );
 
     await act(async () => {
       desktop.listeners.get("mail:inbox-updated")?.({
@@ -2211,6 +2242,13 @@ describe("Mine Mail desktop state bridge", () => {
     await user.click(await screen.findByRole("button", { name: /已收藏/ }));
     expect(await screen.findByText("Starred Inbox")).toBeTruthy();
     expect(await screen.findByText("Starred Sent")).toBeTruthy();
+    await waitFor(() =>
+      expect(desktop.mailApi.listStarredMailboxPage).toHaveBeenCalledTimes(3),
+    );
+    expect(
+      desktop.mailApi.listStarredMailboxPage.mock.calls.map(([, role]) => role),
+    ).toEqual(expect.arrayContaining(["inbox", "sent", "archive"]));
+    expect(desktop.mailApi.loadOlderMailboxPage).not.toHaveBeenCalled();
 
     await user.click(
       screen.getByRole("button", { name: "取消收藏：Starred Sent" }),

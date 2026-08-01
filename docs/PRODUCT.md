@@ -167,6 +167,9 @@ must be updated here when an intentional product change lands.
   request is pending, a bounded 64 px content-end buffer shows
   **正在加载更多邮件…** without replacing cached rows, changing the selection, or
   resetting the visible scroll position; it contracts after the request settles.
+  Automatic pagination is edge-triggered: one approach to the bottom starts at
+  most one request, and a loading-to-idle render cycle cannot retrigger it while
+  the list end remains visible. Scrolling away from the bottom rearms it.
   Completion and failure add no persistent bottom line. Explicit synchronization
   feedback remains in the shared status band below the tabs. There is no manual
   load-more control or persistent end/empty-state explanation.
@@ -198,7 +201,12 @@ must be updated here when an intentional product change lands.
 - A queued local mutation remains until the server confirms the requested final
   flag state. A transient failure cannot silently discard it.
 - The **已收藏** workspace shows the complete starred aggregate without
-  **全部 / 未读** filter tabs.
+  **全部 / 未读** filter tabs. It merges independent Inbox, Sent, and Archive
+  source pages that contain only effective `\Flagged` summaries. Those pages
+  use cursors and server-history boundaries separate from ordinary folder
+  pagination, and older remote discovery uses bounded IMAP UID searches with
+  the `FLAGGED` criterion. Exhausting or refreshing Starred history must not
+  advance, complete, or invalidate ordinary folder history.
 - Contact **收藏** is a separate local organization feature and must not be
   implemented with IMAP `\Flagged`.
 
@@ -610,6 +618,11 @@ must be updated here when an intentional product change lands.
   `load_older_mailbox_page(account_id, role, cursor, page_size, query?)`, and
   `sync_mailbox(account_id, role) -> { synced }`. The synchronization result
   exposes only the bounded count and never provider mailbox coordinates.
+  Starred aggregation uses the parallel narrow commands
+  `list_starred_mailbox_page(account_id, role, cursor?, page_size, query?)` and
+  `load_older_starred_mailbox_page(account_id, role, cursor, page_size, query?)`;
+  they accept only Inbox, Sent, or Archive and return only effective
+  `\Flagged` summaries.
 - After the user accepts the one-time creation confirmation, the UI calls
   `create_mailbox_role(account_id, role) -> MailboxCapability`. This command
   accepts only `archive` or `trash`, chooses the canonical `Archive` or `Trash`

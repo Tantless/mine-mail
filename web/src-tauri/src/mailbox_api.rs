@@ -285,6 +285,14 @@ fn validate_page_role(role: MailboxRole) -> CommandResult<()> {
     }
 }
 
+fn validate_starred_page_role(role: MailboxRole) -> CommandResult<()> {
+    if matches!(role, MailboxRole::Inbox | MailboxRole::Sent | MailboxRole::Archive) {
+        Ok(())
+    } else {
+        Err("This mailbox does not participate in the starred aggregate.".to_owned())
+    }
+}
+
 fn validate_page_size(page_size: usize) -> CommandResult<()> {
     if (1..=MAX_MESSAGE_PAGE_SIZE).contains(&page_size) {
         Ok(())
@@ -577,6 +585,93 @@ pub(crate) async fn load_older_mailbox_page(
     };
     match network
         .load_older_mailbox_page(&account_id, role, &cursor, page_size, query.as_deref())
+        .await
+    {
+        Ok(page) => Ok(page_with_prefetch(&backend, &account_id, page)),
+        Err(error) if is_offline_history_error(&error) => Ok(page_with_prefetch(
+            &backend,
+            &account_id,
+            offline_page(local),
+        )),
+        Err(error) => Err(safe_mail_error(error)),
+    }
+}
+
+#[tauri::command]
+pub(crate) async fn list_starred_mailbox_page(
+    backend: State<'_, BackendState>,
+    account_id: String,
+    role: MailboxRole,
+    cursor: Option<String>,
+    page_size: usize,
+    query: Option<String>,
+) -> CommandResult<MessagePageDto> {
+    validate_account_id(&account_id)?;
+    validate_starred_page_role(role)?;
+    validate_page_size(page_size)?;
+    let cursor = parse_cursor(cursor, false)?;
+    let query = normalize_query(query)?;
+    let page = backend
+        .local_for(&account_id)?
+        .list_starred_mailbox_page(
+            &account_id,
+            role,
+            cursor.as_ref(),
+            page_size,
+            query.as_deref(),
+        )
+        .map_err(safe_mail_error)?;
+    Ok(page_with_prefetch(&backend, &account_id, page))
+}
+
+#[tauri::command]
+pub(crate) async fn load_older_starred_mailbox_page(
+    account: State<'_, AccountRuntime>,
+    backend: State<'_, BackendState>,
+    account_id: String,
+    role: MailboxRole,
+    cursor: String,
+    page_size: usize,
+    query: Option<String>,
+) -> CommandResult<MessagePageDto> {
+    validate_account_id(&account_id)?;
+    validate_starred_page_role(role)?;
+    validate_page_size(page_size)?;
+    let cursor = parse_cursor(Some(cursor), true)?.expect("required cursor was validated");
+    let query = normalize_query(query)?;
+    let local = backend
+        .local_for(&account_id)?
+        .list_starred_mailbox_page(
+            &account_id,
+            role,
+            Some(&cursor),
+            page_size,
+            query.as_deref(),
+        )
+        .map_err(safe_mail_error)?;
+    if local.has_more_local
+        || local.remote_history_state != RemoteHistoryState::MayHaveMore
+        || query.is_some()
+    {
+        return Ok(page_with_prefetch(&backend, &account_id, local));
+    }
+
+    let _ = account.refresh_oauth_backends(&backend).await;
+    let Ok(network) = backend.network_for(&account_id) else {
+        return Ok(page_with_prefetch(
+            &backend,
+            &account_id,
+            offline_page(local),
+        ));
+    };
+    match network
+        .load_older_starred_mailbox_page(
+            &account_id,
+            role,
+            &cursor,
+            page_size,
+            query.as_deref(),
+        )
         .await
     {
         Ok(page) => Ok(page_with_prefetch(&backend, &account_id, page)),
@@ -990,7 +1085,7 @@ mod tests {
         MailboxBodySegmentDto, MailboxCapabilityDto, MailboxMessageDto, MailboxSyncReportDto,
         MessagePageDto, is_offline_history_error, normalize_query, offline_page, parse_cursor,
         validate_account_id, validate_attachment_id, validate_message_id, validate_page_role,
-        validate_page_size,
+        validate_page_size, validate_starred_page_role,
     };
     use crate::{
         AttachmentMetaDto, BodyRenderMode, BodySegmentConfidenceDto, BodySegmentDto,
@@ -1051,6 +1146,10 @@ mod tests {
         assert!(validate_page_role(MailboxRole::Inbox).is_ok());
         assert!(validate_page_role(MailboxRole::Trash).is_ok());
         assert!(validate_page_role(MailboxRole::Drafts).is_err());
+        assert!(validate_starred_page_role(MailboxRole::Inbox).is_ok());
+        assert!(validate_starred_page_role(MailboxRole::Sent).is_ok());
+        assert!(validate_starred_page_role(MailboxRole::Archive).is_ok());
+        assert!(validate_starred_page_role(MailboxRole::Trash).is_err());
         assert!(
             normalize_query(Some("  needle  ".to_owned()))
                 .is_ok_and(|query| query.as_deref() == Some("needle"))

@@ -1575,6 +1575,28 @@ impl MailBackend {
         Ok(page)
     }
 
+    /// Returns one SQLite-backed `\Flagged` page without scanning ordinary
+    /// unstarred summaries in React.
+    pub fn list_starred_mailbox_page(
+        &self,
+        account_id: &str,
+        role: MailboxRole,
+        cursor: Option<&MessagePageCursor>,
+        page_size: usize,
+        query: Option<&str>,
+    ) -> Result<MessagePage> {
+        self.ensure_account_scope(account_id)?;
+        let mut page = self
+            .repository
+            .list_starred_mailbox_page(account_id, role, cursor, page_size, query)?;
+        if query.is_some_and(|query| !query.trim().is_empty()) && !page.has_more_local {
+            page.remote_history_state = RemoteHistoryState::Complete;
+            page.end_reached = true;
+            page.next_cursor = None;
+        }
+        Ok(page)
+    }
+
     /// Loads an older local page first. Only when SQLite is exhausted does it
     /// perform one bounded UID-window fetch and then re-read the same keyset.
     pub async fn load_older_mailbox_page(
@@ -1585,19 +1607,55 @@ impl MailBackend {
         page_size: usize,
         query: Option<&str>,
     ) -> Result<MessagePage> {
+        self.load_older_mailbox_page_filtered(account_id, role, cursor, page_size, query, false)
+            .await
+    }
+
+    pub async fn load_older_starred_mailbox_page(
+        &self,
+        account_id: &str,
+        role: MailboxRole,
+        cursor: &MessagePageCursor,
+        page_size: usize,
+        query: Option<&str>,
+    ) -> Result<MessagePage> {
+        self.load_older_mailbox_page_filtered(account_id, role, cursor, page_size, query, true)
+            .await
+    }
+
+    async fn load_older_mailbox_page_filtered(
+        &self,
+        account_id: &str,
+        role: MailboxRole,
+        cursor: &MessagePageCursor,
+        page_size: usize,
+        query: Option<&str>,
+        flagged_only: bool,
+    ) -> Result<MessagePage> {
         self.ensure_account_scope(account_id)?;
-        let local = self
-            .repository
-            .load_older_mailbox_page(account_id, role, cursor, page_size, query)?;
+        let local = if flagged_only {
+            self.repository
+                .load_older_starred_mailbox_page(account_id, role, cursor, page_size, query)?
+        } else {
+            self.repository
+                .load_older_mailbox_page(account_id, role, cursor, page_size, query)?
+        };
         if local.has_more_local
             || local.remote_history_state != RemoteHistoryState::MayHaveMore
             || query.is_some_and(|query| !query.trim().is_empty())
         {
-            return self.list_mailbox_page(account_id, role, Some(cursor), page_size, query);
+            return if flagged_only {
+                self.list_starred_mailbox_page(account_id, role, Some(cursor), page_size, query)
+            } else {
+                self.list_mailbox_page(account_id, role, Some(cursor), page_size, query)
+            };
         }
 
         let context = self.repository.message_page_cursor_context(cursor)?;
-        if context.account_id != account_id || context.role != role {
+        if context.account_id != account_id
+            || context.role != role
+            || context.flagged_only != flagged_only
+        {
             return Err(MailError::Validation(
                 "the message cursor does not match this account and mailbox role".to_owned(),
             ));
@@ -1612,11 +1670,33 @@ impl MailBackend {
                 RemoteHistoryState::Unavailable,
             ));
         }
-        let history = self
-            .repository
-            .mailbox_history(account_id, &context.mailbox)?
+        let ordinary_history = (!flagged_only)
+            .then(|| {
+                self.repository
+                    .mailbox_history(account_id, &context.mailbox)
+            })
+            .transpose()?
+            .flatten()
             .unwrap_or_default();
-        if history.complete {
+        let starred_history = flagged_only
+            .then(|| {
+                self.repository
+                    .starred_mailbox_history(account_id, &context.mailbox)
+            })
+            .transpose()?
+            .flatten()
+            .unwrap_or_default();
+        let history_before_uid = if flagged_only {
+            starred_history.before_uid
+        } else {
+            ordinary_history.before_uid
+        };
+        let history_complete = if flagged_only {
+            starred_history.complete
+        } else {
+            ordinary_history.complete
+        };
+        if history_complete {
             return Ok(page_with_remote_state(local, RemoteHistoryState::Complete));
         }
 
@@ -1653,7 +1733,7 @@ impl MailBackend {
         }
         // The unsigned client cursor is never trusted to choose a server UID
         // bound. Only SQLite's account/mailbox history state may advance it.
-        let before_uid = earlier_history_bound(history.before_uid, selected.uid_next);
+        let before_uid = earlier_history_bound(history_before_uid, selected.uid_next);
         let Some(before_uid) = before_uid else {
             if selected.exists > 0 {
                 let _ = connection.logout().await;
@@ -1662,25 +1742,46 @@ impl MailBackend {
                     RemoteHistoryState::Unavailable,
                 ));
             }
-            self.repository.advance_mailbox_history(
-                account_id,
-                &context.mailbox,
-                selected_uid_validity,
-                history.before_uid,
-                None,
-                true,
-                Some(selected.exists),
-            )?;
+            if flagged_only {
+                self.repository.advance_starred_mailbox_history(
+                    account_id,
+                    &context.mailbox,
+                    selected_uid_validity,
+                    starred_history.before_uid,
+                    None,
+                    true,
+                )?;
+            } else {
+                self.repository.advance_mailbox_history(
+                    account_id,
+                    &context.mailbox,
+                    selected_uid_validity,
+                    ordinary_history.before_uid,
+                    None,
+                    true,
+                    Some(selected.exists),
+                )?;
+            }
             let _ = connection.logout().await;
-            return self
-                .repository
-                .load_older_mailbox_page(account_id, role, cursor, page_size, query);
+            return if flagged_only {
+                self.repository
+                    .load_older_starred_mailbox_page(account_id, role, cursor, page_size, query)
+            } else {
+                self.repository
+                    .load_older_mailbox_page(account_id, role, cursor, page_size, query)
+            };
         };
         let fetch_limit = normalized_message_page_size(page_size).min(HISTORY_FETCH_PAGE_SIZE);
-        let searched = match connection
-            .search_uids_before_with_scope(before_uid, fetch_limit, scope)
-            .await
-        {
+        let searched_result = if flagged_only {
+            connection
+                .search_flagged_uids_before_with_scope(before_uid, fetch_limit, scope)
+                .await
+        } else {
+            connection
+                .search_uids_before_with_scope(before_uid, fetch_limit, scope)
+                .await
+        };
+        let searched = match searched_result {
             Ok(searched) => searched,
             Err(_) => {
                 let _ = connection.logout().await;
@@ -1696,21 +1797,37 @@ impl MailBackend {
                 return Ok(page_with_remote_state(local, RemoteHistoryState::Offline));
             }
         }
-        self.repository.advance_mailbox_history(
-            account_id,
-            &context.mailbox,
-            selected_uid_validity,
-            history.before_uid,
-            searched.next_before_uid,
-            searched.reached_uid_floor,
-            match scope {
-                MailboxMessageScope::All => Some(selected.exists),
-                MailboxMessageScope::GmailArchive => history.remote_total,
-            },
-        )?;
+        if flagged_only {
+            self.repository.advance_starred_mailbox_history(
+                account_id,
+                &context.mailbox,
+                selected_uid_validity,
+                starred_history.before_uid,
+                searched.next_before_uid,
+                searched.reached_uid_floor,
+            )?;
+        } else {
+            self.repository.advance_mailbox_history(
+                account_id,
+                &context.mailbox,
+                selected_uid_validity,
+                ordinary_history.before_uid,
+                searched.next_before_uid,
+                searched.reached_uid_floor,
+                match scope {
+                    MailboxMessageScope::All => Some(selected.exists),
+                    MailboxMessageScope::GmailArchive => ordinary_history.remote_total,
+                },
+            )?;
+        }
         let _ = connection.logout().await;
-        self.repository
-            .load_older_mailbox_page(account_id, role, cursor, page_size, query)
+        if flagged_only {
+            self.repository
+                .load_older_starred_mailbox_page(account_id, role, cursor, page_size, query)
+        } else {
+            self.repository
+                .load_older_mailbox_page(account_id, role, cursor, page_size, query)
+        }
     }
 
     /// Derives one contact row per normalized address from all cached message
