@@ -83,7 +83,6 @@
     var(--sidebar-text) 82%,
     var(--color-primary)
   );
-  --account-card-surface: rgba(255, 255, 255, 0.09);
   --account-card-hover-surface: rgba(255, 255, 255, 0.17);
   --account-card-active-surface: color-mix(
     in srgb,
@@ -1544,7 +1543,7 @@ html[data-surface="new-mail-notification"] #root {
   padding: 8px 10px;
   border: 1px solid transparent;
   border-radius: 10px;
-  background: var(--account-card-surface);
+  background: transparent;
   text-align: left;
   cursor: pointer;
   transform: translate3d(0, 0, 0) scale(1);

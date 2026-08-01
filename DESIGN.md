@@ -220,7 +220,9 @@ family. Preserve the relative hierarchy when tuning optical values.
   settings category rail each use one shared selection surface. Changing
   folders, accounts, messages, or settings categories moves that surface from
   the previous row to the next within `--motion-normal`; the rows themselves
-  never move, and reduced-motion mode collapses the transition.
+  never move, and reduced-motion mode collapses the transition. Unselected
+  connected-account rows remain transparent against the sidebar, while hover
+  retains a quiet surface response.
 - A selected row changes both surface and edge; unread state is semantic, not a
   second competing card style.
 - Background refreshes preserve the visible rows and selection. Loading must not

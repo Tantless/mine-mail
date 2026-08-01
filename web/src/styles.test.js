@@ -95,6 +95,17 @@ describe("settings overlay positioning", () => {
   });
 });
 
+describe("account switcher material contract", () => {
+  it("keeps unselected account rows transparent while retaining hover feedback", () => {
+    expect(declarationsFor("\\.account-card")).toMatch(
+      /background:\s*transparent/,
+    );
+    expect(declarationsFor("\\.account-card:hover")).toMatch(
+      /background:\s*var\(--account-card-hover-surface\)/,
+    );
+  });
+});
+
 describe("mail workspace motion contract", () => {
   it("uses center-anchored window motion without horizontal page travel", () => {
     const readerEntering = declarationsFor(
