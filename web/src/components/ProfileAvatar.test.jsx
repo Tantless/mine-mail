@@ -30,6 +30,7 @@ describe("ProfileAvatar", () => {
     expect(trustedBrandForEmail("notifications@github.com")?.id).toBe("github");
     expect(trustedBrandForEmail("security@accounts.google.com")?.id).toBe("google");
     expect(trustedBrandForEmail("notice@163.com")?.id).toBe("netease");
+    expect(trustedBrandForEmail("notice@qq.com")?.id).toBe("tencentqq");
     expect(trustedBrandForEmail("updates@email.openai.com")?.id).toBe("openai");
     expect(trustedBrandForEmail("news@figma.com")?.id).toBe("figma");
     expect(trustedBrandForEmail("hello@unity3d.com")?.id).toBe("unity");
@@ -67,6 +68,11 @@ describe("ProfileAvatar", () => {
         (path) => path.getAttribute("fill"),
       ),
     ).toEqual(["#4285f4", "#34a853", "#fbbc05", "#eb4335"]);
+
+    rerender(<ProfileAvatar email="notice@qq.com" label="QQ 邮箱" />);
+    expect(container.querySelector(".profile-avatar--tencentqq svg path")).toBeTruthy();
+    expect(container.querySelector(".profile-avatar--tencentqq .brand-mark__letters")).toBeNull();
+    expect(screen.getByLabelText("腾讯 QQ")).toBeTruthy();
   });
 
   it("keeps the built-in brand registry complete and unambiguous", () => {

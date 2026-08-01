@@ -51,6 +51,7 @@ const OAUTH_REFRESH_MARGIN_SECONDS: u64 = 300;
 pub(crate) enum AccountProvider {
     #[serde(rename = "163")]
     NetEase163,
+    Qq,
     Gmail,
     Outlook,
     Custom,
@@ -105,6 +106,11 @@ impl AccountMetadata {
                 server("smtp.163.com", 465),
                 SmtpSecurity::ImplicitTls,
             ),
+            AccountProvider::Qq => (
+                server("imap.qq.com", 993),
+                server("smtp.qq.com", 465),
+                SmtpSecurity::ImplicitTls,
+            ),
             AccountProvider::Gmail => (
                 server("imap.gmail.com", 993),
                 server("smtp.gmail.com", 465),
@@ -152,6 +158,11 @@ impl AccountMetadata {
                 .ends_with("@163.com")
         {
             return Err("The 163 preset requires an @163.com address.".to_owned());
+        }
+        if input.provider == AccountProvider::Qq
+            && !input.email.trim().to_ascii_lowercase().ends_with("@qq.com")
+        {
+            return Err("The QQ preset requires an @qq.com address.".to_owned());
         }
 
         if input.provider != AccountProvider::Custom {
@@ -397,6 +408,14 @@ pub(crate) fn account_presets() -> Vec<AccountPresetDto> {
             true,
             "请使用 163 邮箱生成的 IMAP / SMTP 客户端授权密码。",
             "客户端授权密码",
+            false,
+        ),
+        preset_dto(
+            AccountProvider::Qq,
+            "QQ 邮箱",
+            true,
+            "请使用 QQ 邮箱生成的授权码，而不是 QQ 登录密码。",
+            "QQ 邮箱授权码",
             false,
         ),
         preset_dto(
@@ -2077,6 +2096,7 @@ mod tests {
             providers,
             vec![
                 AccountProvider::NetEase163,
+                AccountProvider::Qq,
                 AccountProvider::Gmail,
                 AccountProvider::Custom,
             ]
@@ -2104,6 +2124,29 @@ mod tests {
         assert_eq!(gmail.smtp.port, 465);
         assert_eq!(gmail.smtp_security, SmtpSecurity::ImplicitTls);
         assert_eq!(gmail.authentication, AccountAuthentication::Password);
+
+        let qq = AccountMetadata::preset(AccountProvider::Qq, "demo@qq.com".to_owned())
+            .expect("QQ preset");
+        assert_eq!(qq.imap.host, "imap.qq.com");
+        assert_eq!(qq.imap.port, 993);
+        assert_eq!(qq.smtp.host, "smtp.qq.com");
+        assert_eq!(qq.smtp.port, 465);
+        assert_eq!(qq.smtp_security, SmtpSecurity::ImplicitTls);
+
+        let invalid_qq = ConfigureAccountRequest {
+            provider: AccountProvider::Qq,
+            email: "demo@example.com".to_owned(),
+            secret: "unused".to_owned(),
+            imap_host: None,
+            imap_port: None,
+            smtp_host: None,
+            smtp_port: None,
+            smtp_security: None,
+        };
+        assert_eq!(
+            AccountMetadata::from_input(&invalid_qq).expect_err("QQ requires its own domain"),
+            "The QQ preset requires an @qq.com address."
+        );
 
         let oauth = AccountMetadata::google("demo@gmail.com".to_owned()).expect("Google OAuth");
         assert_eq!(oauth.authentication, AccountAuthentication::GoogleOAuth);

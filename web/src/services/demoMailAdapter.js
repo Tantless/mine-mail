@@ -65,6 +65,12 @@ function createDemoState() {
     accountPresets: [
       { id: "163", label: "163 邮箱", secret_label: "客户端授权密码" },
       {
+        id: "qq",
+        label: "QQ 邮箱",
+        note: "请使用 QQ 邮箱生成的授权码，而不是 QQ 登录密码。",
+        secret_label: "QQ 邮箱授权码",
+      },
+      {
         id: "gmail",
         label: "Gmail",
         oauth: true,

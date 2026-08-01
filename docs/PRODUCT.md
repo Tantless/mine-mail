@@ -28,10 +28,12 @@ must be updated here when an intentional product change lands.
   and tray synchronization still cover every connected account.
 - Account caches, sync cursors, notification baselines, drafts, Outbox items, and
   queued remote mutations are isolated by stable account ID.
-- Provider choices shown when connecting a new account are 163, Gmail, and
-  custom IMAP/SMTP. Outlook is hidden until its Microsoft OAuth 2.0 / Modern
-  Auth path is implemented; the formal interface never shows an unavailable or
-  “coming soon” Outlook provider card.
+- Provider choices shown when connecting a new account are 163, QQ, Gmail, and
+  custom IMAP/SMTP. QQ uses `imap.qq.com:993` and `smtp.qq.com:465` with TLS,
+  the complete `@qq.com` address, and a QQ-generated authorization code rather
+  than the QQ login password. Outlook is hidden until its Microsoft OAuth 2.0 /
+  Modern Auth path is implemented; the formal interface never shows an
+  unavailable or “coming soon” Outlook provider card.
 - A legacy local Outlook account record remains readable for cached mail only.
   Mine Mail preserves its metadata and explains that reconnecting is unsupported,
   but it cannot create a new Outlook account or start password-based network work

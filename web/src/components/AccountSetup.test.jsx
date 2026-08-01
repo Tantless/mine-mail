@@ -5,6 +5,7 @@ import { AccountSetupForm } from "./AccountSetup.jsx";
 
 const presets = [
   { id: "163", label: "163 邮箱", secretLabel: "客户端授权密码", availableInMvp: true },
+  { id: "qq", label: "QQ 邮箱", secretLabel: "QQ 邮箱授权码", availableInMvp: true },
   { id: "gmail", label: "Gmail", oauth: true, secretLabel: "Google OAuth", availableInMvp: true },
   {
     id: "outlook",
@@ -130,7 +131,7 @@ describe("AccountSetupForm", () => {
 
     expect(
       screen.getAllByRole("radio").map((option) => option.textContent),
-    ).toEqual(["163 邮箱", "Gmail", "自定义 IMAP/SMTP"]);
+    ).toEqual(["163 邮箱", "QQ 邮箱", "Gmail", "自定义 IMAP/SMTP"]);
     expect(screen.queryByRole("radio", { name: "Outlook" })).toBeNull();
     expect(screen.queryByText(/OAuth \/ Modern Auth 尚未支持/)).toBeNull();
   });
@@ -151,7 +152,7 @@ describe("AccountSetupForm", () => {
 
     expect(
       screen.getAllByRole("radio").map((option) => option.textContent),
-    ).toEqual(["163 邮箱", "Gmail", "自定义 IMAP/SMTP"]);
+    ).toEqual(["163 邮箱", "QQ 邮箱", "Gmail", "自定义 IMAP/SMTP"]);
     expect(screen.queryByText("Outlook")).toBeNull();
   });
 
@@ -174,6 +175,31 @@ describe("AccountSetupForm", () => {
     expect(screen.queryByPlaceholderText("请输入授权密码")).toBeNull();
     await user.click(screen.getByRole("button", { name: "使用 Google 登录" }));
     expect(onGoogle).toHaveBeenCalledOnce();
+  });
+
+  it("submits QQ accounts with the provider-issued authorization code", async () => {
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    const user = userEvent.setup();
+    render(
+      <AccountSetupForm
+        presets={presets}
+        status={{ configured: false }}
+        submitStatus="idle"
+        error={null}
+        onSubmit={onSubmit}
+      />,
+    );
+
+    await user.click(screen.getByRole("radio", { name: "QQ 邮箱" }));
+    await user.type(screen.getByLabelText("邮箱地址"), "mine@qq.com");
+    await user.type(screen.getByLabelText("QQ 邮箱授权码"), "qq-app-secret");
+    await user.click(screen.getByRole("button", { name: "连接邮箱" }));
+
+    expect(onSubmit).toHaveBeenCalledWith({
+      provider: "qq",
+      email: "mine@qq.com",
+      secret: "qq-app-secret",
+    });
   });
 
   it("uses the themed selector for custom SMTP security", async () => {

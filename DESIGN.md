@@ -455,7 +455,7 @@ family. Preserve the relative hierarchy when tuning optical values.
   Focus moves directly to the input, while cancellation, validation, and progress
   remain tied to that row. Do not use a dialog or full-workspace scrim for this
   routine edit.
-- The formal provider-first list contains 163, Gmail, and custom IMAP/SMTP.
+- The formal provider-first list contains 163, QQ, Gmail, and custom IMAP/SMTP.
   Outlook is absent until its supported Microsoft authentication flow is a
   complete product capability; do not show a disabled or “coming soon” card.
 - Persistent backend health is not decorative chrome. Show only explicit action

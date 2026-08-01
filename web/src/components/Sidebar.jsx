@@ -111,6 +111,7 @@ const themeOptions = [
 
 const providerNames = {
   "163": "163 邮箱",
+  qq: "QQ 邮箱",
   gmail: "Gmail",
   outlook: "Outlook",
   custom: "自定义邮箱",

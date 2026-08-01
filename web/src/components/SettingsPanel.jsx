@@ -73,12 +73,14 @@ const menuItems = [
 
 const fallbackProviders = [
   { id: "163", label: "163 邮箱", description: "使用 163 邮箱客户端授权码连接" },
+  { id: "qq", label: "QQ 邮箱", description: "使用 QQ 邮箱授权码连接" },
   { id: "gmail", label: "Gmail", description: "通过 Google 安全登录" },
   { id: "custom", label: "其他邮箱", description: "手动配置 IMAP / SMTP" },
 ];
 
 const providerNames = {
   "163": "163 邮箱",
+  qq: "QQ 邮箱",
   gmail: "Gmail",
   outlook: "Outlook",
   custom: "自定义邮箱",
@@ -86,6 +88,7 @@ const providerNames = {
 
 const providerDescriptions = {
   "163": "输入 163 邮箱地址，并使用客户端授权码完成连接。",
+  qq: "输入完整 QQ 邮箱地址，并使用 QQ 邮箱生成的授权码完成连接。",
   gmail: "在系统浏览器中完成 Google OAuth 安全登录。",
   custom: "输入邮箱地址、授权信息以及 IMAP / SMTP 服务器配置。",
 };
@@ -201,6 +204,9 @@ function ProviderMark({ provider }) {
   }
   if (provider === "gmail") {
     return <ProfileAvatar className="settings-provider-mark" email="mail@gmail.com" label="Gmail" />;
+  }
+  if (provider === "qq") {
+    return <ProfileAvatar className="settings-provider-mark" email="mail@qq.com" label="QQ 邮箱" />;
   }
   if (provider === "outlook") {
     return (

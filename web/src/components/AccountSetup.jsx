@@ -4,6 +4,7 @@ import { ThemedSelect } from "./ThemedSelect.jsx";
 
 const fallbackPresets = [
   { id: "163", label: "163 邮箱", secret_label: "客户端授权密码" },
+  { id: "qq", label: "QQ 邮箱", secret_label: "QQ 邮箱授权码" },
   { id: "gmail", label: "Gmail", oauth: true, secret_label: "Google OAuth" },
   { id: "custom", label: "自定义 IMAP/SMTP", secret_label: "邮箱密码或授权密码" },
 ];

@@ -201,6 +201,7 @@ describe("SettingsPanel account flow", () => {
         {...panelProps({
           accountPresets: [
             { id: "163", label: "163 邮箱" },
+            { id: "qq", label: "QQ 邮箱" },
             { id: "gmail", label: "Gmail" },
             {
               id: "outlook",
@@ -219,6 +220,7 @@ describe("SettingsPanel account flow", () => {
       .getByRole("heading", { name: "选择邮箱服务商" })
       .closest("section");
     expect(within(providerPage).getByText("163 邮箱")).toBeTruthy();
+    expect(within(providerPage).getByText("QQ 邮箱")).toBeTruthy();
     expect(within(providerPage).getByText("Gmail")).toBeTruthy();
     expect(within(providerPage).getByText("自定义 IMAP/SMTP")).toBeTruthy();
     expect(within(providerPage).queryByText("Outlook")).toBeNull();
