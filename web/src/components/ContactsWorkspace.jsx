@@ -1,13 +1,14 @@
 import {
   AddressBook,
   ArrowLeft,
-  ArrowDownLeft,
-  ArrowUpRight,
+  CaretRight,
   EnvelopeSimple,
   List,
   MagnifyingGlass,
   NotePencil,
+  PaperPlaneTilt,
   Star,
+  Tray,
   UsersThree,
   WarningCircle,
 } from "@phosphor-icons/react";
@@ -62,8 +63,8 @@ function messageTime(message) {
 }
 
 function mailboxRoleLabel(message) {
-  if (message.mailbox_role === "inbox") return "INBOX";
-  if (message.mailbox_role === "sent") return "SENT";
+  if (message.mailbox_role === "inbox") return "收件箱";
+  if (message.mailbox_role === "sent") return "已发送";
   return "";
 }
 
@@ -312,9 +313,9 @@ const ContactMessageRow = memo(function ContactMessageRow({
           aria-hidden="true"
         >
           {outgoing ? (
-            <ArrowUpRight size={18} />
+            <PaperPlaneTilt size={17} weight="regular" />
           ) : (
-            <ArrowDownLeft size={18} />
+            <Tray size={17} weight="regular" />
           )}
         </span>
         <span className="contacts-message-row__copy">
@@ -329,11 +330,16 @@ const ContactMessageRow = memo(function ContactMessageRow({
           <span className="contacts-message-row__preview">
             {message.preview || "暂无摘要"}
           </span>
-          <span className="contacts-message-row__meta">
-            {outgoing ? "发给对方" : "对方发来"}
-            {mailboxLabel ? ` · ${mailboxLabel}` : ""}
-          </span>
+          {mailboxLabel ? (
+            <span className="contacts-message-row__meta">{mailboxLabel}</span>
+          ) : null}
         </span>
+        <CaretRight
+          className="contacts-message-row__open-indicator"
+          size={15}
+          weight="bold"
+          aria-hidden="true"
+        />
       </button>
     </article>
   );

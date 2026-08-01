@@ -12,6 +12,12 @@ function declarationsFor(selectorPattern) {
   return styles.match(new RegExp(`${selectorPattern}\\s*\\{([^}]*)\\}`, "s"))?.[1];
 }
 
+function contactDeclarationsFor(selectorPattern) {
+  return contactsStyles.match(
+    new RegExp(`${selectorPattern}\\s*\\{([^}]*)\\}`, "s"),
+  )?.[1];
+}
+
 function nestedBlockFor(header) {
   const start = styles.indexOf(header);
   if (start < 0) return undefined;
@@ -232,6 +238,31 @@ describe("mail synchronization feedback material contract", () => {
     expect(feedbackIcon).toMatch(/justify-self:\s*start/);
     expect(feedbackIcon).toMatch(/margin-inline-start:\s*9px/);
     expect(entrance).not.toMatch(/transform/);
+  });
+});
+
+describe("contact correspondence history material contract", () => {
+  it("uses one continuous list and theme-colored direction glyphs without icon tiles", () => {
+    const list = contactDeclarationsFor("\\.contacts-message-list");
+    const row = contactDeclarationsFor("\\.contacts-message-row");
+    const direction = contactDeclarationsFor(
+      "\\.contacts-message-row__direction",
+    );
+    const outgoing = contactDeclarationsFor(
+      '\\.contacts-message-row__direction\\[data-outgoing="true"\\]',
+    );
+
+    expect(list).toMatch(/gap:\s*0/);
+    expect(list).toMatch(/border:\s*0/);
+    expect(list).toMatch(/background:\s*transparent/);
+    expect(row).toMatch(/border:\s*0/);
+    expect(row).toMatch(/background:\s*transparent/);
+    expect(direction).toMatch(/background:\s*transparent/);
+    expect(direction).toMatch(/border:\s*0/);
+    expect(direction).toMatch(/box-shadow:\s*none/);
+    expect(direction).toMatch(/color:\s*var\(--color-primary\)/);
+    expect(outgoing).toMatch(/color:\s*var\(--color-primary\)/);
+    expect(direction).not.toMatch(/var\(--color-success\)/);
   });
 });
 

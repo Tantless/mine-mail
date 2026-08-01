@@ -327,11 +327,26 @@ describe("ContactsWorkspace", () => {
   });
 
   it("renders semantic mailbox roles without exposing provider mailbox encoding", () => {
-    renderWorkspace();
+    const { container } = renderWorkspace();
 
-    expect(screen.getByText("对方发来 · INBOX")).toBeTruthy();
-    expect(screen.getByText("发给对方 · SENT")).toBeTruthy();
+    expect(screen.getByText("收件箱")).toBeTruthy();
+    expect(screen.getByText("已发送")).toBeTruthy();
+    expect(screen.queryByText("对方发来")).toBeNull();
+    expect(screen.queryByText("我发出")).toBeNull();
     expect(screen.queryByText(/&XfJT0ZAB-/)).toBeNull();
+    expect(
+      container.querySelector(
+        '.contacts-message-row__direction[data-outgoing="false"]',
+      ),
+    ).toBeTruthy();
+    expect(
+      container.querySelector(
+        '.contacts-message-row__direction[data-outgoing="true"]',
+      ),
+    ).toBeTruthy();
+    expect(
+      container.querySelectorAll(".contacts-message-row__open-indicator"),
+    ).toHaveLength(messages.length);
   });
 
   it("reveals the inline editor and saves a remark with Enter", async () => {

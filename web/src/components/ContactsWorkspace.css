@@ -715,44 +715,50 @@
 
 .contacts-message-list {
   display: grid;
-  gap: 7px;
+  gap: 0;
+  border: 0;
+  background: transparent;
 }
 
 .contacts-message-list > article {
   min-width: 0;
-  contain: layout paint style;
-  contain-intrinsic-size: auto 82px;
+  contain: layout style;
+  contain-intrinsic-size: auto 74px;
   content-visibility: auto;
+}
+
+.contacts-message-list > article + article {
+  border-top: 1px solid color-mix(in srgb, var(--color-divider) 72%, transparent);
 }
 
 .contacts-message-row {
   display: grid;
   width: 100%;
   min-width: 0;
-  grid-template-columns: 36px minmax(0, 1fr);
-  gap: 11px;
-  align-items: start;
-  padding: 13px 14px;
-  border: 1px solid color-mix(in srgb, var(--color-border) 76%, transparent);
-  border-radius: 11px;
-  background: color-mix(in srgb, var(--control-surface) 42%, transparent);
+  min-height: 74px;
+  grid-template-columns: 28px minmax(0, 1fr) 16px;
+  gap: 12px;
+  align-items: center;
+  padding: 11px 13px 11px 10px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
   color: var(--color-text);
   text-align: left;
-  box-shadow: inset 0 1px 0
-    color-mix(in srgb, var(--surface-highlight) 54%, transparent);
   transition:
     background var(--motion-fast),
-    border-color var(--motion-fast),
+    border-radius var(--motion-fast),
     transform 80ms;
 }
 
-.contacts-message-row:hover {
-  border-color: color-mix(
+.contacts-message-row:hover,
+.contacts-message-row:focus-visible {
+  border-radius: var(--row-radius);
+  background: color-mix(
     in srgb,
-    var(--color-primary) 30%,
-    var(--color-border)
+    var(--color-primary) 10%,
+    var(--row-hover-surface)
   );
-  background: color-mix(in srgb, var(--row-hover-surface) 78%, transparent);
 }
 
 .contacts-message-row:active,
@@ -763,25 +769,17 @@
 
 .contacts-message-row__direction {
   display: grid;
-  width: 36px;
-  height: 36px;
+  width: 28px;
+  height: 28px;
   place-items: center;
-  border-radius: 10px;
-  background: color-mix(
-    in srgb,
-    var(--color-primary) 11%,
-    var(--color-control)
-  );
+  border: 0;
+  background: transparent;
   color: var(--color-primary);
+  box-shadow: none;
 }
 
 .contacts-message-row__direction[data-outgoing="true"] {
-  background: color-mix(
-    in srgb,
-    var(--color-success) 11%,
-    var(--color-control)
-  );
-  color: var(--color-success);
+  color: var(--color-primary);
 }
 
 .contacts-message-row__copy {
@@ -824,6 +822,25 @@
 .contacts-message-row__meta {
   color: var(--color-text-muted);
   font-size: 10px;
+}
+
+.contacts-message-row__open-indicator {
+  color: var(--color-text-secondary);
+  opacity: 0;
+  transform: translateX(-2px);
+  transition:
+    opacity var(--motion-fast),
+    transform var(--motion-fast);
+}
+
+.contacts-message-row:hover .contacts-message-row__open-indicator,
+.contacts-message-row:focus-visible .contacts-message-row__open-indicator {
+  opacity: 0.74;
+  transform: translateX(0);
+}
+
+.contacts-message-row:disabled .contacts-message-row__open-indicator {
+  opacity: 0;
 }
 
 .contacts-correspondence-state {
