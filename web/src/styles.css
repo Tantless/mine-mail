@@ -2138,8 +2138,31 @@ html[data-surface="new-mail-notification"] #root {
 }
 
 .mail-pagination-sentinel {
-  display: block;
+  display: flex;
   height: 1px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  overflow: hidden;
+  color: var(--color-text-muted);
+  font-size: 11px;
+  line-height: 1;
+  opacity: 0;
+  white-space: nowrap;
+  transition:
+    height var(--motion-normal) ease-out,
+    opacity var(--motion-fast) ease-out;
+}
+
+.mail-pagination-sentinel[data-state="loading"] {
+  height: 64px;
+  opacity: 1;
+}
+
+.mail-pagination-sentinel[data-state="loading"] svg {
+  flex: 0 0 auto;
+  color: var(--color-primary);
+  animation: spin 850ms linear infinite;
 }
 
 .mail-list {

@@ -626,10 +626,24 @@ describe("release-state semantic styling", () => {
     ).toMatch(/overflow-wrap:\s*anywhere/);
   });
 
-  it("keeps automatic pagination silent and removes persistent folder state chrome", () => {
-    expect(declarationsFor("\\.mail-pagination-sentinel")).toMatch(
-      /height:\s*1px/,
+  it("uses a bounded loading buffer without persistent folder state chrome", () => {
+    const sentinel = declarationsFor("\\.mail-pagination-sentinel");
+    const loading = declarationsFor(
+      '\\.mail-pagination-sentinel\\[data-state="loading"\\]',
     );
+    const loadingIcon = declarationsFor(
+      '\\.mail-pagination-sentinel\\[data-state="loading"\\] svg',
+    );
+    expect(sentinel).toMatch(/height:\s*1px/);
+    expect(sentinel).toMatch(/display:\s*flex/);
+    expect(sentinel).toMatch(/overflow:\s*hidden/);
+    expect(sentinel).toMatch(/color:\s*var\(--color-text-muted\)/);
+    expect(sentinel).toMatch(/height var\(--motion-normal\)/);
+    expect(loading).toMatch(/height:\s*64px/);
+    expect(loading).toMatch(/opacity:\s*1/);
+    expect(loading).not.toMatch(/background|border|box-shadow/);
+    expect(loadingIcon).toMatch(/color:\s*var\(--color-primary\)/);
+    expect(loadingIcon).toMatch(/animation:\s*spin 850ms linear infinite/);
     expect(styles).not.toMatch(/mail-pagination-notice/);
     expect(styles).not.toMatch(/mail-load-progress|empty-list/);
     expect(styles).not.toMatch(

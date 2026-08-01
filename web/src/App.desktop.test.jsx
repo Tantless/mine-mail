@@ -2358,6 +2358,7 @@ describe("Mine Mail desktop state bridge", () => {
       uid: undefined,
       flags: ["\\Seen"],
     };
+    const pendingOlderPage = deferred();
     desktop.mailApi.listMailboxPage.mockImplementation(
       async (_, role, _cursor, _pageSize, query) =>
         role === "inbox" && !query
@@ -2369,8 +2370,8 @@ describe("Mine Mail desktop state bridge", () => {
             })
           : mailboxPage([], role),
     );
-    desktop.mailApi.loadOlderMailboxPage.mockResolvedValue(
-      mailboxPage([older], "inbox"),
+    desktop.mailApi.loadOlderMailboxPage.mockReturnValue(
+      pendingOlderPage.promise,
     );
     render(<App />);
 
@@ -2393,8 +2394,25 @@ describe("Mine Mail desktop state bridge", () => {
         null,
       ),
     );
+    expect(
+      await within(list).findByRole("status", {
+        name: "正在加载更多邮件",
+      }),
+    ).toBeTruthy();
+    expect(screen.getByText("Newest local page")).toBeTruthy();
+    expect(scrollSurface.scrollTop).toBe(350);
+
+    await act(async () => {
+      pendingOlderPage.resolve(mailboxPage([older], "inbox"));
+    });
     expect(await screen.findByText("Older local page")).toBeTruthy();
     expect(screen.getByText("Newest local page")).toBeTruthy();
+    expect(
+      within(list).queryByRole("status", {
+        name: "正在加载更多邮件",
+      }),
+    ).toBeNull();
+    expect(scrollSurface.scrollTop).toBe(350);
     expect(screen.queryByText("已加载 1 封")).toBeNull();
     expect(list.querySelector(".mail-pagination-notice")).toBeNull();
     expect(

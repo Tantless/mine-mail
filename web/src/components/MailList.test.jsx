@@ -422,7 +422,7 @@ describe("MailList state distinctions", () => {
 describe("MailList pagination and semantics", () => {
   afterEach(cleanup);
 
-  it("loads automatically near the bottom without rendering bottom pagination feedback", () => {
+  it("loads automatically near the bottom and shows bounded feedback only while pending", () => {
     const onLoadMore = vi.fn();
     const { container, rerenderMailList } = renderMailList({
       messages: [firstMessage],
@@ -445,12 +445,23 @@ describe("MailList pagination and semantics", () => {
     ).toBeNull();
 
     rerenderMailList({ loadMoreState: "loading" });
-    expect(screen.queryByText("正在加载…")).toBeNull();
+    const feedback = screen.getByRole("status", {
+      name: "正在加载更多邮件",
+    });
+    expect(feedback.textContent).toBe("正在加载更多邮件…");
+    expect(feedback.dataset.state).toBe("loading");
+    expect(feedback.getAttribute("aria-busy")).toBe("true");
+    expect(feedback.querySelector("svg")?.getAttribute("width")).toBe("14");
+    expect(screen.getByText("项目进度")).toBeTruthy();
     expect(container.querySelector(".mail-pagination-notice")).toBeNull();
     rerenderMailList({
       messages: [firstMessage, secondMessage],
       loadMoreState: "idle",
     });
+    expect(
+      screen.queryByRole("status", { name: "正在加载更多邮件" }),
+    ).toBeNull();
+    expect(screen.getByText("会议安排")).toBeTruthy();
     expect(screen.queryByText("已加载 1 封")).toBeNull();
   });
 
@@ -462,6 +473,9 @@ describe("MailList pagination and semantics", () => {
 
     rerenderMailList({ loadMoreState: "loading" });
     rerenderMailList({ loadMoreState: "retry" });
+    expect(
+      screen.queryByRole("status", { name: "正在加载更多邮件" }),
+    ).toBeNull();
     expect(screen.queryByText("加载失败")).toBeNull();
     expect(container.querySelector(".mail-pagination-notice")).toBeNull();
   });
@@ -477,7 +491,9 @@ describe("MailList pagination and semantics", () => {
     expect(screen.queryByText(/无法提供|已显示全部|加载更早/)).toBeNull();
 
     rerenderMailList({ loadMoreState: "complete" });
-    expect(screen.queryByText(/已显示全部|加载更早/)).toBeNull();
+    expect(
+      screen.queryByText(/已显示全部|加载更早|正在加载更多/),
+    ).toBeNull();
   });
 
   it("uses a normal list with native row buttons instead of a partial listbox", async () => {

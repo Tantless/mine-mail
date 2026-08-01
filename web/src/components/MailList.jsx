@@ -219,6 +219,7 @@ export function MailList({
       mailboxCapability.status !== "available",
   );
   const paginationPhase = resolvedPaginationPhase(loadMoreState);
+  const isLoadingMore = paginationPhase === "loading";
   const selectedNavigationKey = messageNavigationKey(selectedMessage);
   const selectedRowKey =
     selectedNavigationKey ||
@@ -561,11 +562,24 @@ export function MailList({
                 );
               })}
             </ul>
-            <span
+            <div
               ref={loadMoreSentinelRef}
               className="mail-pagination-sentinel"
-              aria-hidden="true"
-            />
+              data-state={paginationPhase}
+              role={isLoadingMore ? "status" : undefined}
+              aria-label={isLoadingMore ? "正在加载更多邮件" : undefined}
+              aria-live={isLoadingMore ? "polite" : undefined}
+              aria-atomic={isLoadingMore || undefined}
+              aria-busy={isLoadingMore || undefined}
+              aria-hidden={isLoadingMore ? undefined : "true"}
+            >
+              {isLoadingMore ? (
+                <>
+                  <CircleNotch size={14} weight="regular" aria-hidden="true" />
+                  <span>正在加载更多邮件…</span>
+                </>
+              ) : null}
+            </div>
           </>
         ) : null}
       </div>

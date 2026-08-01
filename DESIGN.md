@@ -316,10 +316,13 @@ family. Preserve the relative hierarchy when tuning optical values.
   navigation model rather than imitating a collapsible desktop column.
 - Inbox, Sent, Archive, and Trash append 50-message keyset pages automatically
   when the list approaches its bottom. There is no manual load-more button or
-  persistent end card. Automatic pagination stays visually silent and never adds
-  a bottom loading/result line; appending or receiving mail preserves selection
-  and scroll position. Explicit synchronization uses the shared status band
-  below the tabs.
+  persistent end card. While the next page is loading, the list end expands into
+  a bounded 64 px buffer with one centered `CircleNotch` and
+  **正在加载更多邮件…**; the user may continue scrolling into that space without
+  replacing cached rows. Appended rows replace the buffer and it then contracts;
+  completion and failure add no persistent bottom line. Appending or receiving
+  mail preserves selection and scroll position. Explicit synchronization uses
+  the shared status band below the tabs.
 - Every explicit folder refresh deepens the list material into one full-width,
   square-edged status band directly below the tabs. The compact band reaches
   through the panel's inline edge seam and is only one tonal step deeper than the

@@ -163,8 +163,11 @@ must be updated here when an intentional product change lands.
   account, folder, epoch, or query.
 - A page distinguishes more SQLite history, more possible server history, an
   unavailable offline history request, and a confirmed end. Approaching the
-  bottom automatically requests the next page of at most 50 messages without a
-  separate bottom loading, completion, or failure line. Explicit synchronization
+  bottom automatically requests the next page of at most 50 messages. While that
+  request is pending, a bounded 64 px content-end buffer shows
+  **正在加载更多邮件…** without replacing cached rows, changing the selection, or
+  resetting the visible scroll position; it contracts after the request settles.
+  Completion and failure add no persistent bottom line. Explicit synchronization
   feedback remains in the shared status band below the tabs. There is no manual
   load-more control or persistent end/empty-state explanation.
 - New arrivals and background refreshes are merged by exact mailbox and UID
