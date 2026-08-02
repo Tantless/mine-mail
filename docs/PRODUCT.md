@@ -736,6 +736,9 @@ must be updated here when an intentional product change lands.
 - **关于 Mine Mail** shows the exact active data directory, total disk use, and
   separate usage for **邮件与本地资料 / 界面与浏览器缓存 / 用户资源 /
   可清理缓存 / 诊断日志 / 其他数据**. Its action label is **更改位置**.
+- **关于 Mine Mail** links the source repository from its update-status line;
+  opening it uses the system default browser so users can review the project or
+  submit feedback through GitHub Issues.
 - A user-selected data directory must be an empty, writable, absolute directory
   on a local disk. Mine Mail rejects network shares, protected system locations,
   and a directory that contains or is contained by the current data directory.

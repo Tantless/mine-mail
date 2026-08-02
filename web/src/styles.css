@@ -6047,6 +6047,22 @@ html[data-surface="new-mail-notification"] #root {
   color: var(--color-danger);
 }
 
+.settings-version-note__link {
+  border-radius: 3px;
+  color: var(--color-primary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.settings-version-note__link:hover {
+  color: var(--color-primary-hover);
+}
+
+.settings-version-note__link:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
 .settings-storage-section {
   display: grid;
   gap: 16px;

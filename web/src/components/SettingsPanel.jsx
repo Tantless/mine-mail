@@ -114,6 +114,8 @@ const productLinks = [
   },
 ];
 
+const sourceRepositoryUrl = "https://github.com/Tantless/mine-mail";
+
 function normalizeProvider(preset) {
   const id = preset.id ?? preset.provider ?? preset.provider_id;
   const fallback = fallbackProviders.find((provider) => provider.id === id);
@@ -1348,10 +1350,25 @@ export function SettingsPanel({
                 aria-live={updateStatus === "error" ? "assertive" : "polite"}
                 aria-atomic="true"
               >
-                {updateMessage ||
-                  (updateClient.isSupported
-                    ? "更新来自 GitHub Releases。"
-                    : "浏览器预览不执行更新，请使用 Mine Mail 桌面应用。")}
+                {updateMessage || (
+                  <>
+                    项目在{" "}
+                    <a
+                      className="settings-version-note__link"
+                      href={sourceRepositoryUrl}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        onOpenExternalLink(sourceRepositoryUrl);
+                      }}
+                    >
+                      Tantless/mine-mail
+                    </a>
+                    {" "}上开源，如有问题与反馈，可以在 GitHub Issues 中提出。
+                    {!updateClient.isSupported
+                      ? " 浏览器预览不执行更新，请使用 Mine Mail 桌面应用。"
+                      : null}
+                  </>
+                )}
               </p>
 
               <section

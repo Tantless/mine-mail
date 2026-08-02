@@ -581,7 +581,7 @@ describe("SettingsPanel account flow", () => {
     expect(document.activeElement).toBe(checkUpdate);
   });
 
-  it("keeps the legal resources as compact links inside the version card", async () => {
+  it("opens the legal resources and source repository as external links", async () => {
     const user = userEvent.setup();
     const onOpenExternalLink = vi.fn();
     render(<SettingsPanel {...panelProps({ onOpenExternalLink })} />);
@@ -593,10 +593,18 @@ describe("SettingsPanel account flow", () => {
     const privacyLink = screen.getByRole("link", { name: "隐私政策" });
     const termsLink = screen.getByRole("link", { name: "服务条款" });
     const deletionLink = screen.getByRole("link", { name: "数据删除指南" });
+    const sourceRepositoryLink = screen.getByRole("link", {
+      name: "Tantless/mine-mail",
+    });
 
     expect(privacyLink.closest(".settings-version-card")).toBeTruthy();
     expect(termsLink.closest(".settings-version-card")).toBeTruthy();
     expect(deletionLink.closest(".settings-version-card")).toBeTruthy();
+    expect(sourceRepositoryLink.closest(".settings-version-note")).toBeTruthy();
+    expect(sourceRepositoryLink.getAttribute("href")).toBe(
+      "https://github.com/Tantless/mine-mail",
+    );
+    expect(screen.getByText(/如有问题与反馈，可以在 GitHub Issues 中提出/)).toBeTruthy();
     expect(screen.queryByText("隐私与数据")).toBeNull();
     expect(
       screen.queryByText("了解 Gmail 数据、本地缓存和凭据的处理方式"),
@@ -606,6 +614,12 @@ describe("SettingsPanel account flow", () => {
 
     expect(onOpenExternalLink).toHaveBeenCalledWith(
       "https://minemail.tantless.online/privacy/",
+    );
+
+    await user.click(sourceRepositoryLink);
+
+    expect(onOpenExternalLink).toHaveBeenLastCalledWith(
+      "https://github.com/Tantless/mine-mail",
     );
   });
 
