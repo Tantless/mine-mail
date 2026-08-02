@@ -13,8 +13,7 @@ Mine Mail 仅为最新的正式版本系列提供安全更新。
 
 请勿通过公开 Issue 报告尚未修复的安全漏洞。请使用 GitHub Security
 Advisories 的[私密漏洞报告](https://github.com/Tantless/mine-mail/security/advisories/new)
-提交问题。正式发布 v1.0.0 前必须启用该入口；如果入口不可用，请暂缓提交，且不要
-公开披露漏洞细节。
+提交问题。如果入口暂时不可用，请暂缓提交，且不要公开披露漏洞细节。
 
 报告中请尽量提供：
 

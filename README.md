@@ -11,8 +11,8 @@ Tauri 2、React 19、Rust 与 SQLite 构建。
 - 凭据保存在操作系统凭据存储中；邮件内容按不可信输入处理并在 Rust 中清理。
 
 Mine Mail v1.0.0 是首个正式版本，面向 Windows 11 x64、macOS 14 及以上版本的
-Apple Silicon Mac，以及 Linux x64 发布。各平台安装包通过同一套发布门禁完成
-构建、签名和验收。
+Apple Silicon Mac，以及 Linux x64 发布。各平台安装包由统一发布流程构建和校验；
+具体签名、公证与服务商授权状态以对应版本的发行说明为准。
 
 
 
