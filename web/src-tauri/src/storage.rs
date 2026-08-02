@@ -1042,22 +1042,25 @@ fn is_remote_windows_drive(path: &Path) -> bool {
     unsafe { GetDriveTypeW(root.as_ptr()) == 4 }
 }
 
+#[cfg(target_os = "windows")]
 fn is_protected_install_location(path: &Path) -> bool {
-    #[cfg(target_os = "windows")]
-    {
-        for variable in [
-            "ProgramFiles",
-            "ProgramFiles(x86)",
-            "ProgramW6432",
-            "SystemRoot",
-        ] {
-            if let Some(protected) = env::var_os(variable) {
-                if windows_path_starts_with(path, Path::new(&protected)) {
-                    return true;
-                }
+    for variable in [
+        "ProgramFiles",
+        "ProgramFiles(x86)",
+        "ProgramW6432",
+        "SystemRoot",
+    ] {
+        if let Some(protected) = env::var_os(variable) {
+            if windows_path_starts_with(path, Path::new(&protected)) {
+                return true;
             }
         }
     }
+    false
+}
+
+#[cfg(not(target_os = "windows"))]
+fn is_protected_install_location(_path: &Path) -> bool {
     false
 }
 

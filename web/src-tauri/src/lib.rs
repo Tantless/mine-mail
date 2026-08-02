@@ -2158,7 +2158,7 @@ fn initialize_state(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Erro
 
 fn build_configured_windows(
     app: &tauri::App,
-    runtime_data_root: &std::path::Path,
+    _runtime_data_root: &std::path::Path,
 ) -> tauri::Result<()> {
     for window_config in &app.config().app.windows {
         let app_origin = configured_webview_app_origin(
@@ -2184,7 +2184,7 @@ fn build_configured_windows(
                 },
             );
         #[cfg(target_os = "windows")]
-        let builder = builder.data_directory(runtime_data_root.join("EBWebView"));
+        let builder = builder.data_directory(_runtime_data_root.join("EBWebView"));
         builder.build()?;
     }
     Ok(())

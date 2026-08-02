@@ -113,35 +113,13 @@ impl NotificationSound {
         }
     }
 
+    #[cfg(target_os = "windows")]
     pub(super) fn system_resource_name(self) -> &'static str {
-        #[cfg(target_os = "windows")]
-        {
-            return match self {
-                Self::Default => "Notification.Default",
-                Self::Mail => "Notification.Mail",
-                Self::Im => "Notification.IM",
-                Self::Reminder => "Notification.Reminder",
-            };
-        }
-
-        #[cfg(target_os = "macos")]
-        {
-            return match self {
-                Self::Default => "default",
-                Self::Mail => "Glass",
-                Self::Im => "Ping",
-                Self::Reminder => "Hero",
-            };
-        }
-
-        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-        {
-            match self {
-                Self::Default => "default",
-                Self::Mail => "message-new-email",
-                Self::Im => "message",
-                Self::Reminder => "dialog-information",
-            }
+        match self {
+            Self::Default => "Notification.Default",
+            Self::Mail => "Notification.Mail",
+            Self::Im => "Notification.IM",
+            Self::Reminder => "Notification.Reminder",
         }
     }
 }
