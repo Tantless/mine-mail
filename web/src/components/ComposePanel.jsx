@@ -3,6 +3,7 @@ import {
   Suspense,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -43,6 +44,8 @@ const composeMinimizedHeight = 44;
 const composeMinimizedBottom = 18;
 const composeGeometryStorageKey = "mine-mail-compose-geometry-v1";
 const resizeDirections = ["n", "ne", "e", "se", "s", "sw", "w", "nw"];
+const composeWindowMotionFallbackMs = 260;
+const composeWindowMotionFallbackPaddingMs = 80;
 const dialogFocusableSelector = [
   "a[href]",
   "button:not([disabled])",
@@ -280,6 +283,95 @@ function minimizedGeometry() {
   };
 }
 
+function prefersReducedMotion() {
+  return (
+    typeof window.matchMedia === "function" &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches
+  );
+}
+
+function composeWindowMotionDuration(panel) {
+  const rawDuration = getComputedStyle(panel)
+    .getPropertyValue("--motion-window")
+    .trim();
+  if (rawDuration.endsWith("ms")) {
+    const milliseconds = Number.parseFloat(rawDuration);
+    if (Number.isFinite(milliseconds)) return milliseconds;
+  }
+  if (rawDuration.endsWith("s")) {
+    const seconds = Number.parseFloat(rawDuration);
+    if (Number.isFinite(seconds)) return seconds * 1000;
+  }
+  return composeWindowMotionFallbackMs;
+}
+
+function usableMotionRect(rect) {
+  return (
+    rect &&
+    [rect.left, rect.top, rect.width, rect.height].every(Number.isFinite) &&
+    rect.width > 0 &&
+    rect.height > 0
+  );
+}
+
+function applyPanelGeometry(panel, geometry) {
+  if (!panel) return;
+  panel.style.left = `${geometry.x}px`;
+  panel.style.top = `${geometry.y}px`;
+  panel.style.width = `${geometry.width}px`;
+  panel.style.height = `${geometry.height}px`;
+}
+
+function geometryForInteraction(interaction) {
+  const dx = interaction.clientX - interaction.pointerX;
+  const dy = interaction.clientY - interaction.pointerY;
+  const origin = interaction.geometry;
+
+  if (interaction.kind === "drag") {
+    return constrainGeometry({
+      ...origin,
+      x: origin.x + dx,
+      y: origin.y + dy,
+    });
+  }
+
+  const limits = geometryLimits();
+  const originRight = origin.x + origin.width;
+  const originBottom = origin.y + origin.height;
+  let left = origin.x;
+  let top = origin.y;
+  let right = originRight;
+  let bottom = originBottom;
+  const direction = interaction.direction;
+
+  if (direction.includes("w")) {
+    left = clamp(origin.x + dx, composeMargin, originRight - limits.minWidth);
+  }
+  if (direction.includes("e")) {
+    right = clamp(
+      originRight + dx,
+      origin.x + limits.minWidth,
+      limits.viewport.width - composeMargin,
+    );
+  }
+  if (direction.includes("n")) {
+    top = clamp(
+      origin.y + dy,
+      composeTopBoundary,
+      originBottom - limits.minHeight,
+    );
+  }
+  if (direction.includes("s")) {
+    bottom = clamp(
+      originBottom + dy,
+      origin.y + limits.minHeight,
+      limits.viewport.height - composeMargin,
+    );
+  }
+
+  return { x: left, y: top, width: right - left, height: bottom - top };
+}
+
 function ComposeIconSegment({
   label,
   value,
@@ -456,6 +548,7 @@ export function ComposePanel({
   const [isMinimized, setIsMinimized] = useState(
     Boolean(initiallyMinimized),
   );
+  const [hasEntered, setHasEntered] = useState(false);
   const [interactionKind, setInteractionKind] = useState(null);
   const [windowMotion, setWindowMotion] = useState(null);
   const [isReplyExpanded, setIsReplyExpanded] = useState(false);
@@ -467,6 +560,9 @@ export function ComposePanel({
   );
   const lastRestoreRequestRef = useRef(restoreRequest);
   const dialogRef = useRef(null);
+  const pendingWindowMotionRef = useRef(null);
+  const windowMotionRef = useRef(null);
+  const windowMotionTokenRef = useRef(0);
   const restoreFocusRef = useRef(
     typeof document !== "undefined" &&
       document.activeElement instanceof HTMLElement
@@ -501,84 +597,207 @@ export function ComposePanel({
     });
   }, []);
 
-  const endInteraction = useCallback(() => {
-    if (interactionRef.current && !isMinimized) {
-      persistGeometry(geometryRef.current);
+  const applyInteractionFrame = useCallback(() => {
+    const interaction = interactionRef.current;
+    const panel = dialogRef.current;
+    if (!interaction || !panel) return null;
+
+    interaction.rafId = null;
+    const nextGeometry = geometryForInteraction(interaction);
+
+    if (interaction.kind === "drag") {
+      panel.style.translate = `${nextGeometry.x - interaction.geometry.x}px ${
+        nextGeometry.y - interaction.geometry.y
+      }px`;
+    } else {
+      applyPanelGeometry(panel, nextGeometry);
     }
-    interactionRef.current = null;
-    setInteractionKind(null);
-    document.body.style.removeProperty("user-select");
-    document.body.style.removeProperty("cursor");
-  }, [isMinimized]);
+
+    return nextGeometry;
+  }, []);
+
+  const endInteraction = useCallback(
+    ({ commit = true } = {}) => {
+      const interaction = interactionRef.current;
+      if (interaction?.rafId !== null && interaction?.rafId !== undefined) {
+        window.cancelAnimationFrame?.(interaction.rafId);
+        interaction.rafId = null;
+      }
+
+      if (interaction && commit && !isMinimized) {
+        const finalGeometry = applyInteractionFrame() || interaction.geometry;
+        const panel = dialogRef.current;
+        applyPanelGeometry(panel, finalGeometry);
+        panel?.style.removeProperty("translate");
+        geometryRef.current = finalGeometry;
+        setGeometry(finalGeometry);
+        persistGeometry(finalGeometry);
+      } else {
+        dialogRef.current?.style.removeProperty("translate");
+      }
+
+      interactionRef.current = null;
+      if (commit) setInteractionKind(null);
+      document.body.style.removeProperty("user-select");
+      document.body.style.removeProperty("cursor");
+    },
+    [applyInteractionFrame, isMinimized],
+  );
 
   useEffect(() => {
     const onPointerMove = (event) => {
       const interaction = interactionRef.current;
       if (!interaction) return;
-      const dx = event.clientX - interaction.pointerX;
-      const dy = event.clientY - interaction.pointerY;
-      const origin = interaction.geometry;
+      interaction.clientX = event.clientX;
+      interaction.clientY = event.clientY;
+      if (interaction.rafId !== null) return;
+      if (typeof window.requestAnimationFrame !== "function") {
+        applyInteractionFrame();
+        return;
+      }
+      interaction.rafId = window.requestAnimationFrame(applyInteractionFrame);
+    };
+    const onPointerEnd = () => endInteraction();
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerEnd);
+    window.addEventListener("pointercancel", onPointerEnd);
+    return () => {
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerEnd);
+      window.removeEventListener("pointercancel", onPointerEnd);
+      endInteraction({ commit: false });
+    };
+  }, [applyInteractionFrame, endInteraction]);
 
-      if (interaction.kind === "drag") {
-        commitGeometry(
-          constrainGeometry({
-            ...origin,
-            x: origin.x + dx,
-            y: origin.y + dy,
-          }),
+  const finishWindowMotion = useCallback((token = null, updateState = true) => {
+    const motion = windowMotionRef.current;
+    if (token !== null && motion?.token !== token) return;
+    if (motion?.rafId !== null && motion?.rafId !== undefined) {
+      window.cancelAnimationFrame?.(motion.rafId);
+    }
+    if (motion?.timerId !== null && motion?.timerId !== undefined) {
+      window.clearTimeout(motion.timerId);
+    }
+    pendingWindowMotionRef.current = null;
+    windowMotionRef.current = null;
+
+    const panel = dialogRef.current;
+    if (panel) {
+      panel.style.removeProperty("transform");
+      panel.style.removeProperty("transform-origin");
+      delete panel.dataset.windowMotionStage;
+    }
+    if (updateState) setWindowMotion(null);
+  }, []);
+
+  const beginWindowMotion = useCallback(
+    ({ phase, targetGeometry, targetMinimized }) => {
+      const panel = dialogRef.current;
+      const startRect = panel?.getBoundingClientRect?.() || null;
+      finishWindowMotion();
+
+      geometryRef.current = targetGeometry;
+      setGeometry(targetGeometry);
+      setIsMinimized(targetMinimized);
+      setHasEntered(true);
+
+      if (prefersReducedMotion()) {
+        setWindowMotion(null);
+        return;
+      }
+
+      if (!usableMotionRect(startRect)) {
+        const motion = {
+          token: windowMotionTokenRef.current + 1,
+          phase,
+          startRect: null,
+          rafId: null,
+          timerId: null,
+        };
+        windowMotionTokenRef.current = motion.token;
+        windowMotionRef.current = motion;
+        setWindowMotion(phase);
+        motion.timerId = window.setTimeout(
+          () => finishWindowMotion(motion.token),
+          composeWindowMotionFallbackMs + composeWindowMotionFallbackPaddingMs,
         );
         return;
       }
 
-      const limits = geometryLimits();
-      const originRight = origin.x + origin.width;
-      const originBottom = origin.y + origin.height;
-      let left = origin.x;
-      let top = origin.y;
-      let right = originRight;
-      let bottom = originBottom;
-      const direction = interaction.direction;
+      const motion = {
+        token: windowMotionTokenRef.current + 1,
+        phase,
+        startRect,
+        rafId: null,
+        timerId: null,
+      };
+      windowMotionTokenRef.current = motion.token;
+      pendingWindowMotionRef.current = motion;
+      windowMotionRef.current = motion;
+      setWindowMotion(phase);
+    },
+    [finishWindowMotion],
+  );
 
-      if (direction.includes("w")) {
-        left = clamp(origin.x + dx, composeMargin, originRight - limits.minWidth);
-      }
-      if (direction.includes("e")) {
-        right = clamp(
-          originRight + dx,
-          origin.x + limits.minWidth,
-          limits.viewport.width - composeMargin,
-        );
-      }
-      if (direction.includes("n")) {
-        top = clamp(
-          origin.y + dy,
-          composeTopBoundary,
-          originBottom - limits.minHeight,
-        );
-      }
-      if (direction.includes("s")) {
-        bottom = clamp(
-          originBottom + dy,
-          origin.y + limits.minHeight,
-          limits.viewport.height - composeMargin,
-        );
-      }
+  useLayoutEffect(() => {
+    const motion = pendingWindowMotionRef.current;
+    const panel = dialogRef.current;
+    if (!motion || !panel || motion.phase !== windowMotion) return;
+    pendingWindowMotionRef.current = null;
 
-      commitGeometry({ x: left, y: top, width: right - left, height: bottom - top });
+    const finalRect = panel.getBoundingClientRect();
+    if (!usableMotionRect(finalRect)) {
+      finishWindowMotion(motion.token);
+      return;
+    }
+
+    const translateX = motion.startRect.left - finalRect.left;
+    const translateY = motion.startRect.top - finalRect.top;
+    const scaleX = motion.startRect.width / finalRect.width;
+    const scaleY = motion.startRect.height / finalRect.height;
+    const effectivelyStatic =
+      Math.abs(translateX) < 0.01 &&
+      Math.abs(translateY) < 0.01 &&
+      Math.abs(scaleX - 1) < 0.001 &&
+      Math.abs(scaleY - 1) < 0.001;
+    if (effectivelyStatic) {
+      finishWindowMotion(motion.token);
+      return;
+    }
+
+    panel.dataset.windowMotionStage = "inverted";
+    panel.style.transformOrigin = "top left";
+    panel.style.transform = `translate3d(${translateX}px, ${translateY}px, 0) scale(${scaleX}, ${scaleY})`;
+    panel.getBoundingClientRect();
+
+    const startTransition = () => {
+      if (windowMotionRef.current?.token !== motion.token) return;
+      panel.dataset.windowMotionStage = "running";
+      panel.getBoundingClientRect();
+      panel.style.transform = "translate3d(0, 0, 0) scale(1, 1)";
+      motion.timerId = window.setTimeout(
+        () => finishWindowMotion(motion.token),
+        composeWindowMotionDuration(panel) + composeWindowMotionFallbackPaddingMs,
+      );
     };
-    window.addEventListener("pointermove", onPointerMove);
-    window.addEventListener("pointerup", endInteraction);
-    window.addEventListener("pointercancel", endInteraction);
-    return () => {
-      window.removeEventListener("pointermove", onPointerMove);
-      window.removeEventListener("pointerup", endInteraction);
-      window.removeEventListener("pointercancel", endInteraction);
-      endInteraction();
-    };
-  }, [commitGeometry, endInteraction]);
+    motion.rafId =
+      typeof window.requestAnimationFrame === "function"
+        ? window.requestAnimationFrame(startTransition)
+        : null;
+    if (motion.rafId === null) startTransition();
+  }, [finishWindowMotion, windowMotion]);
+
+  useEffect(
+    () => () => {
+      finishWindowMotion(null, false);
+    },
+    [finishWindowMotion],
+  );
 
   useEffect(() => {
     const onWindowResize = () => {
+      finishWindowMotion();
+      endInteraction();
       if (isMinimized) {
         commitGeometry(minimizedGeometry());
         return;
@@ -587,11 +806,12 @@ export function ComposePanel({
     };
     window.addEventListener("resize", onWindowResize);
     return () => window.removeEventListener("resize", onWindowResize);
-  }, [commitGeometry, isMinimized]);
+  }, [commitGeometry, endInteraction, finishWindowMotion, isMinimized]);
 
   const beginDrag = (event) => {
     if (
       event.button !== 0 ||
+      windowMotionRef.current ||
       event.target.closest(
         "button, input, textarea, [contenteditable], [data-no-compose-drag]",
       )
@@ -603,7 +823,10 @@ export function ComposePanel({
       kind: "drag",
       pointerX: event.clientX,
       pointerY: event.clientY,
-      geometry,
+      clientX: event.clientX,
+      clientY: event.clientY,
+      geometry: geometryRef.current,
+      rafId: null,
     };
     setInteractionKind("drag");
     document.body.style.userSelect = "none";
@@ -611,7 +834,7 @@ export function ComposePanel({
   };
 
   const beginResize = (direction, event) => {
-    if (event.button !== 0 || isMinimized) return;
+    if (event.button !== 0 || isMinimized || windowMotionRef.current) return;
     event.preventDefault();
     event.stopPropagation();
     interactionRef.current = {
@@ -619,7 +842,10 @@ export function ComposePanel({
       direction,
       pointerX: event.clientX,
       pointerY: event.clientY,
-      geometry,
+      clientX: event.clientX,
+      clientY: event.clientY,
+      geometry: geometryRef.current,
+      rafId: null,
     };
     setInteractionKind("resize");
     document.body.style.userSelect = "none";
@@ -629,14 +855,17 @@ export function ComposePanel({
   const restoreComposer = useCallback(() => {
     if (!isMinimized) return false;
     endInteraction();
-    commitGeometry(
-      constrainGeometry(minimizedGeometryRef.current || loadInitialGeometry()),
+    const targetGeometry = constrainGeometry(
+      minimizedGeometryRef.current || loadInitialGeometry(),
     );
     minimizedGeometryRef.current = null;
-    setWindowMotion("restoring");
-    setIsMinimized(false);
+    beginWindowMotion({
+      phase: "restoring",
+      targetGeometry,
+      targetMinimized: false,
+    });
     return true;
-  }, [commitGeometry, endInteraction, isMinimized]);
+  }, [beginWindowMotion, endInteraction, isMinimized]);
 
   useEffect(() => {
     if (lastRestoreRequestRef.current === restoreRequest) return;
@@ -648,9 +877,11 @@ export function ComposePanel({
     if (restoreComposer()) return;
     endInteraction();
     minimizedGeometryRef.current = geometryRef.current;
-    commitGeometry(minimizedGeometry());
-    setWindowMotion("minimizing");
-    setIsMinimized(true);
+    beginWindowMotion({
+      phase: "minimizing",
+      targetGeometry: minimizedGeometry(),
+      targetMinimized: true,
+    });
   };
 
   const saveAndMinimize = async () => {
@@ -832,9 +1063,32 @@ export function ComposePanel({
         aria-label={isMinimized ? minimizedTitle : undefined}
         aria-labelledby={isMinimized ? undefined : "compose-title"}
         data-minimized={isMinimized}
-        data-interacting={interactionKind ? "true" : "false"}
+        data-entered={hasEntered || undefined}
+        data-interacting={interactionKind || undefined}
         data-window-motion={windowMotion || undefined}
         onKeyDown={trapDialogFocus}
+        onAnimationEnd={(event) => {
+          if (
+            event.target === event.currentTarget &&
+            event.animationName === "compose-in"
+          ) {
+            setHasEntered(true);
+          }
+        }}
+        onTransitionEnd={(event) => {
+          if (
+            event.target !== event.currentTarget ||
+            event.propertyName !== "transform" ||
+            event.currentTarget.dataset.windowMotionStage !== "running"
+          ) {
+            return;
+          }
+          const expectedDuration =
+            composeWindowMotionDuration(event.currentTarget) / 1000;
+          if (event.elapsedTime + 0.01 >= expectedDuration) {
+            finishWindowMotion();
+          }
+        }}
         style={{
           left: geometry.x,
           top: geometry.y,

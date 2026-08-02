@@ -458,8 +458,43 @@ describe("compose page and stationery policy", () => {
     const panel = declarationsFor("(?:^|\\r?\\n)\\.compose-panel");
     expect(panel).toMatch(/background:\s*var\(--compose-page-surface\)/);
     expect(panel).not.toMatch(/backdrop-filter/);
-    expect(panel).toMatch(/width var\(--motion-window\)/);
-    expect(panel).toMatch(/height var\(--motion-window\)/);
+    expect(panel).not.toMatch(/animation:\s*compose-in/);
+    expect(panel).not.toMatch(/(?:left|top|width|height) var\(--motion-window\)/);
+    expect(panel).not.toMatch(/will-change/);
+
+    const enteringPanel = declarationsFor(
+      '\\.compose-panel:not\\(\\[data-entered="true"\\]\\)',
+    );
+    expect(enteringPanel).toMatch(/animation:\s*compose-in 220ms/);
+
+    const movingPanel = declarationsFor(
+      '\\.compose-panel\\[data-window-motion\\]\\[data-window-motion-stage="running"\\]',
+    );
+    expect(movingPanel).toMatch(
+      /transform var\(--motion-window\) cubic-bezier\(0\.2,\s*0\.72,\s*0\.28,\s*1\)/,
+    );
+    const windowMotionPanel = declarationsFor(
+      "\\.compose-panel\\[data-window-motion\\]",
+    );
+    expect(windowMotionPanel).toMatch(/will-change:\s*transform/);
+    const draggingPanel = declarationsFor(
+      '\\.compose-panel\\[data-interacting="drag"\\]',
+    );
+    expect(draggingPanel).toMatch(/will-change:\s*translate/);
+
+    const composeLayer = declarationsFor("\\.compose-layer");
+    const composeScrim = declarationsFor("\\.compose-layer::before");
+    const minimizedScrim = declarationsFor(
+      '\\.compose-layer\\[data-minimized="true"\\]::before',
+    );
+    expect(composeLayer).not.toMatch(/backdrop-filter|background-color var\(--motion-normal\)/);
+    expect(composeScrim).toMatch(/backdrop-filter:\s*blur\(7px\) saturate\(0\.92\)/);
+    expect(composeScrim).toMatch(/transition:\s*opacity var\(--motion-normal\) ease-out/);
+    expect(minimizedScrim).toMatch(/opacity:\s*0/);
+    expect(minimizedScrim).toMatch(/visibility:\s*hidden/);
+    expect(styles).toMatch(
+      /\.confirm-layer\s*\{\s*background:[\s\S]*?backdrop-filter:\s*blur\(7px\) saturate\(0\.92\)/,
+    );
 
     const minimizedHover = declarationsFor(
       "\\.compose-minimized-shell:hover,\\s*\\r?\\n\\.compose-minimized-shell:focus-within",

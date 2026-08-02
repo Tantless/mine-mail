@@ -1,4 +1,5 @@
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -51,9 +52,24 @@ function renderCompose(overrides = {}) {
   return { ...render(<ComposePanel {...props} />), props };
 }
 
+function motionRect(left, top, width, height) {
+  return {
+    x: left,
+    y: top,
+    left,
+    top,
+    right: left + width,
+    bottom: top + height,
+    width,
+    height,
+    toJSON: () => ({}),
+  };
+}
+
 afterEach(() => {
   cleanup();
   window.localStorage.clear();
+  vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
 
@@ -118,6 +134,178 @@ it("summarizes minimized drafts from subject and first recipient", () => {
       name: "还原写信窗口：季度计划(林夏)",
     }).textContent,
   ).toBe("季度计划(林夏)");
+});
+
+it("coalesces drag and resize pointer samples into one geometry write per frame", () => {
+  window.localStorage.setItem(
+    "mine-mail-compose-geometry-v1",
+    JSON.stringify({ x: 180, y: 110, width: 700, height: 540 }),
+  );
+  renderCompose();
+  const dialog = screen.getByRole("dialog", { name: "编辑草稿" });
+  const dragSurface = dialog.querySelector(".compose-drag-surface");
+  const resizeHandle = dialog.querySelector('[data-resize-direction="se"]');
+  const frames = new Map();
+  let nextFrameId = 1;
+  const requestFrame = vi
+    .spyOn(window, "requestAnimationFrame")
+    .mockImplementation((callback) => {
+      const id = nextFrameId;
+      nextFrameId += 1;
+      frames.set(id, callback);
+      return id;
+    });
+  vi.spyOn(window, "cancelAnimationFrame").mockImplementation((id) => {
+    frames.delete(id);
+  });
+  const runFrame = () => {
+    const [id, callback] = frames.entries().next().value;
+    frames.delete(id);
+    act(() => callback(16));
+  };
+
+  const initialLeft = Number.parseFloat(dialog.style.left);
+  const initialTop = Number.parseFloat(dialog.style.top);
+  fireEvent.pointerDown(dragSurface, {
+    button: 0,
+    clientX: 400,
+    clientY: 120,
+  });
+  fireEvent.pointerMove(window, { clientX: 420, clientY: 135 });
+  fireEvent.pointerMove(window, { clientX: 470, clientY: 165 });
+
+  expect(requestFrame).toHaveBeenCalledOnce();
+  expect(dialog.style.translate).toBe("");
+  runFrame();
+  expect(dialog.style.translate).toBe("70px 45px");
+
+  fireEvent.pointerUp(window);
+  expect(dialog.style.translate).toBe("");
+  expect(Number.parseFloat(dialog.style.left)).toBe(initialLeft + 70);
+  expect(Number.parseFloat(dialog.style.top)).toBe(initialTop + 45);
+
+  const initialWidth = Number.parseFloat(dialog.style.width);
+  const initialHeight = Number.parseFloat(dialog.style.height);
+  fireEvent.pointerDown(resizeHandle, {
+    button: 0,
+    clientX: 800,
+    clientY: 620,
+  });
+  fireEvent.pointerMove(window, { clientX: 810, clientY: 630 });
+  fireEvent.pointerMove(window, { clientX: 840, clientY: 650 });
+
+  expect(requestFrame).toHaveBeenCalledTimes(2);
+  runFrame();
+  fireEvent.pointerUp(window);
+  expect(Number.parseFloat(dialog.style.width)).toBeGreaterThan(initialWidth);
+  expect(Number.parseFloat(dialog.style.height)).toBeGreaterThan(initialHeight);
+
+  const persisted = JSON.parse(
+    window.localStorage.getItem("mine-mail-compose-geometry-v1"),
+  );
+  expect(persisted).toEqual({
+    x: Math.round(Number.parseFloat(dialog.style.left)),
+    y: Math.round(Number.parseFloat(dialog.style.top)),
+    width: Math.round(Number.parseFloat(dialog.style.width)),
+    height: Math.round(Number.parseFloat(dialog.style.height)),
+  });
+});
+
+it("runs minimize and restore geometry through one interruptible transform transition", () => {
+  renderCompose();
+  const dialog = screen.getByRole("dialog", { name: "编辑草稿" });
+  const layer = dialog.closest(".compose-layer");
+  const expandedRect = motionRect(80, 60, 900, 720);
+  const minimizedRect = motionRect(360, 700, 340, 44);
+  const rect = vi.spyOn(dialog, "getBoundingClientRect");
+  const frames = new Map();
+  let nextFrameId = 1;
+  vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+    const id = nextFrameId;
+    nextFrameId += 1;
+    frames.set(id, callback);
+    return id;
+  });
+  vi.spyOn(window, "cancelAnimationFrame").mockImplementation((id) => {
+    frames.delete(id);
+  });
+  const runFrame = () => {
+    const [id, callback] = frames.entries().next().value;
+    frames.delete(id);
+    act(() => callback(16));
+  };
+
+  rect
+    .mockReturnValueOnce(expandedRect)
+    .mockReturnValueOnce(minimizedRect)
+    .mockReturnValue(minimizedRect);
+  fireEvent.pointerDown(layer, { button: 0 });
+
+  expect(dialog.dataset.minimized).toBe("true");
+  expect(dialog.dataset.windowMotion).toBe("minimizing");
+  expect(dialog.dataset.windowMotionStage).toBe("inverted");
+  expect(dialog.style.transform).toContain("translate3d(");
+  expect(dialog.style.transform).not.toContain("scale(1, 1)");
+
+  runFrame();
+  expect(dialog.dataset.windowMotionStage).toBe("running");
+  expect(dialog.style.transform).toBe("translate3d(0, 0, 0) scale(1, 1)");
+  expect(dialog.dataset.entered).toBe("true");
+  fireEvent.transitionEnd(dialog, {
+    propertyName: "transform",
+    elapsedTime: 0.05,
+  });
+  expect(dialog.dataset.windowMotion).toBe("minimizing");
+  fireEvent.transitionEnd(dialog, {
+    propertyName: "transform",
+    elapsedTime: 0.26,
+  });
+  expect(dialog.dataset.windowMotion).toBeUndefined();
+  expect(dialog.dataset.windowMotionStage).toBeUndefined();
+  expect(dialog.style.transform).toBe("");
+
+  rect
+    .mockReset()
+    .mockReturnValueOnce(minimizedRect)
+    .mockReturnValueOnce(expandedRect)
+    .mockReturnValue(expandedRect);
+  fireEvent.click(
+    screen.getByRole("button", {
+      name: "还原写信窗口：版本化附件(friend@example.com)",
+    }),
+  );
+  expect(dialog.dataset.minimized).toBe("false");
+  expect(dialog.dataset.windowMotion).toBe("restoring");
+  runFrame();
+  fireEvent.transitionEnd(dialog, {
+    propertyName: "transform",
+    elapsedTime: 0.26,
+  });
+  expect(dialog.dataset.windowMotion).toBeUndefined();
+  expect(dialog.style.transform).toBe("");
+});
+
+it("collapses compose window motion atomically when reduced motion is requested", () => {
+  vi.stubGlobal("matchMedia", vi.fn((query) => ({
+    media: query,
+    matches: query === "(prefers-reduced-motion: reduce)",
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+  })));
+  const requestFrame = vi.spyOn(window, "requestAnimationFrame");
+  renderCompose();
+  const dialog = screen.getByRole("dialog", { name: "编辑草稿" });
+  vi.spyOn(dialog, "getBoundingClientRect").mockReturnValue(
+    motionRect(80, 60, 900, 720),
+  );
+
+  fireEvent.pointerDown(dialog.closest(".compose-layer"), { button: 0 });
+  expect(dialog.dataset.minimized).toBe("true");
+  expect(dialog.dataset.windowMotion).toBeUndefined();
+  expect(dialog.style.transform).toBe("");
+  expect(requestFrame).not.toHaveBeenCalled();
 });
 
 it("traps focus inside the open composer and restores the invoking control", () => {
