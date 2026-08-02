@@ -61,6 +61,10 @@ jobs:
       - name: Run frontend tests
         run: npm test -- --run
 
+      - name: Test release asset contract
+        working-directory: .
+        run: node --test .github/scripts/validate-release-assets.test.mjs
+
       - name: Build frontend
         run: npm run build
 

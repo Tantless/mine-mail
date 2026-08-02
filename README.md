@@ -10,8 +10,9 @@ Tauri 2、React 19、Rust 与 SQLite 构建。
 - 提供邮件搜索、草稿与发件队列、纯文本/安全 HTML 阅读、桌面通知和四套主题。
 - 凭据保存在操作系统凭据存储中；邮件内容按不可信输入处理并在 Rust 中清理。
 
-Mine Mail 目前仍是开发预览版。主要开发与验收环境为 Windows 11；macOS 和
-Linux 是目标平台，但仍需更多真实设备验证。
+Mine Mail 目前仍是开发预览版，面向 Windows 11 x64、macOS 14 及以上版本的
+Apple Silicon Mac，以及 Linux x64 发布。主要开发与验收环境为 Windows 11；
+macOS 和 Linux 仍需更多真实设备验证。
 
 
 
@@ -43,10 +44,12 @@ Linux 是目标平台，但仍需更多真实设备验证。
 1. 打开 [Mine Mail 最新版本](https://github.com/Tantless/mine-mail/releases/latest)，
    阅读发行说明并下载与你的系统匹配的安装包：
 
-   - Windows x64：`Mine-Mail_<版本号>_x64-setup.exe`
-   - macOS Apple Silicon：文件名包含 `aarch64` 的 `.dmg`
-   - macOS Intel：文件名包含 `x64` 的 `.dmg`
-   - Linux x64：`.AppImage` 或 `.deb`
+   - Windows 11 x64（AMD/Intel 64 位处理器）：
+     `Mine-Mail_<版本号>_x64-setup.exe`
+   - macOS 14+ Apple Silicon：`Mine.Mail_<版本号>_aarch64.dmg`
+   - Linux x64：Ubuntu/Debian 用户优先选择
+     `Mine.Mail_<版本号>_amd64.deb`；其他现代发行版可使用免安装的
+     `Mine.Mail_<版本号>_amd64.AppImage`
 
 2. 退出正在运行的旧版本，然后运行安装包。Windows 安装向导支持选择安装目录；
    macOS 将 Mine Mail 拖入“应用程序”，Linux 按所选包格式完成安装。

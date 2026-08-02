@@ -84,11 +84,13 @@ provider console, signing account, and a clean target device.
 
 - [ ] Validate Windows on the declared minimum version and architecture.
 - [ ] Before publishing macOS, complete Developer ID signing, notarization,
-  stapling, Intel/Apple Silicon testing, Keychain, tray, notification, autostart,
-  sleep/wake, updater, and uninstall checks.
-- [ ] Before publishing Linux, choose supported distributions/package formats and
-  validate package signing, secret storage, WebKitGTK, tray, notification,
-  autostart, sleep/wake, updater, and uninstall behavior.
+  stapling, Apple Silicon testing on the declared minimum macOS version,
+  Keychain, tray, notification, autostart, sleep/wake, updater, and uninstall
+  checks.
+- [ ] Before publishing Linux, validate the DEB and AppImage packages on the
+  declared x64 distributions, including package signing, secret storage,
+  WebKitGTK, tray, notification, autostart, sleep/wake, updater, and uninstall
+  behavior.
 
 ### Attachment Save As filesystem matrix
 

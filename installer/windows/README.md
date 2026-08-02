@@ -1,6 +1,7 @@
 # Mine Mail Windows installer
 
-This project is the user-visible Windows `setup.exe`.
+This project is the user-visible Windows 11 x64 `setup.exe` for AMD and Intel
+64-bit processors.
 
 - React owns the frameless branded interface.
 - Rust owns window controls, path validation, payload extraction and lifecycle
