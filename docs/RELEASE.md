@@ -46,9 +46,9 @@ provider console, signing account, and a clean target device.
 
 ## Privacy, security, and legal
 
-- [ ] Add a repository-level `LICENSE` matching the Cargo package declarations.
-- [ ] Add `SECURITY.md` with a private vulnerability-reporting path and supported
-  versions.
+- [x] Add a repository-level `LICENSE` matching the Cargo package declarations.
+- [ ] Enable GitHub private vulnerability reporting and keep `SECURITY.md`
+  aligned with that private reporting path and the supported versions.
 - [ ] Review the public privacy, terms, support, and data-deletion pages against
   the shipped data flow and defaults.
 - [ ] Document local persistent data, paths, retention/deletion controls, and the
