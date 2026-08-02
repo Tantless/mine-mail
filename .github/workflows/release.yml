@@ -97,7 +97,7 @@ jobs:
         include:
           - label: macOS Apple Silicon
             platform: macos-latest
-            args: "--target aarch64-apple-darwin --bundles dmg"
+            args: "--target aarch64-apple-darwin --bundles app,dmg"
             rust_targets: "aarch64-apple-darwin"
             apple_signing_identity: "-"
           - label: Linux x64

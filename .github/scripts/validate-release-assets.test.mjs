@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import test from "node:test";
 
 import { validateReleaseAssets } from "./validate-release-assets.mjs";
@@ -63,6 +64,19 @@ test("accepts the supported release asset and updater matrix", () => {
     validateReleaseAssets(releaseFixture()),
     `Validated the ${tag} release asset and updater matrix.`,
   );
+});
+
+test("macOS release build produces both installer and updater bundles", () => {
+  const workflow = fs.readFileSync(
+    new URL("../workflows/release.yml", import.meta.url),
+    "utf8",
+  );
+  const macosMatrix = workflow.match(
+    /- label: macOS Apple Silicon([\s\S]*?)(?=\n\s*- label:)/,
+  )?.[1];
+
+  assert.ok(macosMatrix, "macOS Apple Silicon release matrix is missing");
+  assert.match(macosMatrix, /--bundles app,dmg/);
 });
 
 test("rejects an installer outside the supported release matrix", () => {
