@@ -26,6 +26,14 @@ must be updated here when an intentional product change lands.
 - A user may connect at most three accounts.
 - One account is active in the interface at a time. Startup, scheduled, manual,
   and tray synchronization still cover every connected account.
+- During the current app session, switching away from an account remembers its
+  active primary destination, selected middle-column message, and whether the
+  reader detail is open. Returning to that account restores those three states.
+  An account without a remembered navigation state does not select Inbox or its
+  first message automatically; in the wide workspace it starts with no primary
+  destination selected and the empty-reader quotation spanning the retracted
+  list and reader area. Defensive compact layouts keep their established
+  navigation geometry.
 - Account caches, sync cursors, notification baselines, drafts, Outbox items, and
   queued remote mutations are isolated by stable account ID.
 - Provider choices shown when connecting a new account are 163, QQ, Gmail, and

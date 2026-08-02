@@ -273,6 +273,16 @@ family. Preserve the relative hierarchy when tuning optical values.
 - Each account and folder remembers its own message-list scroll position.
   Opening a folder without a remembered position starts at the top; switching
   back restores that account-and-folder position.
+- Connected-account switching restores the target account's remembered primary
+  destination, middle-list message selection, and reader-detail visibility. A
+  target without a navigation snapshot uses the wide retracted-list empty scene:
+  no primary folder selection is visible and the quotation experience fills the
+  space beside the sidebar. When account workspaces change, any open detail uses
+  the existing fast exit first; the middle surface then reuses the established
+  collapse, reveal, or midpoint context-switch transition. A changed primary
+  destination moves the shared sidebar selection surface normally, and a
+  remembered open detail enters only after the target middle surface is present.
+  Reduced motion and defensive compact layouts retain their atomic behavior.
 - In the wide mail workspace, opening a message brings only the reader content
   into the existing third column with a restrained 260 ms window-style geometry
   and material transition: it grows from a slightly smaller, quieter,

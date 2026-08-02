@@ -129,6 +129,7 @@ describe("Mine Mail MVP", () => {
     const user = userEvent.setup();
     render(<App />);
 
+    await screen.findByText(/我们希望它是一间安静的邮件工作室/);
     await user.click(await screen.findByRole("button", { name: "回复" }));
     const composer = await screen.findByRole("dialog", { name: "新邮件" });
     const body = await within(composer).findByLabelText("邮件正文");
@@ -196,7 +197,7 @@ describe("Mine Mail MVP", () => {
     ).toBe("page");
   });
 
-  it("paints a prewarmed mailbox immediately while the native account switch is pending", async () => {
+  it("keeps a fresh prewarmed account in the default empty workspace while the native switch is pending", async () => {
     const user = userEvent.setup();
     const pendingSwitch = deferred();
     const accountA = {
@@ -303,12 +304,35 @@ describe("Mine Mail MVP", () => {
 
     await user.click(screen.getByRole("button", { name: "切换到 b@gmail.com" }));
     expect(screen.getByRole("button", { name: "当前账户 b@gmail.com" })).toBeTruthy();
-    expect(screen.getAllByText("Gmail 本地缓存即时显示").length).toBeGreaterThan(0);
+    expect(
+      document.querySelector(".mail-workspace").dataset.listVisibility,
+    ).toBe("retracted");
+    expect(
+      document.querySelectorAll(
+        '.folder-nav__item[data-selected="true"]',
+      ),
+    ).toHaveLength(0);
+    expect(
+      screen.getByLabelText("邮件阅读区，当前未打开邮件"),
+    ).toBeTruthy();
     expect(fetchMailboxMessage).not.toHaveBeenCalledWith(
       "account-b-message-202",
     );
 
     pendingSwitch.resolve(statusB);
+    await waitFor(() =>
+      expect(mailApi.switchAccount).toHaveBeenCalledWith("account-b"),
+    );
+    expect(fetchMailboxMessage).not.toHaveBeenCalledWith(
+      "account-b-message-202",
+    );
+
+    await user.click(screen.getByRole("button", { name: /^收件箱/ }));
+    await user.click(
+      screen.getByRole("button", {
+        name: /打开邮件：.*Gmail 本地缓存即时显示/,
+      }),
+    );
     await waitFor(() =>
       expect(fetchMailboxMessage).toHaveBeenCalledWith(
         "account-b-message-202",

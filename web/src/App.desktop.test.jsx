@@ -666,6 +666,144 @@ describe("Mine Mail desktop state bridge", () => {
       ).toBeTruthy();
     });
 
+    it("animates account workspace changes and restores each account navigation state", async () => {
+      const accounts = [
+        {
+          accountId: "account-a",
+          provider: "163",
+          email: "a@example.com",
+          backendReady: true,
+          credentialAvailable: true,
+          networkReady: true,
+        },
+        {
+          accountId: "account-b",
+          provider: "gmail",
+          email: "b@example.com",
+          backendReady: true,
+          credentialAvailable: true,
+          networkReady: true,
+        },
+      ];
+      let activeAccountId = "account-a";
+      const statusFor = (accountId) => ({
+        configured: true,
+        ...accounts.find((account) => account.accountId === accountId),
+        accountId,
+        activeAccountId: accountId,
+        accounts,
+      });
+      desktop.mailApi.getAccountStatus.mockImplementation(async () =>
+        statusFor(activeAccountId),
+      );
+      desktop.mailApi.switchAccount.mockImplementation(async (accountId) => {
+        activeAccountId = accountId;
+        return statusFor(accountId);
+      });
+      const accountAInbox = summary(1, "First mail");
+      const accountBSent = summary("account-b-sent", "B sent state");
+      desktop.mailApi.listMailboxPage.mockImplementation(
+        async (accountId, role) =>
+          mailboxPage(
+            accountId === "account-a" && role === "inbox"
+              ? [accountAInbox]
+              : accountId === "account-b" && role === "sent"
+                ? [accountBSent]
+                : [],
+            role,
+          ),
+      );
+      desktop.mailApi.fetchMailboxMessage.mockImplementation(
+        async (messageId) => ({
+          ...(messageId === accountAInbox.id
+            ? accountAInbox
+            : accountBSent),
+          body_text:
+            messageId === accountAInbox.id ? "A reader body" : "B reader body",
+          body_fetched: true,
+        }),
+      );
+
+      const { opener } = await renderWideWorkspace();
+      fireEvent.click(opener);
+      await advanceWorkspaceMotion(400);
+      expect(screen.getByText("A reader body")).toBeTruthy();
+
+      fireEvent.click(
+        screen.getByRole("button", { name: "切换到 b@example.com" }),
+      );
+      await act(async () => Promise.resolve());
+      expect(
+        screen.getByLabelText("邮件阅读区").dataset.readerMotion,
+      ).toBe("exiting");
+      await advanceWorkspaceMotion(240);
+      expect(
+        document.querySelector(".mail-workspace").dataset.listMotion,
+      ).toBe("collapsing");
+      await advanceWorkspaceMotion(400);
+      expect(
+        screen.getByRole("button", { name: "当前账户 b@example.com" }),
+      ).toBeTruthy();
+      expect(
+        document.querySelector(".mail-workspace").dataset.listMotion,
+      ).toBe("collapsed");
+      expect(
+        document.querySelectorAll(
+          '.folder-nav__item[data-selected="true"]',
+        ),
+      ).toHaveLength(0);
+      expect(screen.queryByText("B reader body")).toBeNull();
+
+      fireEvent.click(screen.getByRole("button", { name: "已发送" }));
+      expect(
+        document.querySelector(".mail-workspace").dataset.listMotion,
+      ).toBe("expanding");
+      await advanceWorkspaceMotion(400);
+      fireEvent.click(
+        screen.getByRole("button", {
+          name: /打开邮件：.*B sent state/,
+        }),
+      );
+      await advanceWorkspaceMotion(400);
+      expect(screen.getByText("B reader body")).toBeTruthy();
+
+      fireEvent.click(
+        screen.getByRole("button", { name: "切换到 a@example.com" }),
+      );
+      await act(async () => Promise.resolve());
+      await advanceWorkspaceMotion(240);
+      expect(
+        document.querySelector(".mail-workspace").dataset.listMotion,
+      ).toBe("switching-out");
+      await advanceWorkspaceMotion(250);
+      expect(
+        document.querySelector(".mail-workspace").dataset.listMotion,
+      ).toBe("switching-in");
+      expect(
+        screen.getByRole("button", { name: "收件箱" }).getAttribute(
+          "aria-current",
+        ),
+      ).toBe("page");
+      await advanceWorkspaceMotion(250);
+      await advanceWorkspaceMotion(400);
+      expect(screen.getByText("A reader body")).toBeTruthy();
+
+      fireEvent.click(
+        screen.getByRole("button", { name: "切换到 b@example.com" }),
+      );
+      await act(async () => Promise.resolve());
+      await advanceWorkspaceMotion(240);
+      await advanceWorkspaceMotion(250);
+      expect(
+        screen.getByRole("button", { name: "已发送" }).getAttribute(
+          "aria-current",
+        ),
+      ).toBe("page");
+      await advanceWorkspaceMotion(250);
+      await advanceWorkspaceMotion(400);
+      expect(screen.getByText("B reader body")).toBeTruthy();
+    });
+
     it("closes an open reader before the current sidebar folder retracts the list, then reveals another folder", async () => {
       const { opener } = await renderWideWorkspace();
       fireEvent.click(opener);
@@ -2701,6 +2839,7 @@ describe("Mine Mail desktop state bridge", () => {
       screen.getByRole("button", { name: "切换到 b@example.com" }),
     );
     await screen.findByRole("button", { name: "当前账户 b@example.com" });
+    await user.click(screen.getByRole("button", { name: "收件箱" }));
     await user.click(
       await screen.findByRole("button", {
         name: /打开邮件：.*Account B remains selected/,
@@ -3285,7 +3424,7 @@ describe("Mine Mail desktop state bridge", () => {
     render(<App />);
 
     await user.click(await screen.findByRole("button", { name: "通讯录" }));
-    await user.click(screen.getByRole("tab", { name: "收藏" }));
+    await user.click(await screen.findByRole("tab", { name: "收藏" }));
     await user.click(
       await screen.findByRole("button", {
         name: "查看联系人 Delayed Gmail contact（me@gmail.com）",

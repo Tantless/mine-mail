@@ -707,6 +707,7 @@ export function App() {
   const [sentOutboxFallbacks, setSentOutboxFallbacks] = useState([]);
   const [selectedMessageId, setSelectedMessageId] = useState(null);
   const [selectedMessage, setSelectedMessage] = useState(null);
+  const [isReaderOpen, setIsReaderOpen] = useState(false);
   const [isMessageLoading, setIsMessageLoading] = useState(false);
   const [messageError, setMessageError] = useState(null);
   const [query, setQuery] = useState("");
@@ -779,9 +780,12 @@ export function App() {
   const draftsRef = useRef([]);
   const selectionRequestRef = useRef(0);
   const selectedMessageIdRef = useRef(null);
+  const readerOpenRef = useRef(false);
   const messageBodyCacheRef = useRef(new Map());
   const accountViewsRef = useRef(new Map());
   const accountViewLoadsRef = useRef(new Map());
+  const accountViewSnapshotLockRef = useRef(null);
+  const rememberActiveAccountViewRef = useRef(() => null);
   const mailListScrollPositionsRef = useRef(new Map());
   const draftsRequestRef = useRef(0);
   const outboxRequestRef = useRef(0);
@@ -892,13 +896,19 @@ export function App() {
     setReaderMotion(phase);
   }, []);
 
+  const setReaderOpenState = useCallback((open) => {
+    readerOpenRef.current = open;
+    setIsReaderOpen(open);
+  }, []);
+
   const presentReader = useCallback(
     (phase) => {
       readerAfterExitRef.current = null;
       setReaderExitSpeed("normal");
+      setReaderOpenState(true);
       setReaderMotionPhase(prefersReducedMotion() ? "open" : phase);
     },
-    [setReaderMotionPhase],
+    [setReaderMotionPhase, setReaderOpenState],
   );
 
   const setContactDetailMotionPhase = useCallback((phase) => {
@@ -930,13 +940,17 @@ export function App() {
   useEffect(() => {
     const accountId = activeAccountIdRef.current;
     if (!accountId) return;
+    if (accountViewSnapshotLockRef.current) return;
+    const current = accountViewsRef.current.get(accountId) || {};
     accountViewsRef.current.set(accountId, {
+      ...current,
       messages,
       sentMessages,
       archiveMessages,
       trashMessages,
       drafts,
       outbox,
+      sentOutboxFallbacks,
       selectedMessageId,
       selectedMessage,
       mailboxPageStates,
@@ -953,6 +967,7 @@ export function App() {
     selectedMessage,
     selectedMessageId,
     sentMessages,
+    sentOutboxFallbacks,
     starredMailboxPageStates,
     trashMessages,
   ]);
@@ -1245,12 +1260,13 @@ export function App() {
     selectedMessageIdRef.current = null;
     setSelectedMessageId(null);
     setSelectedMessage(null);
+    setReaderOpenState(false);
     setMessageError(null);
     setIsMessageLoading(false);
     readerAfterExitRef.current = null;
     setReaderMotionPhase("idle");
     return true;
-  }, [setReaderMotionPhase]);
+  }, [setReaderMotionPhase, setReaderOpenState]);
 
   const clearContactSelection = useCallback(() => {
     selectedContactEmailRef.current = null;
@@ -2250,6 +2266,7 @@ export function App() {
           sentOutboxFallbacks: previous.sentOutboxFallbacks || [],
           selectedMessageId: previous.selectedMessageId ?? null,
           selectedMessage: previous.selectedMessage ?? null,
+          navigationState: previous.navigationState || null,
           mailboxPageStates:
             previous.mailboxPageStates || createMailboxPageStates(),
           starredMailboxPageStates:
@@ -2364,6 +2381,7 @@ export function App() {
         sentOutboxFallbacks: previous.sentOutboxFallbacks || [],
         selectedMessageId: previous.selectedMessageId ?? null,
         selectedMessage: previous.selectedMessage ?? null,
+        navigationState: previous.navigationState || null,
         mailboxPageStates:
           previous.mailboxPageStates || createMailboxPageStates(),
         starredMailboxPageStates:
@@ -2586,8 +2604,16 @@ export function App() {
   );
 
   const restoreAccountView = useCallback(
-    (accountId, view, { selectFirst = true } = {}) => {
-      const restored = view || {
+    (
+      accountId,
+      view,
+      {
+        preserveWorkspaceMotion = false,
+        deferReader = false,
+        contactContext = null,
+      } = {},
+    ) => {
+      const restored = {
         messages: [],
         sentMessages: [],
         archiveMessages: [],
@@ -2597,13 +2623,35 @@ export function App() {
         sentOutboxFallbacks: [],
         selectedMessageId: null,
         selectedMessage: null,
+        navigationState: null,
         mailboxPageStates: createMailboxPageStates(),
         starredMailboxPageStates: createStarredMailboxPageStates(),
         mailboxCapabilities: null,
+        ...(view || {}),
       };
+      const navigationState = restored.navigationState || null;
+      const restoredFolder = navigationState?.folder || "inbox";
+      const restoredListExpanded =
+        !isWideMailWorkspaceRef.current ||
+        navigationState?.listExpanded === true;
+      const restoredMessageId = navigationState
+        ? restored.selectedMessageId ?? null
+        : null;
+      const restoredMessage =
+        restoredMessageId !== null
+          ? restored.selectedMessage ?? null
+          : null;
+      const restoredReaderOpen = Boolean(
+        restoredListExpanded &&
+        navigationState?.readerOpen &&
+        restoredMessageId !== null &&
+        restoredMessage,
+      );
       activeAccountIdRef.current = accountId;
+      activeFolderRef.current = restoredFolder;
       activateComposerForAccount(accountId);
       selectionRequestRef.current += 1;
+      setActiveFolder(restoredFolder);
       setMessages(restored.messages);
       setSentMessages(restored.sentMessages || []);
       setArchiveMessages(restored.archiveMessages || []);
@@ -2622,36 +2670,39 @@ export function App() {
       setRemoteSearch(null);
       setQuery("");
       setFilter("all");
-      activeMailListIntentRef.current = null;
-      queuedMailListIntentRef.current = null;
-      setMailListMotionPhase("expanded");
+      setContactQuery("");
+      setContactFilter(contactContext?.filter || "all");
+      selectedContactEmailRef.current = contactContext?.email || null;
+      selectedContactAccountIdRef.current =
+        contactContext?.accountId || null;
+      setSelectedContactEmail(contactContext?.email || null);
+      setSelectedContactAccountId(contactContext?.accountId || null);
+      if (!preserveWorkspaceMotion) {
+        activeMailListIntentRef.current = null;
+        queuedMailListIntentRef.current = null;
+        setMailListMotionPhase(
+          restoredListExpanded ? "expanded" : "collapsed",
+        );
+      }
       readerAfterExitRef.current = null;
-      if (restored.selectedMessageId === null) {
-        setReaderMotionPhase("idle");
-      } else {
+      setReaderOpenState(false);
+      setReaderMotionPhase("idle");
+      selectedMessageIdRef.current = restoredMessageId;
+      setSelectedMessageId(restoredMessageId);
+      setSelectedMessage(restoredMessage);
+      if (restoredReaderOpen && !deferReader) {
         presentReader("entering");
       }
-      selectedMessageIdRef.current = restored.selectedMessageId;
-      setSelectedMessageId(restored.selectedMessageId);
-      setSelectedMessage(restored.selectedMessage);
       setMessageError(null);
       setIsMessageLoading(false);
       settleMailboxSnapshot(restored, { preserveSyncing: false });
-      if (
-        selectFirst &&
-        restored.selectedMessageId === null &&
-        restored.messages.length &&
-        window.innerWidth >= 720
-      ) {
-        void handleSelect(restored.messages[0]);
-      }
       return restored;
     },
     [
       activateComposerForAccount,
-      handleSelect,
       presentReader,
       setMailListMotionPhase,
+      setReaderOpenState,
       setReaderMotionPhase,
       settleMailboxSnapshot,
     ],
@@ -3354,6 +3405,9 @@ export function App() {
           invalidateForwardPreparationsForAccount(
             activeAccountIdRef.current,
           );
+          rememberActiveAccountViewRef.current(
+            activeAccountIdRef.current,
+          );
           forwardPreparationRequestRef.current += 1;
           const accountSwitchRequestId =
             accountSwitchRequestRef.current + 1;
@@ -3380,7 +3434,6 @@ export function App() {
           restoreAccountView(
             opaqueAccountId,
             accountViewsRef.current.get(opaqueAccountId),
-            { selectFirst: false },
           );
         }
         if (
@@ -3444,6 +3497,7 @@ export function App() {
           (event) => {
             const status = event?.payload;
             if (!status || typeof status.configured !== "boolean") return;
+            if (accountViewSnapshotLockRef.current) return;
             const previousStatus = accountStatusRef.current;
             accountStatusRef.current = status;
             activeAccountIdRef.current =
@@ -4786,7 +4840,7 @@ export function App() {
     if (afterExit?.restoreFocusKey) {
       focusMessageRow(afterExit.restoreFocusKey);
     }
-    clearSelection();
+    clearSelection({ navigationIntentId: afterExit?.navigationIntentId });
     afterExit?.run?.();
   }, [clearSelection, focusMessageRow, setReaderMotionPhase]);
   completeReaderMotionRef.current = completeReaderMotion;
@@ -4796,17 +4850,21 @@ export function App() {
       speed = "normal",
       restoreFocusKey = null,
       afterExit = null,
+      navigationIntentId = null,
     } = {}) => {
       const run = typeof afterExit === "function" ? afterExit : null;
-      if (selectedMessageIdRef.current === null) {
+      if (
+        selectedMessageIdRef.current === null ||
+        !readerOpenRef.current
+      ) {
         run?.();
         return;
       }
 
-      const nextAction = { restoreFocusKey, run };
+      const nextAction = { restoreFocusKey, run, navigationIntentId };
       if (prefersReducedMotion()) {
         if (restoreFocusKey) focusMessageRow(restoreFocusKey);
-        clearSelection();
+        clearSelection({ navigationIntentId });
         run?.();
         return;
       }
@@ -4922,6 +4980,11 @@ export function App() {
     const activeIntent = activeMailListIntentRef.current;
 
     if (phase === "switching-out") {
+      if (activeIntent?.type === "account-switch") {
+        activeIntent.commit?.();
+        setMailListMotionPhase("switching-in");
+        return;
+      }
       if (activeIntent?.type === "switch") {
         if (activeIntent.folder !== activeFolderRef.current) {
           commitFolderChangeRef.current(activeIntent.folder);
@@ -4938,12 +5001,17 @@ export function App() {
     }
 
     if (phase === "collapsing") {
+      if (activeIntent?.type === "account-switch") {
+        activeIntent.commit?.();
+      }
       setMailListMotionPhase("collapsed");
+      activeIntent?.after?.();
       settleMailListMotion();
       return;
     }
     if (phase === "expanding" || phase === "switching-in") {
       setMailListMotionPhase("expanded");
+      activeIntent?.after?.();
       settleMailListMotion();
     }
   }, [setMailListMotionPhase, settleMailListMotion]);
@@ -4952,9 +5020,17 @@ export function App() {
   const startMailListIntent = useCallback(
     (intent) => {
       if (!intent) return;
-      if (!isWideMailWorkspaceRef.current) {
+      if (!isWideMailWorkspaceRef.current || intent.instant) {
         activeMailListIntentRef.current = null;
         queuedMailListIntentRef.current = null;
+        if (intent.type === "account-switch") {
+          intent.commit?.();
+          setMailListMotionPhase(
+            intent.targetListExpanded ? "expanded" : "collapsed",
+          );
+          intent.after?.();
+          return;
+        }
         if (
           intent.type !== "collapse" &&
           intent.folder &&
@@ -4975,6 +5051,7 @@ export function App() {
           activeMailListIntentRef.current = intent;
           queuedMailListIntentRef.current = null;
         } else {
+          queuedMailListIntentRef.current?.cancel?.();
           queuedMailListIntentRef.current = intent;
         }
         return;
@@ -4983,7 +5060,13 @@ export function App() {
       if (prefersReducedMotion()) {
         activeMailListIntentRef.current = null;
         queuedMailListIntentRef.current = null;
-        if (intent.type === "collapse") {
+        if (intent.type === "account-switch") {
+          intent.commit?.();
+          setMailListMotionPhase(
+            intent.targetListExpanded ? "expanded" : "collapsed",
+          );
+          intent.after?.();
+        } else if (intent.type === "collapse") {
           setMailListMotionPhase("collapsed");
         } else {
           if (
@@ -4998,6 +5081,26 @@ export function App() {
       }
 
       activeMailListIntentRef.current = intent;
+      if (intent.type === "account-switch") {
+        if (!intent.targetListExpanded) {
+          if (phase === "collapsed") {
+            intent.commit?.();
+            setMailListMotionPhase("collapsed");
+            activeMailListIntentRef.current = null;
+            intent.after?.();
+          } else {
+            setMailListMotionPhase("collapsing");
+          }
+          return;
+        }
+        if (phase === "collapsed") {
+          intent.commit?.();
+          setMailListMotionPhase("expanding");
+        } else {
+          setMailListMotionPhase("switching-out");
+        }
+        return;
+      }
       if (intent.type === "collapse") {
         if (phase === "collapsed") {
           activeMailListIntentRef.current = null;
@@ -5296,6 +5399,7 @@ export function App() {
       email: selectedContactEmailRef.current,
       accountId:
         selectedContactAccountIdRef.current || activeAccountIdRef.current,
+      filter: contactFilter,
     };
     const targetAccountId =
       contactContext.accountId;
@@ -6309,6 +6413,59 @@ export function App() {
     }
   };
 
+  const rememberActiveAccountView = useCallback(
+    (accountId) => {
+      if (!accountId) return null;
+      const listExpanded =
+        !isWideMailWorkspaceRef.current ||
+        !["collapsing", "collapsed"].includes(
+          mailListMotionRef.current,
+        );
+      const view = {
+        ...(accountViewsRef.current.get(accountId) || {}),
+        messages,
+        sentMessages,
+        archiveMessages,
+        trashMessages,
+        drafts,
+        outbox,
+        sentOutboxFallbacks,
+        selectedMessageId,
+        selectedMessage,
+        navigationState: {
+          folder: activeFolderRef.current,
+          listExpanded,
+          readerOpen: Boolean(
+            listExpanded &&
+            selectedMessageIdRef.current !== null &&
+            readerOpenRef.current &&
+            readerMotionRef.current !== "exiting",
+          ),
+        },
+        mailboxPageStates,
+        starredMailboxPageStates,
+        mailboxCapabilities,
+      };
+      accountViewsRef.current.set(accountId, view);
+      return view;
+    },
+    [
+      archiveMessages,
+      drafts,
+      mailboxCapabilities,
+      mailboxPageStates,
+      messages,
+      outbox,
+      selectedMessage,
+      selectedMessageId,
+      sentMessages,
+      sentOutboxFallbacks,
+      starredMailboxPageStates,
+      trashMessages,
+    ],
+  );
+  rememberActiveAccountViewRef.current = rememberActiveAccountView;
+
   const handleSwitchAccount = async (accountId, options = {}) => {
     invalidatePreparedFolderMotion();
     const suppliedNavigationIntentId = options.navigationIntentId ?? null;
@@ -6354,21 +6511,7 @@ export function App() {
     const previousStatus = accountStatus;
     const previousAccountId =
       accountStatus.activeAccountId || accountStatus.accountId || null;
-    if (previousAccountId) {
-      accountViewsRef.current.set(previousAccountId, {
-        messages,
-        sentMessages,
-        archiveMessages,
-        trashMessages,
-        drafts,
-        outbox,
-        selectedMessageId,
-        selectedMessage,
-        mailboxPageStates,
-        starredMailboxPageStates,
-        mailboxCapabilities,
-      });
-    }
+    const previousView = rememberActiveAccountView(previousAccountId);
     const targetAccount = accountStatus.accounts?.find(
       (account) => account.accountId === accountId,
     );
@@ -6384,49 +6527,154 @@ export function App() {
     };
     const requestId = accountSwitchRequestRef.current + 1;
     accountSwitchRequestRef.current = requestId;
+    accountViewSnapshotLockRef.current = {
+      accountId: previousAccountId,
+      requestId,
+    };
     setAccountSubmitStatus("saving");
 
     let targetView = accountViewsRef.current.get(accountId);
-    if (targetView) {
-      setAccountStatus(optimisticStatus);
-      restoreAccountView(accountId, targetView, { selectFirst: false });
-    }
+    let confirmedStatus = null;
+    let targetCommitted = false;
+    let transitionIntent = null;
+    let finishTransition = null;
+    const transitionDone = new Promise((resolve) => {
+      finishTransition = resolve;
+    });
+    const requestIsCurrent = () =>
+      accountSwitchRequestRef.current === requestId &&
+      navigationIntentRef.current === navigationIntentId;
+    const releaseSnapshotLock = () => {
+      if (accountViewSnapshotLockRef.current?.requestId === requestId) {
+        accountViewSnapshotLockRef.current = null;
+      }
+    };
+    const abandonTransition = () => {
+      releaseSnapshotLock();
+      if (activeMailListIntentRef.current === transitionIntent) {
+        activeMailListIntentRef.current = null;
+      }
+      if (queuedMailListIntentRef.current === transitionIntent) {
+        queuedMailListIntentRef.current = null;
+      }
+      transitionIntent?.cancel?.();
+    };
     try {
       const viewPromise = targetView
         ? Promise.resolve(targetView)
         : loadAccountView(accountId).catch(() => null);
-      if (!targetView) {
-        void viewPromise.then((loadedView) => {
-          if (
-            !loadedView ||
-            accountSwitchRequestRef.current !== requestId ||
-            navigationIntentRef.current !== navigationIntentId
-          )
-            return;
-          setAccountStatus(optimisticStatus);
-          restoreAccountView(accountId, loadedView, { selectFirst: false });
-        });
-      }
-      const status = await mailApi.switchAccount(accountId);
-      const loadedView = await viewPromise;
-      if (
-        accountSwitchRequestRef.current !== requestId ||
-        navigationIntentRef.current !== navigationIntentId
-      ) {
+      const statusPromise = mailApi.switchAccount(accountId).then(
+        (status) => ({ ok: true, status }),
+        (error) => ({ ok: false, error }),
+      );
+      targetView =
+        (await viewPromise) || accountViewsRef.current.get(accountId) || null;
+      if (!requestIsCurrent()) {
+        abandonTransition();
         return false;
       }
-      targetView = loadedView || accountViewsRef.current.get(accountId);
-      setAccountStatus(status);
-      if (activeAccountIdRef.current !== accountId || !targetView) {
-        restoreAccountView(accountId, targetView, { selectFirst: false });
+
+      if (options.preserveContactContext) {
+        targetView = {
+          ...(targetView || {}),
+          selectedMessageId: null,
+          selectedMessage: null,
+          navigationState: {
+            folder: "contacts",
+            listExpanded: true,
+            readerOpen: false,
+          },
+        };
       }
-      if (
-        targetView?.selectedMessageId == null &&
-        targetView?.messages.length &&
-        options.selectFirst !== false &&
-        window.innerWidth >= 720
+
+      const targetNavigation = targetView?.navigationState || null;
+      const targetListExpanded =
+        !isWideMailWorkspaceRef.current ||
+        targetNavigation?.listExpanded === true;
+      const targetReaderOpen = Boolean(
+        targetListExpanded &&
+        targetNavigation?.readerOpen &&
+        targetView?.selectedMessageId != null &&
+        targetView?.selectedMessage,
+      );
+      const finish = () => {
+        if (requestIsCurrent() && targetReaderOpen) {
+          presentReader("entering");
+        }
+        finishTransition?.();
+      };
+      transitionIntent = {
+        type: "account-switch",
+        requestId,
+        targetListExpanded,
+        instant: options.forceAtomic === true || isSettingsOpen,
+        commit: () => {
+          if (!requestIsCurrent()) return;
+          targetCommitted = true;
+          releaseSnapshotLock();
+          const targetStatus = confirmedStatus || optimisticStatus;
+          accountStatusRef.current = targetStatus;
+          setAccountStatus(targetStatus);
+          restoreAccountView(accountId, targetView, {
+            preserveWorkspaceMotion: true,
+            deferReader: true,
+            contactContext: options.preserveContactContext || null,
+          });
+        },
+        after: finish,
+        cancel: () => finishTransition?.(),
+      };
+      const startTransition = () => {
+        if (!requestIsCurrent()) {
+          finishTransition?.();
+          return;
+        }
+        startMailListIntentRef.current(transitionIntent);
+      };
+      if (transitionIntent.instant) {
+        startTransition();
+      } else if (readerOpenRef.current) {
+        requestReaderExit({
+          speed: "fast",
+          afterExit: startTransition,
+          navigationIntentId,
+        });
+      } else if (
+        activeFolderRef.current === "contacts" &&
+        selectedContactEmailRef.current
       ) {
-        void handleSelect(targetView.messages[0]);
+        requestContactDetailExit({
+          speed: "fast",
+          afterExit: startTransition,
+        });
+      } else {
+        startTransition();
+      }
+
+      const statusResult = await statusPromise;
+      if (!statusResult.ok) throw statusResult.error;
+      confirmedStatus = statusResult.status;
+      if (!requestIsCurrent()) {
+        abandonTransition();
+        return false;
+      }
+      if (targetCommitted) {
+        accountStatusRef.current = confirmedStatus;
+        setAccountStatus(confirmedStatus);
+      }
+      await transitionDone;
+      if (!requestIsCurrent()) {
+        abandonTransition();
+        return false;
+      }
+      if (!targetCommitted) {
+        accountStatusRef.current = confirmedStatus;
+        setAccountStatus(confirmedStatus);
+        restoreAccountView(accountId, targetView, {
+          deferReader: true,
+          contactContext: options.preserveContactContext || null,
+        });
+        if (targetReaderOpen) presentReader("entering");
       }
       setAccountSubmitStatus("saved");
       setAccountError(null);
@@ -6438,15 +6686,17 @@ export function App() {
     } catch (error) {
       if (accountSwitchRequestRef.current !== requestId) return;
       accountSwitchRequestRef.current += 1;
-      if (preservedContactContextRef.current?.requestId === suppliedContactRequestId) {
+      abandonTransition();
+      if (
+        preservedContactContextRef.current?.requestId ===
+        suppliedContactRequestId
+      ) {
         preservedContactContextRef.current = null;
       }
+      accountStatusRef.current = previousStatus;
       setAccountStatus(previousStatus);
       if (previousAccountId) {
-        restoreAccountView(
-          previousAccountId,
-          accountViewsRef.current.get(previousAccountId),
-        );
+        restoreAccountView(previousAccountId, previousView);
       }
       setAccountSubmitStatus("error");
       showToast(describeError(error, "邮箱账户切换失败"), "error");
@@ -6455,13 +6705,20 @@ export function App() {
   };
 
   const handleSidebarAccountSwitch = (accountId) => {
-    if (isSettingsOpen) {
-      handleFolderChange("inbox");
-    }
     const currentAccountId =
       accountStatus.activeAccountId || accountStatus.accountId || null;
-    if (!accountId || accountId === currentAccountId) return;
-    void handleSwitchAccount(accountId);
+    if (!accountId) return;
+    if (accountId === currentAccountId) {
+      if (isSettingsOpen) handleFolderChange("inbox");
+      return;
+    }
+    if (isSettingsOpen) {
+      setIsSettingsOpen(false);
+      setSettingsFocusTarget(null);
+    }
+    void handleSwitchAccount(accountId, {
+      forceAtomic: isSettingsOpen,
+    });
   };
 
   const handleSaveAccountRemark = async (accountId, remark) => {
@@ -6829,10 +7086,14 @@ export function App() {
   );
   const visibleReaderMessage = mailListIsRetracted
     ? null
-    : selectedMessage;
+    : isReaderOpen
+      ? selectedMessage
+      : null;
   const readerRenderKey =
     messageNavigationKey(visibleReaderMessage) ||
-    (!mailListIsRetracted && selectedLocalMessageId !== null
+    (!mailListIsRetracted &&
+    isReaderOpen &&
+    selectedLocalMessageId !== null
       ? `reader-message:${selectedLocalMessageId}`
       : "reader-empty");
   const messageReader = (
@@ -6946,7 +7207,7 @@ export function App() {
 
   return (
     <div
-      className={`app-shell platform-${platform} ${isSidebarOpen ? "sidebar-is-open" : ""} ${isSettingsOpen ? "settings-is-open" : ""} ${selectedMessage || (isContactMode && selectedContact) ? "has-selection" : ""}`}
+      className={`app-shell platform-${platform} ${isSidebarOpen ? "sidebar-is-open" : ""} ${isSettingsOpen ? "settings-is-open" : ""} ${(isReaderOpen && selectedMessage) || (isContactMode && selectedContact) ? "has-selection" : ""}`}
       data-runtime={isTauriRuntime ? "tauri" : "web"}
       onClickCapture={(event) => {
         if (
