@@ -5,10 +5,24 @@
     "PingFang SC",
     system-ui,
     sans-serif;
-  color: #102a46;
+  color: var(--installer-text);
   background: transparent;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
+  --installer-panel: rgba(255, 251, 247, 0.97);
+  --installer-text: #102a46;
+  --installer-border: rgba(91, 143, 193, 0.38);
+  --installer-primary: #ff8458;
+  --installer-primary-hover: #f87549;
+  --installer-primary-pressed: #e96a40;
+  --installer-on-primary: #ffffff;
+  --installer-step-active: #176bed;
+  --installer-step-done: #347b6b;
+  --installer-step-waiting: #8c9baa;
+  --installer-danger: #bd5947;
+  --installer-brand-surface: rgba(255, 239, 224, 0.78);
+  --installer-motion-fast: 160ms;
+  --installer-motion-normal: 220ms;
 }
 
 * {
@@ -47,9 +61,9 @@ button,
   display: grid;
   grid-template-columns: 286px minmax(0, 1fr);
   overflow: hidden;
-  border: 1px solid rgba(91, 143, 193, 0.38);
+  border: 1px solid var(--installer-border);
   border-radius: 28px;
-  background: rgba(255, 251, 247, 0.97);
+  background: var(--installer-panel);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.94);
   backdrop-filter: blur(26px) saturate(1.08);
 }
@@ -84,10 +98,10 @@ button,
   background: rgba(255, 255, 255, 0.36);
   cursor: pointer;
   transition:
-    color 160ms ease,
-    background-color 160ms ease,
-    border-color 160ms ease,
-    transform 160ms ease;
+    color var(--installer-motion-fast) ease,
+    background-color var(--installer-motion-fast) ease,
+    border-color var(--installer-motion-fast) ease,
+    transform var(--installer-motion-fast) ease;
 }
 
 .window-control svg {
@@ -96,7 +110,7 @@ button,
 }
 
 .window-control:hover {
-  color: #102a46;
+  color: var(--installer-text);
   border-color: rgba(82, 129, 178, 0.22);
   background: rgba(255, 255, 255, 0.8);
   transform: translateY(-1px);
@@ -116,7 +130,7 @@ button,
   flex-direction: column;
   padding: 58px 28px 30px;
   border-right: 1px solid rgba(229, 173, 134, 0.26);
-  background: rgba(255, 239, 224, 0.78);
+  background: var(--installer-brand-surface);
   box-shadow: inset -12px 0 34px rgba(255, 255, 255, 0.36);
 }
 
@@ -141,10 +155,10 @@ button,
 
 .brand-lockup strong {
   display: block;
+  color: var(--installer-text);
   font-size: 22px;
   font-weight: 790;
   letter-spacing: -0.03em;
-  color: #102a46;
 }
 
 .brand-lockup span {
@@ -185,11 +199,10 @@ button,
   margin-left: -6px;
   padding: 6px 10px 6px 6px;
   border-radius: 21px;
-  color: #8c9baa;
+  color: var(--installer-step-waiting);
   transition:
-    color 220ms ease,
-    background-color 220ms ease,
-    transform 220ms ease;
+    color var(--installer-motion-normal) ease,
+    transform var(--installer-motion-normal) ease;
 }
 
 .step-marker {
@@ -200,13 +213,14 @@ button,
   place-items: center;
   border: 1px solid rgba(107, 136, 164, 0.2);
   border-radius: 18px;
+  color: inherit;
   background: rgba(255, 255, 255, 0.56);
   box-shadow: 0 8px 18px rgba(82, 106, 129, 0.08);
   transition:
-    color 220ms ease,
-    border-color 220ms ease,
-    background-color 220ms ease,
-    box-shadow 220ms ease;
+    color var(--installer-motion-normal) ease,
+    border-color var(--installer-motion-normal) ease,
+    background-color var(--installer-motion-normal) ease,
+    box-shadow var(--installer-motion-normal) ease;
 }
 
 .step-marker svg {
@@ -214,25 +228,14 @@ button,
   height: 23px;
 }
 
-.step-copy strong,
-.step-copy small {
-  display: block;
-}
-
 .step-copy strong {
+  display: block;
   font-size: 15px;
   font-weight: 760;
 }
 
-.step-copy small {
-  margin-top: 2px;
-  font-size: 11px;
-  font-weight: 650;
-  opacity: 0.72;
-}
-
 .step-item--active {
-  color: #176bed;
+  color: var(--installer-step-active);
   transform: translateX(3px);
 }
 
@@ -245,7 +248,7 @@ button,
 }
 
 .step-item--done {
-  color: #347b6b;
+  color: var(--installer-step-done);
 }
 
 .step-item--done .step-marker {
@@ -257,7 +260,7 @@ button,
 }
 
 .step-item--error {
-  color: #bd5947;
+  color: var(--installer-danger);
 }
 
 .step-item--error .step-marker {
@@ -290,54 +293,16 @@ button,
   width: 100%;
   max-width: 570px;
   margin: auto;
-  animation: panel-enter 340ms ease both;
-}
-
-.eyebrow {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  margin-bottom: 13px;
-  color: #3674ba;
-  font-size: 12px;
-  font-weight: 780;
-  letter-spacing: 0.05em;
-}
-
-.eyebrow svg {
-  width: 15px;
-  height: 15px;
-  color: #ff9b67;
-}
-
-.eyebrow--error {
-  color: #b65342;
+  animation: panel-enter 260ms ease both;
 }
 
 h1 {
   margin: 0;
-  color: #102a46;
-  font-size: 43px;
+  color: var(--installer-text);
+  font-size: 38px;
   font-weight: 820;
-  line-height: 1.12;
-  letter-spacing: -0.055em;
-}
-
-.lead {
-  margin: 16px 0 0;
-  color: #244b70;
-  font-size: 20px;
-  font-weight: 720;
-  letter-spacing: -0.015em;
-}
-
-.description {
-  max-width: 500px;
-  margin: 9px 0 0;
-  color: #718397;
-  font-size: 14px;
-  font-weight: 580;
-  line-height: 1.7;
+  line-height: 1.14;
+  letter-spacing: -0.045em;
 }
 
 .path-card {
@@ -413,6 +378,7 @@ h1 {
 
 .soft-button {
   min-width: 62px;
+  min-height: 38px;
   padding: 9px 13px;
   font-size: 12px;
 }
@@ -434,24 +400,8 @@ h1 {
 .primary-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 18px;
+  justify-content: flex-end;
   margin-top: 27px;
-}
-
-.trust-note {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: #7d8d9b;
-  font-size: 11px;
-  font-weight: 680;
-}
-
-.trust-note svg {
-  width: 14px;
-  height: 14px;
-  color: #f1a16f;
 }
 
 .primary-button {
@@ -464,8 +414,8 @@ h1 {
   padding: 0 24px;
   border: 1px solid #d85e38;
   border-radius: 18px;
-  color: #ffffff;
-  background: #ff8458;
+  color: var(--installer-on-primary);
+  background: var(--installer-primary);
   box-shadow:
     0 13px 26px rgba(216, 94, 56, 0.24),
     inset 0 1px 0 rgba(255, 255, 255, 0.36);
@@ -485,7 +435,7 @@ h1 {
 }
 
 .primary-button:hover:not(:disabled) {
-  background: #f87549;
+  background: var(--installer-primary-hover);
   box-shadow:
     0 16px 30px rgba(216, 94, 56, 0.29),
     inset 0 1px 0 rgba(255, 255, 255, 0.42);
@@ -493,6 +443,7 @@ h1 {
 }
 
 .primary-button:active:not(:disabled) {
+  background: var(--installer-primary-pressed);
   transform: translateY(0);
 }
 
@@ -513,60 +464,23 @@ h1 {
   font-size: 14px;
 }
 
+.stage-message {
+  margin: 16px 0 0;
+  color: #244b70;
+  font-size: 16px;
+  font-weight: 680;
+  line-height: 1.55;
+}
+
 .installing-panel,
 .error-panel {
   text-align: center;
 }
 
-.installing-panel .description,
-.error-panel .description {
+.installing-panel .stage-message,
+.error-panel .stage-message {
   margin-right: auto;
   margin-left: auto;
-}
-
-.mascot-orbit {
-  position: relative;
-  width: 132px;
-  height: 132px;
-  display: grid;
-  place-items: center;
-  margin: 0 auto 21px;
-  border: 1px solid rgba(74, 124, 174, 0.22);
-  border-radius: 43px;
-  background: rgba(240, 247, 255, 0.76);
-  box-shadow:
-    0 20px 42px rgba(61, 106, 151, 0.13),
-    inset 0 0 0 7px rgba(255, 255, 255, 0.6);
-}
-
-.mascot-orbit img {
-  width: 93px;
-  height: 93px;
-  object-fit: contain;
-}
-
-.mascot-orbit--working {
-  animation: mascot-float 2.1s ease-in-out infinite;
-}
-
-.orbit-badge {
-  position: absolute;
-  right: -7px;
-  bottom: 2px;
-  width: 42px;
-  height: 42px;
-  display: grid;
-  place-items: center;
-  border: 3px solid #fffaf6;
-  border-radius: 15px;
-  color: #176bed;
-  background: #eaf3ff;
-  box-shadow: 0 8px 18px rgba(56, 102, 147, 0.16);
-}
-
-.orbit-badge svg {
-  width: 22px;
-  height: 22px;
 }
 
 .progress-track {
@@ -592,67 +506,24 @@ h1 {
   animation: progress-run 1.4s ease-in-out infinite;
 }
 
-.stage-line {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 14px;
-  color: #74879a;
-  font-size: 12px;
-  font-weight: 690;
-}
-
-.stage-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 999px;
-  background: #4f95ff;
-  box-shadow: 0 0 0 5px rgba(79, 149, 255, 0.1);
-}
-
 .error-symbol {
   width: 112px;
   height: 112px;
   display: grid;
   place-items: center;
   margin: 0 auto 23px;
+  border: 1px solid rgba(200, 83, 62, 0.24);
   border-radius: 38px;
+  color: #c75d49;
+  background: rgba(255, 234, 228, 0.86);
   box-shadow:
     0 18px 38px rgba(54, 119, 104, 0.13),
     inset 0 0 0 7px rgba(255, 255, 255, 0.62);
 }
 
-.error-symbol {
-  border: 1px solid rgba(200, 83, 62, 0.24);
-  color: #c75d49;
-  background: rgba(255, 234, 228, 0.86);
-}
-
 .error-symbol svg {
   width: 64px;
   height: 64px;
-}
-
-.success-panel {
-  text-align: left;
-}
-
-.success-panel h1 {
-  font-size: 49px;
-}
-
-.success-letter {
-  max-width: 510px;
-  margin: 13px 0 0;
-  color: #285478;
-  font-family:
-    "FZKai-Z03",
-    "STKaiti",
-    "KaiTi",
-    serif;
-  font-size: 19px;
-  line-height: 1.65;
-  letter-spacing: 0.035em;
 }
 
 .finish-options {
@@ -672,7 +543,7 @@ h1 {
   align-items: center;
   gap: 10px;
   min-height: 70px;
-  padding: 13px 13px;
+  padding: 13px;
   border: 1px solid rgba(65, 117, 166, 0.17);
   border-radius: 18px;
   background: rgba(245, 249, 252, 0.72);
@@ -722,23 +593,11 @@ h1 {
   min-width: 0;
 }
 
-.finish-option__copy strong,
-.finish-option__copy small {
-  display: block;
-}
-
 .finish-option__copy strong {
+  display: block;
   color: #173754;
   font-size: 13px;
   font-weight: 800;
-}
-
-.finish-option__copy small {
-  margin-top: 3px;
-  color: #7c8e9f;
-  font-size: 10px;
-  font-weight: 620;
-  line-height: 1.35;
 }
 
 .finish-option input {
@@ -816,6 +675,7 @@ h1 {
 
 .secondary-button {
   min-width: 120px;
+  min-height: 40px;
   margin-top: 21px;
   padding: 11px 17px;
   font-size: 13px;
@@ -862,7 +722,7 @@ h1 {
 
 .close-dialog h2 {
   margin: 0;
-  color: #163550;
+  color: var(--installer-text);
   font-size: 21px;
   font-weight: 810;
 }
@@ -883,7 +743,7 @@ button:focus-visible {
 @keyframes panel-enter {
   from {
     opacity: 0;
-    transform: translateY(9px);
+    transform: translateY(6px);
   }
   to {
     opacity: 1;
@@ -898,16 +758,6 @@ button:focus-visible {
   58%,
   100% {
     transform: translateX(300%);
-  }
-}
-
-@keyframes mascot-float {
-  0%,
-  100% {
-    transform: translateY(0);
-  }
-  50% {
-    transform: translateY(-5px);
   }
 }
 
@@ -935,8 +785,7 @@ button:focus-visible {
     padding-left: 34px;
   }
 
-  .brand-lockup span,
-  .step-copy small {
+  .brand-lockup span {
     display: none;
   }
 
