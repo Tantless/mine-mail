@@ -28,6 +28,10 @@ const isTauriRuntime =
 const previewDelay = (milliseconds) =>
   new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 
+export function normalizeSelectedInstallDir(path) {
+  return /^[A-Za-z]:[\\/]$/.test(path) ? `${path}MineMail` : path;
+}
+
 function StepIcon({ step }) {
   if (step === "ready") {
     return <EnvelopeSimpleOpen data-step-icon="ready" weight="duotone" />;
@@ -230,7 +234,12 @@ function SuccessPanel({
   );
 }
 
-function ErrorPanel({ message, onRetry }) {
+export function ErrorPanel({
+  message,
+  defaultInstallDir,
+  onChooseAnother,
+  onUseDefault,
+}) {
   return (
     <section
       className="content-panel error-panel"
@@ -241,11 +250,28 @@ function ErrorPanel({ message, onRetry }) {
         <WarningCircle weight="duotone" />
       </div>
       <h1 id="error-title">安装未完成</h1>
-      <p className="stage-message">现有文件没有被覆盖。</p>
+      <p className="stage-message">安装已停止，没有改用其他位置继续。</p>
       <p className="error-message">{message}</p>
-      <button className="secondary-button" type="button" onClick={onRetry}>
-        返回重试
-      </button>
+      <p className="error-recovery">
+        建议改用默认位置安装，或重新选择一个可写文件夹。
+        <strong title={defaultInstallDir}>{defaultInstallDir}</strong>
+      </p>
+      <div className="error-actions">
+        <button
+          className="secondary-button"
+          type="button"
+          onClick={onChooseAnother}
+        >
+          重新选择位置
+        </button>
+        <button
+          className="primary-button primary-button--compact"
+          type="button"
+          onClick={onUseDefault}
+        >
+          使用默认位置
+        </button>
+      </div>
     </section>
   );
 }
@@ -315,15 +341,28 @@ export default function InstallerApp() {
 
   const versionLabel = useMemo(() => `v${info.version}`, [info.version]);
 
-  const browse = async () => {
-    if (!isTauriRuntime) return;
+  const chooseInstallDirectory = async () => {
+    if (!isTauriRuntime) return false;
     const selected = await open({
       directory: true,
       multiple: false,
       title: "选择 Mine Mail 的安装位置",
       defaultPath: installDir,
     });
-    if (typeof selected === "string") setInstallDir(selected);
+    if (typeof selected !== "string") return false;
+    setInstallDir(normalizeSelectedInstallDir(selected));
+    return true;
+  };
+
+  const browse = () => void chooseInstallDirectory();
+
+  const chooseAnotherAfterFailure = async () => {
+    if (await chooseInstallDirectory()) setInstallerState("ready");
+  };
+
+  const useDefaultAfterFailure = () => {
+    setInstallDir(info.defaultInstallDir);
+    setInstallerState("ready");
   };
 
   const runPreviewInstallation = async () => {
@@ -435,7 +474,9 @@ export default function InstallerApp() {
           {installerState === "error" && (
             <ErrorPanel
               message={errorMessage}
-              onRetry={() => setInstallerState("ready")}
+              defaultInstallDir={info.defaultInstallDir}
+              onChooseAnother={chooseAnotherAfterFailure}
+              onUseDefault={useDefaultAfterFailure}
             />
           )}
         </main>

@@ -673,6 +673,37 @@ h1 {
   line-height: 1.6;
 }
 
+.error-recovery {
+  max-width: 480px;
+  margin: 14px auto 0;
+  color: #536f89;
+  font-size: 12px;
+  font-weight: 640;
+  line-height: 1.55;
+}
+
+.error-recovery strong {
+  display: block;
+  overflow: hidden;
+  margin-top: 4px;
+  color: #234d73;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.error-actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin-top: 20px;
+}
+
+.error-actions .primary-button,
+.error-actions .secondary-button {
+  margin-top: 0;
+}
+
 .secondary-button {
   min-width: 120px;
   min-height: 40px;

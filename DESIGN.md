@@ -610,6 +610,12 @@ family. Preserve the relative hierarchy when tuning optical values.
 
 ### Notifications and confirmations
 
+- The Windows installer uses the platform folder picker. Selecting a drive root
+  resolves to a `MineMail` child directory before installation so application
+  files are never scattered across the root. A failed install remains on the
+  branded error surface, states that installation stopped without switching
+  locations, and offers secondary **重新选择位置** plus primary
+  **使用默认位置** actions; neither action starts another install implicitly.
 - The lower-right desktop new-mail card is always readable over the desktop,
   theme-aware, compact, and more opaque than decorative glass.
 - Its native surface is 388 × 148 px, always on top, non-resizable, transparent

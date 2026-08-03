@@ -8,7 +8,10 @@ import {
   screen,
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import InstallerApp from "./InstallerApp";
+import InstallerApp, {
+  ErrorPanel,
+  normalizeSelectedInstallDir,
+} from "./InstallerApp";
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
@@ -28,6 +31,11 @@ afterEach(() => {
 });
 
 describe("Mine Mail installer experience", () => {
+  it("places a selected drive root inside a MineMail directory", () => {
+    expect(normalizeSelectedInstallDir("D:\\")).toBe("D:\\MineMail");
+    expect(normalizeSelectedInstallDir("D:\\Apps")).toBe("D:\\Apps");
+  });
+
   it("starts with the branded ready state and a custom install path", () => {
     render(<InstallerApp />);
 
@@ -111,5 +119,29 @@ describe("Mine Mail installer experience", () => {
       screen.getByRole("dialog", { name: "安装正在进行" }),
     ).toBeTruthy();
     expect(screen.getByRole("button", { name: "继续安装" })).toBeTruthy();
+  });
+
+  it("stops after a failure and asks before switching to the default path", () => {
+    const onChooseAnother = vi.fn();
+    const onUseDefault = vi.fn();
+    render(
+      <ErrorPanel
+        message="安装位置不可写。"
+        defaultInstallDir={"C:\\Users\\You\\AppData\\Local\\Mine Mail"}
+        onChooseAnother={onChooseAnother}
+        onUseDefault={onUseDefault}
+      />,
+    );
+
+    expect(
+      screen.getByText("安装已停止，没有改用其他位置继续。"),
+    ).toBeTruthy();
+    expect(screen.getByText(/AppData\\Local\\Mine Mail/)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "重新选择位置" }));
+    fireEvent.click(screen.getByRole("button", { name: "使用默认位置" }));
+
+    expect(onChooseAnother).toHaveBeenCalledTimes(1);
+    expect(onUseDefault).toHaveBeenCalledTimes(1);
   });
 });

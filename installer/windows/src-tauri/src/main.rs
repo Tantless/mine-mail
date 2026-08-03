@@ -1,7 +1,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::{
-    env, fs,
+    env,
+    ffi::OsString,
+    fs,
     path::{Path, PathBuf},
     process::Command,
     sync::{
@@ -17,6 +19,8 @@ use tauri::{AppHandle, Emitter, Manager, WebviewWindow, WindowEvent};
 static NSIS_PAYLOAD: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/mine-mail-payload.exe"));
 const PRODUCT_NAME: &str = "Mine Mail";
 const PRODUCT_SHORTCUT: &str = "Mine Mail.lnk";
+const ROOT_INSTALL_DIR_NAME: &str = "MineMail";
+const EXPECTED_INSTALL_DIR_ENV: &str = "MINE_MAIL_EXPECTED_INSTALL_DIR";
 
 #[derive(Default)]
 struct InstallerRuntime {
@@ -250,6 +254,7 @@ fn perform_install(app: &AppHandle, install_dir: &Path) -> Result<PathBuf, Strin
     }
 
     emit_stage(app, "准备安装文件", "正在检查安装环境并准备应用文件…");
+    prepare_install_dir(install_dir)?;
     let temporary_dir = tempfile::Builder::new()
         .prefix("mine-mail-setup-")
         .tempdir()
@@ -258,9 +263,20 @@ fn perform_install(app: &AppHandle, install_dir: &Path) -> Result<PathBuf, Strin
     fs::write(&payload_path, NSIS_PAYLOAD).map_err(|error| format!("无法释放安装文件：{error}"))?;
 
     emit_stage(app, "写入应用文件", "正在安装 Mine Mail…");
-    let status = Command::new(&payload_path)
+    let mut install_dir_argument = OsString::from("/D=");
+    install_dir_argument.push(install_dir.as_os_str());
+    let mut command = Command::new(&payload_path);
+    command
         .arg("/S")
-        .arg(format!("/D={}", install_dir.display()))
+        .env(EXPECTED_INSTALL_DIR_ENV, install_dir.as_os_str());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.raw_arg(&install_dir_argument);
+    }
+    #[cfg(not(windows))]
+    command.arg(&install_dir_argument);
+    let status = command
         .status()
         .map_err(|error| format!("无法启动内部安装程序：{error}"))?;
 
@@ -276,6 +292,17 @@ fn perform_install(app: &AppHandle, install_dir: &Path) -> Result<PathBuf, Strin
         .ok_or_else(|| "安装程序已结束，但没有在目标目录中找到 Mine Mail。".to_owned())
 }
 
+fn prepare_install_dir(install_dir: &Path) -> Result<(), String> {
+    fs::create_dir_all(install_dir)
+        .map_err(|error| format!("无法创建安装位置，请确认所选磁盘可用且目录可写：{error}"))?;
+    tempfile::Builder::new()
+        .prefix(".mine-mail-install-check-")
+        .tempfile_in(install_dir)
+        .map_err(|error| format!("安装位置不可写，请选择其他位置：{error}"))?
+        .close()
+        .map_err(|error| format!("无法完成安装位置检查，请选择其他位置：{error}"))
+}
+
 fn emit_stage(app: &AppHandle, label: &'static str, message: &'static str) {
     let _ = app.emit("installer://stage", StagePayload { label, message });
 }
@@ -285,7 +312,7 @@ fn validate_install_dir(value: &str) -> Result<PathBuf, String> {
     if trimmed.is_empty() {
         return Err("请选择安装位置。".to_owned());
     }
-    if trimmed.contains(['\r', '\n', '\0']) {
+    if trimmed.contains(['\r', '\n', '\0', '"']) {
         return Err("安装位置包含无效字符。".to_owned());
     }
 
@@ -295,6 +322,9 @@ fn validate_install_dir(value: &str) -> Result<PathBuf, String> {
     }
     if path.is_file() {
         return Err("安装位置指向了一个文件，请选择文件夹。".to_owned());
+    }
+    if path.parent().is_none() {
+        return Ok(path.join(ROOT_INSTALL_DIR_NAME));
     }
     Ok(path)
 }
@@ -367,7 +397,7 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{locate_installed_executable, validate_install_dir};
+    use super::{locate_installed_executable, prepare_install_dir, validate_install_dir};
     use std::fs;
 
     #[test]
@@ -381,6 +411,28 @@ mod tests {
         let path = validate_install_dir(r"C:\Users\Test\AppData\Local\Mine Mail")
             .expect("absolute Windows path should be accepted");
         assert!(path.is_absolute());
+    }
+
+    #[test]
+    fn places_a_drive_root_install_inside_a_minemail_directory() {
+        let path = validate_install_dir(r"D:\").expect("drive root should be normalized");
+        assert_eq!(path, std::path::PathBuf::from(r"D:\MineMail"));
+    }
+
+    #[test]
+    fn creates_and_checks_a_missing_install_directory() {
+        let parent = tempfile::tempdir().expect("temporary parent directory");
+        let install_dir = parent.path().join("MineMail");
+
+        prepare_install_dir(&install_dir).expect("install directory should be prepared");
+
+        assert!(install_dir.is_dir());
+        assert_eq!(
+            fs::read_dir(&install_dir)
+                .expect("prepared install directory")
+                .count(),
+            0
+        );
     }
 
     #[test]

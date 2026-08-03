@@ -727,6 +727,17 @@ must be updated here when an intentional product change lands.
 
 ## Local data location and migration
 
+- The branded Windows installer treats a selected drive root as a parent and
+  installs into its `MineMail` child directory, creating that directory when it
+  does not exist. A selected non-root directory remains the exact target.
+- Before invoking its maintained NSIS payload, the installer verifies that the
+  target can be created and written. The payload must use that exact target; it
+  never falls back to the per-user default when a custom target is rejected or
+  becomes unavailable.
+- A failed installation stops and exposes the failure. **使用默认位置** selects
+  the displayed per-user default and returns to the ready state, while
+  **重新选择位置** opens the folder picker. Neither action retries installation
+  until the user explicitly activates **安装** again.
 - On a new Windows installation, Mine Mail stores local product data in the
   writable `Data` directory beside the installed executable. A protected,
   occupied, or unwritable install location falls back to Tauri's per-user local

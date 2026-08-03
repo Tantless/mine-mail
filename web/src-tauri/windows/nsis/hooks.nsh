@@ -101,3 +101,15 @@ Function MineMailGuiInit
   SendMessage $R9 ${WM_SETFONT} $R8 1
   SetCtlColors $R9 "6F7F90" "FFF9F3"
 FunctionEnd
+
+; The branded installer passes the exact destination through both /D= and this
+; environment variable. If NSIS rejects /D= and restores its own default, stop
+; before copying application files instead of silently installing elsewhere.
+!macro NSIS_HOOK_PREINSTALL
+  ReadEnvStr $R5 "MINE_MAIL_EXPECTED_INSTALL_DIR"
+  ${If} $R5 != ""
+  ${AndIf} $INSTDIR != $R5
+    SetErrorLevel 3
+    Quit
+  ${EndIf}
+!macroend
