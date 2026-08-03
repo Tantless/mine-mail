@@ -6301,11 +6301,11 @@ export function App() {
   };
 
   const handleConfigureAccount = async (request) => {
-    if (composerRef.current) {
-      showToast("请先关闭当前写信窗口，再连接其他账户。", "error");
+    const previousAccountId = activeAccountIdRef.current;
+    if (!(await prepareComposerForAccountSwitch())) {
       return;
     }
-    const previousAccountId = activeAccountIdRef.current;
+    rememberActiveAccountViewRef.current(previousAccountId);
     setAccountSubmitStatus("saving");
     setAccountError(null);
     try {
@@ -6325,7 +6325,11 @@ export function App() {
       activeAccountIdRef.current = nextAccountId;
       accountStatusRef.current = status;
       if (previousAccountId !== nextAccountId) {
+        activateComposerForAccount(nextAccountId);
+        invalidateForwardPreparationsForAccount(previousAccountId);
+        forwardPreparationRequestRef.current += 1;
         clearSelection();
+        messageBodyCacheRef.current.clear();
         setMessages([]);
         setSentMessages([]);
         setArchiveMessages([]);
@@ -6396,11 +6400,11 @@ export function App() {
   };
 
   const handleConnectGoogle = async () => {
-    if (composerRef.current) {
-      showToast("请先关闭当前写信窗口，再连接其他账户。", "error");
+    const previousAccountId = activeAccountIdRef.current;
+    if (!(await prepareComposerForAccountSwitch())) {
       return;
     }
-    const previousAccountId = activeAccountIdRef.current;
+    rememberActiveAccountViewRef.current(previousAccountId);
     setAccountSubmitStatus("saving");
     setAccountError(null);
     try {

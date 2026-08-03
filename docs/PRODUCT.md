@@ -42,6 +42,13 @@ must be updated here when an intentional product change lands.
   than the QQ login password. Outlook is hidden until its Microsoft OAuth 2.0 /
   Modern Auth path is implemented; the formal interface never shows an
   unavailable or “coming soon” Outlook provider card.
+- A live compose session does not block connecting another account. Before an
+  authorization-code or OAuth connection can activate a different account,
+  Mine Mail applies the same save gate as an ordinary account switch: current
+  edits are persisted locally and the source session is retained as minimized.
+  A local save failure prevents the connection from starting. After a successful
+  connection, the new account becomes active with its own compose session;
+  returning to the source account restores the retained session.
 - The 163 and QQ connection and credential-repair forms place a **查看教程**
   action beside the authorization-secret field. It opens a bundled, offline
   tutorial for the matching provider inside Settings without submitting the

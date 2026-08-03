@@ -474,6 +474,10 @@ family. Preserve the relative hierarchy when tuning optical values.
 - Account avatar editing starts from the avatar. Secondary account actions use a
   compact icon/menu. Adding an account is a provider-first drill-in inside the
   detail pane.
+- Adding an account remains available while a compose session exists. Starting
+  the connection first stabilizes and minimizes the source account's composer;
+  successful login then uses the standard account-switch presentation, without
+  a close-composer warning toast.
 - Account remark editing starts from that account's local action menu. Opening it
   reveals “备注”, the compact input, and the text “保存” action inside the row's
   reserved remark slot; the resting account row shows no persistent remark

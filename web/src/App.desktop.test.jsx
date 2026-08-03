@@ -69,6 +69,7 @@ const desktop = vi.hoisted(() => {
       getAccountStatus: vi.fn(),
       switchAccount: vi.fn(),
       configureAccount: vi.fn(),
+      connectGoogleAccount: vi.fn(),
       listProfileAvatars: vi.fn(),
       saveProfileAvatar: vi.fn(),
       deleteProfileAvatar: vi.fn(),
@@ -2174,6 +2175,237 @@ describe("Mine Mail desktop state bridge", () => {
     expect(desktop.mailApi.saveDraft).toHaveBeenCalledTimes(2);
     expect(desktop.mailApi.saveDraft.mock.calls[1][0].subject).toBe(
       "B 账户独立邮件",
+    );
+  });
+
+  it("keeps the current compose session when connecting another Gmail account", async () => {
+    const initialStatus = {
+      configured: true,
+      accountId: "desktop-account",
+      activeAccountId: "desktop-account",
+      provider: "163",
+      email: "me@163.com",
+      backendReady: true,
+      credentialAvailable: true,
+      networkReady: true,
+      startupError: null,
+      accounts: [
+        {
+          accountId: "desktop-account",
+          provider: "163",
+          email: "me@163.com",
+          backendReady: true,
+          credentialAvailable: true,
+          networkReady: true,
+        },
+      ],
+    };
+    const connectedStatus = {
+      configured: true,
+      accountId: "gmail-account",
+      activeAccountId: "gmail-account",
+      provider: "gmail",
+      email: "second@gmail.com",
+      backendReady: true,
+      credentialAvailable: true,
+      networkReady: true,
+      startupError: null,
+      accounts: [
+        {
+          accountId: "desktop-account",
+          provider: "163",
+          email: "me@163.com",
+          backendReady: true,
+          credentialAvailable: true,
+          networkReady: true,
+        },
+        {
+          accountId: "gmail-account",
+          provider: "gmail",
+          email: "second@gmail.com",
+          backendReady: true,
+          credentialAvailable: true,
+          networkReady: true,
+        },
+      ],
+    };
+    let currentAccountId = "desktop-account";
+    let isConnected = false;
+    const draftsByAccount = new Map([
+      ["desktop-account", []],
+      ["gmail-account", []],
+    ]);
+    const statusFor = (accountId) => ({
+      ...connectedStatus,
+      ...connectedStatus.accounts.find(
+        (account) => account.accountId === accountId,
+      ),
+      accountId,
+      activeAccountId: accountId,
+    });
+    desktop.mailApi.getAccountStatus.mockImplementation(async () =>
+      isConnected ? statusFor(currentAccountId) : initialStatus,
+    );
+    desktop.mailApi.connectGoogleAccount.mockImplementation(async () => {
+      isConnected = true;
+      currentAccountId = "gmail-account";
+      return statusFor(currentAccountId);
+    });
+    desktop.mailApi.switchAccount.mockImplementation(async (accountId) => {
+      currentAccountId = accountId;
+      return statusFor(accountId);
+    });
+    desktop.mailApi.listDrafts.mockImplementation(
+      async () => draftsByAccount.get(currentAccountId) || [],
+    );
+    desktop.mailApi.saveDraft.mockImplementation(
+      async (request, draftId, expectedLocalVersion) => {
+        const outcome = savedOutcome(request, draftId, expectedLocalVersion);
+        draftsByAccount.set(currentAccountId, [outcome.draft]);
+        return outcome;
+      },
+    );
+    const user = userEvent.setup();
+    render(<App />);
+
+    await screen.findByRole("button", { name: "当前账户 me@163.com" });
+    await user.click(screen.getByRole("button", { name: /写信/ }));
+    await user.type(screen.getByLabelText("主题"), "登录前正在编辑");
+    await user.click(
+      screen.getByRole("button", { name: /添加邮箱账户/ }),
+    );
+    await user.click(
+      await screen.findByRole("button", { name: /Gmail/ }),
+    );
+    await user.click(
+      screen.getByRole("button", { name: "使用 Google 登录" }),
+    );
+
+    await screen.findByRole("button", {
+      name: "当前账户 second@gmail.com",
+    });
+    expect(desktop.mailApi.saveDraft).toHaveBeenCalledOnce();
+    expect(desktop.mailApi.saveDraft.mock.calls[0][0].subject).toBe(
+      "登录前正在编辑",
+    );
+    expect(
+      desktop.mailApi.saveDraft.mock.invocationCallOrder[0],
+    ).toBeLessThan(
+      desktop.mailApi.connectGoogleAccount.mock.invocationCallOrder[0],
+    );
+    expect(
+      screen.queryByText("请先关闭当前写信窗口，再连接其他账户。"),
+    ).toBeNull();
+    expect(screen.queryByRole("dialog", { name: /登录前正在编辑/ })).toBeNull();
+
+    const accountSwitcher = screen.getByLabelText("已登录邮箱账户");
+    await user.click(
+      within(accountSwitcher).getByRole("button", {
+        name: "切换到 me@163.com",
+      }),
+    );
+    await screen.findByRole("button", { name: "当前账户 me@163.com" });
+    const restore = await screen.findByRole("button", {
+      name: "还原写信窗口：登录前正在编辑",
+    });
+    await user.click(restore);
+    expect(screen.getByLabelText("主题").value).toBe("登录前正在编辑");
+  });
+
+  it("stabilizes the current compose session before connecting a password account", async () => {
+    desktop.mailApi.configureAccount.mockResolvedValue({
+      configured: true,
+      accountId: "qq-account",
+      activeAccountId: "qq-account",
+      provider: "qq",
+      email: "second@qq.com",
+      backendReady: true,
+      credentialAvailable: true,
+      networkReady: true,
+      startupError: null,
+      accounts: [
+        {
+          accountId: "desktop-account",
+          provider: "163",
+          email: "me@163.com",
+          backendReady: true,
+          credentialAvailable: true,
+          networkReady: true,
+        },
+        {
+          accountId: "qq-account",
+          provider: "qq",
+          email: "second@qq.com",
+          backendReady: true,
+          credentialAvailable: true,
+          networkReady: true,
+        },
+      ],
+    });
+    const user = userEvent.setup();
+    render(<App />);
+
+    await screen.findByRole("button", { name: "当前账户 me@163.com" });
+    await user.click(screen.getByRole("button", { name: /写信/ }));
+    await user.type(screen.getByLabelText("主题"), "连接授权码账户前的草稿");
+    await user.click(
+      screen.getByRole("button", { name: /添加邮箱账户/ }),
+    );
+    await user.click(
+      await screen.findByRole("button", { name: /QQ 邮箱/ }),
+    );
+    await user.type(screen.getByLabelText("邮箱地址"), "second@qq.com");
+    await user.type(screen.getByLabelText("QQ 邮箱授权码"), "app-secret");
+    await user.click(screen.getByRole("button", { name: "连接邮箱" }));
+
+    await screen.findByRole("button", { name: "当前账户 second@qq.com" });
+    expect(desktop.mailApi.configureAccount).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: "qq",
+        email: "second@qq.com",
+        secret: "app-secret",
+      }),
+    );
+    expect(desktop.mailApi.saveDraft.mock.calls[0][0].subject).toBe(
+      "连接授权码账户前的草稿",
+    );
+    expect(
+      desktop.mailApi.saveDraft.mock.invocationCallOrder[0],
+    ).toBeLessThan(desktop.mailApi.configureAccount.mock.invocationCallOrder[0]);
+    expect(
+      screen.queryByText("请先关闭当前写信窗口，再连接其他账户。"),
+    ).toBeNull();
+    expect(
+      screen.queryByRole("button", {
+        name: "还原写信窗口：连接授权码账户前的草稿",
+      }),
+    ).toBeNull();
+  });
+
+  it("does not start account login when the current compose session cannot be saved", async () => {
+    desktop.mailApi.saveDraft.mockRejectedValueOnce(
+      new Error("本地草稿写入失败"),
+    );
+    const user = userEvent.setup();
+    render(<App />);
+
+    await screen.findByRole("button", { name: "当前账户 me@163.com" });
+    await user.click(screen.getByRole("button", { name: /写信/ }));
+    await user.type(screen.getByLabelText("主题"), "不能丢失的登录前草稿");
+    await user.click(
+      screen.getByRole("button", { name: /添加邮箱账户/ }),
+    );
+    await user.click(
+      await screen.findByRole("button", { name: /Gmail/ }),
+    );
+    await user.click(
+      screen.getByRole("button", { name: "使用 Google 登录" }),
+    );
+
+    expect(await screen.findByText("本地草稿写入失败")).toBeTruthy();
+    expect(desktop.mailApi.connectGoogleAccount).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("主题").value).toBe(
+      "不能丢失的登录前草稿",
     );
   });
 
