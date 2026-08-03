@@ -22,7 +22,6 @@ import { MessageView } from "./components/MessageView.jsx";
 import { ComposePanel } from "./components/ComposePanel.jsx";
 import { ConsequentialConfirmDialog } from "./components/ConsequentialConfirmDialog.jsx";
 import { AccountEmptyWorkspace } from "./components/AccountEmptyWorkspace.jsx";
-import { MailboxRoleSetupDialog } from "./components/MailboxRoleSetupDialog.jsx";
 import { PermanentDeleteDialog } from "./components/PermanentDeleteDialog.jsx";
 import { Toast } from "./components/Toast.jsx";
 import { normalizeAvatarEmail } from "./components/ProfileAvatar.jsx";
@@ -737,7 +736,6 @@ export function App() {
   );
   const [mailboxCapabilities, setMailboxCapabilities] = useState(null);
   const [remoteSearch, setRemoteSearch] = useState(null);
-  const [mailboxSetup, setMailboxSetup] = useState(null);
   const [messageActionStates, setMessageActionStates] = useState({});
   const [attachmentSaveStates, setAttachmentSaveStates] = useState({});
   const [forwardPreparationStates, setForwardPreparationStates] = useState({});
@@ -791,6 +789,7 @@ export function App() {
   const outboxRequestRef = useRef(0);
   const mailboxPageRequestsRef = useRef(new Map());
   const mailboxCapabilityRequestRef = useRef(new Map());
+  const mailboxRoleCreationRequestsRef = useRef(new Map());
   const remoteSearchRequestRef = useRef(0);
   const accountStatusRef = useRef(accountStatus);
   const activeAccountIdRef = useRef(null);
@@ -818,7 +817,6 @@ export function App() {
   const syncFeedbackTimerRef = useRef(null);
   const drawerTriggerRef = useRef(null);
   const consequentialActionRef = useRef(null);
-  const executeArchiveMessageRef = useRef(null);
   const readerMotionRef = useRef("idle");
   const readerAfterExitRef = useRef(null);
   const completeReaderMotionRef = useRef(() => {});
@@ -4344,79 +4342,67 @@ export function App() {
     [messages],
   );
 
-  const beginMailboxSetup = useCallback((role, pendingMessage = null) => {
-    if (!["archive", "trash"].includes(role)) return;
-    consequentialActionRef.current =
-      document.activeElement instanceof HTMLElement
-        ? document.activeElement
-        : null;
-    setMailboxSetup({
-      role,
-      pending: false,
-      error: null,
-      pendingMessage,
-    });
-  }, []);
+  const ensureMailboxRoleAvailable = useCallback(
+    async (role, accountId = activeAccountIdRef.current) => {
+      if (!accountId || !["archive", "trash"].includes(role)) {
+        throw new Error("邮箱文件夹请求无效");
+      }
+      const view = accountViewsRef.current.get(accountId) || {};
+      const currentCapabilities =
+        activeAccountIdRef.current === accountId
+          ? mailboxCapabilities || view.mailboxCapabilities
+          : view.mailboxCapabilities;
+      const currentCapability = currentCapabilities?.[role];
+      if (currentCapability?.status === "available") {
+        return currentCapability;
+      }
+      const requestKey = `${accountId}:${role}`;
+      const existingRequest =
+        mailboxRoleCreationRequestsRef.current.get(requestKey);
+      if (existingRequest) return existingRequest;
 
-  const confirmMailboxSetup = useCallback(
-    async (role, pendingMessage = null) => {
-      const accountId = activeAccountIdRef.current;
-      if (!accountId || !["archive", "trash"].includes(role)) return;
-      setMailboxSetup((current) =>
-        current?.role === role
-          ? { ...current, pending: true, error: null }
-          : current,
-      );
-      try {
+      const canEnsure =
+        !currentCapability ||
+        currentCapability.status === "discovery_pending" ||
+        currentCapability.status === "needs_creation_confirmation" ||
+        (currentCapability.status === "unavailable" &&
+          currentCapability.unavailable_reason === "create_failed" &&
+          currentCapability.retryable);
+      if (!canEnsure) {
+        throw new Error(mailboxSetupFailureMessage(currentCapability, role));
+      }
+
+      const request = (async () => {
         const capability = await mailApi.createMailboxRole(accountId, role);
-        if (activeAccountIdRef.current !== accountId) return;
-        setMailboxCapabilities((current) => ({
-          ...(current || {}),
-          [role]: capability,
-        }));
-        const view = accountViewsRef.current.get(accountId) || {};
+        const latestView = accountViewsRef.current.get(accountId) || {};
         accountViewsRef.current.set(accountId, {
-          ...view,
+          ...latestView,
           mailboxCapabilities: {
-            ...(view.mailboxCapabilities || {}),
+            ...(latestView.mailboxCapabilities || {}),
             [role]: capability,
           },
         });
+        if (activeAccountIdRef.current === accountId) {
+          setMailboxCapabilities((current) => ({
+            ...(current || {}),
+            [role]: capability,
+          }));
+        }
         if (capability.status !== "available") {
           throw new Error(mailboxSetupFailureMessage(capability, role));
         }
-        setMailboxSetup(null);
+        return capability;
+      })().finally(() => {
         if (
-          role === "archive" &&
-          pendingMessage &&
-          executeArchiveMessageRef.current
+          mailboxRoleCreationRequestsRef.current.get(requestKey) === request
         ) {
-          await executeArchiveMessageRef.current(pendingMessage, accountId);
-          return;
+          mailboxRoleCreationRequestsRef.current.delete(requestKey);
         }
-        setActiveFolder(role);
-        setFilter("all");
-        setQuery("");
-        clearSelection();
-        void loadMailboxRolePage({ accountId, role }).catch((error) =>
-          showToast(
-            describeError(error, `${folderLabels[role]}读取失败`),
-            "error",
-          ),
-        );
-      } catch (error) {
-        setMailboxSetup((current) =>
-          current?.role === role
-            ? {
-                ...current,
-                pending: false,
-                error: describeError(error, "文件夹创建失败，请重试"),
-              }
-            : current,
-        );
-      }
+      });
+      mailboxRoleCreationRequestsRef.current.set(requestKey, request);
+      return request;
     },
-    [clearSelection, loadMailboxRolePage, showToast],
+    [mailboxCapabilities],
   );
 
   const handleMailboxCapabilityRetry = useCallback(
@@ -4428,7 +4414,17 @@ export function App() {
         capability?.unavailable_reason === "create_failed" &&
         capability.retryable
       ) {
-        beginMailboxSetup(role);
+        try {
+          await ensureMailboxRoleAvailable(role, accountId);
+          if (activeAccountIdRef.current !== accountId) return;
+          setActiveFolder(role);
+          setQuery("");
+          setFilter("all");
+          clearSelection();
+          await loadMailboxRolePage({ accountId, role });
+        } catch (error) {
+          showToast(describeError(error, "邮箱文件夹创建失败"), "error");
+        }
         return;
       }
       if (!networkActionsAvailableRef.current) {
@@ -4450,8 +4446,8 @@ export function App() {
       }
     },
     [
-      beginMailboxSetup,
       clearSelection,
+      ensureMailboxRoleAvailable,
       loadMailboxRolePage,
       mailboxCapabilities,
       refreshMailboxCapabilities,
@@ -4589,8 +4585,6 @@ export function App() {
     selectAdjacentAfterRemoval,
     setMessageActionState,
   ]);
-  executeArchiveMessageRef.current = executeArchiveMessage;
-
   const handleArchiveMessage = useCallback(async () => {
     const message = selectedMessage;
     const accountId = activeAccountIdRef.current;
@@ -4603,26 +4597,31 @@ export function App() {
       await executeArchiveMessage(message, accountId);
       return;
     }
-    if (
-      capability?.status === "needs_creation_confirmation" ||
-      (capability?.status === "unavailable" &&
-        capability.unavailable_reason === "create_failed" &&
-        capability.retryable)
-    ) {
-      beginMailboxSetup("archive", message);
-      return;
+    setMessageActionState(accountId, messageId, "archive", {
+      status: "in_flight",
+    });
+    try {
+      await ensureMailboxRoleAvailable("archive", accountId);
+      if (activeAccountIdRef.current !== accountId) {
+        setMessageActionState(accountId, messageId, "archive", {
+          status: "idle",
+        });
+        return;
+      }
+      await executeArchiveMessage(message, accountId);
+    } catch (error) {
+      setMessageActionState(accountId, messageId, "archive", {
+        status: "error",
+        retryable: true,
+        error,
+      });
     }
-    if (!capability || capability.status === "discovery_pending") {
-      showToast("正在确认归档文件夹，请稍后重试", "info");
-      return;
-    }
-    showToast("此账户暂时不能使用归档", "error");
   }, [
-    beginMailboxSetup,
+    ensureMailboxRoleAvailable,
     executeArchiveMessage,
     mailboxCapabilities,
     selectedMessage,
-    showToast,
+    setMessageActionState,
   ]);
 
   const handleMoveToTrash = useCallback(async () => {
@@ -4633,8 +4632,7 @@ export function App() {
     if (
       !accountId ||
       messageId === null ||
-      !["inbox", "sent", "archive"].includes(sourceRole) ||
-      !capabilityAvailable(mailboxCapabilities, "trash")
+      !["inbox", "sent", "archive"].includes(sourceRole)
     ) {
       return;
     }
@@ -4642,6 +4640,13 @@ export function App() {
       status: "in_flight",
     });
     try {
+      await ensureMailboxRoleAvailable("trash", accountId);
+      if (activeAccountIdRef.current !== accountId) {
+        setMessageActionState(accountId, messageId, "move_to_trash", {
+          status: "idle",
+        });
+        return;
+      }
       const receipt = await mailApi.moveMessageToTrash(messageId);
       setMessageActionState(
         accountId,
@@ -4659,7 +4664,7 @@ export function App() {
       });
     }
   }, [
-    mailboxCapabilities,
+    ensureMailboxRoleAvailable,
     refreshMutationRoles,
     selectAdjacentAfterRemoval,
     selectedMessage,
@@ -5187,19 +5192,11 @@ export function App() {
     }
   }, [clearSelection, mailListMotion]);
 
-  const commitFolderChange = (folder) => {
-    if (
-      folder === "trash" &&
-      !capabilityAvailable(mailboxCapabilities, folder)
-    ) {
-      const capability = mailboxCapabilities?.[folder];
-      if (capability?.status === "needs_creation_confirmation") {
-        beginMailboxSetup(folder);
-      } else if (capability?.retryable) {
-        void handleMailboxCapabilityRetry(folder);
-      }
-      return;
-    }
+  const commitFolderChange = async (folder) => {
+    const targetAccountId = activeAccountId;
+    const shouldEnsureMailboxRole =
+      ["archive", "trash"].includes(folder) &&
+      !capabilityAvailable(mailboxCapabilities, folder);
     setIsSettingsOpen(false);
     setSettingsFocusTarget(null);
     setActiveFolder(folder);
@@ -5213,9 +5210,22 @@ export function App() {
     clearContactSelection();
     clearSelection();
     setIsSidebarOpen(false);
-    if (paginatedMailboxRoles.includes(folder) && activeAccountId) {
+
+    if (shouldEnsureMailboxRole) {
+      try {
+        await ensureMailboxRoleAvailable(folder, targetAccountId);
+        if (activeAccountIdRef.current !== targetAccountId) return;
+      } catch (error) {
+        showToast(
+          describeError(error, `${folderLabels[folder]}创建失败，请重试`),
+          "error",
+        );
+        return;
+      }
+    }
+    if (paginatedMailboxRoles.includes(folder) && targetAccountId) {
       void loadMailboxRolePage({
-        accountId: activeAccountId,
+        accountId: targetAccountId,
         role: folder,
       }).catch(() => {});
       if (
@@ -5223,10 +5233,10 @@ export function App() {
         networkActionsAvailable
       ) {
         void mailApi
-          .syncMailbox(activeAccountId, folder)
+          .syncMailbox(targetAccountId, folder)
           .then(() =>
             loadMailboxRolePage({
-              accountId: activeAccountId,
+              accountId: targetAccountId,
               role: folder,
             }),
           )
@@ -5270,10 +5280,10 @@ export function App() {
     const folderMotionRequest = folderMotionRequestRef.current + 1;
     folderMotionRequestRef.current = folderMotionRequest;
     if (
-      folder === "trash" &&
+      ["archive", "trash"].includes(folder) &&
       !capabilityAvailable(mailboxCapabilities, folder)
     ) {
-      commitFolderChange(folder);
+      void commitFolderChange(folder);
       return;
     }
 
@@ -5289,7 +5299,7 @@ export function App() {
 
     if (!canCoordinate) {
       resetMailListMotion();
-      commitFolderChange(folder);
+      void commitFolderChange(folder);
       return;
     }
 
@@ -7039,7 +7049,6 @@ export function App() {
     }
     return "idle";
   };
-  const trashAvailable = capabilityAvailable(mailboxCapabilities, "trash");
   const mailListIsRetracted = ["collapsing", "collapsed"].includes(
     mailListMotion,
   );
@@ -7142,8 +7151,7 @@ export function App() {
       archiveState={actionStateFor("archive")}
       onMoveToTrash={
         selectedIsMailboxMessage &&
-        ["inbox", "sent", "archive"].includes(selectedMailboxRole) &&
-        trashAvailable
+        ["inbox", "sent", "archive"].includes(selectedMailboxRole)
           ? () => void handleMoveToTrash()
           : null
       }
@@ -7290,7 +7298,6 @@ export function App() {
             setIsSettingsOpen(true);
           }}
           mailboxCapabilities={mailboxCapabilities}
-          onMailboxSetup={beginMailboxSetup}
           onMailboxCapabilityRetry={(role) =>
             void handleMailboxCapabilityRetry(role)
           }
@@ -7498,23 +7505,6 @@ export function App() {
           onAddAttachments={() => void handleAddAttachments()}
           onRemoveAttachment={(attachmentId) =>
             void handleRemoveAttachment(attachmentId)
-          }
-        />
-      ) : null}
-
-      {mailboxSetup ? (
-        <MailboxRoleSetupDialog
-          role={mailboxSetup.role}
-          isPending={mailboxSetup.pending}
-          errorMessage={mailboxSetup.error}
-          returnFocusRef={consequentialActionRef}
-          continueAction={
-            mailboxSetup.role === "archive" &&
-            Boolean(mailboxSetup.pendingMessage)
-          }
-          onCancel={() => setMailboxSetup(null)}
-          onConfirm={(role) =>
-            void confirmMailboxSetup(role, mailboxSetup.pendingMessage)
           }
         />
       ) : null}

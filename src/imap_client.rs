@@ -144,6 +144,27 @@ impl CreatableMailboxRole {
             Self::Trash => "Trash",
         }
     }
+
+    fn special_use_attribute(self) -> &'static str {
+        match self {
+            Self::Archive => "\\Archive",
+            Self::Trash => "\\Trash",
+        }
+    }
+
+    fn special_use_create_command(self) -> String {
+        format!(
+            "CREATE {} (USE ({}))",
+            self.canonical_name(),
+            self.special_use_attribute()
+        )
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MailboxRoleCreationMethod {
+    SpecialUse,
+    FixedNameFallback,
 }
 
 /// `async-imap` 0.11.2 consumes COPYUID response codes and exposes only
@@ -231,6 +252,7 @@ pub(crate) struct ImapConnection {
     supports_move: bool,
     supports_uidplus: bool,
     supports_special_use: bool,
+    supports_create_special_use: bool,
     supports_idle: bool,
     supports_condstore: bool,
 }
@@ -321,6 +343,7 @@ impl ImapConnection {
         let supports_move = has_capability(&capabilities, "MOVE");
         let supports_uidplus = has_capability(&capabilities, "UIDPLUS");
         let supports_special_use = has_capability(&capabilities, "SPECIAL-USE");
+        let supports_create_special_use = has_capability(&capabilities, "CREATE-SPECIAL-USE");
         let supports_idle = has_capability(&capabilities, "IDLE");
         let supports_condstore = has_capability(&capabilities, "CONDSTORE");
         Ok(Self {
@@ -328,6 +351,7 @@ impl ImapConnection {
             supports_move,
             supports_uidplus,
             supports_special_use,
+            supports_create_special_use,
             supports_idle,
             supports_condstore,
         })
@@ -383,16 +407,35 @@ impl ImapConnection {
             .collect())
     }
 
-    /// Creates only the two fixed product-managed fallback mailboxes. The
-    /// caller must issue LIST afterward and confirm the requested SPECIAL-USE
-    /// role is advertised and selectable before treating creation as success.
-    pub async fn create_mailbox_role(&mut self, role: CreatableMailboxRole) -> Result<()> {
-        timeout(COMMAND_TIMEOUT, self.session.create(role.canonical_name()))
+    /// Creates one of the two bounded mailbox roles. RFC 6154 role assignment
+    /// is preferred whenever the server advertises CREATE-SPECIAL-USE; older
+    /// servers receive the exact fixed-name fallback and are verified by LIST.
+    pub async fn create_mailbox_role(
+        &mut self,
+        role: CreatableMailboxRole,
+    ) -> Result<MailboxRoleCreationMethod> {
+        let method = if self.supports_create_special_use {
+            timeout(
+                COMMAND_TIMEOUT,
+                self.session
+                    .run_command_and_check_ok(role.special_use_create_command()),
+            )
             .await
             .map_err(|_| MailError::Timeout {
-                operation: "IMAP CREATE product mailbox",
+                operation: "IMAP CREATE special-use mailbox",
             })?
-            .map_err(|error| MailError::Imap(error.to_string()))
+            .map_err(|error| MailError::Imap(error.to_string()))?;
+            MailboxRoleCreationMethod::SpecialUse
+        } else {
+            timeout(COMMAND_TIMEOUT, self.session.create(role.canonical_name()))
+                .await
+                .map_err(|_| MailError::Timeout {
+                    operation: "IMAP CREATE product mailbox",
+                })?
+                .map_err(|error| MailError::Imap(error.to_string()))?;
+            MailboxRoleCreationMethod::FixedNameFallback
+        };
+        Ok(method)
     }
 
     pub async fn select_mailbox_with_scope(
@@ -587,6 +630,7 @@ impl ImapConnection {
         let supports_move = self.supports_move;
         let supports_uidplus = self.supports_uidplus;
         let supports_special_use = self.supports_special_use;
+        let supports_create_special_use = self.supports_create_special_use;
         let supports_idle = self.supports_idle;
         let supports_condstore = self.supports_condstore;
         if !supports_idle {
@@ -619,6 +663,7 @@ impl ImapConnection {
                 supports_move,
                 supports_uidplus,
                 supports_special_use,
+                supports_create_special_use,
                 supports_idle,
                 supports_condstore,
             },
@@ -1764,6 +1809,14 @@ mod tests {
     fn product_managed_create_roles_have_fixed_names() {
         assert_eq!(CreatableMailboxRole::Archive.canonical_name(), "Archive");
         assert_eq!(CreatableMailboxRole::Trash.canonical_name(), "Trash");
+        assert_eq!(
+            CreatableMailboxRole::Archive.special_use_create_command(),
+            "CREATE Archive (USE (\\Archive))"
+        );
+        assert_eq!(
+            CreatableMailboxRole::Trash.special_use_create_command(),
+            "CREATE Trash (USE (\\Trash))"
+        );
     }
 
     #[test]

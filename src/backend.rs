@@ -33,8 +33,8 @@ use crate::{
     },
     imap_client::{
         CreatableMailboxRole, DeleteFinalization, ImapConnection, MailboxHint, MailboxMessageScope,
-        MessageMoveMethod, RemoteBodyPart, RemoteMailbox, RemoteMessage, RemoteMessageStructure,
-        RemoteMimePart, RemoteTransferEncoding,
+        MailboxRoleCreationMethod, MessageMoveMethod, RemoteBodyPart, RemoteMailbox, RemoteMessage,
+        RemoteMessageStructure, RemoteMimePart, RemoteTransferEncoding,
     },
     mailbox_mutation::{
         PersistedFlagWork, PersistedPhaseWork, persisted_flag_work, persisted_phase_work,
@@ -474,6 +474,7 @@ fn selectable_role_mailbox<'a>(
     role: MailboxRole,
     mailboxes: &'a [RemoteMailbox],
     gmail_adapter: bool,
+    imap_host: &str,
 ) -> Option<&'a RemoteMailbox> {
     let mut candidates = mailboxes
         .iter()
@@ -488,12 +489,29 @@ fn selectable_role_mailbox<'a>(
                     mailbox.is_drafts || mailbox.name.eq_ignore_ascii_case("Drafts")
                 }
                 MailboxRole::Archive => mailbox.is_archive || (gmail_adapter && mailbox.is_all),
-                MailboxRole::Trash => mailbox.is_trash,
+                MailboxRole::Trash => {
+                    mailbox.is_trash
+                        || provider_trash_fallback_name_matches(imap_host, &mailbox.name)
+                }
             }
         })
         .collect::<Vec<_>>();
     candidates.sort_by_key(|mailbox| mailbox.name.to_lowercase());
     candidates.into_iter().next()
+}
+
+fn provider_trash_fallback_name_matches(imap_host: &str, mailbox_name: &str) -> bool {
+    let leaf = mailbox_name
+        .rsplit(['/', '.'])
+        .next()
+        .unwrap_or(mailbox_name);
+    if imap_host.eq_ignore_ascii_case("imap.qq.com") {
+        return leaf.eq_ignore_ascii_case("Deleted Messages");
+    }
+    if imap_host.eq_ignore_ascii_case("imap.163.com") {
+        return matches!(leaf, "已删除" | "&XfJSIJZk-");
+    }
+    false
 }
 
 fn sent_fallback_name_matches(name: &str) -> bool {
@@ -514,8 +532,9 @@ fn discovered_mailbox_capability(
     role: MailboxRole,
     mailboxes: &[RemoteMailbox],
     gmail_adapter: bool,
+    imap_host: &str,
 ) -> MailboxCapability {
-    selectable_role_mailbox(role, mailboxes, gmail_adapter)
+    selectable_role_mailbox(role, mailboxes, gmail_adapter, imap_host)
         .map(|mailbox| available_mailbox_capability(role, &mailbox.name))
         .unwrap_or_else(|| missing_mailbox_capability(role))
 }
@@ -524,9 +543,11 @@ fn confirmed_created_mailbox_capability(
     role: MailboxRole,
     mailboxes: &[RemoteMailbox],
     gmail_adapter: bool,
+    imap_host: &str,
+    allow_fixed_name_fallback: bool,
 ) -> MailboxCapability {
-    let discovered = discovered_mailbox_capability(role, mailboxes, gmail_adapter);
-    if discovered.status == MailboxCapabilityStatus::Available {
+    let discovered = discovered_mailbox_capability(role, mailboxes, gmail_adapter, imap_host);
+    if discovered.status == MailboxCapabilityStatus::Available || !allow_fixed_name_fallback {
         return discovered;
     }
     let canonical_name = match role {
@@ -812,7 +833,12 @@ impl MailBackend {
             MailboxRole::Archive,
             MailboxRole::Trash,
         ] {
-            let capability = discovered_mailbox_capability(role, &mailboxes, gmail_adapter);
+            let capability = discovered_mailbox_capability(
+                role,
+                &mailboxes,
+                gmail_adapter,
+                &self.config.imap.host,
+            );
             self.repository
                 .set_mailbox_capability(account_id, &capability)?;
             capabilities.push(capability);
@@ -821,9 +847,10 @@ impl MailBackend {
         Ok(capabilities)
     }
 
-    /// Creates only the fixed Archive or Trash fallback after the caller's
-    /// confirmation. LIST both before and after CREATE makes this idempotent
-    /// and prevents an ordinary same-named folder from becoming a role.
+    /// Ensures Archive or Trash after an explicit user action. LIST both before
+    /// and after CREATE makes this idempotent. Provider-declared roles always
+    /// win; RFC 6154 creation is verified by its role attribute, while legacy
+    /// servers may use only the exact fixed-name fallback created here.
     pub async fn create_mailbox_role(
         &self,
         account_id: &str,
@@ -868,7 +895,12 @@ impl MailBackend {
                 return Ok(capability);
             }
         };
-        let existing = discovered_mailbox_capability(role, &before, gmail_adapter);
+        let existing = discovered_mailbox_capability(
+            role,
+            &before,
+            gmail_adapter,
+            &self.config.imap.host,
+        );
         if existing.status == MailboxCapabilityStatus::Available {
             self.repository
                 .set_mailbox_capability(account_id, &existing)?;
@@ -876,15 +908,20 @@ impl MailBackend {
             return Ok(existing);
         }
 
-        let create_succeeded = connection.create_mailbox_role(creatable).await.is_ok();
+        let creation_method = connection.create_mailbox_role(creatable).await.ok();
         let after = connection.list_mailboxes().await;
         let capability = match after {
             Ok(mailboxes) => {
-                let discovered =
-                    confirmed_created_mailbox_capability(role, &mailboxes, gmail_adapter);
+                let discovered = confirmed_created_mailbox_capability(
+                    role,
+                    &mailboxes,
+                    gmail_adapter,
+                    &self.config.imap.host,
+                    creation_method == Some(MailboxRoleCreationMethod::FixedNameFallback),
+                );
                 if discovered.status == MailboxCapabilityStatus::Available {
                     discovered
-                } else if create_succeeded {
+                } else if creation_method.is_some() {
                     failed_mailbox_creation(
                         role,
                         MailboxCapabilityUnavailableReason::CreatedMailboxNotSelectable,
@@ -7260,7 +7297,12 @@ mod tests {
     #[test]
     fn discovery_never_guesses_an_ordinary_archive_name() {
         let mailboxes = [remote_mailbox("Archive", false, false, true)];
-        let capability = discovered_mailbox_capability(MailboxRole::Archive, &mailboxes, false);
+        let capability = discovered_mailbox_capability(
+            MailboxRole::Archive,
+            &mailboxes,
+            false,
+            "imap.example.com",
+        );
 
         assert_eq!(
             capability.status,
@@ -7273,15 +7315,64 @@ mod tests {
     fn confirmed_create_accepts_only_the_exact_selectable_canonical_name() {
         let ordinary = [remote_mailbox("Archive", false, false, true)];
         let confirmed =
-            confirmed_created_mailbox_capability(MailboxRole::Archive, &ordinary, false);
+            confirmed_created_mailbox_capability(
+                MailboxRole::Archive,
+                &ordinary,
+                false,
+                "imap.example.com",
+                true,
+            );
         assert_eq!(confirmed.status, MailboxCapabilityStatus::Available);
         assert_eq!(confirmed.display_name.as_deref(), Some("Archive"));
+        assert_eq!(
+            confirmed_created_mailbox_capability(
+                MailboxRole::Archive,
+                &ordinary,
+                false,
+                "imap.example.com",
+                false,
+            )
+            .status,
+            MailboxCapabilityStatus::NeedsCreationConfirmation
+        );
 
         let non_selectable = [remote_mailbox("Trash", false, false, false)];
         assert_ne!(
-            confirmed_created_mailbox_capability(MailboxRole::Trash, &non_selectable, false).status,
+            confirmed_created_mailbox_capability(
+                MailboxRole::Trash,
+                &non_selectable,
+                false,
+                "imap.example.com",
+                true,
+            )
+            .status,
             MailboxCapabilityStatus::Available
         );
+    }
+
+    #[test]
+    fn provider_declared_roles_win_over_same_named_ordinary_mailboxes() {
+        let mailboxes = [
+            remote_mailbox("Archive", false, false, true),
+            remote_mailbox("Provider/Archived", true, false, true),
+            remote_mailbox("Trash", false, false, true),
+            remote_mailbox("Provider/Deleted", false, true, true),
+        ];
+
+        let archive = discovered_mailbox_capability(
+            MailboxRole::Archive,
+            &mailboxes,
+            false,
+            "imap.example.com",
+        );
+        let trash = discovered_mailbox_capability(
+            MailboxRole::Trash,
+            &mailboxes,
+            false,
+            "imap.example.com",
+        );
+        assert_eq!(archive.display_name.as_deref(), Some("Provider/Archived"));
+        assert_eq!(trash.display_name.as_deref(), Some("Provider/Deleted"));
     }
 
     #[test]
@@ -7325,13 +7416,83 @@ mod tests {
     fn gmail_all_mail_adapter_is_provider_scoped() {
         let mut localized_all_mail = remote_mailbox("[Gmail]/所有邮件", false, false, true);
         localized_all_mail.is_all = true;
-        let all_mail = [localized_all_mail];
+        let localized_trash = remote_mailbox("[Gmail]/垃圾箱", false, true, true);
+        let all_mail = [localized_all_mail, localized_trash];
         assert_eq!(
-            discovered_mailbox_capability(MailboxRole::Archive, &all_mail, true).status,
+            discovered_mailbox_capability(
+                MailboxRole::Archive,
+                &all_mail,
+                true,
+                "imap.gmail.com",
+            )
+            .status,
             MailboxCapabilityStatus::Available
         );
         assert_eq!(
-            discovered_mailbox_capability(MailboxRole::Archive, &all_mail, false).status,
+            discovered_mailbox_capability(
+                MailboxRole::Trash,
+                &all_mail,
+                true,
+                "imap.gmail.com",
+            )
+                .display_name
+                .as_deref(),
+            Some("[Gmail]/垃圾箱")
+        );
+        assert_eq!(
+            discovered_mailbox_capability(
+                MailboxRole::Archive,
+                &all_mail,
+                false,
+                "imap.example.com",
+            )
+            .status,
+            MailboxCapabilityStatus::NeedsCreationConfirmation
+        );
+    }
+
+    #[test]
+    fn known_provider_trash_names_map_to_their_official_mailboxes() {
+        let qq = [remote_mailbox("Deleted Messages", false, false, true)];
+        let netease_unicode = [remote_mailbox("已删除", false, false, true)];
+        let netease_modified_utf7 = [remote_mailbox("&XfJSIJZk-", false, false, true)];
+
+        assert_eq!(
+            discovered_mailbox_capability(MailboxRole::Trash, &qq, false, "imap.qq.com")
+                .display_name
+                .as_deref(),
+            Some("Deleted Messages")
+        );
+        assert_eq!(
+            discovered_mailbox_capability(
+                MailboxRole::Trash,
+                &netease_unicode,
+                false,
+                "imap.163.com",
+            )
+            .display_name
+            .as_deref(),
+            Some("已删除")
+        );
+        assert_eq!(
+            discovered_mailbox_capability(
+                MailboxRole::Trash,
+                &netease_modified_utf7,
+                false,
+                "imap.163.com",
+            )
+            .display_name
+            .as_deref(),
+            Some("&XfJSIJZk-")
+        );
+        assert_eq!(
+            discovered_mailbox_capability(
+                MailboxRole::Trash,
+                &qq,
+                false,
+                "imap.example.com",
+            )
+            .status,
             MailboxCapabilityStatus::NeedsCreationConfirmation
         );
     }

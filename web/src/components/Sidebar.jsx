@@ -82,18 +82,11 @@ function capabilityStateFor(role, capability) {
   if (!copy || !capability || capability.status === "available") return null;
 
   if (capability.status === "needs_creation_confirmation") {
-    if (role === "archive") return null;
-    return {
-      actionLabel: `设置${copy.mailbox}`,
-      action: "setup",
-    };
+    return null;
   }
 
   if (capability.status === "discovery_pending") {
-    return {
-      actionLabel: `重新确认${copy.mailbox}`,
-      action: capability.retryable ? "retry" : null,
-    };
+    return null;
   }
 
   return {
@@ -154,7 +147,6 @@ export function Sidebar({
   onAddAccount,
   onOpenSettings,
   mailboxCapabilities = null,
-  onMailboxSetup = null,
   onMailboxCapabilityRetry = null,
   isDrawerOpen = false,
   onDrawerClose = null,
@@ -354,11 +346,8 @@ export function Sidebar({
                 capability,
               );
               const capabilityAction =
-                capabilityState?.action === "setup" &&
-                typeof onMailboxSetup === "function"
-                  ? () => onMailboxSetup(folder.id)
-                  : capabilityState?.action === "retry" &&
-                      typeof onMailboxCapabilityRetry === "function"
+                capabilityState?.action === "retry" &&
+                typeof onMailboxCapabilityRetry === "function"
                     ? () => onMailboxCapabilityRetry(folder.id)
                     : null;
               const folderAction =

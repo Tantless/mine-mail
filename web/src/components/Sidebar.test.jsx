@@ -461,17 +461,23 @@ describe("Sidebar account switcher", () => {
     ).toBeTruthy();
   });
 
-  it("keeps Archive and Trash disabled until authoritative capabilities arrive", () => {
+  it("routes explicit Archive and Trash navigation while discovery is pending", async () => {
+    const user = userEvent.setup();
     const onFolderChange = vi.fn();
     renderSidebar(1, { onFolderChange });
 
     const archive = screen.getByRole("button", { name: "归档" });
     const trash = screen.getByRole("button", { name: "垃圾箱" });
-    expect(archive.disabled).toBe(true);
-    expect(trash.disabled).toBe(true);
+    expect(archive.disabled).toBe(false);
+    expect(trash.disabled).toBe(false);
     expect(archive.textContent).toBe("归档");
     expect(trash.textContent).toBe("垃圾箱");
-    expect(onFolderChange).not.toHaveBeenCalled();
+
+    await user.click(archive);
+    await user.click(trash);
+
+    expect(onFolderChange).toHaveBeenCalledWith("archive");
+    expect(onFolderChange).toHaveBeenCalledWith("trash");
   });
 
   it("traps drawer focus, closes with Escape, and restores its trigger", () => {
@@ -515,36 +521,46 @@ describe("Sidebar account switcher", () => {
     trigger.remove();
   });
 
-  it("keeps a missing Archive role neutral and routes to its workspace", async () => {
+  it("keeps missing managed roles neutral and routes them to their workspaces", async () => {
     const user = userEvent.setup();
     const onFolderChange = vi.fn();
-    const onMailboxSetup = vi.fn();
     renderSidebar(1, {
       onFolderChange,
-      onMailboxSetup,
       mailboxCapabilities: {
         archive: {
           role: "archive",
           status: "needs_creation_confirmation",
           retryable: true,
         },
-        trash: { role: "trash", status: "available", retryable: false },
+        trash: {
+          role: "trash",
+          status: "needs_creation_confirmation",
+          retryable: true,
+        },
       },
     });
 
     const archive = screen.getByRole("button", { name: "归档" });
+    const trash = screen.getByRole("button", { name: "垃圾箱" });
     expect(archive.disabled).toBe(false);
+    expect(trash.disabled).toBe(false);
     expect(archive.textContent).not.toContain("需设置");
+    expect(trash.textContent).not.toContain("需设置");
     expect(archive.dataset.capabilityStatus).toBeUndefined();
+    expect(trash.dataset.capabilityStatus).toBeUndefined();
 
     await user.click(archive);
+    await user.click(trash);
 
     expect(onFolderChange).toHaveBeenCalledWith("archive");
-    expect(onMailboxSetup).not.toHaveBeenCalled();
+    expect(onFolderChange).toHaveBeenCalledWith("trash");
   });
 
-  it("keeps discovery non-navigable without exposing its state", () => {
+  it("keeps discovery neutral while routing the explicit folder action", async () => {
+    const user = userEvent.setup();
+    const onFolderChange = vi.fn();
     renderSidebar(1, {
+      onFolderChange,
       mailboxCapabilities: {
         archive: {
           role: "archive",
@@ -556,8 +572,12 @@ describe("Sidebar account switcher", () => {
     });
 
     const archive = screen.getByRole("button", { name: "归档" });
-    expect(archive.disabled).toBe(true);
+    expect(archive.disabled).toBe(false);
     expect(archive.textContent).toBe("归档");
+
+    await user.click(archive);
+
+    expect(onFolderChange).toHaveBeenCalledWith("archive");
   });
 
   it("keeps unavailable roles neutral while retaining a controlled retry action", async () => {

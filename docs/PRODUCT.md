@@ -252,23 +252,35 @@ must be updated here when an intentional product change lands.
   use Gmail's `in:archive` provider query while excluding Sent, Drafts, Spam,
   and Trash, so only dedicated archived messages appear instead of the raw
   contents of All Mail or another semantic mailbox.
-- Archive remains a neutral folder entry while discovery is pending or creation
-  has not been approved; absence of an optional Archive target is not a warning
-  or account-health problem. Sidebar entries never expose capability discovery
-  or queued-mutation status. Opening Archive first paints any cached summaries
-  for a persisted available role; discovery, missing-role, empty, and failure
-  states do not render explanatory cards in the list workspace.
-- If no archive target exists, the first message Archive action uses a Mine Mail
-  confirmation to offer creation of the fixed `Archive` mailbox. Accepting that
-  confirmation creates and verifies the role, then continues the exact Archive
-  action that prompted setup. The role is persisted only after CREATE followed
-  by LIST confirms a selectable mailbox. Canceling creates no mailbox and leaves
-  the message unchanged. Creation failure keeps Archive unavailable with a
-  recoverable explanation; Archive never degrades into deletion.
-- Trash follows the same rule using selectable SPECIAL-USE `\Trash`, with a
-  one-time confirmed creation of `Trash` when absent. Canceling or failing that
-  setup disables move-to-Trash for the account and never converts it to permanent
-  deletion.
+- Archive remains a neutral folder entry while discovery is pending or its role
+  is absent; absence of an optional Archive target is not a warning or
+  account-health problem. Sidebar entries never expose capability discovery or
+  queued-mutation status. Opening Archive first paints any cached summaries for
+  a persisted available role; discovery, empty, and failure states do not render
+  explanatory cards in the list workspace. Explicit Archive or Trash navigation
+  and message actions do not wait for background discovery: when the role is
+  still `discovery_pending`, that action performs the same LIST-backed role
+  ensure immediately and continues against the settled capability. The user is
+  never asked to retry merely because background discovery has not finished.
+- If no archive target exists, opening Archive or the first message Archive
+  action automatically creates and verifies the role without a confirmation
+  dialog. A message action continues only after that exact role becomes
+  available. Discovery always prefers the provider's selectable SPECIAL-USE
+  role; Gmail keeps using its `\All` adapter. When the server advertises
+  `CREATE-SPECIAL-USE`, Mine Mail creates `Archive` with the `\Archive` role;
+  legacy servers use only the exact product-managed `Archive` fallback. CREATE
+  followed by LIST must verify the provider role or the exact fallback before it
+  is persisted. Creation failure keeps Archive unavailable with a recoverable
+  explanation; Archive never degrades into deletion.
+- Trash follows the same rule using the provider's selectable SPECIAL-USE
+  `\Trash` role first. Opening Trash or moving a message there automatically
+  creates a missing role without a confirmation dialog, using RFC 6154 role
+  creation when supported and the exact `Trash` fallback otherwise. For known
+  providers that omit SPECIAL-USE on their official system folders, Mine Mail
+  maps only the provider-specific exact name: QQ `Deleted Messages`, and NetEase
+  163 `已删除` (including its IMAP modified UTF-7 wire form). It never applies
+  those name guesses to custom servers. Failure disables move-to-Trash for the
+  account and never converts it to permanent deletion.
 - **删除** in Inbox, Sent, or Archive means move to Trash. Only a message already
   in Trash offers permanent deletion, and every permanent deletion requires a
   Mine Mail confirmation. Draft and Outbox deletion keep their separate
@@ -555,9 +567,10 @@ must be updated here when an intentional product change lands.
 - `MailboxCapability` is
   `{ role, status, display_name?, unavailable_reason?, retryable }`.
   `discovery_pending` means no authoritative online discovery has completed;
-  `needs_creation_confirmation` means the role is absent and the UI may offer
-  its one-time creation confirmation. `retryable` is true only when repeating
-  discovery or role creation can change the result.
+  `needs_creation_confirmation` is a backward-compatible wire value meaning the
+  role is absent and the next explicit folder or message action may create it
+  automatically. It does not cause a confirmation dialog. `retryable` is true
+  only when repeating discovery or role creation can change the result.
 - `MessagePage` is
   `{ items, next_cursor?, has_more_local, remote_history_state, end_reached }`.
   `not_checked` is used while more SQLite rows remain; `may_have_more` means a
@@ -651,13 +664,17 @@ must be updated here when an intentional product change lands.
   `load_older_starred_mailbox_page(account_id, role, cursor, page_size, query?)`;
   they accept only Inbox, Sent, or Archive and return only effective
   `\Flagged` summaries.
-- After the user accepts the one-time creation confirmation, the UI calls
-  `create_mailbox_role(account_id, role) -> MailboxCapability`. This command
-  accepts only `archive` or `trash`, chooses the canonical `Archive` or `Trash`
-  name in Rust, performs LIST before and after CREATE, and returns `available`
-  only for the verified selectable role. It accepts no arbitrary mailbox name
-  and is idempotent when another client or repeated command already created the
-  role. Expected discovery, CREATE, and selectability failures return the
+- An explicit folder or message action calls
+  `create_mailbox_role(account_id, role) -> MailboxCapability` automatically
+  when the role is pending or absent. This command accepts only `archive` or
+  `trash`, performs LIST before and after CREATE, prefers a provider-declared
+  role, and uses RFC 6154 `CREATE ... USE` when the server supports it. A legacy
+  server receives only the canonical `Archive` or `Trash` fallback. The command
+  returns `available` immediately when the first LIST finds the verified role;
+  otherwise it returns `available` only for the verified selectable provider
+  role or the exact fallback it just created. It accepts no arbitrary mailbox
+  name and is idempotent when another client or repeated command already created
+  the role. Expected discovery, CREATE, and selectability failures return the
   corresponding capability status/reason; only invalid account or role input
   rejects the command outside that DTO.
 - Message actions use `set_message_seen(message_id, seen)`,

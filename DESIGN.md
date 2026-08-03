@@ -361,9 +361,12 @@ family. Preserve the relative hierarchy when tuning optical values.
 - Archive and Trash paint cached summaries before synchronization. Their sidebar
   entries stay visually neutral and never expose discovery, capability, or
   pending-queue status. Opening an available Archive shows cached mail
-  immediately. A missing or unavailable role leaves the list visually quiet;
-  Archive setup remains available from the first explicit Archive action, while
-  Trash retains its distinct safety contract.
+  immediately. A missing role is created automatically only after an explicit
+  Archive/Trash navigation or message action; initial sidebar presentation never
+  creates server state. If background discovery is still pending, that explicit
+  action settles the role itself and continues instead of asking the user to try
+  again. Folder navigation selects the quiet workspace immediately while the
+  role is being ensured. An unavailable role leaves the list visually quiet.
 - The reader has one outer scrollbar. Native text/semantic HTML uses Mine Mail
   typography; complex sender HTML remains sanitized and isolated. See
   `docs/MAIL_RENDERING.md`.
@@ -631,12 +634,12 @@ family. Preserve the relative hierarchy when tuning optical values.
 - Lower-right toasts are reserved for failures and bounded information that
   requires attention. Routine successful actions use their resulting UI state or
   nearby inline status and never produce a success toast.
-- Creating a missing Archive or Trash mailbox uses a one-time consequential
-  confirmation. Archive setup is requested only from an explicit setup action or
-  the first message Archive action, never from initial sidebar presentation.
-  Confirming setup from a message continues that exact Archive action after the
-  server role is verified. Cancel returns to the unchanged message; creation
-  progress blocks duplicate submission but does not dismiss cached content.
+- Creating a missing Archive or Trash mailbox follows explicit folder navigation
+  or a message action automatically, without a confirmation dialog. Initial
+  sidebar presentation never creates server state. A triggering message action
+  continues only after the server role is verified; creation progress blocks
+  duplicate submission without dismissing cached content, and failure leaves the
+  message unchanged with recoverable feedback.
 - Permanent deletion from Trash requires a confirmation every time. The dialog
   names the irreversible consequence, uses the semantic danger action, starts on
   a safe non-destructive focus target, traps focus, supports Escape before work

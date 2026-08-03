@@ -1,7 +1,6 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { MailboxRoleSetupDialog } from "./MailboxRoleSetupDialog.jsx";
 import { PermanentDeleteDialog } from "./PermanentDeleteDialog.jsx";
 
 function invokingControl(label = "触发操作") {
@@ -19,105 +18,6 @@ afterEach(() => {
   cleanup();
   document.querySelectorAll("[data-confirm-test-trigger]").forEach((element) => {
     element.remove();
-  });
-});
-
-describe("MailboxRoleSetupDialog", () => {
-  it("names the fixed Archive folder, starts safely, traps focus, and restores the trigger", () => {
-    const trigger = invokingControl("归档");
-    trigger.button.dataset.confirmTestTrigger = "true";
-    const onCancel = vi.fn();
-    const view = render(
-      <MailboxRoleSetupDialog
-        role="archive"
-        returnFocusRef={trigger.ref}
-        onCancel={onCancel}
-        onConfirm={vi.fn()}
-      />,
-    );
-
-    expect(
-      screen.getByRole("heading", { name: "设置归档文件夹？" }),
-    ).toBeTruthy();
-    expect(
-      screen.getByText(
-        "Mine Mail 将在当前邮箱账户中创建名为 Archive 的服务器文件夹。不会创建新邮箱地址，也不会删除邮件。",
-      ),
-    ).toBeTruthy();
-    expect(screen.getByText("固定文件夹名称")).toBeTruthy();
-    expect(screen.getByText("Archive")).toBeTruthy();
-    expect(
-      screen.getByText(
-        "仅在首次创建缺失文件夹时需要此确认。取消不会创建文件夹，也不会移动或改变当前邮件。",
-      ),
-    ).toBeTruthy();
-
-    const dialog = screen.getByRole("alertdialog");
-    expect(dialog.getAttribute("aria-labelledby")).toBeTruthy();
-    expect(dialog.getAttribute("aria-describedby")).toBeTruthy();
-    const cancel = screen.getByRole("button", { name: "取消" });
-    const close = screen.getByRole("button", {
-      name: "取消创建 Archive 文件夹",
-    });
-    const confirm = screen.getByRole("button", { name: "创建归档文件夹" });
-    expect(document.activeElement).toBe(cancel);
-
-    confirm.focus();
-    fireEvent.keyDown(confirm, { key: "Tab" });
-    expect(document.activeElement).toBe(close);
-
-    close.focus();
-    fireEvent.keyDown(close, { key: "Tab", shiftKey: true });
-    expect(document.activeElement).toBe(confirm);
-
-    cancel.focus();
-    fireEvent.keyDown(dialog, { key: "Escape" });
-    expect(onCancel).toHaveBeenCalledOnce();
-
-    view.unmount();
-    expect(document.activeElement).toBe(trigger.button);
-  });
-
-  it("describes and confirms creation that continues the triggering Archive action", async () => {
-    const user = userEvent.setup();
-    const onConfirm = vi.fn();
-    render(
-      <MailboxRoleSetupDialog
-        role="archive"
-        continueAction
-        onCancel={vi.fn()}
-        onConfirm={onConfirm}
-      />,
-    );
-
-    expect(
-      screen.getByRole("heading", {
-        name: "创建归档文件夹并归档这封邮件？",
-      }),
-    ).toBeTruthy();
-    await user.click(screen.getByRole("button", { name: "创建并归档" }));
-    expect(onConfirm).toHaveBeenCalledWith("archive");
-  });
-
-  it("reports the exact Trash role through a controlled callback", async () => {
-    const user = userEvent.setup();
-    const onConfirm = vi.fn();
-    render(
-      <MailboxRoleSetupDialog
-        role="trash"
-        onCancel={vi.fn()}
-        onConfirm={onConfirm}
-      />,
-    );
-
-    expect(
-      screen.getByText(
-        "Mine Mail 将创建名为 Trash 的固定邮箱，并在服务器确认它可用后再把当前邮件移入垃圾箱。",
-      ),
-    ).toBeTruthy();
-    await user.click(screen.getByRole("button", { name: "创建 Trash" }));
-    expect(onConfirm).toHaveBeenCalledOnce();
-    expect(onConfirm).toHaveBeenCalledWith("trash");
   });
 });
 
