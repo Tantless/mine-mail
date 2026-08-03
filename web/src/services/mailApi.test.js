@@ -902,6 +902,24 @@ describe("mailApi desktop IPC contract", () => {
     expect(inbox.items[0]).not.toHaveProperty("uid");
     expect(inbox.items[0]).not.toHaveProperty("body_text");
 
+    const contacts = await mailApi.listContacts("demo-primary");
+    expect(contacts.contacts).toContainEqual(
+      expect.objectContaining({
+        email: "chenyu@example.com",
+        displayName: "陈屿",
+        messageCount: 4,
+      }),
+    );
+    const correspondence = await mailApi.listContactMessages(
+      "demo-primary",
+      "chenyu@example.com",
+      10,
+    );
+    expect(correspondence).toHaveLength(4);
+    expect(correspondence.map((message) => message.direction)).toEqual(
+      expect.arrayContaining(["incoming", "outgoing"]),
+    );
+
     const firstStarredPage = await mailApi.listStarredMailboxPage(
       "demo-primary",
       "inbox",

@@ -20,21 +20,21 @@ Apple Silicon Mac，以及 Linux x64 发布。各平台安装包由统一发布�
   <tr>
     <td width="50%">
       <strong>Daylight · 日间</strong><br>
-      <img src="docs/assets/readme/daylight.webp" alt="Mine Mail 日间主题 mock 数据截图">
+      <img src="docs/assets/readme/daylight.webp" alt="Mine Mail 日间主题：模拟演出通知与邮件详情">
     </td>
     <td width="50%">
       <strong>Night · 夜间</strong><br>
-      <img src="docs/assets/readme/night.webp" alt="Mine Mail 夜间主题 mock 数据截图">
+      <img src="docs/assets/readme/night.webp" alt="Mine Mail 夜间主题：通讯录与联系人往来邮件">
     </td>
   </tr>
   <tr>
     <td width="50%">
       <strong>Dusk · 黄昏</strong><br>
-      <img src="docs/assets/readme/dusk.webp" alt="Mine Mail 黄昏主题 mock 数据截图">
+      <img src="docs/assets/readme/dusk.webp" alt="Mine Mail 黄昏主题：默认诗句阅读状态">
     </td>
     <td width="50%">
       <strong>Forest · 森林</strong><br>
-      <img src="docs/assets/readme/forest.webp" alt="Mine Mail 森林主题 mock 数据截图">
+      <img src="docs/assets/readme/forest.webp" alt="Mine Mail 森林主题：模拟草稿箱内容">
     </td>
   </tr>
 </table>
