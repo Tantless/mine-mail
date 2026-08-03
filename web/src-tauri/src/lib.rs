@@ -1898,15 +1898,34 @@ fn set_autostart_enabled(app: &AppHandle, enabled: bool) -> CommandResult<()> {
     let current = autostart
         .is_enabled()
         .map_err(|_| "The system startup setting could not be read.".to_owned())?;
-    if current == enabled {
+    if !enabled && !current {
         return Ok(());
     }
     if enabled {
+        // `is_enabled` only tells us that an entry exists; it does not verify
+        // its executable arguments. Re-enabling rewrites entries left by older
+        // releases so login startup always includes `--background`.
         autostart.enable()
     } else {
         autostart.disable()
     }
     .map_err(|_| "The system startup setting could not be updated.".to_owned())
+}
+
+fn refresh_enabled_autostart_registration(app: &AppHandle) -> CommandResult<bool> {
+    let autostart = app.autolaunch();
+    let enabled = autostart
+        .is_enabled()
+        .map_err(|_| "The system startup setting could not be read.".to_owned())?;
+    if enabled {
+        // The autostart plugin owns the platform-specific registration and is
+        // configured with `--background`. Rewriting an enabled entry migrates
+        // historical registrations without changing the user's preference.
+        autostart
+            .enable()
+            .map_err(|_| "The system startup setting could not be refreshed.".to_owned())?;
+    }
+    Ok(enabled)
 }
 
 fn requested_autostart_change(current: bool, requested: Option<bool>) -> Option<bool> {
@@ -2079,6 +2098,14 @@ fn initialize_state(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Erro
             "foreground"
         }),
     );
+    if refresh_enabled_autostart_registration(app.handle()).is_err() {
+        diagnostics::warn(
+            "autostart_registration_refresh_failed",
+            DiagnosticFields::default()
+                .operation("autostart_registration")
+                .error(DiagnosticErrorKind::Runtime),
+        );
+    }
     let storage = StorageRuntime::initialize(app.handle());
     let app_data = storage.runtime_data_root.clone();
     let path_error = storage.startup_error;
@@ -2351,8 +2378,9 @@ mod tests {
         ForwardPreparationOutcomeDto, InboxMessageDto, MessageNavigationTargetDto, OutboxItemDto,
         OutboxMessageDto, ReplyContextDto, Url, WebviewNavigationDecision,
         assert_no_private_mail_coordinates, classify_webview_navigation,
-        delivery_unknown_decision_name, requested_autostart_change, sanitize_compose_request,
-        validate_delivery_unknown_request, validate_external_url, validate_outbox_id,
+        delivery_unknown_decision_name, is_background_launch, requested_autostart_change,
+        sanitize_compose_request, validate_delivery_unknown_request, validate_external_url,
+        validate_outbox_id,
     };
 
     fn rich_message() -> InboxMessage {
@@ -2616,6 +2644,19 @@ mod tests {
         assert_eq!(requested_autostart_change(false, None), None);
         assert_eq!(requested_autostart_change(false, Some(true)), Some(true));
         assert_eq!(requested_autostart_change(true, Some(false)), Some(false));
+    }
+
+    #[test]
+    fn background_launch_requires_the_explicit_autostart_argument() {
+        assert!(is_background_launch([
+            "Mine Mail.exe".to_owned(),
+            "--background".to_owned(),
+        ]));
+        assert!(!is_background_launch(["Mine Mail.exe".to_owned()]));
+        assert!(!is_background_launch([
+            "Mine Mail.exe".to_owned(),
+            "--background=false".to_owned(),
+        ]));
     }
 
     #[test]

@@ -124,7 +124,9 @@ must be updated here when an intentional product change lands.
   correspondence with a loading placeholder.
 - When background mode is enabled, closing the main window hides it to the tray.
   Tray labels are exactly **打开 / 刷新 / 退出**.
-- Login autostart is one setting and defaults off.
+- Login autostart is one setting and defaults off. When enabled, login starts
+  Mine Mail hidden in the tray without opening or focusing the main window;
+  launching Mine Mail normally still opens the main window.
 
 ## Mail list, bodies, and remote content
 
