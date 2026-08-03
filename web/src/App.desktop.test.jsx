@@ -5710,7 +5710,7 @@ describe("Mine Mail desktop state bridge", () => {
     await user.click(screen.getByText("Second draft"));
 
     expect((await screen.findByRole("alert")).textContent).toContain(
-      "local write failed",
+      "Mine Mail 内部处理失败：切换草稿前未能保存当前编辑，请重试；如果仍然失败，请重启应用。",
     );
     const composer = screen.getByRole("dialog", {
       name: "Keep this edit(friend@example.com)",
@@ -6082,7 +6082,7 @@ describe("Mine Mail desktop state bridge", () => {
     ).toBe(true);
     expect(
       within(screen.getByLabelText("邮件阅读区")).getByText(
-        "说明：A newer ambiguous attempt exists",
+        "说明：投递结果仍待确认，请先到邮箱服务商的“已发送”文件夹核对。",
       ),
     ).toBeTruthy();
     expect(desktop.mailApi.resolveDeliveryUnknown).toHaveBeenCalledOnce();
@@ -6118,7 +6118,7 @@ describe("Mine Mail desktop state bridge", () => {
 
     expect(
       await within(dialog).findByText(
-        "Desktop bridge unavailable。邮件仍保留在发件队列。",
+        "Mine Mail 内部处理失败：未能处理投递结果。请重试；如果仍然失败，请重启应用。邮件仍保留在发件队列。",
       ),
     ).toBeTruthy();
     expect(
@@ -6266,7 +6266,11 @@ describe("Mine Mail desktop state bridge", () => {
     expect(
       await screen.findByRole("heading", { name: "服务器已拒绝" }),
     ).toBeTruthy();
-    expect(screen.getByText("说明：Permanent rejection")).toBeTruthy();
+    expect(
+      screen.getByText(
+        "说明：邮箱服务器拒绝了这次投递，请检查收件人和账户设置。",
+      ),
+    ).toBeTruthy();
     expect(screen.queryByRole("button", { name: "重试发送" })).toBeNull();
   });
 });

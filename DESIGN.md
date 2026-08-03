@@ -211,6 +211,14 @@ family. Preserve the relative hierarchy when tuning optical values.
   states. Opening one must not create a different visual system.
 - Use Mine Mail-owned dialogs and inline validation instead of `alert`, `confirm`,
   or `prompt`. Show one relevant error close to the failed action.
+- Error copy is concise Simplified Chinese and starts with the distinction the
+  user needs: **请检查输入 / 操作未完成** for a correctable action, the relevant
+  account or connection condition for an external dependency, or
+  **Mine Mail 内部处理失败** for an unexpected application failure. Never place
+  raw backend English, stack text, or internal codes in an error surface.
+- State what remains safe and the next action when they matter. Do not imply that
+  an internal failure was caused by the user's input, and do not use a generic
+  “something went wrong” message when a bounded recovery step is known.
 
 ### Lists and rows
 

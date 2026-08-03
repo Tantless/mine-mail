@@ -21,6 +21,23 @@ must be updated here when an intentional product change lands.
   remains authoritative for remote messages and system flags once synchronization
   confirms them.
 
+## User-visible failures
+
+- Product-owned error copy is Simplified Chinese. Protocol, provider, format,
+  and product names such as IMAP, SMTP, OAuth, TLS, Gmail, and Mine Mail may stay
+  in their established technical form, but raw English diagnostics never appear
+  in the interface.
+- A failure identifies its source without blaming the user: invalid or stale
+  input says what to check; account authorization and network/provider failures
+  state the recovery action; an unexpected local or bridge failure explicitly
+  says that Mine Mail's internal processing failed.
+- Rust retains diagnostic detail for privacy-safe local diagnostics. React shows
+  only bounded, actionable copy and never exposes provider-controlled response
+  text, internal identifiers, database details, complete paths, or stack traces.
+- Unknown failures preserve recoverable local state, offer a safe retry where
+  possible, and direct the user to restart Mine Mail only when another retry does
+  not resolve an internal processing failure.
+
 ## Accounts and identity
 
 - A user may connect at most three accounts.

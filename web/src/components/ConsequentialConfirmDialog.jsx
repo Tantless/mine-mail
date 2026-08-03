@@ -5,6 +5,7 @@ import {
   useConfirmDialogFocus,
 } from "./ConfirmDialogPrimitives.jsx";
 import { IconButton } from "./IconButton.jsx";
+import { userFacingErrorMessage } from "../utils/userFacingError.js";
 
 export function ConsequentialConfirmDialog({
   open,
@@ -95,7 +96,7 @@ export function ConsequentialConfirmDialog({
             aria-live="assertive"
             aria-atomic="true"
           >
-            {errorMessage}
+            {userFacingErrorMessage(errorMessage, "该操作没有完成")}
           </p>
         ) : null}
 

@@ -1,7 +1,12 @@
 import { CheckCircle, Info, WarningCircle, X } from "@phosphor-icons/react";
+import { userFacingErrorMessage } from "../utils/userFacingError.js";
 
 export function Toast({ toast, onClose }) {
   if (!toast) return null;
+  const message =
+    toast.tone === "error"
+      ? userFacingErrorMessage(toast.message, "该操作没有完成")
+      : toast.message;
   const Icon =
     toast.tone === "error"
       ? WarningCircle
@@ -18,7 +23,7 @@ export function Toast({ toast, onClose }) {
       <span className="toast__icon" aria-hidden="true">
         <Icon size={18} weight="fill" />
       </span>
-      <span className="toast__message">{toast.message}</span>
+      <span className="toast__message">{message}</span>
       <button
         className="toast__close"
         type="button"

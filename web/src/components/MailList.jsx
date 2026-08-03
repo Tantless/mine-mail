@@ -19,6 +19,7 @@ import {
   senderLabel,
 } from "../utils/formatters.js";
 import { messageNavigationKey } from "../utils/messageNavigation.js";
+import { userFacingErrorMessage } from "../utils/userFacingError.js";
 import { useSlidingSelection } from "../hooks/useSlidingSelection.js";
 
 const folderConfigurations = {
@@ -159,6 +160,10 @@ function SyncFeedbackRow({ feedback }) {
       : state === "error"
         ? XCircle
         : CircleNotch;
+  const message =
+    state === "error"
+      ? userFacingErrorMessage(feedback.message, "邮箱同步没有完成")
+      : feedback.message;
 
   return (
     <div
@@ -169,7 +174,7 @@ function SyncFeedbackRow({ feedback }) {
       aria-atomic="true"
     >
       <Icon size={14} weight="regular" aria-hidden="true" />
-      <span>{feedback.message}</span>
+      <span>{message}</span>
     </div>
   );
 }

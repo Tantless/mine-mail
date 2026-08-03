@@ -125,7 +125,7 @@ impl AccountMetadata {
                 SmtpSecurity::StartTls,
             ),
             AccountProvider::Custom => {
-                return Err("Custom accounts require explicit IMAP and SMTP settings.".to_owned());
+                return Err("请检查输入：自定义邮箱需要填写完整的 IMAP 和 SMTP 设置。".to_owned());
             }
         };
         let mut metadata = Self {
@@ -160,32 +160,32 @@ impl AccountMetadata {
                 .to_ascii_lowercase()
                 .ends_with("@163.com")
         {
-            return Err("The 163 preset requires an @163.com address.".to_owned());
+            return Err("请检查输入：163 邮箱地址必须以 @163.com 结尾。".to_owned());
         }
         if input.provider == AccountProvider::Qq
             && !input.email.trim().to_ascii_lowercase().ends_with("@qq.com")
         {
-            return Err("The QQ preset requires an @qq.com address.".to_owned());
+            return Err("请检查输入：QQ 邮箱地址必须以 @qq.com 结尾。".to_owned());
         }
 
         if input.provider != AccountProvider::Custom {
             return Self::preset(input.provider, input.email.trim().to_owned());
         }
 
-        let imap_host = required_text(input.imap_host.as_deref(), "IMAP host")?;
-        let smtp_host = required_text(input.smtp_host.as_deref(), "SMTP host")?;
+        let imap_host = required_text(input.imap_host.as_deref(), "IMAP 服务器地址")?;
+        let smtp_host = required_text(input.smtp_host.as_deref(), "SMTP 服务器地址")?;
         let imap_port = input
             .imap_port
             .filter(|port| *port > 0)
-            .ok_or_else(|| "A valid IMAP port is required.".to_owned())?;
+            .ok_or_else(|| "请检查输入：请输入有效的 IMAP 端口。".to_owned())?;
         let smtp_port = input
             .smtp_port
             .filter(|port| *port > 0)
-            .ok_or_else(|| "A valid SMTP port is required.".to_owned())?;
+            .ok_or_else(|| "请检查输入：请输入有效的 SMTP 端口。".to_owned())?;
         let smtp_security = input
             .smtp_security
             .map(Into::into)
-            .ok_or_else(|| "SMTP security must be implicit TLS or STARTTLS.".to_owned())?;
+            .ok_or_else(|| "请检查输入：SMTP 安全方式只能选择 TLS 或 STARTTLS。".to_owned())?;
 
         let mut metadata = Self {
             schema_version: ACCOUNT_METADATA_VERSION,
@@ -221,7 +221,7 @@ impl AccountMetadata {
                 self.smtp_security,
             ),
         };
-        result.map_err(|_| "The account settings are invalid.".to_owned())
+        result.map_err(|_| "请检查输入：邮箱账户设置无效。".to_owned())
     }
 
     fn same_identity(&self, other: &Self) -> bool {
@@ -1711,7 +1711,7 @@ fn account_identity_hash(metadata: &AccountMetadata) -> String {
 fn required_text(value: Option<&str>, field: &str) -> Result<String, String> {
     let value = value.unwrap_or_default().trim();
     if value.is_empty() {
-        Err(format!("{field} is required."))
+        Err(format!("请检查输入：{field}不能为空。"))
     } else {
         Ok(value.to_owned())
     }
@@ -1724,11 +1724,11 @@ fn normalize_account_remark(value: &str) -> Result<Option<String>, String> {
     }
     if remark.chars().count() > ACCOUNT_REMARK_MAX_CHARACTERS {
         return Err(format!(
-            "Account remarks can contain at most {ACCOUNT_REMARK_MAX_CHARACTERS} characters."
+            "请检查输入：邮箱备注最多可输入 {ACCOUNT_REMARK_MAX_CHARACTERS} 个字符。"
         ));
     }
     if remark.chars().any(char::is_control) {
-        return Err("Account remarks cannot contain control characters.".to_owned());
+        return Err("请检查输入：邮箱备注不能包含控制字符。".to_owned());
     }
     Ok(Some(remark.to_owned()))
 }
@@ -2293,7 +2293,7 @@ mod tests {
         };
         assert_eq!(
             AccountMetadata::from_input(&invalid_qq).expect_err("QQ requires its own domain"),
-            "The QQ preset requires an @qq.com address."
+            "请检查输入：QQ 邮箱地址必须以 @qq.com 结尾。"
         );
 
         let oauth = AccountMetadata::google("demo@gmail.com".to_owned()).expect("Google OAuth");

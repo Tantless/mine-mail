@@ -202,12 +202,13 @@ impl ContactStore {
 
     fn set_favorite(&self, account_id: &str, email: &str, favorite: bool) -> Result<bool, String> {
         if account_id.trim().is_empty() || account_id.chars().any(char::is_control) {
-            return Err("A valid account is required for a contact favorite.".to_owned());
+            return Err("操作未完成：联系人收藏缺少有效的邮箱账户。".to_owned());
         }
-        let email = normalize_contact_email(email).map_err(|error| error.to_string())?;
+        let email = normalize_contact_email(email)
+            .map_err(|_| "请检查操作：联系人邮箱地址无效。".to_owned())?;
         let connection = self
             .connection()
-            .map_err(|_| "Contact storage is unavailable.".to_owned())?;
+            .map_err(|_| "Mine Mail 内部处理失败：联系人存储暂时不可用，请重试。".to_owned())?;
         let changed = if favorite {
             connection.execute(
                 "INSERT INTO contact_favorites (
@@ -227,16 +228,17 @@ impl ContactStore {
                 params![account_id, email],
             )
         }
-        .map_err(|_| "The contact favorite could not be updated.".to_owned())?;
+        .map_err(|_| "Mine Mail 未能保存联系人收藏状态，请重试。".to_owned())?;
         Ok(changed > 0)
     }
 
     fn set_remark(&self, email: &str, remark: &str) -> Result<bool, String> {
-        let email = normalize_contact_email(email).map_err(|error| error.to_string())?;
+        let email = normalize_contact_email(email)
+            .map_err(|_| "请检查操作：联系人邮箱地址无效。".to_owned())?;
         let remark = normalize_contact_remark(remark)?;
         let connection = self
             .connection()
-            .map_err(|_| "Contact storage is unavailable.".to_owned())?;
+            .map_err(|_| "Mine Mail 内部处理失败：联系人存储暂时不可用，请重试。".to_owned())?;
         let changed = if let Some(remark) = remark {
             connection.execute(
                 "INSERT INTO contacts (
@@ -255,14 +257,15 @@ impl ContactStore {
         } else {
             connection.execute("DELETE FROM contacts WHERE email = ?1", [&email])
         }
-        .map_err(|_| "The contact remark could not be updated.".to_owned())?;
+        .map_err(|_| "Mine Mail 未能保存联系人备注，请重试。".to_owned())?;
         Ok(changed > 0)
     }
 
     fn remark_for(&self, email: &str) -> Result<Option<String>, String> {
-        let email = normalize_contact_email(email).map_err(|error| error.to_string())?;
+        let email = normalize_contact_email(email)
+            .map_err(|_| "请检查操作：联系人邮箱地址无效。".to_owned())?;
         self.connection()
-            .map_err(|_| "Contact storage is unavailable.".to_owned())?
+            .map_err(|_| "Mine Mail 内部处理失败：联系人存储暂时不可用，请重试。".to_owned())?
             .query_row(
                 "SELECT NULLIF(TRIM(remark), '')
                  FROM contacts
@@ -272,18 +275,18 @@ impl ContactStore {
             )
             .optional()
             .map(|remark| remark.flatten())
-            .map_err(|_| "The contact remark could not be read.".to_owned())
+            .map_err(|_| "Mine Mail 未能读取联系人备注，请重试。".to_owned())
     }
 
     fn remove_account_favorites(&self, account_id: &str) -> Result<(), String> {
         self.connection()
-            .map_err(|_| "Contact storage is unavailable.".to_owned())?
+            .map_err(|_| "Mine Mail 内部处理失败：联系人存储暂时不可用，请重试。".to_owned())?
             .execute(
                 "DELETE FROM contact_favorites WHERE account_id = ?1",
                 [account_id],
             )
             .map(|_| ())
-            .map_err(|_| "The removed account's favorites could not be cleared.".to_owned())
+            .map_err(|_| "邮箱账户已移除，但 Mine Mail 未能清理其联系人收藏。".to_owned())
     }
 
     fn connection(&self) -> rusqlite::Result<Connection> {
@@ -313,16 +316,16 @@ impl ContactRuntime {
         let store = self
             .store
             .as_ref()
-            .ok_or_else(|| "Contact storage is unavailable.".to_owned())?;
+            .ok_or_else(|| "Mine Mail 内部处理失败：联系人存储暂时不可用，请重试。".to_owned())?;
         store
             .resolve_legacy_favorites(&activity_by_account, active_account_id)
-            .map_err(|_| "Existing contact favorites could not be upgraded.".to_owned())?;
+            .map_err(|_| "Mine Mail 未能升级已有联系人收藏，请重试。".to_owned())?;
         let records = store
             .list_records()
-            .map_err(|_| "Contacts could not be loaded.".to_owned())?;
+            .map_err(|_| "Mine Mail 未能读取联系人，请重试。".to_owned())?;
         let favorites = store
             .list_favorites()
-            .map_err(|_| "Contact favorites could not be loaded.".to_owned())?;
+            .map_err(|_| "Mine Mail 未能读取联系人收藏，请重试。".to_owned())?;
         Ok(build_directory(
             records,
             favorites,
@@ -339,28 +342,28 @@ impl ContactRuntime {
     ) -> Result<bool, String> {
         self.store
             .as_ref()
-            .ok_or_else(|| "Contact storage is unavailable.".to_owned())?
+            .ok_or_else(|| "Mine Mail 内部处理失败：联系人存储暂时不可用，请重试。".to_owned())?
             .set_favorite(account_id, email, favorite)
     }
 
     pub(crate) fn set_remark(&self, email: &str, remark: &str) -> Result<bool, String> {
         self.store
             .as_ref()
-            .ok_or_else(|| "Contact storage is unavailable.".to_owned())?
+            .ok_or_else(|| "Mine Mail 内部处理失败：联系人存储暂时不可用，请重试。".to_owned())?
             .set_remark(email, remark)
     }
 
     pub(crate) fn remark_for(&self, email: &str) -> Result<Option<String>, String> {
         self.store
             .as_ref()
-            .ok_or_else(|| "Contact storage is unavailable.".to_owned())?
+            .ok_or_else(|| "Mine Mail 内部处理失败：联系人存储暂时不可用，请重试。".to_owned())?
             .remark_for(email)
     }
 
     pub(crate) fn remove_account(&self, account_id: &str) -> Result<(), String> {
         self.store
             .as_ref()
-            .ok_or_else(|| "Contact storage is unavailable.".to_owned())?
+            .ok_or_else(|| "Mine Mail 内部处理失败：联系人存储暂时不可用，请重试。".to_owned())?
             .remove_account_favorites(account_id)
     }
 }
@@ -372,11 +375,11 @@ fn normalize_contact_remark(value: &str) -> Result<Option<String>, String> {
     }
     if remark.chars().count() > CONTACT_REMARK_MAX_CHARACTERS {
         return Err(format!(
-            "Contact remarks can contain at most {CONTACT_REMARK_MAX_CHARACTERS} characters."
+            "请检查输入：联系人备注最多可输入 {CONTACT_REMARK_MAX_CHARACTERS} 个字符。"
         ));
     }
     if remark.chars().any(char::is_control) {
-        return Err("Contact remarks cannot contain control characters.".to_owned());
+        return Err("请检查输入：联系人备注不能包含控制字符。".to_owned());
     }
     Ok(Some(remark.to_owned()))
 }

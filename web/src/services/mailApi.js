@@ -1,5 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import {
+  toUserFacingError,
+  userFacingErrorMessage,
+} from "../utils/userFacingError.js";
 
 export const isTauriRuntime =
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -61,20 +65,69 @@ async function callDemo(method, ...args) {
   if (typeof action !== "function") {
     throw new Error("当前运行时没有实现此操作。");
   }
-  return action(...args);
+  try {
+    return await action(...args);
+  } catch (error) {
+    throw toUserFacingError(error, "演示操作没有完成");
+  }
 }
 
-function commandError(error) {
-  if (error instanceof Error) return error;
-  if (typeof error === "string") return new Error(error);
-  return new Error("桌面后端没有完成此操作。");
+const commandFailureMessages = Object.freeze({
+  add_draft_attachments: "添加附件没有完成",
+  archive_message: "归档邮件没有完成",
+  configure_account: "邮箱账户连接没有完成",
+  confirm_permanent_delete: "永久删除没有完成",
+  connect_google_account: "Google 登录没有完成",
+  create_mailbox_role: "邮箱文件夹创建没有完成",
+  delete_draft: "删除草稿没有完成",
+  delete_profile_avatar: "移除头像没有完成",
+  fetch_mailbox_message: "邮件正文读取没有完成",
+  fetch_outbox_message: "发件队列邮件读取没有完成",
+  get_account_status: "账户状态读取没有完成",
+  get_desktop_settings: "桌面设置读取没有完成",
+  list_contact_messages: "往来邮件读取没有完成",
+  list_contacts: "联系人读取没有完成",
+  list_mailbox_page: "邮件列表读取没有完成",
+  load_older_mailbox_page: "更早邮件读取没有完成",
+  move_message_to_inbox: "移回收件箱没有完成",
+  move_message_to_trash: "移到废纸篓没有完成",
+  open_external_url: "外部链接打开没有完成",
+  prepare_forward: "转发邮件准备没有完成",
+  prepare_permanent_delete: "永久删除确认没有完成",
+  prepare_reply: "回复邮件准备没有完成",
+  remove_account: "移除邮箱账户没有完成",
+  remove_draft_attachment: "移除附件没有完成",
+  resolve_delivery_unknown: "投递结果处理没有完成",
+  retry_outbox: "重新发送没有完成",
+  save_draft: "草稿保存没有完成",
+  save_message_attachment: "附件保存没有完成",
+  save_profile_avatar: "头像保存没有完成",
+  send_draft: "发送邮件没有完成",
+  set_account_remark: "邮箱备注保存没有完成",
+  set_contact_favorite: "联系人收藏状态保存没有完成",
+  set_contact_remark: "联系人备注保存没有完成",
+  set_message_seen: "已读状态保存没有完成",
+  set_message_starred_by_id: "星标状态保存没有完成",
+  switch_account: "邮箱账户切换没有完成",
+  sync_all: "邮箱同步没有完成",
+  sync_drafts: "草稿同步没有完成",
+  sync_mailbox: "邮箱文件夹同步没有完成",
+  sync_sent: "已发送邮件同步没有完成",
+  update_desktop_settings: "桌面设置保存没有完成",
+});
+
+function commandError(error, command) {
+  return toUserFacingError(
+    error,
+    commandFailureMessages[command] || "该操作没有完成",
+  );
 }
 
 async function desktopInvoke(command, args) {
   try {
     return await invoke(command, args);
   } catch (error) {
-    throw commandError(error);
+    throw commandError(error, command);
   }
 }
 
@@ -110,7 +163,13 @@ function normalizeSettings(settings = {}) {
     remoteImageMode: ["automatic", "ask", "blocked"].includes(remoteImageMode)
       ? remoteImageMode
       : "automatic",
-    startupError: settings.startupError ?? settings.startup_error ?? null,
+    startupError:
+      (settings.startupError ?? settings.startup_error)
+        ? userFacingErrorMessage(
+            settings.startupError ?? settings.startup_error,
+            "桌面设置初始化没有完成",
+          )
+        : null,
   };
 }
 
@@ -192,7 +251,13 @@ function normalizeAccountStatus(status = {}) {
       status.credential_available ??
       status.configured,
     ),
-    startupError: status.startupError ?? status.startup_error ?? null,
+    startupError:
+      (status.startupError ?? status.startup_error)
+        ? userFacingErrorMessage(
+            status.startupError ?? status.startup_error,
+            "邮箱账户初始化没有完成",
+          )
+        : null,
     accounts,
     accountCount: Number(
       status.accountCount ?? status.account_count ?? accounts.length,
@@ -707,7 +772,9 @@ export const mailApi = {
         localDataDeleted: Boolean(
           result.localDataDeleted ?? result.local_data_deleted,
         ),
-        warning: result.warning ?? null,
+        warning: result.warning
+          ? userFacingErrorMessage(result.warning, "本地数据清理没有完成")
+          : null,
       };
     }
     return callDemo("removeAccount", accountId, options);
@@ -787,7 +854,7 @@ export const mailApi = {
     try {
       return await listen(eventName, handler);
     } catch (error) {
-      throw commandError(error);
+      throw commandError(error, `listen:${eventName}`);
     }
   },
 };

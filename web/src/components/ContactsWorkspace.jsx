@@ -20,6 +20,7 @@ import {
   useState,
 } from "react";
 import { formatFullDate, formatMailTime } from "../utils/formatters.js";
+import { userFacingErrorMessage } from "../utils/userFacingError.js";
 import { useSlidingSelection } from "../hooks/useSlidingSelection.js";
 import { EditableProfileAvatar, ProfileAvatar } from "./ProfileAvatar.jsx";
 import { TooltipTarget } from "./Tooltip.jsx";
@@ -119,9 +120,7 @@ function useContactVirtualWindow({ count, scrollContainerRef }) {
 }
 
 function errorMessage(error, fallback) {
-  if (typeof error === "string" && error.trim()) return error;
-  if (error?.message) return error.message;
-  return fallback;
+  return userFacingErrorMessage(error, fallback);
 }
 
 function messageKey(message, index) {

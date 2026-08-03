@@ -31,6 +31,7 @@ import { EditableProfileAvatar, ProfileAvatar } from "./ProfileAvatar.jsx";
 import { TooltipTarget } from "./Tooltip.jsx";
 import { formatFullDate } from "../utils/formatters.js";
 import { messageNavigationKey } from "../utils/messageNavigation.js";
+import { userFacingErrorMessage } from "../utils/userFacingError.js";
 
 const REMOTE_MAILBOX_ROLES = new Set(["inbox", "sent", "archive", "trash"]);
 const MOVE_TO_TRASH_ROLES = new Set(["inbox", "sent", "archive"]);
@@ -64,19 +65,20 @@ function normalizeActionState(value) {
   return value && typeof value === "object" ? value : { status: "idle" };
 }
 
-function actionStateMessage(state) {
-  if (state.disabledReason) return state.disabledReason;
-  if (state.message) return state.message;
-  if (state.error_message) return state.error_message;
-  if (typeof state.error === "string") return state.error;
-  if (state.error?.message) return state.error.message;
-  return "";
+function actionStateMessage(state, fallback) {
+  const detail =
+    state.disabledReason ||
+    state.message ||
+    state.error_message ||
+    state.error ||
+    null;
+  return detail ? userFacingErrorMessage(detail, fallback) : "";
 }
 
 function actionPresentation(actionLabel, stateValue) {
   const state = normalizeActionState(stateValue);
   const status = state.status || "idle";
-  const detail = actionStateMessage(state);
+  const detail = actionStateMessage(state, `${actionLabel}没有完成`);
 
   if (state.available === false || status === "unavailable") {
     return {
@@ -218,12 +220,15 @@ function attachmentStatusPresentation(attachment, stateValue, canSave) {
   const state = normalizeAttachmentSaveState(stateValue);
   const status = state.status || "idle";
   const name = attachment.safe_display_name || "attachment.bin";
-  const error =
+  const rawError =
     state.message ||
     state.error_message ||
     (typeof state.error === "string" ? state.error : state.error?.message) ||
     attachmentErrorLabel(state.error_kind || state.errorKind) ||
     "";
+  const error = rawError
+    ? userFacingErrorMessage(rawError, "附件保存没有完成")
+    : "";
 
   if (status === "saving") {
     return {
@@ -768,7 +773,13 @@ export function MessageView({
           <aside className="message-error delivery-status" role="status">
             <strong>投递状态：{message.delivery_status_label}</strong>
             {message.outbox?.last_error ? (
-              <span>说明：{message.outbox.last_error}</span>
+              <span>
+                说明：
+                {userFacingErrorMessage(
+                  message.outbox.last_error,
+                  "邮件投递状态暂时无法确认",
+                )}
+              </span>
             ) : null}
             {message.outbox?.status === "delivery_unknown" ? (
               <>
@@ -829,7 +840,9 @@ export function MessageView({
           ) : error ? (
             <div className="message-error" role="alert">
               <strong>正文加载失败</strong>
-              <span>{error}</span>
+              <span>
+                {userFacingErrorMessage(error, "邮件正文暂时无法显示")}
+              </span>
               {onRetry ? (
                 <button type="button" className="secondary-button" onClick={onRetry}>
                   重新加载

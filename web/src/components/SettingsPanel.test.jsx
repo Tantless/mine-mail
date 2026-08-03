@@ -839,7 +839,11 @@ describe("SettingsPanel account flow", () => {
     await waitFor(() =>
       expect(storageClient.cancelMigration).toHaveBeenCalledOnce(),
     );
-    expect(await screen.findByText("restart unavailable")).toBeTruthy();
+    expect(
+      await screen.findByText(
+        "Mine Mail 内部处理失败：数据迁移没有开始，原目录不会改变。请重试；如果仍然失败，请重启应用。",
+      ),
+    ).toBeTruthy();
   });
 
   it("keeps a missing configured data path visible without offering an empty fallback", async () => {

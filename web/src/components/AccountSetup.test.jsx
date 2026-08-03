@@ -85,11 +85,33 @@ describe("AccountSetupForm", () => {
     await user.type(email, "wrong@domain.com");
     await user.click(screen.getByRole("button", { name: "连接邮箱" }));
 
-    expect(screen.getByRole("alert").textContent).toBe("邮箱账号格式不正确。");
+    expect(screen.getByRole("alert").textContent).toBe(
+      "请检查输入：邮箱账号格式不正确。",
+    );
     expect(email.getAttribute("aria-describedby").split(" ")).toContain(
       "account-setup-error",
     );
     expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it("never exposes an English backend rejection in the account form", () => {
+    render(
+      <AccountSetupForm
+        presets={presets}
+        status={{ configured: false }}
+        submitStatus="error"
+        error="The QQ preset requires an @qq.com address."
+        onSubmit={vi.fn()}
+        initialProvider="qq"
+      />,
+    );
+
+    expect(screen.getByRole("alert").textContent).toBe(
+      "请检查输入：QQ 邮箱地址必须以 @qq.com 结尾。",
+    );
+    expect(
+      screen.queryByText("The QQ preset requires an @qq.com address."),
+    ).toBeNull();
   });
 
   it("clears the uncontrolled secret input immediately after submit", async () => {

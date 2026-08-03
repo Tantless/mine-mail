@@ -8,6 +8,7 @@ import {
 } from "@phosphor-icons/react";
 import { IconButton } from "./IconButton.jsx";
 import { ThemedSelect } from "./ThemedSelect.jsx";
+import { userFacingErrorMessage } from "../utils/userFacingError.js";
 
 const fallbackPresets = [
   { id: "163", label: "163 邮箱", secret_label: "客户端授权密码" },
@@ -137,7 +138,11 @@ export function AccountSetupForm({
   const selected = options.find((item) => item.id === provider) || options[0];
   const providerEmailDomain = providerEmailDomains[provider] || null;
   const configurationBlocked = Boolean(selected?.disabled);
-  const displayedError = validationError ? validationError.message : error;
+  const displayedError = validationError
+    ? validationError.message
+    : error
+      ? userFacingErrorMessage(error, "邮箱账户连接没有完成")
+      : null;
 
   const rejectInvalidField = (field, message, ref) => {
     setValidationError({ field, message });
@@ -168,7 +173,9 @@ export function AccountSetupForm({
     if (!emailIsValid) {
       rejectInvalidField(
         "email",
-        providerEmailDomain ? "邮箱账号格式不正确。" : "邮箱地址格式不正确。",
+        providerEmailDomain
+          ? "请检查输入：邮箱账号格式不正确。"
+          : "请检查输入：邮箱地址格式不正确。",
         emailRef,
       );
       return;
@@ -186,7 +193,7 @@ export function AccountSetupForm({
       if (!Number.isInteger(imapPort) || imapPort < 1 || imapPort > 65535) {
         rejectInvalidField(
           "imapPort",
-          "IMAP 端口应为 1–65535。",
+          "请检查输入：IMAP 端口应为 1–65535。",
           imapPortRef,
         );
         return;
@@ -199,7 +206,7 @@ export function AccountSetupForm({
       if (!Number.isInteger(smtpPort) || smtpPort < 1 || smtpPort > 65535) {
         rejectInvalidField(
           "smtpPort",
-          "SMTP 端口应为 1–65535。",
+          "请检查输入：SMTP 端口应为 1–65535。",
           smtpPortRef,
         );
         return;

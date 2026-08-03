@@ -845,12 +845,12 @@ describe("mailApi desktop IPC contract", () => {
     });
   });
 
-  it("preserves safe string errors returned by Rust", async () => {
+  it("converts Rust diagnostics into categorized Chinese errors", async () => {
     ipc.invoke.mockRejectedValue("Recipient confirmation did not match");
     const { mailApi } = await import("./mailApi.js");
 
     await expect(mailApi.syncAll()).rejects.toThrow(
-      "Recipient confirmation did not match",
+      "操作未完成：收件人信息已变化，请重新确认后发送。",
     );
   });
 

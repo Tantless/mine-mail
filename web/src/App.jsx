@@ -27,6 +27,7 @@ import { Toast } from "./components/Toast.jsx";
 import { normalizeAvatarEmail } from "./components/ProfileAvatar.jsx";
 import { hasFlag } from "./utils/formatters.js";
 import { messageNavigationKey } from "./utils/messageNavigation.js";
+import { userFacingErrorMessage } from "./utils/userFacingError.js";
 
 const ContactsWorkspace = lazy(() =>
   import("./components/ContactsWorkspace.jsx").then(({ ContactsWorkspace }) => ({
@@ -450,9 +451,7 @@ function getInitialTheme() {
 }
 
 function describeError(error, fallback) {
-  if (typeof error === "string" && error.trim()) return error;
-  if (error?.message) return error.message;
-  return fallback;
+  return userFacingErrorMessage(error, fallback);
 }
 
 function toDraftMessage(draft, index) {
@@ -2929,7 +2928,13 @@ export function App() {
         .then((value) => {
           if (cancelled) return;
           setSettings(value);
-          if (value.startupError) showToast(value.startupError, "error", true);
+          if (value.startupError) {
+            showToast(
+              describeError(value.startupError, "桌面设置初始化没有完成"),
+              "error",
+              true,
+            );
+          }
         })
         .catch((error) => {
           if (!cancelled)
@@ -2965,8 +2970,10 @@ export function App() {
           beginMailboxLoading(networkUsable && isTauri ? "syncing" : "loading");
           if (!networkUsable) {
             setAccountError(
-              status.startupError ||
+              describeError(
+                status.startupError,
                 "本地邮件仍可阅读，但账户凭据或网络连接不可用。请重新连接账户后再同步或发送。",
+              ),
             );
           }
           void loadMailboxData({
@@ -2975,10 +2982,11 @@ export function App() {
           });
         } else {
           setAccountError(
-            status.startupError ||
-              (status.configured && !status.credentialAvailable
+            status.startupError
+              ? describeError(status.startupError, "邮箱账户初始化没有完成")
+              : status.configured && !status.credentialAvailable
                 ? "账户信息存在，但系统凭据不可用，请重新输入授权信息。"
-                : null),
+                : null,
           );
         }
       } catch (error) {
@@ -3676,7 +3684,10 @@ export function App() {
             }
             setSyncState("error");
             showToast(
-              event?.payload?.message || "部分邮箱暂时未能同步，请稍后重试",
+              describeError(
+                event?.payload?.message,
+                "部分邮箱暂时未能同步，请稍后重试",
+              ),
               "error",
             );
           },
@@ -6281,7 +6292,7 @@ export function App() {
               stale,
               error: stale
                 ? "发件队列状态已刷新。请取消后查看最新状态，再重新选择操作。"
-                : `${describeError(error, "未能处理投递结果")}。邮件仍保留在发件队列。`,
+                : `${describeError(error, "未能处理投递结果").replace(/[。！？!?]+$/u, "")}。邮件仍保留在发件队列。`,
             }
           : current,
       );
@@ -6323,9 +6334,9 @@ export function App() {
       setAccountStatus(status);
       const backendUsable = status.configured && status.backendReady;
       if (!backendUsable) {
-        const message =
-          status.startupError ||
-          "账户信息已保存，但邮箱服务尚未就绪，请检查授权信息。";
+        const message = status.startupError
+          ? describeError(status.startupError, "邮箱账户初始化没有完成")
+          : "账户信息已保存，但邮箱服务尚未就绪，请检查授权信息。";
         setAccountError(message);
         setAccountSubmitStatus("error");
         return;
@@ -6358,7 +6369,10 @@ export function App() {
       await loadMailboxData({ selectFirst: true });
       if (!networkUsable) {
         setAccountError(
-          status.startupError || "本地邮箱已打开，但账户凭据或网络连接不可用。",
+          describeError(
+            status.startupError,
+            "本地邮箱已打开，但账户凭据或网络连接不可用。",
+          ),
         );
       }
       setAccountSubmitStatus("saved");
@@ -6772,7 +6786,13 @@ export function App() {
         );
       }
       if (result.warning) {
-        showToast(`账户已移除，但本地数据清理未完成：${result.warning}`, "error");
+        showToast(
+          `账户已移除，但本地数据清理未完成：${describeError(
+            result.warning,
+            "请重启 Mine Mail 后重试清理",
+          )}`,
+          "error",
+        );
       } else if (result.googleAuthorizationRevoked) {
         showToast(
           result.localDataDeleted
@@ -7244,8 +7264,9 @@ export function App() {
           <span className="account-repair-banner__copy">
             <strong>账户暂时离线</strong>
             <span>
-              {accountError ||
-                "已下载的邮件仍可阅读；重新连接账户后才能同步、下载其他正文或发送邮件。"}
+              {accountError
+                ? describeError(accountError, "邮箱账户暂时不可用")
+                : "已下载的邮件仍可阅读；重新连接账户后才能同步、下载其他正文或发送邮件。"}
             </span>
           </span>
           <button

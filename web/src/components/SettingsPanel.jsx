@@ -34,6 +34,7 @@ import { EditableProfileAvatar, ProfileAvatar } from "./ProfileAvatar.jsx";
 import { ThemedSelect } from "./ThemedSelect.jsx";
 import { TooltipTarget } from "./Tooltip.jsx";
 import { useSlidingSelection } from "../hooks/useSlidingSelection.js";
+import { userFacingErrorMessage } from "../utils/userFacingError.js";
 
 const remoteImageOptions = [
   { value: "automatic", label: "自动加载" },
@@ -158,7 +159,7 @@ function accountDisplayName(account) {
 }
 
 function errorMessage(error, fallback) {
-  return error instanceof Error && error.message ? error.message : fallback;
+  return userFacingErrorMessage(error, fallback);
 }
 
 function displayVersion(version) {
@@ -366,7 +367,13 @@ export function SettingsPanel({
         setStorageState("idle");
         if (status.migrationNotice) {
           setStorageMessage({
-            text: status.migrationNotice.message,
+            text:
+              status.migrationNotice.status === "failed"
+                ? errorMessage(
+                    status.migrationNotice.message,
+                    "数据迁移没有完成，仍在使用原数据目录。",
+                  )
+                : status.migrationNotice.message,
             tone:
               status.migrationNotice.status === "failed" ? "danger" : "success",
           });

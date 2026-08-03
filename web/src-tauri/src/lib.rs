@@ -1012,17 +1012,13 @@ impl From<OutboxRecipientGroups> for OutboxRecipientGroupsDto {
 fn safe_outbox_last_error(status: OutboxStatus, error: Option<&str>) -> Option<String> {
     error.map(|_| {
         match status {
-            OutboxStatus::Retryable => {
-                "Sending failed before delivery was confirmed. You can retry safely."
-            }
-            OutboxStatus::Rejected => {
-                "The mail server rejected this message. Review the recipients and account settings before trying again."
-            }
+            OutboxStatus::Retryable => "邮箱服务未确认本次投递，可以安全重试。",
+            OutboxStatus::Rejected => "邮箱服务器拒绝了这封邮件，请检查收件人和账户设置后重试。",
             OutboxStatus::DeliveryUnknown => {
-                "Delivery could not be confirmed. Check Sent before deciding whether to retry."
+                "投递结果仍待确认，请先到邮箱服务商的“已发送”文件夹核对，再决定是否重试。"
             }
             OutboxStatus::Queued | OutboxStatus::Sending | OutboxStatus::Sent => {
-                "Mine Mail could not complete the previous send attempt."
+                "Mine Mail 内部处理失败：上一次发送尝试未能完成。"
             }
         }
         .to_owned()
@@ -2529,7 +2525,7 @@ mod tests {
             serde_json::to_value(OutboxItemDto::from(failed)).expect("serialize failed Outbox");
         assert_eq!(
             failed_summary["last_error"],
-            "Sending failed before delivery was confirmed. You can retry safely."
+            "邮箱服务未确认本次投递，可以安全重试。"
         );
         assert!(!failed_summary.to_string().contains("[Gmail]"));
         assert!(!failed_summary.to_string().contains(r"C:\Users"));
