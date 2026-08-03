@@ -22,6 +22,28 @@ const smtpSecurityOptions = [
 ];
 
 const authorizationGuideProviders = new Set(["163", "qq"]);
+const providerEmailDomains = Object.freeze({
+  163: "@163.com",
+  qq: "@qq.com",
+});
+
+function editableEmailValue(value, provider) {
+  const domain = providerEmailDomains[provider];
+  if (!domain || !value.toLowerCase().endsWith(domain)) return value;
+  return value.slice(0, -domain.length);
+}
+
+function emailValueForProviderChange(value, currentProvider, nextProvider) {
+  const currentDomain = providerEmailDomains[currentProvider];
+  const nextDomain = providerEmailDomains[nextProvider];
+  if (currentDomain && nextDomain) {
+    return editableEmailValue(value, currentProvider);
+  }
+  if (currentDomain && !nextDomain && value && !value.includes("@")) {
+    return `${value}${currentDomain}`;
+  }
+  return editableEmailValue(value, nextProvider);
+}
 
 function normalizedPreset(preset) {
   return {
@@ -75,7 +97,9 @@ export function AccountSetupForm({
     requestedInitialProvider || status?.provider,
   );
   const [provider, setProvider] = useState(initialProvider);
-  const [email, setEmail] = useState(status?.email || "");
+  const [email, setEmail] = useState(() =>
+    editableEmailValue(status?.email || "", initialProvider),
+  );
   const [custom, setCustom] = useState({
     imapHost: "",
     imapPort: 993,
@@ -85,6 +109,8 @@ export function AccountSetupForm({
   });
   const [validationError, setValidationError] = useState(null);
   const secretInputId = useId();
+  const emailInputId = useId();
+  const emailDomainDescriptionId = useId();
   const emailRef = useRef(null);
   const secretRef = useRef(null);
   const imapHostRef = useRef(null);
@@ -93,7 +119,13 @@ export function AccountSetupForm({
   const smtpPortRef = useRef(null);
 
   useEffect(() => {
-    if (status?.email) setEmail(status.email);
+    if (status?.email) {
+      const statusProvider = resolveProvider(
+        options,
+        requestedInitialProvider || status?.provider,
+      );
+      setEmail(editableEmailValue(status.email, statusProvider));
+    }
     setProvider((current) =>
       resolveProvider(
         options,
@@ -103,6 +135,7 @@ export function AccountSetupForm({
   }, [options, requestedInitialProvider, status?.email, status?.provider]);
 
   const selected = options.find((item) => item.id === provider) || options[0];
+  const providerEmailDomain = providerEmailDomains[provider] || null;
   const configurationBlocked = Boolean(selected?.disabled);
   const displayedError = validationError ? validationError.message : error;
 
@@ -120,14 +153,24 @@ export function AccountSetupForm({
       return;
     }
 
-    const normalizedEmail = email.trim();
+    const emailInput = email.trim();
+    const normalizedEmail = providerEmailDomain
+      ? `${emailInput}${providerEmailDomain}`
+      : emailInput;
     const secret = secretRef.current?.value || "";
-    if (!normalizedEmail) {
+    if (!emailInput) {
       rejectInvalidField("email", null, emailRef);
       return;
     }
-    if (!/^[^\s@]+@[^\s@]+$/.test(normalizedEmail)) {
-      rejectInvalidField("email", "邮箱地址格式不正确。", emailRef);
+    const emailIsValid = providerEmailDomain
+      ? /^[^\s@]+$/.test(emailInput)
+      : /^[^\s@]+@[^\s@]+$/.test(normalizedEmail);
+    if (!emailIsValid) {
+      rejectInvalidField(
+        "email",
+        providerEmailDomain ? "邮箱账号格式不正确。" : "邮箱地址格式不正确。",
+        emailRef,
+      );
       return;
     }
     if (!secret.trim()) {
@@ -201,6 +244,9 @@ export function AccountSetupForm({
               data-selected={provider === option.id}
               data-disabled={option.disabled}
               onClick={() => {
+                setEmail((current) =>
+                  emailValueForProviderChange(current, provider, option.id),
+                );
                 setProvider(option.id);
                 setValidationError(null);
               }}
@@ -233,29 +279,50 @@ export function AccountSetupForm({
           </div>
         ) : (
           <>
-          <label className="settings-field">
-            <span>邮箱地址</span>
-            <span className="settings-input-shell settings-input-shell--text inset-input-shell">
+          <div className="settings-field">
+            <label htmlFor={emailInputId}>邮箱地址</label>
+            <span className="settings-input-shell settings-input-shell--text account-email-control inset-input-shell">
               <input
+                id={emailInputId}
                 ref={emailRef}
-                type="email"
+                type={providerEmailDomain ? "text" : "email"}
+                inputMode="email"
+                autoCapitalize="none"
+                spellCheck={false}
                 autoComplete="off"
                 value={email}
                 aria-invalid={validationError?.field === "email" || undefined}
-                aria-describedby={
+                aria-describedby={[
+                  providerEmailDomain ? emailDomainDescriptionId : null,
                   validationError?.field === "email" &&
                   validationError?.message
                     ? "account-setup-error"
-                    : undefined
-                }
+                    : null,
+                ]
+                  .filter(Boolean)
+                  .join(" ") || undefined}
                 onChange={(event) => {
-                  setEmail(event.target.value);
+                  setEmail(
+                    providerEmailDomain
+                      ? editableEmailValue(event.target.value, provider)
+                      : event.target.value,
+                  );
                   setValidationError(null);
                 }}
-                placeholder="name@example.com"
+                placeholder={
+                  providerEmailDomain ? "请输入邮箱账号" : "name@example.com"
+                }
               />
+              {providerEmailDomain ? (
+                <span
+                  id={emailDomainDescriptionId}
+                  className="account-email-control__suffix"
+                >
+                  {providerEmailDomain}
+                </span>
+              ) : null}
             </span>
-          </label>
+          </div>
           {selected?.note ? <p className="account-preset-note">{selected.note}</p> : null}
           <div className="settings-field">
             <label htmlFor={secretInputId}>{selected?.secretLabel}</label>

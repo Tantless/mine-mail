@@ -7404,6 +7404,27 @@ html[data-surface="new-mail-notification"] #root {
   cursor: text;
 }
 
+.account-email-control input {
+  width: auto;
+  flex: 1 1 auto;
+}
+
+.account-email-control__suffix {
+  display: flex;
+  min-height: 38px;
+  flex: 0 0 auto;
+  align-items: center;
+  align-self: stretch;
+  padding: 0 13px;
+  border-left: 1px solid color-mix(in srgb, var(--color-divider) 78%, transparent);
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  font-weight: 560;
+  line-height: 1;
+  user-select: none;
+  white-space: nowrap;
+}
+
 .settings-input-shell input[type="number"] {
   appearance: textfield;
 }

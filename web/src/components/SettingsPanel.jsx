@@ -88,8 +88,8 @@ const providerNames = {
 };
 
 const providerDescriptions = {
-  "163": "输入 163 邮箱地址，并使用客户端授权码完成连接。",
-  qq: "输入完整 QQ 邮箱地址，并使用 QQ 邮箱生成的授权码完成连接。",
+  "163": "输入 163 邮箱账号，并使用客户端授权码完成连接。",
+  qq: "输入 QQ 邮箱账号，并使用 QQ 邮箱生成的授权码完成连接。",
   gmail: "在系统浏览器中完成 Google OAuth 安全登录。",
   custom: "输入邮箱地址、授权信息以及 IMAP / SMTP 服务器配置。",
 };

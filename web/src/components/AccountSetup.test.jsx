@@ -82,11 +82,13 @@ describe("AccountSetupForm", () => {
     );
 
     const email = screen.getByLabelText("邮箱地址");
-    await user.type(email, "not-an-email");
+    await user.type(email, "wrong@domain.com");
     await user.click(screen.getByRole("button", { name: "连接邮箱" }));
 
-    expect(screen.getByRole("alert").textContent).toBe("邮箱地址格式不正确。");
-    expect(email.getAttribute("aria-describedby")).toBe("account-setup-error");
+    expect(screen.getByRole("alert").textContent).toBe("邮箱账号格式不正确。");
+    expect(email.getAttribute("aria-describedby").split(" ")).toContain(
+      "account-setup-error",
+    );
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
@@ -103,7 +105,7 @@ describe("AccountSetupForm", () => {
       />,
     );
 
-    await user.type(screen.getByLabelText("邮箱地址"), "me@163.com");
+    await user.type(screen.getByLabelText("邮箱地址"), "me");
     const secretInput = screen.getByPlaceholderText("请输入授权密码");
     await user.type(secretInput, "temporary-secret");
     await user.click(screen.getByRole("button", { name: "连接邮箱" }));
@@ -194,7 +196,7 @@ describe("AccountSetupForm", () => {
     );
 
     await user.click(screen.getByRole("radio", { name: "QQ 邮箱" }));
-    await user.type(screen.getByLabelText("邮箱地址"), "mine@qq.com");
+    await user.type(screen.getByLabelText("邮箱地址"), "mine");
     await user.type(screen.getByLabelText("QQ 邮箱授权码"), "qq-app-secret");
     await user.click(screen.getByRole("button", { name: "连接邮箱" }));
 
@@ -202,6 +204,63 @@ describe("AccountSetupForm", () => {
       provider: "qq",
       email: "mine@qq.com",
       secret: "qq-app-secret",
+    });
+  });
+
+  it("renders fixed provider domains inside the 163 and QQ address fields", async () => {
+    const user = userEvent.setup();
+    render(
+      <AccountSetupForm
+        presets={presets}
+        status={{ configured: false }}
+        submitStatus="idle"
+        error={null}
+        onSubmit={vi.fn()}
+      />,
+    );
+
+    const email = screen.getByLabelText("邮箱地址");
+    expect(email.type).toBe("text");
+    expect(email.placeholder).toBe("请输入邮箱账号");
+    expect(screen.getByText("@163.com").id).toBe(
+      email.getAttribute("aria-describedby"),
+    );
+
+    await user.click(screen.getByRole("radio", { name: "QQ 邮箱" }));
+    expect(screen.queryByText("@163.com")).toBeNull();
+    expect(screen.getByText("@qq.com")).toBeTruthy();
+
+    await user.click(
+      screen.getByRole("radio", { name: "自定义 IMAP/SMTP" }),
+    );
+    expect(screen.queryByText("@qq.com")).toBeNull();
+    expect(email.type).toBe("email");
+    expect(email.placeholder).toBe("name@example.com");
+  });
+
+  it("normalizes a pasted complete 163 address before submitting", async () => {
+    const onSubmit = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <AccountSetupForm
+        presets={presets}
+        status={{ configured: false }}
+        submitStatus="idle"
+        error={null}
+        onSubmit={onSubmit}
+      />,
+    );
+
+    const email = screen.getByLabelText("邮箱地址");
+    fireEvent.change(email, { target: { value: "mine@163.com" } });
+    expect(email.value).toBe("mine");
+    await user.type(screen.getByLabelText("客户端授权密码"), "app-secret");
+    await user.click(screen.getByRole("button", { name: "连接邮箱" }));
+
+    expect(onSubmit).toHaveBeenCalledWith({
+      provider: "163",
+      email: "mine@163.com",
+      secret: "app-secret",
     });
   });
 

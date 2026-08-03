@@ -491,6 +491,11 @@ family. Preserve the relative hierarchy when tuning optical values.
 - The formal provider-first list contains 163, QQ, Gmail, and custom IMAP/SMTP.
   Outlook is absent until its supported Microsoft authentication flow is a
   complete product capability; do not show a disabled or “coming soon” card.
+- The 163 and QQ address inputs use one inset composite field: the editable
+  account name stays on the leading side and the selected provider's fixed
+  `@163.com` or `@qq.com` suffix stays on the trailing side. The suffix is not
+  editable and shares the field's hover, keyboard-focus, validation, and theme
+  treatment rather than becoming a separate control.
 - The 163 and QQ authorization-secret inputs pair the inset field with one
   40 px accent, icon-only tutorial action. Its pointer-hover tooltip and
   accessible name identify the matching provider. It opens the offline tutorial

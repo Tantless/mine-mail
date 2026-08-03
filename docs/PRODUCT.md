@@ -49,6 +49,11 @@ must be updated here when an intentional product change lands.
   A local save failure prevents the connection from starting. After a successful
   connection, the new account becomes active with its own compose session;
   returning to the source account restores the retained session.
+- The 163 and QQ connection and credential-repair forms collect only the
+  editable account name beside a fixed provider domain suffix, then submit the
+  normalized complete address to Rust. A pasted complete address with the
+  matching suffix is normalized into the same field without duplicating the
+  domain.
 - The 163 and QQ connection and credential-repair forms place a **查看教程**
   action beside the authorization-secret field. It opens a bundled, offline
   tutorial for the matching provider inside Settings without submitting the

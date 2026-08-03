@@ -1144,7 +1144,8 @@ describe("Mine Mail MVP", () => {
     expect(
       screen.getByRole("heading", { name: "连接163 邮箱" }),
     ).toBeTruthy();
-    expect(screen.getByDisplayValue("repair@163.com")).toBeTruthy();
+    expect(screen.getByDisplayValue("repair")).toBeTruthy();
+    expect(screen.getByText("@163.com")).toBeTruthy();
     expect(screen.getByRole("button", { name: "更新账户" })).toBeTruthy();
   });
 
