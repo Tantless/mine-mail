@@ -10,7 +10,7 @@
     "preview": "vite preview",
     "test": "vitest run",
     "tauri": "tauri",
-    "tauri:dev": "tauri dev",
+    "tauri:dev": "node ./scripts/tauri-dev.mjs",
     "tauri:build": "tauri build"
   },
   "dependencies": {

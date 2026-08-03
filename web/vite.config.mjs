@@ -1,6 +1,10 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
+import { configuredDevPort } from "./scripts/dev-port.mjs";
+
+const devPort = configuredDevPort(process.env.MINE_MAIL_DEV_PORT);
+
 export default defineConfig({
   build: {
     rollupOptions: {
@@ -24,7 +28,7 @@ export default defineConfig({
   },
   server: {
     host: "0.0.0.0",
-    port: 1420,
+    port: devPort,
     strictPort: true,
     allowedHosts: ["terminal.local"],
     watch: {

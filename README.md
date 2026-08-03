@@ -90,6 +90,23 @@ cd web
 npm run tauri:dev
 ```
 
+开发启动器默认使用 1420 端口；如果该端口已被其他项目占用，会自动选择后续可用端口，
+并同步更新 Vite、Tauri 开发地址和开发 CSP。需要固定端口时，可以显式指定：
+
+```powershell
+$env:MINE_MAIL_DEV_PORT = "1430"
+npm run tauri:dev
+```
+
+在 Bash 中使用：
+
+```bash
+MINE_MAIL_DEV_PORT=1430 npm run tauri:dev
+```
+
+显式指定的端口若已被占用，启动器会停止并提示更换端口，不会静默连接到其他项目。
+`MINE_MAIL_DEV_PORT` 同样适用于下面的 React-only 开发命令。
+
 只开发 React 界面时，可以启用不连接真实邮箱的 mock 演示模式：
 
 ```powershell
