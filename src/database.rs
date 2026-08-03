@@ -1412,42 +1412,22 @@ impl Repository {
             uid,
         )?;
         let mutation = if let Some(existing) = existing {
-            if existing.status != MutationStatus::Pending {
-                if existing.desired == desired {
-                    transaction.commit()?;
-                    return Ok((changed, existing));
-                }
-                if existing.status == MutationStatus::Confirmed {
-                    transaction.execute(
-                        &format!(
-                            "UPDATE {table}
-                             SET desired = ?2,
-                                 revision = revision + 1,
-                                 status = 'pending',
-                                 error_kind = NULL,
-                                 updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-                             WHERE operation_id = ?1 AND status = 'confirmed'"
-                        ),
-                        params![existing.operation_id, desired],
-                    )?;
-                } else {
-                    return Err(MailError::Validation(
-                        "the earlier flag mutation must be reconciled before changing its target"
-                            .to_owned(),
-                    ));
-                }
-            }
-            if existing.status == MutationStatus::Pending && existing.desired != desired {
+            if existing.desired != desired {
+                // Seen and Flagged mutations write an idempotent final state. A new
+                // local target can therefore supersede any earlier lifecycle state:
+                // claim/finalize calls are revision-guarded, so an older in-flight
+                // result cannot update either this queue row or the message flags.
                 transaction.execute(
                     &format!(
                         "UPDATE {table}
-                         SET desired = ?2,
+                         SET desired = ?3,
                              revision = revision + 1,
+                             status = 'pending',
                              error_kind = NULL,
                              updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-                         WHERE operation_id = ?1 AND status = 'pending'"
+                         WHERE account_id = ?1 AND operation_id = ?2"
                     ),
-                    params![existing.operation_id, desired],
+                    params![expected_account_id, existing.operation_id, desired],
                 )?;
             }
             query_system_flag_mutation_by_operation(
@@ -10241,6 +10221,103 @@ mod tests {
                 .iter()
                 .any(|flag| flag.eq_ignore_ascii_case("\\Flagged"))
         );
+    }
+
+    #[test]
+    fn in_flight_flagged_toggle_is_retargeted_and_ignores_the_older_result() {
+        let (_directory, repository, account) = setup();
+        initialize_mailbox(
+            &repository,
+            &account.account_id,
+            MailboxRole::Inbox,
+            "INBOX",
+            75,
+        );
+        let mail = message(&account.account_id, false);
+        let row_id = repository.upsert_message(&mail).expect("message");
+        let (_, star) = repository
+            .queue_system_flag_mutation(
+                &account.account_id,
+                "INBOX",
+                mail.uid,
+                SystemFlagKind::Flagged,
+                true,
+            )
+            .expect("star intent");
+        repository
+            .claim_system_flag_mutation(
+                &account.account_id,
+                &star.operation_id,
+                SystemFlagKind::Flagged,
+                star.revision,
+            )
+            .expect("claim star")
+            .expect("in-flight star");
+
+        let (_, unstar) = repository
+            .queue_system_flag_mutation(
+                &account.account_id,
+                "INBOX",
+                mail.uid,
+                SystemFlagKind::Flagged,
+                false,
+            )
+            .expect("unstar supersedes in-flight star");
+        assert_eq!(unstar.operation_id, star.operation_id);
+        assert_eq!(unstar.revision, star.revision + 1);
+        assert_eq!(unstar.status, MutationStatus::Pending);
+        assert!(!unstar.desired);
+
+        assert!(
+            !repository
+                .finalize_system_flag_mutation_confirmed(
+                    &account.account_id,
+                    &star.operation_id,
+                    SystemFlagKind::Flagged,
+                    star.revision,
+                    &["\\Seen".to_owned(), "\\Flagged".to_owned()],
+                )
+                .expect("ignore the older star confirmation")
+        );
+        assert_eq!(
+            repository
+                .get_message(row_id)
+                .expect("newer unstar remains local")
+                .flags,
+            ["\\Seen"]
+        );
+
+        let claimed_unstar = repository
+            .claim_system_flag_mutation(
+                &account.account_id,
+                &unstar.operation_id,
+                SystemFlagKind::Flagged,
+                unstar.revision,
+            )
+            .expect("claim unstar")
+            .expect("in-flight unstar");
+        assert!(
+            repository
+                .finalize_system_flag_mutation_confirmed(
+                    &account.account_id,
+                    &claimed_unstar.operation_id,
+                    SystemFlagKind::Flagged,
+                    claimed_unstar.revision,
+                    &["\\Seen".to_owned()],
+                )
+                .expect("confirm latest unstar")
+        );
+        let receipt = repository
+            .system_flag_mutation_receipt(
+                &account.account_id,
+                &unstar.operation_id,
+                SystemFlagKind::Flagged,
+            )
+            .expect("unstar receipt")
+            .expect("durable unstar operation");
+        assert_eq!(receipt.status, MutationStatus::Confirmed);
+        assert_eq!(receipt.local_revision, unstar.revision);
+        assert!(!receipt.desired);
     }
 
     #[test]
