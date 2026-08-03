@@ -40,6 +40,22 @@ describe("IconButton tooltip", () => {
     expect(screen.queryByRole("tooltip")).toBeNull();
   });
 
+  it("can keep programmatic focus quiet while preserving pointer help", () => {
+    render(
+      <IconButton label="查看授权码教程" tooltipOnFocus={false}>
+        帮助
+      </IconButton>,
+    );
+    const button = screen.getByRole("button", { name: "查看授权码教程" });
+
+    fireEvent.focus(button);
+    expect(screen.queryByRole("tooltip")).toBeNull();
+
+    fireEvent.pointerEnter(button);
+    act(() => vi.advanceTimersByTime(380));
+    expect(screen.getByRole("tooltip").textContent).toBe("查看授权码教程");
+  });
+
   it("keeps unavailable toolbar actions explainable on pointer hover", () => {
     render(
       <IconButton label="归档（尚未实现）" disabled>

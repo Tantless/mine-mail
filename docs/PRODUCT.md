@@ -42,6 +42,10 @@ must be updated here when an intentional product change lands.
   than the QQ login password. Outlook is hidden until its Microsoft OAuth 2.0 /
   Modern Auth path is implemented; the formal interface never shows an
   unavailable or “coming soon” Outlook provider card.
+- The 163 and QQ connection and credential-repair forms place a **查看教程**
+  action beside the authorization-secret field. It opens a bundled, offline
+  tutorial for the matching provider inside Settings without submitting the
+  form, exposing the entered secret, or losing values when the user returns.
 - A legacy local Outlook account record remains readable for cached mail only.
   Mine Mail preserves its metadata and explains that reconnecting is unsupported,
   but it cannot create a new Outlook account or start password-based network work
@@ -49,7 +53,8 @@ must be updated here when an intentional product change lands.
 - Password-based providers use the mailbox address plus a provider-issued
   authorization secret. Gmail uses Google OAuth 2.0 Authorization Code + PKCE in
   the system browser with a random loopback callback, then XOAUTH2 for IMAP and
-  SMTP.
+  SMTP. While Google OAuth remains in preview testing, the Gmail connection form
+  explains that access requires allowlisting through `tantless@163.com`.
 - Access and refresh tokens stay in the OS credential store and Rust runtime.
 - A missing, expired, or revoked credential stops synchronization and monitoring
   for only that account. Cached mail stays readable.

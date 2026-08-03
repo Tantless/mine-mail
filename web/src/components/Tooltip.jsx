@@ -91,7 +91,7 @@ function assignRef(ref, value) {
   }
 }
 
-export function TooltipTarget({ children, label }) {
+export function TooltipTarget({ children, label, openOnFocus = true }) {
   const anchorRef = useRef(null);
   const openTimerRef = useRef(null);
   const [tooltipOpen, setTooltipOpen] = useState(false);
@@ -153,7 +153,7 @@ export function TooltipTarget({ children, label }) {
         },
         onFocus: (event) => {
           cancelPendingOpen();
-          if (label) setTooltipOpen(true);
+          if (label && openOnFocus) setTooltipOpen(true);
           child.props.onFocus?.(event);
         },
         onKeyDown: (event) => {

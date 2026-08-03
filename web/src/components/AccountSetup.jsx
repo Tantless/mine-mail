@@ -1,5 +1,12 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { EnvelopeSimple, GoogleLogo, ShieldCheck, ShieldWarning } from "@phosphor-icons/react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
+import {
+  EnvelopeSimple,
+  GoogleLogo,
+  Question,
+  ShieldCheck,
+  ShieldWarning,
+} from "@phosphor-icons/react";
+import { IconButton } from "./IconButton.jsx";
 import { ThemedSelect } from "./ThemedSelect.jsx";
 
 const fallbackPresets = [
@@ -13,6 +20,8 @@ const smtpSecurityOptions = [
   { value: "implicit_tls", label: "TLS" },
   { value: "start_tls", label: "STARTTLS" },
 ];
+
+const authorizationGuideProviders = new Set(["163", "qq"]);
 
 function normalizedPreset(preset) {
   return {
@@ -48,6 +57,8 @@ export function AccountSetupForm({
   error,
   onSubmit,
   onGoogle,
+  onOpenAuthorizationGuide,
+  authorizationGuideButtonRef,
   initialProvider: requestedInitialProvider,
   showProviderPicker = true,
 }) {
@@ -73,6 +84,7 @@ export function AccountSetupForm({
     smtpSecurity: "implicit_tls",
   });
   const [validationError, setValidationError] = useState(null);
+  const secretInputId = useId();
   const emailRef = useRef(null);
   const secretRef = useRef(null);
   const imapHostRef = useRef(null);
@@ -245,27 +257,42 @@ export function AccountSetupForm({
             </span>
           </label>
           {selected?.note ? <p className="account-preset-note">{selected.note}</p> : null}
-          <label className="settings-field">
-            <span>{selected?.secretLabel}</span>
-            <span className="settings-input-shell settings-input-shell--text inset-input-shell">
-              <input
-                ref={secretRef}
-                type="password"
-                aria-label={selected?.secretLabel}
-                aria-invalid={validationError?.field === "secret" || undefined}
-                aria-describedby={
-                  validationError?.field === "secret" &&
-                  validationError?.message
-                    ? "account-setup-error"
-                    : undefined
-                }
-                autoComplete="off"
-                onInput={() => setValidationError(null)}
-                placeholder="请输入授权密码"
-              />
-            </span>
+          <div className="settings-field">
+            <label htmlFor={secretInputId}>{selected?.secretLabel}</label>
+            <div className="account-secret-control">
+              <span className="settings-input-shell settings-input-shell--text inset-input-shell">
+                <input
+                  id={secretInputId}
+                  ref={secretRef}
+                  type="password"
+                  aria-label={selected?.secretLabel}
+                  aria-invalid={validationError?.field === "secret" || undefined}
+                  aria-describedby={
+                    validationError?.field === "secret" &&
+                    validationError?.message
+                      ? "account-setup-error"
+                      : undefined
+                  }
+                  autoComplete="off"
+                  onInput={() => setValidationError(null)}
+                  placeholder="请输入授权密码"
+                />
+              </span>
+              {authorizationGuideProviders.has(provider) &&
+              onOpenAuthorizationGuide ? (
+                <IconButton
+                  ref={authorizationGuideButtonRef}
+                  className="account-authorization-guide"
+                  label={`查看 ${selected?.label}授权码获取教程`}
+                  tooltipOnFocus={false}
+                  onClick={() => onOpenAuthorizationGuide(provider)}
+                >
+                  <Question size={18} weight="bold" aria-hidden="true" />
+                </IconButton>
+              ) : null}
+            </div>
             <small>授权信息将安全保存在系统凭据库中。</small>
-          </label>
+          </div>
 
           {provider === "custom" ? (
             <div className="custom-server-grid">
@@ -387,26 +414,34 @@ export function AccountSetupForm({
         </p>
       ) : null}
 
-      <button
-        type="submit"
-        className="send-button account-submit"
-        disabled={configurationBlocked || submitStatus === "saving"}
-      >
+      <div className="account-submit-row">
+        <button
+          type="submit"
+          className="send-button account-submit"
+          disabled={configurationBlocked || submitStatus === "saving"}
+        >
+          {provider === "gmail" ? (
+            <GoogleLogo size={18} weight="bold" />
+          ) : (
+            <EnvelopeSimple size={18} weight="fill" />
+          )}
+          {submitStatus === "saving"
+            ? provider === "gmail"
+              ? "等待 Google 登录…"
+              : "正在验证并保存…"
+            : provider === "gmail"
+              ? "使用 Google 登录"
+            : status?.configured
+              ? "更新账户"
+              : "连接邮箱"}
+        </button>
         {provider === "gmail" ? (
-          <GoogleLogo size={18} weight="bold" />
-        ) : (
-          <EnvelopeSimple size={18} weight="fill" />
-        )}
-        {submitStatus === "saving"
-          ? provider === "gmail"
-            ? "等待 Google 登录…"
-            : "正在验证并保存…"
-          : provider === "gmail"
-            ? "使用 Google 登录"
-          : status?.configured
-            ? "更新账户"
-            : "连接邮箱"}
-      </button>
+          <small className="account-google-preview-note" role="note">
+            目前处于预览测试版，如想使用 Google OAuth 登录，请联系 tantless@163.com
+            添加白名单。
+          </small>
+        ) : null}
+      </div>
     </form>
   );
 }

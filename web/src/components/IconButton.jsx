@@ -6,10 +6,11 @@ export function IconButton({
   className = "",
   tone = "default",
   title,
+  tooltipOnFocus = true,
   ...props
 }) {
   return (
-    <TooltipTarget label={title || label}>
+    <TooltipTarget label={title || label} openOnFocus={tooltipOnFocus}>
       <button
         type="button"
         className={`icon-button icon-button--${tone} ${className}`.trim()}

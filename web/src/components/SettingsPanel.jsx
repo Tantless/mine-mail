@@ -22,6 +22,7 @@ import { appStorageApi } from "../services/appStorage.js";
 import { appUpdateApi } from "../services/appUpdate.js";
 import { AccountRemovalDialog } from "./AccountRemovalDialog.jsx";
 import { AccountSetupForm } from "./AccountSetup.jsx";
+import { AuthorizationGuide } from "./AuthorizationGuide.jsx";
 import { BrandLogo } from "./BrandLogo.jsx";
 import {
   ConfirmDialogStatus,
@@ -276,6 +277,8 @@ export function SettingsPanel({
   const [repairingAccount, setRepairingAccount] = useState(
     repairAccountRequested,
   );
+  const [authorizationGuideProvider, setAuthorizationGuideProvider] =
+    useState(null);
   const [accountMenu, setAccountMenu] = useState(null);
   const [pendingAccountRemoval, setPendingAccountRemoval] = useState(null);
   const [editingAccountRemark, setEditingAccountRemark] = useState(null);
@@ -305,6 +308,8 @@ export function SettingsPanel({
   const storageCancelRef = useRef(null);
   const updateCancelRef = useRef(null);
   const accountRemarkInputRef = useRef(null);
+  const authorizationGuideButtonRef = useRef(null);
+  const authorizationGuideReturnFocusRef = useRef(false);
 
   const accounts = connectedAccounts(accountStatus);
   const maxAccounts = accountStatus?.maxAccounts || 3;
@@ -396,6 +401,7 @@ export function SettingsPanel({
     setAccountFlow("providers");
     setSelectedProvider(repairRequested ? accountStatus?.provider || null : null);
     setRepairingAccount(repairRequested);
+    setAuthorizationGuideProvider(null);
   }, [accountStatus?.provider, focusTarget]);
 
   useEffect(() => {
@@ -411,6 +417,7 @@ export function SettingsPanel({
     setAccountFlow("overview");
     setSelectedProvider(null);
     setRepairingAccount(false);
+    setAuthorizationGuideProvider(null);
   }, [accountFlow, accountSubmitStatus]);
 
   useEffect(() => {
@@ -419,7 +426,18 @@ export function SettingsPanel({
     setPendingAccountRemoval(null);
     setEditingAccountRemark(null);
     setAccountRemarkError(null);
-  }, [accountFlow, activeSection, selectedProvider]);
+  }, [accountFlow, activeSection, authorizationGuideProvider, selectedProvider]);
+
+  useEffect(() => {
+    if (
+      authorizationGuideProvider ||
+      !authorizationGuideReturnFocusRef.current
+    ) {
+      return;
+    }
+    authorizationGuideReturnFocusRef.current = false;
+    authorizationGuideButtonRef.current?.focus();
+  }, [authorizationGuideProvider]);
 
   useEffect(() => {
     if (!accountMenu) return undefined;
@@ -456,6 +474,7 @@ export function SettingsPanel({
     setAccountFlow("overview");
     setSelectedProvider(null);
     setRepairingAccount(false);
+    setAuthorizationGuideProvider(null);
   };
 
   const openAddAccount = () => {
@@ -464,6 +483,12 @@ export function SettingsPanel({
     setAccountFlow("providers");
     setSelectedProvider(null);
     setRepairingAccount(false);
+    setAuthorizationGuideProvider(null);
+  };
+
+  const closeAuthorizationGuide = () => {
+    authorizationGuideReturnFocusRef.current = true;
+    setAuthorizationGuideProvider(null);
   };
 
   const openAccountRemarkEditor = (account, returnFocusTarget) => {
@@ -1098,66 +1123,84 @@ export function SettingsPanel({
             </section>
           ) : null}
 
-          {activeSection === "account" && accountFlow === "providers" && selectedProvider ? (
-            <section className="settings-page settings-page--flow" aria-labelledby="connect-title">
-              <header className="settings-flow-heading">
-                <IconButton
-                  label={repairingAccount ? "返回账户设置" : "返回选择邮箱服务商"}
-                  onClick={
-                    repairingAccount
-                      ? openAccountOverview
-                      : () => setSelectedProvider(null)
-                  }
-                >
-                  <ArrowLeft size={18} />
-                </IconButton>
-                <span>
-                  <p className="eyebrow">
-                    {selectedProvider === "outlook"
-                      ? "历史账户"
-                      : repairingAccount
-                        ? "修复账户"
-                        : "添加账户"}
-                  </p>
-                  <h3 id="connect-title">
-                    {selectedProvider === "outlook"
-                      ? "Outlook 账户仅可读取缓存"
-                      : `连接${providerNames[selectedProvider] || "邮箱"}`}
-                  </h3>
-                  <p>
-                    {selectedProvider === "outlook"
-                      ? legacyOutlookNotice
-                      : providerDescriptions[selectedProvider]}
-                  </p>
-                </span>
-              </header>
+          {activeSection === "account" &&
+          accountFlow === "providers" &&
+          selectedProvider ? (
+            <>
+              <section
+                className="settings-page settings-page--flow"
+                aria-labelledby="connect-title"
+                hidden={Boolean(authorizationGuideProvider)}
+              >
+                <header className="settings-flow-heading">
+                  <IconButton
+                    label={
+                      repairingAccount ? "返回账户设置" : "返回选择邮箱服务商"
+                    }
+                    onClick={
+                      repairingAccount
+                        ? openAccountOverview
+                        : () => setSelectedProvider(null)
+                    }
+                  >
+                    <ArrowLeft size={18} />
+                  </IconButton>
+                  <span>
+                    <p className="eyebrow">
+                      {selectedProvider === "outlook"
+                        ? "历史账户"
+                        : repairingAccount
+                          ? "修复账户"
+                          : "添加账户"}
+                    </p>
+                    <h3 id="connect-title">
+                      {selectedProvider === "outlook"
+                        ? "Outlook 账户仅可读取缓存"
+                        : `连接${providerNames[selectedProvider] || "邮箱"}`}
+                    </h3>
+                    <p>
+                      {selectedProvider === "outlook"
+                        ? legacyOutlookNotice
+                        : providerDescriptions[selectedProvider]}
+                    </p>
+                  </span>
+                </header>
 
-              <div className="settings-account-setup">
-                {selectedProvider === "outlook" ? (
-                  <div className="settings-account-empty" role="status">
-                    <ProviderMark provider="outlook" />
-                    <span>
-                      <strong>此账户暂时无法重新连接</strong>
-                      <small>
-                        保留账户即可继续阅读本地缓存；移除账户前，请确认是否还需要这些本地邮件。
-                      </small>
-                    </span>
-                  </div>
-                ) : (
-                  <AccountSetupForm
-                    key={selectedProvider}
-                    presets={accountPresets}
-                    status={repairingAccount ? accountStatus : null}
-                    submitStatus={accountSubmitStatus}
-                    error={accountError}
-                    initialProvider={selectedProvider}
-                    showProviderPicker={false}
-                    onSubmit={onConfigureAccount}
-                    onGoogle={onConnectGoogle}
-                  />
-                )}
-              </div>
-            </section>
+                <div className="settings-account-setup">
+                  {selectedProvider === "outlook" ? (
+                    <div className="settings-account-empty" role="status">
+                      <ProviderMark provider="outlook" />
+                      <span>
+                        <strong>此账户暂时无法重新连接</strong>
+                        <small>
+                          保留账户即可继续阅读本地缓存；移除账户前，请确认是否还需要这些本地邮件。
+                        </small>
+                      </span>
+                    </div>
+                  ) : (
+                    <AccountSetupForm
+                      key={selectedProvider}
+                      presets={accountPresets}
+                      status={repairingAccount ? accountStatus : null}
+                      submitStatus={accountSubmitStatus}
+                      error={accountError}
+                      initialProvider={selectedProvider}
+                      showProviderPicker={false}
+                      onSubmit={onConfigureAccount}
+                      onGoogle={onConnectGoogle}
+                      authorizationGuideButtonRef={authorizationGuideButtonRef}
+                      onOpenAuthorizationGuide={setAuthorizationGuideProvider}
+                    />
+                  )}
+                </div>
+              </section>
+              {authorizationGuideProvider ? (
+                <AuthorizationGuide
+                  provider={authorizationGuideProvider}
+                  onBack={closeAuthorizationGuide}
+                />
+              ) : null}
+            </>
           ) : null}
 
           {activeSection === "features" ? (

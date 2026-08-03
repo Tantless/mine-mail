@@ -227,6 +227,77 @@ describe("SettingsPanel account flow", () => {
     expect(within(providerPage).queryByText("即将支持")).toBeNull();
   });
 
+  it("opens the bundled authorization-code guide without losing form input", async () => {
+    const onOpenExternalLink = vi.fn();
+    const user = userEvent.setup();
+    render(<SettingsPanel {...panelProps({ onOpenExternalLink })} />);
+
+    await user.click(screen.getByRole("button", { name: "添加账户" }));
+    await user.click(screen.getByRole("button", { name: /163 邮箱/ }));
+    const secretInput = screen.getByLabelText("客户端授权密码");
+    const guideButton = screen.getByRole("button", {
+      name: "查看 163 邮箱授权码获取教程",
+    });
+    const connectionPage = secretInput.closest("section");
+    await user.type(secretInput, "keep-this-secret");
+    await user.click(guideButton);
+
+    expect(
+      screen.getByRole("heading", { name: "163 邮箱授权码教程" }),
+    ).toBeTruthy();
+    const guidePage = screen.getByRole("region", {
+      name: "163 邮箱授权码教程",
+    });
+    await waitFor(() => expect(document.activeElement).toBe(guidePage));
+    expect(screen.queryByRole("tooltip")).toBeNull();
+    expect(
+      screen.getByRole("img", {
+        name: "163 邮箱设置菜单中的 POP3/SMTP/IMAP 入口",
+      }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("img", {
+        name: "163 邮箱已开启 IMAP/SMTP 服务并显示新增授权密码按钮",
+      }),
+    ).toBeTruthy();
+    expect(connectionPage.hidden).toBe(true);
+    expect(secretInput.value).toBe("keep-this-secret");
+    expect(onOpenExternalLink).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "返回连接163 邮箱" }));
+    expect(
+      screen.queryByRole("heading", { name: "163 邮箱授权码教程" }),
+    ).toBeNull();
+    expect(connectionPage.hidden).toBe(false);
+    expect(secretInput.value).toBe("keep-this-secret");
+    await waitFor(() => expect(document.activeElement).toBe(guideButton));
+    expect(screen.queryByRole("tooltip")).toBeNull();
+
+    await user.click(
+      screen.getByRole("button", { name: "返回选择邮箱服务商" }),
+    );
+    await user.click(screen.getByRole("button", { name: /QQ 邮箱/ }));
+    await user.click(
+      screen.getByRole("button", { name: "查看 QQ 邮箱授权码获取教程" }),
+    );
+
+    expect(
+      screen.getByRole("heading", { name: "QQ 邮箱授权码教程" }),
+    ).toBeTruthy();
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        screen.getByRole("region", { name: "QQ 邮箱授权码教程" }),
+      ),
+    );
+    expect(screen.queryByRole("tooltip")).toBeNull();
+    expect(
+      screen.getByRole("img", {
+        name: "QQ 邮箱安全设置中的邮件服务和生成授权码按钮",
+      }),
+    ).toBeTruthy();
+    expect(onOpenExternalLink).not.toHaveBeenCalled();
+  });
+
   it("keeps a legacy Outlook account visible as cache-only without a reconnect form", () => {
     const legacyAccountStatus = {
       ...accountStatus,

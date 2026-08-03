@@ -7288,10 +7288,110 @@ html[data-surface="new-mail-notification"] #root {
   gap: 6px;
 }
 
-.settings-field > span:first-child {
+.settings-field > span:first-child,
+.settings-field > label {
   color: var(--color-text-secondary);
   font-size: 11px;
   font-weight: 640;
+}
+
+.account-secret-control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: stretch;
+}
+
+.account-authorization-guide {
+  border-color: color-mix(in srgb, var(--color-primary) 76%, var(--surface-edge));
+  background: var(--color-primary);
+  color: var(--color-on-primary);
+  box-shadow:
+    0 5px 14px color-mix(in srgb, var(--color-primary) 22%, transparent),
+    inset 0 1px 0 color-mix(in srgb, #fff 24%, transparent);
+}
+
+.account-authorization-guide:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--color-primary-hover) 82%, var(--surface-edge));
+  background: var(--color-primary-hover);
+  color: var(--color-on-primary);
+}
+
+.settings-page[hidden] {
+  display: none;
+}
+
+.authorization-guide-content {
+  display: grid;
+  gap: 22px;
+  padding-bottom: 12px;
+}
+
+.authorization-guide-page:focus {
+  outline: none;
+}
+
+.authorization-guide-steps {
+  display: grid;
+  gap: 26px;
+  margin: 0;
+  padding-left: 24px;
+}
+
+.authorization-guide-step {
+  padding-left: 5px;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  line-height: 1.75;
+}
+
+.authorization-guide-step::marker {
+  color: var(--color-primary);
+  font-weight: 720;
+}
+
+.authorization-guide-step > p {
+  margin: 0;
+}
+
+.authorization-guide-figure {
+  margin: 12px 0 0;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--color-border) 86%, var(--surface-edge));
+  border-radius: 10px;
+  background: var(--color-panel-subtle);
+}
+
+.authorization-guide-figure img {
+  display: block;
+  width: 100%;
+  height: auto;
+  user-select: none;
+}
+
+.authorization-guide-figure figcaption {
+  padding: 8px 11px 9px;
+  border-top: 1px solid color-mix(in srgb, var(--color-divider) 82%, transparent);
+  color: var(--color-text-muted);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.authorization-guide-security {
+  padding: 14px 0 0;
+  border-top: 1px solid color-mix(in srgb, var(--color-divider) 86%, transparent);
+}
+
+.authorization-guide-security strong {
+  color: var(--color-text);
+  font-size: 12px;
+}
+
+.authorization-guide-security p {
+  margin: 5px 0 0;
+  color: var(--color-text-muted);
+  font-size: 11px;
+  line-height: 1.65;
 }
 
 .settings-input-shell {
@@ -7440,6 +7540,23 @@ html[data-surface="new-mail-notification"] #root {
 }
 
 .account-google-auth small {
+  color: var(--color-text-muted);
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+.account-submit-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.account-google-preview-note {
+  flex: 1 1 360px;
+  min-width: min(240px, 100%);
+  margin: 2px 0 0;
   color: var(--color-text-muted);
   font-size: 10px;
   line-height: 1.55;

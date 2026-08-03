@@ -484,6 +484,18 @@ family. Preserve the relative hierarchy when tuning optical values.
 - The formal provider-first list contains 163, QQ, Gmail, and custom IMAP/SMTP.
   Outlook is absent until its supported Microsoft authentication flow is a
   complete product capability; do not show a disabled or “coming soon” card.
+- The 163 and QQ authorization-secret inputs pair the inset field with one
+  40 px accent, icon-only tutorial action. Its pointer-hover tooltip and
+  accessible name identify the matching provider. It opens the offline tutorial
+  as a settings drill-in, keeps the connection form mounted so entered values
+  survive the round trip, returns focus to the trigger without opening its
+  tooltip, and stays absent from Gmail and custom IMAP/SMTP setup. Tutorial entry
+  focuses the guide region rather than its tooltip-bearing back button. Tutorial
+  screenshots ship with the app and remain inside the existing settings scroll
+  surface.
+- The Gmail OAuth action row places a quiet, borderless preview-access note in
+  small muted text beside the primary sign-in button, wrapping below it only when
+  space is constrained. It includes the `tantless@163.com` allowlisting contact.
 - Persistent backend health is not decorative chrome. Show only explicit action
   progress and failures that require user attention.
 - About keeps the compact version card first, then presents local storage as one

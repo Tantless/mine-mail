@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { AccountSetupForm } from "./AccountSetup.jsx";
 
@@ -173,6 +173,9 @@ describe("AccountSetupForm", () => {
     await user.click(screen.getByRole("radio", { name: "Gmail" }));
     expect(screen.queryByLabelText("邮箱地址")).toBeNull();
     expect(screen.queryByPlaceholderText("请输入授权密码")).toBeNull();
+    expect(screen.getByRole("note").textContent).toBe(
+      "目前处于预览测试版，如想使用 Google OAuth 登录，请联系 tantless@163.com 添加白名单。",
+    );
     await user.click(screen.getByRole("button", { name: "使用 Google 登录" }));
     expect(onGoogle).toHaveBeenCalledOnce();
   });
@@ -200,6 +203,50 @@ describe("AccountSetupForm", () => {
       email: "mine@qq.com",
       secret: "qq-app-secret",
     });
+  });
+
+  it("opens the matching authorization-code guide beside 163 and QQ secret inputs", async () => {
+    const onOpenAuthorizationGuide = vi.fn();
+    const onSubmit = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <AccountSetupForm
+        presets={presets}
+        status={{ configured: false }}
+        submitStatus="idle"
+        error={null}
+        onSubmit={onSubmit}
+        onOpenAuthorizationGuide={onOpenAuthorizationGuide}
+      />,
+    );
+
+    const firstGuide = screen.getByRole("button", {
+      name: "查看 163 邮箱授权码获取教程",
+    });
+    expect(firstGuide.closest(".account-secret-control")).toBeTruthy();
+    expect(firstGuide.classList.contains("icon-button")).toBe(true);
+    expect(firstGuide.textContent).toBe("");
+    fireEvent.focus(firstGuide);
+    expect(screen.queryByRole("tooltip")).toBeNull();
+    await user.hover(firstGuide);
+    expect((await screen.findByRole("tooltip")).textContent).toBe(
+      "查看 163 邮箱授权码获取教程",
+    );
+    await user.unhover(firstGuide);
+    await user.click(firstGuide);
+    expect(onOpenAuthorizationGuide).toHaveBeenCalledWith("163");
+    expect(onSubmit).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("radio", { name: "QQ 邮箱" }));
+    await user.click(
+      screen.getByRole("button", { name: "查看 QQ 邮箱授权码获取教程" }),
+    );
+    expect(onOpenAuthorizationGuide).toHaveBeenLastCalledWith("qq");
+
+    await user.click(
+      screen.getByRole("radio", { name: "自定义 IMAP/SMTP" }),
+    );
+    expect(screen.queryByRole("button", { name: /授权码获取教程/ })).toBeNull();
   });
 
   it("uses the themed selector for custom SMTP security", async () => {

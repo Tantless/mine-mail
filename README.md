@@ -55,7 +55,8 @@ Apple Silicon Mac，以及 Linux x64 发布。各平台安装包由统一发布�
    macOS 将 Mine Mail 拖入“应用程序”，Linux 按所选包格式完成安装。
 3. 启动 Mine Mail，进入“设置 → 邮箱账户 → 添加邮箱”：
 
-   - 163 邮箱使用邮箱地址和客户端授权密码，不要填写网页登录密码。
+   - 163 邮箱和 QQ 邮箱使用完整邮箱地址和客户端授权码，不要填写网页登录密码。
+     获取方法见[《163 邮箱与 QQ 邮箱授权码获取教程》](MAIL_AUTHORIZATION_CODE_GUIDE.md)。
    - Gmail 通过浏览器完成 Google OAuth 授权。
    - 其他邮箱选择自定义账户，并填写服务商提供的 IMAP/SMTP 地址、端口和 TLS
      配置。
