@@ -9,7 +9,10 @@ use lettre::{
     },
 };
 
-use crate::{AccountConfig, AuthenticationKind, MailError, OutboxStatus, Result, SmtpSecurity};
+use crate::{
+    AccountConfig, AuthenticationKind, ConnectionFailure, ConnectionFailureKind,
+    ConnectionProtocol, MailError, OutboxStatus, Result, SmtpSecurity,
+};
 
 const SMTP_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -49,13 +52,14 @@ impl SmtpClient {
         Ok(Self { transport })
     }
 
-    pub async fn probe(&self) -> Result<()> {
+    pub async fn probe(&self) -> std::result::Result<(), ConnectionFailure> {
         match self.transport.test_connection().await {
             Ok(true) => Ok(()),
-            Ok(false) => Err(MailError::Smtp(
-                "server rejected the SMTP connection test".to_owned(),
+            Ok(false) => Err(ConnectionFailure::new(
+                ConnectionProtocol::Smtp,
+                ConnectionFailureKind::Server,
             )),
-            Err(error) => Err(MailError::Smtp(safe_smtp_error(&error))),
+            Err(error) => Err(smtp_probe_failure(&error)),
         }
     }
 
@@ -69,6 +73,32 @@ impl SmtpClient {
             .await
             .map(|_| ())
             .map_err(classify_smtp_error)
+    }
+}
+
+fn smtp_probe_failure(error: &SmtpError) -> ConnectionFailure {
+    let status_code = error.status().map(u16::from);
+    let kind = if let Some(status_code) = status_code {
+        smtp_response_failure_kind(status_code)
+    } else if error.is_tls() {
+        ConnectionFailureKind::Tls
+    } else if error.is_timeout() || error.is_transport_shutdown() {
+        ConnectionFailureKind::Network
+    } else if error.is_client() {
+        ConnectionFailureKind::Authentication
+    } else if error.is_response() {
+        ConnectionFailureKind::Server
+    } else {
+        ConnectionFailureKind::Network
+    };
+    ConnectionFailure::new(ConnectionProtocol::Smtp, kind).with_status_code(status_code)
+}
+
+fn smtp_response_failure_kind(status_code: u16) -> ConnectionFailureKind {
+    if matches!(status_code, 432 | 454 | 530 | 534 | 535 | 538) {
+        ConnectionFailureKind::Authentication
+    } else {
+        ConnectionFailureKind::Server
     }
 }
 
@@ -103,5 +133,30 @@ fn safe_smtp_error(error: &SmtpError) -> String {
         "SMTP client rejected the message".to_owned()
     } else {
         "SMTP transport failed; delivery state is unknown".to_owned()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ConnectionFailureKind, smtp_response_failure_kind};
+
+    #[test]
+    fn smtp_authentication_statuses_are_not_reported_as_network_failures() {
+        for status_code in [432, 454, 530, 534, 535, 538] {
+            assert_eq!(
+                smtp_response_failure_kind(status_code),
+                ConnectionFailureKind::Authentication
+            );
+        }
+    }
+
+    #[test]
+    fn other_smtp_statuses_are_reported_as_server_failures() {
+        for status_code in [421, 450, 550] {
+            assert_eq!(
+                smtp_response_failure_kind(status_code),
+                ConnectionFailureKind::Server
+            );
+        }
     }
 }

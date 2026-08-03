@@ -55,6 +55,12 @@ must be updated here when an intentional product change lands.
   the system browser with a random loopback callback, then XOAUTH2 for IMAP and
   SMTP. While Google OAuth remains in preview testing, the Gmail connection form
   explains that access requires allowlisting through `tantless@163.com`.
+- Initial account verification identifies the failing protocol and stage instead
+  of labeling every failure as authentication. It distinguishes invalid
+  configuration, network reachability, TLS setup, credential/OAuth rejection,
+  and a server-side connection-check failure. The inline failure names IMAP or
+  SMTP and gives the next action; it may include a numeric SMTP status code but
+  never server-controlled response text, an address, or credential material.
 - Access and refresh tokens stay in the OS credential store and Rust runtime.
 - A missing, expired, or revoked credential stops synchronization and monitoring
   for only that account. Cached mail stays readable.

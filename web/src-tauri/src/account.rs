@@ -9,7 +9,10 @@ use std::{
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use keyring::Entry;
-use mine_mail::{AccountConfig, MailBackend, ServerConfig, SmtpSecurity};
+use mine_mail::{
+    AccountConfig, ConnectionFailure, ConnectionFailureKind, ConnectionProtocol, ConnectionReport,
+    MailBackend, ServerConfig, SmtpSecurity,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::{
@@ -979,7 +982,7 @@ impl AccountRuntime {
         };
         let network_backend =
             open_backend_without_outbox_recovery(&metadata, &database_path, password.as_str())?;
-        verify_connections(&network_backend).await?;
+        verify_connections(&network_backend, metadata.authentication).await?;
 
         let entry = keyring_entry(&metadata)?;
         let previous_credential = read_previous_credential(&entry)?;
@@ -1049,7 +1052,7 @@ impl AccountRuntime {
             &database_path,
             &oauth.tokens.access_token,
         )?;
-        verify_connections(&network_backend).await?;
+        verify_connections(&network_backend, metadata.authentication).await?;
 
         let entry = keyring_entry(&metadata)?;
         let previous_credential = read_previous_credential(&entry)?;
@@ -1412,22 +1415,87 @@ fn log_oauth_refresh_failure(account_id: &str, started: Instant) {
     );
 }
 
-async fn verify_connections(backend: &MailBackend) -> Result<(), String> {
+async fn verify_connections(
+    backend: &MailBackend,
+    authentication: AccountAuthentication,
+) -> Result<(), String> {
     let connection = backend
         .check_connections()
         .await
         .map_err(crate::safe_mail_error)?;
-    match (connection.imap_ok, connection.smtp_ok) {
-        (true, true) => Ok(()),
-        (false, false) => Err(
-            "The account was not saved because both IMAP and SMTP authentication failed."
-                .to_owned(),
-        ),
-        (false, true) => {
-            Err("The account was not saved because IMAP authentication failed.".to_owned())
+    connection_report_result(&connection, authentication)
+}
+
+fn connection_report_result(
+    connection: &ConnectionReport,
+    authentication: AccountAuthentication,
+) -> Result<(), String> {
+    let mut failures = Vec::new();
+    if !connection.imap_ok {
+        failures.push(connection_failure_message(
+            ConnectionProtocol::Imap,
+            connection.imap_failure.as_ref(),
+            authentication,
+        ));
+    }
+    if !connection.smtp_ok {
+        failures.push(connection_failure_message(
+            ConnectionProtocol::Smtp,
+            connection.smtp_failure.as_ref(),
+            authentication,
+        ));
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("账户未保存：{}。", failures.join("；")))
+    }
+}
+
+fn connection_failure_message(
+    protocol: ConnectionProtocol,
+    failure: Option<&ConnectionFailure>,
+    authentication: AccountAuthentication,
+) -> String {
+    let label = match protocol {
+        ConnectionProtocol::Imap => "IMAP",
+        ConnectionProtocol::Smtp => "SMTP",
+    };
+    let fallback = ConnectionFailure::new(protocol, ConnectionFailureKind::Server);
+    let failure = failure.unwrap_or(&fallback);
+    match failure.kind {
+        ConnectionFailureKind::Configuration => {
+            format!("{label} 配置无效，请检查服务器地址、端口和安全方式")
         }
-        (true, false) => {
-            Err("The account was not saved because SMTP authentication failed.".to_owned())
+        ConnectionFailureKind::Network => {
+            format!("无法连接 {label} 服务器，请检查网络、代理或 TUN 设置后重试")
+        }
+        ConnectionFailureKind::Tls => {
+            format!(
+                "{label} TLS 安全连接失败，请检查安全方式、代理/TUN（含 Fake-IP）或安全软件后重试"
+            )
+        }
+        ConnectionFailureKind::Authentication => {
+            let status = failure
+                .status_code
+                .map(|code| format!("（状态码 {code}）"))
+                .unwrap_or_default();
+            if authentication == AccountAuthentication::GoogleOAuth {
+                format!(
+                    "Gmail {label} 拒绝了 OAuth 登录{status}，请检查 Google 账户安全状态后重新授权"
+                )
+            } else {
+                format!("{label} 身份验证失败{status}，请检查邮箱地址和授权密码")
+            }
+        }
+        ConnectionFailureKind::Server => {
+            if let Some(status_code) = failure.status_code {
+                format!(
+                    "{label} 服务器拒绝了连接检查（状态码 {status_code}），请稍后重试或检查服务商限制"
+                )
+            } else {
+                format!("{label} 服务器未能完成连接检查，请稍后重试")
+            }
         }
     }
 }
@@ -2029,17 +2097,97 @@ fn unix_timestamp() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use mine_mail::{ComposeRequest, SmtpSecurity};
+    use mine_mail::{
+        ComposeRequest, ConnectionFailure, ConnectionFailureKind, ConnectionProtocol,
+        ConnectionReport, SmtpSecurity,
+    };
     use tempfile::tempdir;
 
     use super::{
         AccountAuthentication, AccountMetadata, AccountProvider, AccountStore, BackendState,
         ConfigureAccountRequest, GoogleOAuthError, MAX_ACCOUNTS, StoredAccounts,
-        account_database_path, account_presets, describe_google_token_error, google_client_id,
-        google_refresh_failure, keyring_username, normalize_account_remark, open_local_backend,
-        remove_managed_attachment_data_if_requested, remove_sqlite_cache_files,
-        sqlite_sidecar_path,
+        account_database_path, account_presets, connection_report_result,
+        describe_google_token_error, google_client_id, google_refresh_failure, keyring_username,
+        normalize_account_remark, open_local_backend, remove_managed_attachment_data_if_requested,
+        remove_sqlite_cache_files, sqlite_sidecar_path,
     };
+
+    #[test]
+    fn connection_report_accepts_both_successful_protocols() {
+        let report = ConnectionReport {
+            imap_ok: true,
+            smtp_ok: true,
+            imap_failure: None,
+            smtp_failure: None,
+        };
+
+        assert!(
+            connection_report_result(&report, AccountAuthentication::GoogleOAuth).is_ok()
+        );
+    }
+
+    #[test]
+    fn connection_report_identifies_smtp_tls_and_tun_failures() {
+        let report = ConnectionReport {
+            imap_ok: true,
+            smtp_ok: false,
+            imap_failure: None,
+            smtp_failure: Some(ConnectionFailure::new(
+                ConnectionProtocol::Smtp,
+                ConnectionFailureKind::Tls,
+            )),
+        };
+
+        assert_eq!(
+            connection_report_result(&report, AccountAuthentication::GoogleOAuth)
+                .expect_err("SMTP TLS failure must reject account setup"),
+            "账户未保存：SMTP TLS 安全连接失败，请检查安全方式、代理/TUN（含 Fake-IP）或安全软件后重试。"
+        );
+    }
+
+    #[test]
+    fn connection_report_identifies_oauth_rejection_without_server_text() {
+        let report = ConnectionReport {
+            imap_ok: true,
+            smtp_ok: false,
+            imap_failure: None,
+            smtp_failure: Some(
+                ConnectionFailure::new(
+                    ConnectionProtocol::Smtp,
+                    ConnectionFailureKind::Authentication,
+                )
+                .with_status_code(Some(535)),
+            ),
+        };
+
+        assert_eq!(
+            connection_report_result(&report, AccountAuthentication::GoogleOAuth)
+                .expect_err("OAuth rejection must reject account setup"),
+            "账户未保存：Gmail SMTP 拒绝了 OAuth 登录（状态码 535），请检查 Google 账户安全状态后重新授权。"
+        );
+    }
+
+    #[test]
+    fn connection_report_lists_each_failed_protocol() {
+        let report = ConnectionReport {
+            imap_ok: false,
+            smtp_ok: false,
+            imap_failure: Some(ConnectionFailure::new(
+                ConnectionProtocol::Imap,
+                ConnectionFailureKind::Network,
+            )),
+            smtp_failure: Some(ConnectionFailure::new(
+                ConnectionProtocol::Smtp,
+                ConnectionFailureKind::Configuration,
+            )),
+        };
+
+        assert_eq!(
+            connection_report_result(&report, AccountAuthentication::Password)
+                .expect_err("failed protocols must reject account setup"),
+            "账户未保存：无法连接 IMAP 服务器，请检查网络、代理或 TUN 设置后重试；SMTP 配置无效，请检查服务器地址、端口和安全方式。"
+        );
+    }
 
     #[test]
     fn google_desktop_client_id_is_embedded_for_click_to_sign_in() {

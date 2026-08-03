@@ -1,5 +1,7 @@
 use thiserror::Error;
 
+use crate::ConnectionFailure;
+
 pub type Result<T> = std::result::Result<T, MailError>;
 
 #[derive(Debug, Error)]
@@ -24,6 +26,9 @@ pub enum MailError {
 
     #[error("SMTP error: {0}")]
     Smtp(String),
+
+    #[error("{0}")]
+    Connection(ConnectionFailure),
 
     #[error("message format error: {0}")]
     Mime(String),

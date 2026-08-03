@@ -13,7 +13,10 @@ use async_native_tls::TlsStream;
 use futures::TryStreamExt;
 use tokio::{net::TcpStream, time::timeout};
 
-use crate::{AccountConfig, AuthenticationKind, MailError, Result};
+use crate::{
+    AccountConfig, AuthenticationKind, ConnectionFailure, ConnectionFailureKind,
+    ConnectionProtocol, MailError, Result,
+};
 
 type ImapSession = Session<TlsStream<TcpStream>>;
 
@@ -239,10 +242,8 @@ impl ImapConnection {
             TcpStream::connect((config.imap.host.as_str(), config.imap.port)),
         )
         .await
-        .map_err(|_| MailError::Timeout {
-            operation: "IMAP connection",
-        })?
-        .map_err(|error| MailError::Imap(error.to_string()))?;
+        .map_err(|_| imap_connection_error(ConnectionFailureKind::Network))?
+        .map_err(|_| imap_connection_error(ConnectionFailureKind::Network))?;
 
         let connector = async_native_tls::TlsConnector::new();
         let tls_stream = timeout(
@@ -250,19 +251,15 @@ impl ImapConnection {
             connector.connect(config.imap.host.as_str(), stream),
         )
         .await
-        .map_err(|_| MailError::Timeout {
-            operation: "IMAP TLS handshake",
-        })?
-        .map_err(|error| MailError::Imap(error.to_string()))?;
+        .map_err(|_| imap_connection_error(ConnectionFailureKind::Tls))?
+        .map_err(|_| imap_connection_error(ConnectionFailureKind::Tls))?;
 
         let mut client = async_imap::Client::new(tls_stream);
         timeout(CONNECT_TIMEOUT, client.read_response())
             .await
-            .map_err(|_| MailError::Timeout {
-                operation: "IMAP greeting",
-            })?
-            .map_err(|error| MailError::Imap(error.to_string()))?
-            .ok_or_else(|| MailError::Imap("server closed before IMAP greeting".to_owned()))?;
+            .map_err(|_| imap_connection_error(ConnectionFailureKind::Server))?
+            .map_err(|_| imap_connection_error(ConnectionFailureKind::Server))?
+            .ok_or_else(|| imap_connection_error(ConnectionFailureKind::Server))?;
 
         let mut session = match config.authentication_kind() {
             AuthenticationKind::Password => timeout(
@@ -270,10 +267,8 @@ impl ImapConnection {
                 client.login(&config.email, config.authorization_secret()),
             )
             .await
-            .map_err(|_| MailError::Timeout {
-                operation: "IMAP authentication",
-            })?
-            .map_err(|(error, _client)| MailError::Imap(error.to_string()))?,
+            .map_err(|_| imap_connection_error(ConnectionFailureKind::Authentication))?
+            .map_err(|_| imap_connection_error(ConnectionFailureKind::Authentication))?,
             AuthenticationKind::OAuth2 => {
                 let authenticator = OAuth2Authenticator {
                     email: &config.email,
@@ -284,19 +279,15 @@ impl ImapConnection {
                     client.authenticate("XOAUTH2", authenticator),
                 )
                 .await
-                .map_err(|_| MailError::Timeout {
-                    operation: "IMAP OAuth authentication",
-                })?
-                .map_err(|(error, _client)| MailError::Imap(error.to_string()))?
+                .map_err(|_| imap_connection_error(ConnectionFailureKind::Authentication))?
+                .map_err(|_| imap_connection_error(ConnectionFailureKind::Authentication))?
             }
         };
 
         let capabilities = timeout(COMMAND_TIMEOUT, session.capabilities())
             .await
-            .map_err(|_| MailError::Timeout {
-                operation: "IMAP CAPABILITY",
-            })?
-            .map_err(|error| MailError::Imap(error.to_string()))?;
+            .map_err(|_| imap_connection_error(ConnectionFailureKind::Server))?
+            .map_err(|_| imap_connection_error(ConnectionFailureKind::Server))?;
 
         // NetEase documents/uses RFC 2971 client identification. Sending it
         // after LOGIN and before SELECT avoids the provider's “Unsafe Login”
@@ -312,10 +303,8 @@ impl ImapConnection {
                 ]),
             )
             .await
-            .map_err(|_| MailError::Timeout {
-                operation: "IMAP ID",
-            })?
-            .map_err(|error| MailError::Imap(error.to_string()))?;
+            .map_err(|_| imap_connection_error(ConnectionFailureKind::Server))?
+            .map_err(|_| imap_connection_error(ConnectionFailureKind::Server))?;
         }
 
         // Some providers adjust their advertised extensions after RFC 2971
@@ -324,10 +313,8 @@ impl ImapConnection {
         let capabilities = if supports_id {
             timeout(COMMAND_TIMEOUT, session.capabilities())
                 .await
-                .map_err(|_| MailError::Timeout {
-                    operation: "IMAP CAPABILITY",
-                })?
-                .map_err(|error| MailError::Imap(error.to_string()))?
+                .map_err(|_| imap_connection_error(ConnectionFailureKind::Server))?
+                .map_err(|_| imap_connection_error(ConnectionFailureKind::Server))?
         } else {
             capabilities
         };
@@ -1265,6 +1252,10 @@ impl ImapConnection {
             })?
             .map_err(|error| MailError::Imap(error.to_string()))
     }
+}
+
+fn imap_connection_error(kind: ConnectionFailureKind) -> MailError {
+    MailError::Connection(ConnectionFailure::new(ConnectionProtocol::Imap, kind))
 }
 
 fn summary_fetch_query() -> String {

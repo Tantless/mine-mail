@@ -2079,6 +2079,9 @@ fn safe_mail_error(error: mine_mail::MailError) -> String {
         MailError::Timeout { operation } => format!("{operation} timed out. Please try again."),
         MailError::Imap(_) => "The mail server could not complete the Inbox request.".to_owned(),
         MailError::Smtp(_) => "The mail server could not complete the send request.".to_owned(),
+        MailError::Connection(_) => {
+            "The mail server connection could not be established. Please try again.".to_owned()
+        }
         MailError::Config(_)
         | MailError::Database(_)
         | MailError::Io(_)

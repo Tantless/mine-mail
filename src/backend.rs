@@ -21,10 +21,11 @@ use tokio::{
 use uuid::Uuid;
 
 use crate::{
-    AccountConfig, ComposeRequest, ConnectionReport, ContactActivity, ContactMessage,
-    ContactMessageDirection, Draft, DraftDeleteKind, DraftSaveKind, DraftSaveOutcome, InboxMessage,
-    MailAddress, MailError, MailboxRole, OutboxItem, OutboxStatus, ReplyContext, Result,
-    StationeryTheme, SyncBatchProgress, SyncReport,
+    AccountConfig, ComposeRequest, ConnectionFailure, ConnectionFailureKind, ConnectionProtocol,
+    ConnectionReport, ContactActivity, ContactMessage, ContactMessageDirection, Draft,
+    DraftDeleteKind, DraftSaveKind, DraftSaveOutcome, InboxMessage, MailAddress, MailError,
+    MailboxRole, OutboxItem, OutboxStatus, ReplyContext, Result, StationeryTheme,
+    SyncBatchProgress, SyncReport,
     database::{
         DraftRecord, MailboxState, ManagedDraftAttachment, NewDraftAttachment,
         PendingMessageAction, PreparedForwardInsert, Repository,
@@ -945,23 +946,36 @@ impl MailBackend {
     }
 
     pub async fn check_connections(&self) -> Result<ConnectionReport> {
-        let imap_ok = {
+        let imap_failure = {
             let _guard = self.general_imap_gate.lock().await;
             match ImapConnection::connect(&self.config).await {
-                Ok(connection) => connection.probe().await.is_ok(),
-                Err(_) => false,
+                Ok(connection) => connection.probe().await.err().map(|error| {
+                    connection_failure_from_mail_error(error, ConnectionProtocol::Imap)
+                }),
+                Err(error) => Some(connection_failure_from_mail_error(
+                    error,
+                    ConnectionProtocol::Imap,
+                )),
             }
         };
 
-        let smtp_ok = {
+        let smtp_failure = {
             let _guard = self.smtp_gate.lock().await;
             match SmtpClient::new(&self.config) {
-                Ok(client) => client.probe().await.is_ok(),
-                Err(_) => false,
+                Ok(client) => client.probe().await.err(),
+                Err(_) => Some(ConnectionFailure::new(
+                    ConnectionProtocol::Smtp,
+                    ConnectionFailureKind::Configuration,
+                )),
             }
         };
 
-        Ok(ConnectionReport { imap_ok, smtp_ok })
+        Ok(ConnectionReport {
+            imap_ok: imap_failure.is_none(),
+            smtp_ok: smtp_failure.is_none(),
+            imap_failure,
+            smtp_failure,
+        })
     }
 
     pub async fn list_remote_mailboxes(&self) -> Result<Vec<String>> {
@@ -2875,7 +2889,9 @@ impl MailBackend {
                     )?;
                 Ok(())
             }
-            Err(MailError::Imap(_) | MailError::Timeout { .. }) => Ok(()),
+            Err(MailError::Imap(_) | MailError::Timeout { .. } | MailError::Connection(_)) => {
+                Ok(())
+            }
             Err(error) => Err(error),
         }
     }
@@ -6438,8 +6454,26 @@ fn privacy_safe_imap_error(operation: &'static str) -> MailError {
 
 fn privacy_safe_network_error(error: MailError, operation: &'static str) -> MailError {
     match error {
-        MailError::Imap(_) | MailError::Timeout { .. } => privacy_safe_imap_error(operation),
+        MailError::Imap(_) | MailError::Timeout { .. } | MailError::Connection(_) => {
+            privacy_safe_imap_error(operation)
+        }
         other => other,
+    }
+}
+
+fn connection_failure_from_mail_error(
+    error: MailError,
+    fallback_protocol: ConnectionProtocol,
+) -> ConnectionFailure {
+    match error {
+        MailError::Connection(failure) => failure,
+        MailError::Timeout { .. } | MailError::Io(_) => {
+            ConnectionFailure::new(fallback_protocol, ConnectionFailureKind::Network)
+        }
+        MailError::Config(_) | MailError::Validation(_) => {
+            ConnectionFailure::new(fallback_protocol, ConnectionFailureKind::Configuration)
+        }
+        _ => ConnectionFailure::new(fallback_protocol, ConnectionFailureKind::Server),
     }
 }
 
@@ -6448,8 +6482,16 @@ fn message_mutation_error_kind(error: &MailError) -> MessageMutationErrorKind {
         MailError::Timeout { .. } | MailError::Io(_) => {
             MessageMutationErrorKind::NetworkUnavailable
         }
+        MailError::Connection(failure)
+            if matches!(
+                failure.kind,
+                ConnectionFailureKind::Network | ConnectionFailureKind::Tls
+            ) =>
+        {
+            MessageMutationErrorKind::NetworkUnavailable
+        }
         MailError::Validation(_) => MessageMutationErrorKind::Unsupported,
-        MailError::Imap(_) => MessageMutationErrorKind::Unknown,
+        MailError::Imap(_) | MailError::Connection(_) => MessageMutationErrorKind::Unknown,
         _ => MessageMutationErrorKind::Unknown,
     }
 }

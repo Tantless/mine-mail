@@ -271,7 +271,10 @@ fn validate_attachment_id(attachment_id: &str) -> CommandResult<()> {
 }
 
 fn is_offline_history_error(error: &MailError) -> bool {
-    matches!(error, MailError::Imap(_) | MailError::Timeout { .. })
+    matches!(
+        error,
+        MailError::Imap(_) | MailError::Timeout { .. } | MailError::Connection(_)
+    )
 }
 
 fn validate_page_role(role: MailboxRole) -> CommandResult<()> {

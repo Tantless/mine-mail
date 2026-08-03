@@ -21,18 +21,18 @@ pub use config::{AccountConfig, AuthenticationKind, ServerConfig, SmtpSecurity};
 pub use error::{MailError, Result};
 pub use models::{
     AttachmentDisposition, AttachmentMeta, AttachmentSaveErrorKind, AttachmentSaveResult,
-    AttachmentSaveStatus, ComposeFormat, ComposeRequest, ConnectionReport, ContactActivity,
-    ContactMessage, ContactMessageDirection, DeliveryUnknownDecision, Draft, DraftAttachmentMeta,
-    DraftAttachmentMutationKind, DraftAttachmentMutationOutcome, DraftDeleteKind, DraftDto,
-    DraftSaveKind, DraftSaveOutcome, DraftSyncReport, ForwardContext, ForwardPreparationError,
-    ForwardPreparationErrorKind, ForwardPreparationOutcome, ForwardPreparationOutcomeKind,
-    ForwardQuotedRenderMode, ForwardWarning, InboxMessage, MailAddress, MailboxCapability,
-    MailboxCapabilityStatus, MailboxCapabilityUnavailableReason, MailboxRole, MessageActionKind,
-    MessageMutationErrorKind, MessageMutationReceipt, MessagePage, MessagePageCursor,
-    MessagePageItem, MutationStatus, OutboxItem, OutboxRecipientGroups, OutboxStatus,
-    PendingMessageProjection, PreparedForward, RemoteHistoryState, RemoteMutationPhase,
-    ReplyContext, StationeryTheme, SyncBatchProgress, SyncReport, SystemFlagKind,
-    SystemFlagMutationReceipt, normalize_contact_email,
+    AttachmentSaveStatus, ComposeFormat, ComposeRequest, ConnectionFailure, ConnectionFailureKind,
+    ConnectionProtocol, ConnectionReport, ContactActivity, ContactMessage, ContactMessageDirection,
+    DeliveryUnknownDecision, Draft, DraftAttachmentMeta, DraftAttachmentMutationKind,
+    DraftAttachmentMutationOutcome, DraftDeleteKind, DraftDto, DraftSaveKind, DraftSaveOutcome,
+    DraftSyncReport, ForwardContext, ForwardPreparationError, ForwardPreparationErrorKind,
+    ForwardPreparationOutcome, ForwardPreparationOutcomeKind, ForwardQuotedRenderMode,
+    ForwardWarning, InboxMessage, MailAddress, MailboxCapability, MailboxCapabilityStatus,
+    MailboxCapabilityUnavailableReason, MailboxRole, MessageActionKind, MessageMutationErrorKind,
+    MessageMutationReceipt, MessagePage, MessagePageCursor, MessagePageItem, MutationStatus,
+    OutboxItem, OutboxRecipientGroups, OutboxStatus, PendingMessageProjection, PreparedForward,
+    RemoteHistoryState, RemoteMutationPhase, ReplyContext, StationeryTheme, SyncBatchProgress,
+    SyncReport, SystemFlagKind, SystemFlagMutationReceipt, normalize_contact_email,
 };
 
 /// Rebuilds the preferred HTML body from the locally cached RFC822 message and

@@ -51,6 +51,10 @@ pub(crate) fn mail_error_kind(error: &mine_mail::MailError) -> ErrorKind {
         MailError::Serialization(_) => ErrorKind::Serialization,
         MailError::Imap(_) => ErrorKind::Imap,
         MailError::Smtp(_) => ErrorKind::Smtp,
+        MailError::Connection(failure) => match failure.protocol {
+            mine_mail::ConnectionProtocol::Imap => ErrorKind::Imap,
+            mine_mail::ConnectionProtocol::Smtp => ErrorKind::Smtp,
+        },
         MailError::Mime(_) => ErrorKind::Mime,
         MailError::Timeout { .. } => ErrorKind::Timeout,
         MailError::NotFound { .. } => ErrorKind::NotFound,
