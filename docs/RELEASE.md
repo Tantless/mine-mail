@@ -73,6 +73,8 @@ provider console, signing account, and a clean target device.
 - [ ] Make version consistency, tests, build/check, signing, signature
   verification, malware scanning, hashes, updater metadata, and draft release
   creation one fail-closed pipeline.
+- [ ] Confirm every updater manifest uses the release's version-pinned GitHub
+  browser download URLs rather than REST API asset endpoints.
 - [ ] Keep beta and stable update channels separate.
 - [ ] Test signed update success plus interruption, offline, invalid signature,
   disk-full, migration, skipped-version, rollback, and emergency withdrawal

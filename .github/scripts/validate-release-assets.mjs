@@ -72,9 +72,16 @@ export function validateReleaseAssets({
   }
 
   const assetNameByUrl = new Map();
+  const browserUrlByAssetName = new Map();
   for (const asset of releaseAssets) {
     for (const url of [asset.url, asset.browser_download_url].filter(Boolean)) {
       assetNameByUrl.set(normalizedUrl(url), asset.name);
+    }
+    if (asset.browser_download_url) {
+      browserUrlByAssetName.set(
+        asset.name,
+        normalizedUrl(asset.browser_download_url),
+      );
     }
   }
 
@@ -124,6 +131,11 @@ export function validateReleaseAssets({
     if (referencedAsset !== expectedAsset) {
       throw new Error(
         `${platform} must reference ${expectedAsset}, not ${referencedAsset}.`,
+      );
+    }
+    if (url !== browserUrlByAssetName.get(expectedAsset)) {
+      throw new Error(
+        `${platform} must use the GitHub browser download URL for ${expectedAsset}.`,
       );
     }
     const signatureKeyId = minisignKeyId(

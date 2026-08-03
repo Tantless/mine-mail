@@ -294,13 +294,15 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v6
 
-      - name: Validate updater manifest
+      - name: Normalize and validate updater manifest
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ github.ref_name }}
         shell: bash
         run: |
           manifest_dir="$(mktemp -d)"
+          remote_manifest_dir="$(mktemp -d)"
+          trap 'rm -rf "$manifest_dir" "$remote_manifest_dir"' EXIT
           gh release download "$RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --pattern latest.json \
@@ -314,8 +316,23 @@ jobs:
           gh api --paginate \
             "repos/$GITHUB_REPOSITORY/releases/$release_id/assets?per_page=100" \
             | jq -s "add" > "$manifest_dir/release-assets.json"
+          node .github/scripts/normalize-updater-manifest.mjs \
+            "$manifest_dir/latest.json" \
+            "$manifest_dir/release-assets.json"
           node .github/scripts/validate-release-assets.mjs \
             "$manifest_dir/latest.json" \
+            "$manifest_dir/release-assets.json"
+          gh release upload "$RELEASE_TAG" \
+            "$manifest_dir/latest.json" \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber
+          gh release download "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern latest.json \
+            --dir "$remote_manifest_dir"
+          cmp "$manifest_dir/latest.json" "$remote_manifest_dir/latest.json"
+          node .github/scripts/validate-release-assets.mjs \
+            "$remote_manifest_dir/latest.json" \
             "$manifest_dir/release-assets.json"
 
       - name: Publish GitHub Release
