@@ -138,6 +138,11 @@ must be updated here when an intentional product change lands.
 
 - Startup renders cached SQLite state first and starts Rust synchronization
   afterward.
+- If an active folder has no cached rows while its initial local read or first
+  server import is still in progress, the list shows nearby non-blocking loading
+  feedback instead of a blank surface. Cached rows are never replaced by that
+  feedback, and a settled genuinely empty folder returns to the quiet empty
+  state.
 - Immediate synchronization is triggered by startup, explicit in-app refresh,
   tray **刷新**, and supported resume/wake events.
 - Returning focus to an already running main window performs only a lightweight

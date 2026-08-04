@@ -2437,6 +2437,7 @@ export function App() {
     async ({
       selectFirst = false,
       accountId = activeAccountIdRef.current,
+      preserveSyncing = false,
     } = {}) => {
       if (!accountId) return null;
       let capabilities = {};
@@ -2480,6 +2481,7 @@ export function App() {
             accountId,
             role,
             selectFirst: role === "inbox" && selectFirst,
+            preserveSyncing,
           }),
         ),
       );
@@ -3113,6 +3115,7 @@ export function App() {
           void loadMailboxData({
             accountId: activeAccountId,
             selectFirst: true,
+            preserveSyncing: networkUsable && isTauri,
           });
         } else {
           setAccountError(
@@ -4327,6 +4330,44 @@ export function App() {
       ].some((value) => value?.toLowerCase().includes(normalizedQuery));
     });
   }, [activeFolder, contactRemarkForEmail, filter, folderMessages, query]);
+
+  const activeMailboxLoadState = useMemo(() => {
+    if (mailboxLoadStates[activeFolder]) {
+      return mailboxLoadStates[activeFolder];
+    }
+    if (activeFolder === "starred") {
+      const sources = starredMailboxRoles
+        .filter((role) => capabilityAvailable(mailboxCapabilities, role))
+        .map((role) => mailboxLoadStates[role])
+        .filter(Boolean);
+      const phase = sources.some((state) => state.phase === "syncing")
+        ? "syncing"
+        : sources.some((state) => state.phase === "loading")
+          ? "loading"
+          : sources.some((state) => state.phase === "error")
+            ? "error"
+            : "ready";
+      const totals = sources.map((state) => state.total);
+      return {
+        phase,
+        completed: sources.reduce(
+          (sum, state) => sum + (state.completed || 0),
+          0,
+        ),
+        total:
+          sources.length > 0 &&
+          totals.every((total) => Number.isFinite(total))
+            ? totals.reduce((sum, total) => sum + total, 0)
+            : null,
+      };
+    }
+    return { phase: "ready", completed: visibleMessages.length, total: null };
+  }, [
+    activeFolder,
+    mailboxCapabilities,
+    mailboxLoadStates,
+    visibleMessages.length,
+  ]);
 
   useEffect(() => {
     if (activeFolder !== "starred" || !activeAccountId) {
@@ -6694,7 +6735,10 @@ export function App() {
       const networkUsable =
         status.credentialAvailable && status.networkReady !== false;
       beginMailboxLoading(networkUsable ? "syncing" : "loading");
-      await loadMailboxData({ selectFirst: true });
+      await loadMailboxData({
+        selectFirst: true,
+        preserveSyncing: networkUsable,
+      });
       if (!networkUsable) {
         setAccountError(
           describeError(
@@ -6722,9 +6766,8 @@ export function App() {
     const nextAccountId = status.activeAccountId || status.accountId || null;
     activeAccountIdRef.current = nextAccountId;
     accountStatusRef.current = status;
-    beginMailboxLoading(
-      canUseAccountNetwork(status) ? "syncing" : "loading",
-    );
+    const networkUsable = canUseAccountNetwork(status);
+    beginMailboxLoading(networkUsable ? "syncing" : "loading");
     if (previousAccountId !== nextAccountId) {
       activateComposerForAccount(nextAccountId);
       invalidateForwardPreparationsForAccount(previousAccountId);
@@ -6744,7 +6787,10 @@ export function App() {
       setRemoteSearch(null);
     }
     if (status.configured && status.backendReady) {
-      await loadMailboxData({ selectFirst: true });
+      await loadMailboxData({
+        selectFirst: true,
+        preserveSyncing: networkUsable,
+      });
     }
     void prefetchAccountViews(status);
     setAccountSubmitStatus("saved");
@@ -7799,6 +7845,7 @@ export function App() {
                         ? manualSyncFeedback
                         : null
                     }
+                    loadState={activeMailboxLoadState}
                     canSync={networkActionsAvailable}
                     syncDisabledReason={
                       networkActionsAvailable

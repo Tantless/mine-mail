@@ -1663,6 +1663,7 @@ describe("Mine Mail desktop state bridge", () => {
       expect(desktop.listeners.has("mail:inbox-updated")).toBe(true),
     );
     expect(screen.queryByText("没有找到邮件")).toBeNull();
+    expect(screen.getByText("正在同步收件箱…")).toBeTruthy();
     const contactsCallsBeforeProgress =
       desktop.mailApi.listContacts.mock.calls.length;
     desktop.fixtures.inboxPageSource.mockResolvedValue(
@@ -1712,6 +1713,7 @@ describe("Mine Mail desktop state bridge", () => {
     });
 
     expect(await screen.findByText("Progress mail 10")).toBeTruthy();
+    expect(screen.queryByText(/正在同步收件箱/)).toBeNull();
     await waitFor(() =>
       expect(desktop.mailApi.listContacts.mock.calls.length).toBeGreaterThan(
         contactsCallsBeforeProgress,

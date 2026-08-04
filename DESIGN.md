@@ -278,6 +278,12 @@ family. Preserve the relative hierarchy when tuning optical values.
   list position stable while the reader body shows its quiet loading state until
   the complete content and final render mode are ready. List preview text and an
   intermediate plain fallback never appear as the opened body.
+- When the active folder has no cached rows and its initial local read or first
+  server import is still running, the shared status band below the tabs shows a
+  compact spinner with precise loading or synchronization copy. It disappears
+  when that initial work settles. Existing cached rows remain mounted and keep
+  routine background synchronization visually silent; only an explicit refresh
+  drives the heading refresh control.
 - Each account and folder remembers its own message-list scroll position.
   Opening a folder without a remembered position starts at the top; switching
   back restores that account-and-folder position.
