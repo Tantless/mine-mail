@@ -1215,7 +1215,7 @@ impl MailBackend {
     }
 
     pub async fn check_connections(&self) -> Result<ConnectionReport> {
-        let imap_failure = {
+        let check_imap = async {
             let _guard = self.general_imap_gate.lock().await;
             match ImapConnection::connect(&self.config).await {
                 Ok(connection) => connection.probe().await.err().map(|error| {
@@ -1228,7 +1228,7 @@ impl MailBackend {
             }
         };
 
-        let smtp_failure = {
+        let check_smtp = async {
             let _guard = self.smtp_gate.lock().await;
             match SmtpClient::new(&self.config) {
                 Ok(client) => client.probe().await.err(),
@@ -1238,6 +1238,8 @@ impl MailBackend {
                 )),
             }
         };
+
+        let (imap_failure, smtp_failure) = tokio::join!(check_imap, check_smtp);
 
         Ok(ConnectionReport {
             imap_ok: imap_failure.is_none(),

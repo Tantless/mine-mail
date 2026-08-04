@@ -2784,6 +2784,7 @@ dependencies = [
  "ammonia",
  "base64 0.22.1",
  "ego-tree",
+ "gio",
  "html5ever 0.39.0",
  "keyring",
  "log",

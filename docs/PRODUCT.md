@@ -90,6 +90,14 @@ must be updated here when an intentional product change lands.
   and a server-side connection-check failure. The inline failure names IMAP or
   SMTP and gives the next action; it may include a numeric SMTP status code but
   never server-controlled response text, an address, or credential material.
+- Google token exchange, user-info, refresh, and revocation requests honor the
+  operating system's HTTPS proxy as well as standard proxy environment
+  variables. The random loopback callback always remains local.
+- After Google returns the required mail scope and a verified account identity,
+  binding persists the account and returns without waiting for IMAP/SMTP probes
+  or historical import, and adding a distinct account does not wait for syncs
+  already running for other accounts. Mail connectivity and the first import
+  continue through the normal account-scoped background synchronization path.
 - Access and refresh tokens stay in the OS credential store and Rust runtime.
 - A missing, expired, or revoked credential stops synchronization and monitoring
   for only that account. Cached mail stays readable.
@@ -113,6 +121,12 @@ must be updated here when an intentional product change lands.
     the Google authorization grant and local cache;
   - **撤销授权并移除** first asks Google to revoke Mine Mail's OAuth grant, then
     removes the OS token and local account record.
+- Google revocation runs before local disconnection, retries a transient
+  transport failure, and treats Google's report that both saved tokens are
+  already invalid as an idempotently settled outcome. Revocation and
+  disconnection without cache deletion do not wait for unrelated account
+  synchronization; deleting local cache still waits for in-flight access to
+  release its files.
 - The optional local-cache deletion removes that account's SQLite mail, drafts,
   managed draft attachments, and Outbox data and is irreversible. It does not
   happen implicitly. Retaining the cache retains every managed attachment still
