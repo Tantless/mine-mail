@@ -652,6 +652,71 @@ describe("SettingsPanel account flow", () => {
     expect(document.activeElement).toBe(checkUpdate);
   });
 
+  it("shows the classified reason when checking for updates fails", async () => {
+    const updateClient = {
+      isSupported: true,
+      bundledVersion: "0.1.2",
+      getCurrentVersion: vi.fn().mockResolvedValue("0.1.2"),
+      checkForUpdate: vi
+        .fn()
+        .mockRejectedValue(new Error("request timed out while fetching latest.json")),
+      installUpdate: vi.fn(),
+    };
+    const user = userEvent.setup();
+    render(<SettingsPanel {...panelProps({ updateClient })} />);
+
+    await user.click(screen.getByRole("button", { name: "关于 Mine Mail" }));
+    const checkUpdate = screen.getByRole("button", { name: "检查更新" });
+    await user.click(checkUpdate);
+
+    expect(
+      await screen.findByText(
+        "连接更新服务器超时。请检查系统代理或网络后重试；当前版本和本地数据不受影响。",
+      ),
+    ).toBeTruthy();
+    expect(checkUpdate.disabled).toBe(false);
+    expect(screen.queryByText(/request timed out/i)).toBeNull();
+  });
+
+  it("shows an expired package URL when update download returns 404", async () => {
+    const updateClient = {
+      isSupported: true,
+      bundledVersion: "0.1.2",
+      getCurrentVersion: vi.fn().mockResolvedValue("0.1.2"),
+      checkForUpdate: vi.fn().mockResolvedValue({
+        status: "available",
+        currentVersion: "0.1.2",
+        version: "0.1.3",
+        notes: null,
+        resource: { id: 1 },
+      }),
+      installUpdate: vi
+        .fn()
+        .mockRejectedValue(new Error("download request returned HTTP 404")),
+    };
+    const user = userEvent.setup();
+    render(<SettingsPanel {...panelProps({ updateClient })} />);
+
+    await user.click(screen.getByRole("button", { name: "关于 Mine Mail" }));
+    await user.click(screen.getByRole("button", { name: "检查更新" }));
+    const dialog = await screen.findByRole("dialog", {
+      name: "发现 Mine Mail v0.1.3",
+    });
+    await user.click(
+      within(dialog).getByRole("button", { name: "下载并安装" }),
+    );
+
+    expect(
+      await within(dialog).findByText(
+        "更新安装包不存在或下载地址已失效（服务器返回 404）。请稍后重试；当前版本和本地数据不受影响。",
+      ),
+    ).toBeTruthy();
+    expect(
+      within(dialog).getByRole("button", { name: "下载并安装" }).disabled,
+    ).toBe(false);
+    expect(within(dialog).queryByText(/download request returned/i)).toBeNull();
+  });
+
   it("opens the legal resources and source repository as external links", async () => {
     const user = userEvent.setup();
     const onOpenExternalLink = vi.fn();

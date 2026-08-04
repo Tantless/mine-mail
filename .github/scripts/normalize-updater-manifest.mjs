@@ -10,7 +10,27 @@ function normalizedUrl(value, label) {
   }
 }
 
-export function normalizeUpdaterManifest({ manifest, releaseAssets }) {
+export function releaseAssetDownloadUrl({ repository, tag, assetName }) {
+  if (!/^[0-9A-Za-z_.-]+\/[0-9A-Za-z_.-]+$/.test(repository || "")) {
+    throw new Error("GITHUB_REPOSITORY must use the owner/repository format.");
+  }
+  if (!/^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(tag || "")) {
+    throw new Error(`Release tag "${tag}" is invalid.`);
+  }
+  if (!assetName || /[\\/]/.test(assetName)) {
+    throw new Error("Release asset name is invalid.");
+  }
+  return new URL(
+    `https://github.com/${repository}/releases/download/${encodeURIComponent(tag)}/${encodeURIComponent(assetName)}`,
+  ).href;
+}
+
+export function normalizeUpdaterManifest({
+  manifest,
+  releaseAssets,
+  repository,
+  tag,
+}) {
   if (!manifest || typeof manifest !== "object") {
     throw new Error("latest.json is not a JSON object.");
   }
@@ -20,17 +40,19 @@ export function normalizeUpdaterManifest({ manifest, releaseAssets }) {
 
   const assetByUrl = new Map();
   for (const asset of releaseAssets) {
-    if (!asset?.name || !asset?.browser_download_url) continue;
-    const browserDownloadUrl = normalizedUrl(
+    if (!asset?.name) continue;
+    const stableDownloadUrl = releaseAssetDownloadUrl({
+      repository,
+      tag,
+      assetName: asset.name,
+    });
+    for (const url of [
+      asset.url,
       asset.browser_download_url,
-      `${asset.name} browser download URL`,
-    );
-    if (!browserDownloadUrl.startsWith("https:")) {
-      throw new Error(`${asset.name} browser download URL must use HTTPS.`);
-    }
-    for (const url of [asset.url, asset.browser_download_url].filter(Boolean)) {
+      stableDownloadUrl,
+    ].filter(Boolean)) {
       assetByUrl.set(normalizedUrl(url, `${asset.name} asset URL`), {
-        browserDownloadUrl,
+        stableDownloadUrl,
       });
     }
   }
@@ -49,7 +71,7 @@ export function normalizeUpdaterManifest({ manifest, releaseAssets }) {
         platform,
         {
           ...entry,
-          url: asset.browserDownloadUrl,
+          url: asset.stableDownloadUrl,
         },
       ];
     }),
@@ -62,16 +84,23 @@ const isMain =
   process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1]);
 if (isMain) {
   const [manifestPath, releaseAssetsPath] = process.argv.slice(2);
-  if (!manifestPath || !releaseAssetsPath) {
+  const repository = process.env.GITHUB_REPOSITORY;
+  const tag = process.env.RELEASE_TAG;
+  if (!manifestPath || !releaseAssetsPath || !repository || !tag) {
     throw new Error(
-      "Usage: node normalize-updater-manifest.mjs <latest.json> <release-assets.json>",
+      "Usage: GITHUB_REPOSITORY=owner/repository RELEASE_TAG=v1.2.3 node normalize-updater-manifest.mjs <latest.json> <release-assets.json>",
     );
   }
   const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
   const releaseAssets = JSON.parse(
     fs.readFileSync(releaseAssetsPath, "utf8"),
   );
-  const normalized = normalizeUpdaterManifest({ manifest, releaseAssets });
+  const normalized = normalizeUpdaterManifest({
+    manifest,
+    releaseAssets,
+    repository,
+    tag,
+  });
   fs.writeFileSync(manifestPath, `${JSON.stringify(normalized, null, 2)}\n`);
-  console.log("Normalized updater URLs to GitHub browser download URLs.");
+  console.log("Normalized updater URLs to version-pinned GitHub download URLs.");
 }

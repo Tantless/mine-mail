@@ -19,7 +19,10 @@ import {
   X,
 } from "@phosphor-icons/react";
 import { appStorageApi } from "../services/appStorage.js";
-import { appUpdateApi } from "../services/appUpdate.js";
+import {
+  appUpdateApi,
+  describeUpdateFailure,
+} from "../services/appUpdate.js";
 import { AccountRemovalDialog } from "./AccountRemovalDialog.jsx";
 import { AccountSetupForm } from "./AccountSetup.jsx";
 import { AuthorizationGuide } from "./AuthorizationGuide.jsx";
@@ -192,14 +195,6 @@ function storageLocationLabel(kind) {
   if (kind === "install_directory") return "随应用安装位置";
   if (kind === "custom") return "自定义位置";
   return "Windows 默认位置";
-}
-
-function updateErrorMessage(error) {
-  const message = error instanceof Error ? error.message : String(error || "");
-  if (/404|latest\.json|not found/i.test(message)) {
-    return "最新 Release 暂未提供签名更新信息，请稍后重试。";
-  }
-  return "检查更新失败，请确认网络连接后重试。";
 }
 
 function ProviderMark({ provider }) {
@@ -579,7 +574,7 @@ export function SettingsPanel({
       setUpdateMessage("请在 Mine Mail 桌面应用中检查更新。");
     } catch (error) {
       setUpdateStatus("error");
-      setUpdateMessage(updateErrorMessage(error));
+      setUpdateMessage(describeUpdateFailure(error, "check").message);
     }
   };
 
@@ -626,10 +621,10 @@ export function SettingsPanel({
       setAvailableUpdate(null);
       setUpdateStatus("installed");
       setUpdateMessage("更新已安装，正在重新启动 Mine Mail…");
-    } catch {
+    } catch (error) {
       setUpdateStatus("error");
       setUpdateProgress(null);
-      setUpdateMessage("更新没有安装，当前版本不会受到影响，请重试。");
+      setUpdateMessage(describeUpdateFailure(error, "install").message);
     }
   };
 

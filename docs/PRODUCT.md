@@ -869,6 +869,10 @@ must be updated here when an intentional product change lands.
   the user-confirmed trigger.
 - An update failure preserves the installed version and local mail data and must
   not be reported as success.
+- Update failures distinguish version-information access, package download,
+  signature verification, installation, and relaunch failures. The UI shows a
+  bounded Simplified Chinese reason with a safe next action and never exposes a
+  raw backend error, stack trace, or unrestricted URL.
 - The signing private key never belongs in the repository, logs, or release
   artifacts. Committed updater endpoints and public verification keys are
   configuration, not secrets.
