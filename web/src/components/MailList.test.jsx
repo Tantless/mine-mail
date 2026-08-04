@@ -134,6 +134,37 @@ describe("MailList folder contracts", () => {
     expect(sync.classList.contains("is-spinning")).toBe(false);
   });
 
+  it("shows initial synchronization in the shared status row while an empty mailbox loads", () => {
+    const { container, rerenderMailList } = renderMailList({
+      loadState: { phase: "syncing", completed: 0, total: null },
+    });
+
+    expect(screen.getByText("正在同步收件箱…")).toBeTruthy();
+    expect(
+      container.querySelector(".message-list")?.getAttribute("aria-busy"),
+    ).toBe("true");
+    expect(
+      screen.getByRole("button", { name: "同步收件箱" }).getAttribute(
+        "aria-busy",
+      ),
+    ).toBeNull();
+
+    rerenderMailList({
+      loadState: { phase: "syncing", completed: 10, total: 100 },
+    });
+    expect(screen.getByText("正在同步收件箱，已加载 10/100 封…")).toBeTruthy();
+  });
+
+  it("keeps background synchronization quiet when cached rows are visible", () => {
+    renderMailList({
+      messages: [firstMessage],
+      loadState: { phase: "syncing", completed: 1, total: 100 },
+    });
+
+    expect(screen.queryByText(/正在同步收件箱/)).toBeNull();
+    expect(screen.getByText("项目进度")).toBeTruthy();
+  });
+
   it.each([
     ["syncing", "正在同步收件箱…", "status"],
     ["success", "同步成功，新增 3 封邮件", "status"],

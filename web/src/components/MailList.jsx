@@ -179,6 +179,38 @@ function SyncFeedbackRow({ feedback }) {
   );
 }
 
+function emptyMailboxLoadFeedback(loadState, config, title) {
+  if (loadState?.phase === "loading") {
+    return {
+      state: "syncing",
+      message:
+        config === folderConfigurations.drafts
+          ? "正在读取本地草稿…"
+          : config === folderConfigurations.outbox
+            ? "正在读取发件队列…"
+            : "正在读取本地邮件…",
+    };
+  }
+  if (loadState?.phase === "syncing") {
+    const completed = Number(loadState.completed);
+    const total = Number(loadState.total);
+    return {
+      state: "syncing",
+      message:
+        Number.isFinite(completed) && Number.isFinite(total) && total > 0
+          ? `${config.syncingLabel}，已加载 ${completed}/${total} 封…`
+          : `${config.syncingLabel}…`,
+    };
+  }
+  if (loadState?.phase === "error") {
+    return {
+      state: "error",
+      message: `${title}暂时没有加载完成，请点击右上角重试`,
+    };
+  }
+  return null;
+}
+
 export function MailList({
   folderRole,
   folderLabel,
@@ -197,6 +229,7 @@ export function MailList({
   onSync = null,
   syncState = "idle",
   syncFeedback = null,
+  loadState = { phase: "ready", completed: 0, total: null },
   canSync = true,
   syncDisabledReason = null,
   onOpenMobileNav = null,
@@ -218,6 +251,11 @@ export function MailList({
   const config = folderConfigurations[role];
   const title = folderLabel || config.title;
   const isSyncing = syncState === "syncing";
+  const automaticLoadFeedback =
+    messages.length === 0 && !query.trim() && filter === "all"
+      ? emptyMailboxLoadFeedback(loadState, config, title)
+      : null;
+  const visibleSyncFeedback = syncFeedback || automaticLoadFeedback;
   const capabilityUnavailable = Boolean(
     config.mailboxLabel &&
       mailboxCapability &&
@@ -433,11 +471,12 @@ export function MailList({
             {messages.length} 封
           </span>
         </div>
-        <SyncFeedbackRow feedback={syncFeedback} />
+        <SyncFeedbackRow feedback={visibleSyncFeedback} />
       </div>
 
       <div
         className="message-list vertical-scroll-surface"
+        aria-busy={automaticLoadFeedback?.state === "syncing" || undefined}
         ref={messageListRef}
         onScroll={(event) => {
           const surface = event.currentTarget;
