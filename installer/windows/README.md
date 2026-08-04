@@ -46,7 +46,8 @@ cd ..
 
 Replace `<version>` with the version in `web/src-tauri/tauri.conf.json`.
 The resulting public asset is written to
-`installer/windows/release-assets/`. Release builds also upload the maintained
-Tauri NSIS installer and its updater signature. The branded setup remains the
-user-facing first-install experience; the signed NSIS asset is used for
-in-place updates initiated by the running app.
+`installer/windows/release-assets/`. The branded setup accepts Tauri's passive
+and quiet updater arguments, then delegates them to its embedded maintained NSIS
+payload. Release builds sign this outer setup and point Windows updater metadata
+to it, so the public Release exposes only one Windows executable. The internal
+NSIS payload and the temporary outer signature are removed before publication.

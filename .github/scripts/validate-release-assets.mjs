@@ -48,7 +48,6 @@ export function validateReleaseAssets({
   const expectedAssets = {
     manifest: "latest.json",
     windowsInstaller: `Mine-Mail_${expectedVersion}_x64-setup.exe`,
-    windowsUpdater: `Mine.Mail_${expectedVersion}_x64-setup.exe`,
     macosInstaller: `Mine.Mail_${expectedVersion}_aarch64.dmg`,
     macosUpdater: `Mine.Mail_${expectedVersion}_aarch64.app.tar.gz`,
     linuxDeb: `Mine.Mail_${expectedVersion}_amd64.deb`,
@@ -97,8 +96,8 @@ export function validateReleaseAssets({
     "linux-x86_64": expectedAssets.linuxAppImage,
     "linux-x86_64-appimage": expectedAssets.linuxAppImage,
     "linux-x86_64-deb": expectedAssets.linuxDeb,
-    "windows-x86_64": expectedAssets.windowsUpdater,
-    "windows-x86_64-nsis": expectedAssets.windowsUpdater,
+    "windows-x86_64": expectedAssets.windowsInstaller,
+    "windows-x86_64-nsis": expectedAssets.windowsInstaller,
   };
   const supportedPlatforms = new Set(Object.keys(requiredPlatformAssets));
   const unsupportedPlatforms = Object.keys(manifest.platforms ?? {}).filter(

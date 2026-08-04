@@ -292,6 +292,54 @@ fn perform_install(app: &AppHandle, install_dir: &Path) -> Result<PathBuf, Strin
         .ok_or_else(|| "安装程序已结束，但没有在目标目录中找到 Mine Mail。".to_owned())
 }
 
+fn updater_payload_args(args: impl IntoIterator<Item = OsString>) -> Option<Vec<OsString>> {
+    let mut payload_args = Vec::new();
+    let mut has_install_mode = false;
+
+    for arg in args {
+        let value = arg.to_string_lossy();
+        if value.eq_ignore_ascii_case("/P") || value.eq_ignore_ascii_case("/S") {
+            if has_install_mode {
+                return None;
+            }
+            has_install_mode = true;
+            payload_args.push(arg);
+        } else if value.eq_ignore_ascii_case("/R") {
+            payload_args.push(arg);
+        } else {
+            return None;
+        }
+    }
+
+    has_install_mode.then_some(payload_args)
+}
+
+fn perform_updater_install(payload_args: &[OsString]) -> Result<(), String> {
+    if NSIS_PAYLOAD.is_empty() {
+        return Err("安装程序未包含 Mine Mail 安装载荷。".to_owned());
+    }
+
+    let temporary_dir = tempfile::Builder::new()
+        .prefix("mine-mail-update-")
+        .tempdir()
+        .map_err(|error| format!("无法创建临时更新目录：{error}"))?;
+    let payload_path = temporary_dir.path().join("mine-mail-payload.exe");
+    fs::write(&payload_path, NSIS_PAYLOAD).map_err(|error| format!("无法释放更新文件：{error}"))?;
+    let status = Command::new(&payload_path)
+        .args(payload_args)
+        .status()
+        .map_err(|error| format!("无法启动内部更新程序：{error}"))?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        let code = status
+            .code()
+            .map_or_else(|| "未知".to_owned(), |value| value.to_string());
+        Err(format!("内部更新程序返回了错误代码 {code}。"))
+    }
+}
+
 fn prepare_install_dir(install_dir: &Path) -> Result<(), String> {
     fs::create_dir_all(install_dir)
         .map_err(|error| format!("无法创建安装位置，请确认所选磁盘可用且目录可写：{error}"))?;
@@ -367,6 +415,15 @@ fn locate_installed_executable(install_dir: &Path) -> Option<PathBuf> {
 }
 
 fn main() {
+    if let Some(payload_args) = updater_payload_args(env::args_os().skip(1)) {
+        let exit_code = if perform_updater_install(&payload_args).is_ok() {
+            0
+        } else {
+            1
+        };
+        std::process::exit(exit_code);
+    }
+
     tauri::Builder::default()
         .manage(InstallerRuntime::default())
         .plugin(tauri_plugin_dialog::init())
@@ -397,8 +454,11 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{locate_installed_executable, prepare_install_dir, validate_install_dir};
-    use std::fs;
+    use super::{
+        locate_installed_executable, prepare_install_dir, updater_payload_args,
+        validate_install_dir,
+    };
+    use std::{ffi::OsString, fs};
 
     #[test]
     fn rejects_relative_or_control_character_paths() {
@@ -443,5 +503,28 @@ mod tests {
         fs::write(&app, []).expect("app fixture");
 
         assert_eq!(locate_installed_executable(directory.path()), Some(app));
+    }
+
+    #[test]
+    fn forwards_tauri_passive_and_quiet_updater_arguments() {
+        assert_eq!(
+            updater_payload_args([OsString::from("/P"), OsString::from("/R")]),
+            Some(vec![OsString::from("/P"), OsString::from("/R")])
+        );
+        assert_eq!(
+            updater_payload_args([OsString::from("/s"), OsString::from("/r")]),
+            Some(vec![OsString::from("/s"), OsString::from("/r")])
+        );
+    }
+
+    #[test]
+    fn keeps_ordinary_and_unknown_launches_in_the_branded_installer() {
+        assert_eq!(updater_payload_args([]), None);
+        assert_eq!(updater_payload_args([OsString::from("/R")]), None);
+        assert_eq!(updater_payload_args([OsString::from("--unexpected")]), None);
+        assert_eq!(
+            updater_payload_args([OsString::from("/P"), OsString::from("/S")]),
+            None
+        );
     }
 }

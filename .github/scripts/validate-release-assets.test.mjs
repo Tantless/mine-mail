@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import test from "node:test";
 
+import { consolidateWindowsUpdater } from "./consolidate-windows-updater.mjs";
 import { normalizeUpdaterManifest } from "./normalize-updater-manifest.mjs";
 import { validateReleaseAssets } from "./validate-release-assets.mjs";
 
@@ -22,7 +23,6 @@ function releaseFixture({ draft = false } = {}) {
   const names = [
     "latest.json",
     `Mine-Mail_${version}_x64-setup.exe`,
-    `Mine.Mail_${version}_x64-setup.exe`,
     `Mine.Mail_${version}_aarch64.dmg`,
     `Mine.Mail_${version}_aarch64.app.tar.gz`,
     `Mine.Mail_${version}_amd64.deb`,
@@ -42,8 +42,8 @@ function releaseFixture({ draft = false } = {}) {
     "linux-x86_64": `Mine.Mail_${version}_amd64.AppImage`,
     "linux-x86_64-appimage": `Mine.Mail_${version}_amd64.AppImage`,
     "linux-x86_64-deb": `Mine.Mail_${version}_amd64.deb`,
-    "windows-x86_64": `Mine.Mail_${version}_x64-setup.exe`,
-    "windows-x86_64-nsis": `Mine.Mail_${version}_x64-setup.exe`,
+    "windows-x86_64": `Mine-Mail_${version}_x64-setup.exe`,
+    "windows-x86_64-nsis": `Mine-Mail_${version}_x64-setup.exe`,
   };
   const platforms = Object.fromEntries(
     Object.entries(platformAssets).map(([platform, name]) => [
@@ -66,6 +66,50 @@ test("accepts the supported release asset and updater matrix", () => {
   assert.equal(
     validateReleaseAssets(releaseFixture()),
     `Validated the ${tag} release asset and updater matrix.`,
+  );
+});
+
+test("consolidates generated Windows updater entries into the branded installer", () => {
+  const fixture = releaseFixture({ draft: true });
+  const internalUpdaterName = `Mine.Mail_${version}_x64-setup.exe`;
+  const internalUpdater = {
+    name: internalUpdaterName,
+    url: "https://api.github.com/repos/example/mine-mail/releases/assets/99",
+    browser_download_url: `https://github.com/${repository}/releases/download/untagged-a8cd3177c258479dab31/${internalUpdaterName}`,
+  };
+  fixture.releaseAssets.push(internalUpdater);
+  for (const platform of ["windows-x86_64", "windows-x86_64-nsis"]) {
+    fixture.manifest.platforms[platform].url = internalUpdater.url;
+    fixture.manifest.platforms[platform].signature = "internal signature";
+  }
+
+  const consolidated = consolidateWindowsUpdater({
+    ...fixture,
+    signature: minisignEnvelope(),
+  });
+
+  for (const platform of ["windows-x86_64", "windows-x86_64-nsis"]) {
+    assert.equal(
+      consolidated.platforms[platform].url,
+      `https://github.com/${repository}/releases/download/${tag}/Mine-Mail_${version}_x64-setup.exe`,
+    );
+    assert.equal(consolidated.platforms[platform].signature, minisignEnvelope());
+  }
+});
+
+test("reuses an already consolidated Windows signature during draft recovery", () => {
+  const fixture = releaseFixture();
+  assert.deepEqual(consolidateWindowsUpdater(fixture), fixture.manifest);
+});
+
+test("requires a branded signature before replacing an internal Windows updater", () => {
+  const fixture = releaseFixture();
+  fixture.manifest.platforms["windows-x86_64"].url =
+    "https://downloads.example.invalid/internal.exe";
+
+  assert.throws(
+    () => consolidateWindowsUpdater(fixture),
+    /needs the branded Windows updater signature/,
   );
 });
 
@@ -130,10 +174,10 @@ test("rejects updater URLs outside the release during normalization", () => {
 
 test("requires version-pinned download URLs in the validated manifest", () => {
   const fixture = releaseFixture();
-  const updaterAsset = fixture.releaseAssets.find(
-    (asset) => asset.name === `Mine.Mail_${version}_x64-setup.exe`,
+  const installerAsset = fixture.releaseAssets.find(
+    (asset) => asset.name === `Mine-Mail_${version}_x64-setup.exe`,
   );
-  fixture.manifest.platforms["windows-x86_64-nsis"].url = updaterAsset.url;
+  fixture.manifest.platforms["windows-x86_64-nsis"].url = installerAsset.url;
 
   assert.throws(
     () => validateReleaseAssets(fixture),
@@ -170,11 +214,24 @@ test("release publishing normalizes and uploads updater manifests", () => {
       "utf8",
     );
     assert.match(workflow, /normalize-updater-manifest\.mjs/);
+    assert.match(workflow, /consolidate-windows-updater\.mjs/);
+    assert.match(workflow, /gh release delete-asset/);
     assert.match(
       workflow,
       /gh release upload[\s\S]*latest\.json[\s\S]*--clobber/,
     );
   }
+});
+
+test("Windows release signs the branded setup before consolidation", () => {
+  const workflow = fs.readFileSync(
+    new URL("../workflows/release.yml", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(workflow, /signer sign \$setup\[0\]\.FullName/);
+  assert.match(workflow, /Mine-Mail_\$\{version\}_x64-setup\.exe\.sig/);
+  assert.match(workflow, /Mine\.Mail_\$\{version\}_x64-setup\.exe/);
 });
 
 test("rejects an installer outside the supported release matrix", () => {
@@ -187,6 +244,19 @@ test("rejects an installer outside the supported release matrix", () => {
   assert.throws(
     () => validateReleaseAssets(fixture),
     /contains unsupported assets: .*\.msi/,
+  );
+});
+
+test("rejects the internal Windows updater in a public release", () => {
+  const fixture = releaseFixture();
+  fixture.releaseAssets.push({
+    name: `Mine.Mail_${version}_x64-setup.exe`,
+    url: "https://api.github.com/repos/example/mine-mail/releases/assets/99",
+    browser_download_url: `https://github.com/example/mine-mail/releases/download/${tag}/Mine.Mail_${version}_x64-setup.exe`,
+  });
+  assert.throws(
+    () => validateReleaseAssets(fixture),
+    /contains unsupported assets: Mine\.Mail_.*_x64-setup\.exe/,
   );
 });
 

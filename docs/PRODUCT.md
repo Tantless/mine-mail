@@ -886,6 +886,10 @@ must be updated here when an intentional product change lands.
 - The Tauri updater owns endpoint access, signature verification, download,
   installation, and relaunch. React only presents bounded metadata, progress, and
   the user-confirmed trigger.
+- A Windows release exposes one branded setup executable for both first install
+  and in-place updates. The setup accepts Tauri's passive or quiet updater
+  invocation and delegates it to the embedded maintained NSIS payload; that
+  internal payload is never a public Release asset.
 - An update failure preserves the installed version and local mail data and must
   not be reported as success.
 - Update failures distinguish version-information access, package download,
