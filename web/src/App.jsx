@@ -5884,6 +5884,9 @@ export function App() {
     const accountId = activeAccountIdRef.current;
     if (!accountId) return;
     const folder = activeFolderRef.current;
+    if (folder === "starred") {
+      setStarredViewRetention({ accountId, items: [] });
+    }
     const feedbackId = syncFeedbackSequenceRef.current + 1;
     syncFeedbackSequenceRef.current = feedbackId;
     publishManualSyncFeedback({
@@ -5930,9 +5933,6 @@ export function App() {
         );
         if (roles.includes("sent")) await refreshOutbox();
       } else if (folder === "drafts") {
-    if (folder === "starred") {
-      setStarredViewRetention({ accountId, items: [] });
-    }
         const report = await mailApi.syncDrafts();
         synchronizedCount = synchronizedMessageCount(report);
         await Promise.all([refreshDrafts(), refreshOutbox()]);
