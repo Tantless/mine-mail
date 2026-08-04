@@ -1,14 +1,14 @@
 use std::time::Instant;
 
 use mine_mail::{
-    AttachmentMeta, AttachmentSaveErrorKind, ForwardPreparationErrorKind,
+    AttachmentMeta, AttachmentSaveErrorKind, AttachmentSaveStatus, ForwardPreparationErrorKind,
     ForwardPreparationOutcome, InboxMessage, MailBackend, MailError, MailboxCapability,
     MailboxCapabilityStatus, MailboxCapabilityUnavailableReason, MailboxRole,
     MessageMutationReceipt, MessagePage, MessagePageCursor, MessagePageItem,
     PendingMessageProjection, PermanentDeletePlan, RemoteHistoryState, SystemFlagMutationReceipt,
 };
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
 use crate::{
@@ -373,7 +373,8 @@ fn complete_mailbox_message_dto(
 }
 
 fn emit_mailbox_updated(app: &AppHandle, account_id: &str, role: MailboxRole) {
-    let _ = app.emit(
+    diagnostics::emit_event(
+        app,
         "mail:mailbox-updated",
         MailboxUpdatedEvent {
             account_id: account_id.to_owned(),
@@ -392,11 +393,44 @@ fn schedule_seen_flush(
         let event_app = app.clone();
         let event_account_id = account_id.clone();
         tauri::async_runtime::spawn(async move {
-            let _ = network
+            match network
                 .flush_pending_seen_mutations(&event_account_id, role)
-                .await;
+                .await
+            {
+                Ok(changed) => {
+                    diagnostics::limited_recovery(
+                        "message_mutation_flush_failed",
+                        "message_mutation_flush_recovered",
+                        "seen_mutation_flush",
+                        Some(&event_account_id),
+                    );
+                    if changed > 0 {
+                        diagnostics::info(
+                            "message_mutation_flush_completed",
+                            Fields::default()
+                                .account(&event_account_id)
+                                .operation("seen_mutation_flush")
+                                .outcome("completed")
+                                .changes(changed),
+                        );
+                    }
+                }
+                Err(error) => diagnostics::limited_failure(
+                    "message_mutation_flush_failed",
+                    "seen_mutation_flush",
+                    Some(&event_account_id),
+                    diagnostics::mail_error_kind(&error),
+                ),
+            }
             emit_mailbox_updated(&event_app, &event_account_id, role);
         });
+    } else {
+        diagnostics::limited_failure(
+            "message_mutation_flush_failed",
+            "seen_mutation_flush",
+            Some(&account_id),
+            diagnostics::ErrorKind::Runtime,
+        );
     }
     desktop::request_sync(app, false, "message_mutation");
 }
@@ -411,11 +445,44 @@ fn schedule_flagged_flush(
         let event_app = app.clone();
         let event_account_id = account_id.clone();
         tauri::async_runtime::spawn(async move {
-            let _ = network
+            match network
                 .flush_pending_flagged_mutations(&event_account_id, role)
-                .await;
+                .await
+            {
+                Ok(changed) => {
+                    diagnostics::limited_recovery(
+                        "message_mutation_flush_failed",
+                        "message_mutation_flush_recovered",
+                        "flagged_mutation_flush",
+                        Some(&event_account_id),
+                    );
+                    if changed > 0 {
+                        diagnostics::info(
+                            "message_mutation_flush_completed",
+                            Fields::default()
+                                .account(&event_account_id)
+                                .operation("flagged_mutation_flush")
+                                .outcome("completed")
+                                .changes(changed),
+                        );
+                    }
+                }
+                Err(error) => diagnostics::limited_failure(
+                    "message_mutation_flush_failed",
+                    "flagged_mutation_flush",
+                    Some(&event_account_id),
+                    diagnostics::mail_error_kind(&error),
+                ),
+            }
             emit_mailbox_updated(&event_app, &event_account_id, role);
         });
+    } else {
+        diagnostics::limited_failure(
+            "message_mutation_flush_failed",
+            "flagged_mutation_flush",
+            Some(&account_id),
+            diagnostics::ErrorKind::Runtime,
+        );
     }
     desktop::request_sync(app, false, "message_mutation");
 }
@@ -431,14 +498,47 @@ fn schedule_message_action_flush(
         let event_app = app.clone();
         let event_account_id = account_id.clone();
         tauri::async_runtime::spawn(async move {
-            let _ = network
+            match network
                 .flush_pending_message_mutations(&event_account_id)
-                .await;
+                .await
+            {
+                Ok(changed) => {
+                    diagnostics::limited_recovery(
+                        "message_mutation_flush_failed",
+                        "message_mutation_flush_recovered",
+                        "message_action_flush",
+                        Some(&event_account_id),
+                    );
+                    if changed > 0 {
+                        diagnostics::info(
+                            "message_mutation_flush_completed",
+                            Fields::default()
+                                .account(&event_account_id)
+                                .operation("message_action_flush")
+                                .outcome("completed")
+                                .changes(changed),
+                        );
+                    }
+                }
+                Err(error) => diagnostics::limited_failure(
+                    "message_mutation_flush_failed",
+                    "message_action_flush",
+                    Some(&event_account_id),
+                    diagnostics::mail_error_kind(&error),
+                ),
+            }
             emit_mailbox_updated(&event_app, &event_account_id, source_role);
             if let Some(role) = destination_role {
                 emit_mailbox_updated(&event_app, &event_account_id, role);
             }
         });
+    } else {
+        diagnostics::limited_failure(
+            "message_mutation_flush_failed",
+            "message_action_flush",
+            Some(&account_id),
+            diagnostics::ErrorKind::Runtime,
+        );
     }
     desktop::request_sync(app, false, "message_mutation");
 }
@@ -487,12 +587,14 @@ pub(crate) fn get_mailbox_capabilities(
     backend: State<'_, BackendState>,
     account_id: String,
 ) -> CommandResult<Vec<MailboxCapabilityDto>> {
-    validate_account_id(&account_id)?;
-    backend
-        .local_for(&account_id)?
-        .get_mailbox_capabilities(&account_id)
-        .map(|capabilities| capabilities.into_iter().map(Into::into).collect())
-        .map_err(safe_mail_error)
+    diagnostics::command("get_mailbox_capabilities", Fields::default(), || {
+        validate_account_id(&account_id)?;
+        backend
+            .local_for(&account_id)?
+            .get_mailbox_capabilities(&account_id)
+            .map(|capabilities| capabilities.into_iter().map(Into::into).collect())
+            .map_err(safe_mail_error)
+    })
 }
 
 #[tauri::command]
@@ -503,31 +605,35 @@ pub(crate) async fn create_mailbox_role(
     account_id: String,
     role: MailboxRole,
 ) -> CommandResult<MailboxCapabilityDto> {
-    validate_account_id(&account_id)?;
-    if role != MailboxRole::Trash {
-        return Err("Only Trash can be created.".to_owned());
-    }
-    let local = backend.local_for(&account_id)?;
-    // Refreshing all OAuth-backed runtimes is account-safe: the exact backend
-    // below is still selected by the caller's validated stable account ID.
-    let _ = account.refresh_oauth_backends(&backend).await;
-    let capability = match backend.network_for(&account_id) {
-        Ok(network) => network
-            .create_mailbox_role(&account_id, role)
-            .await
-            .map_err(safe_mail_error)?,
-        Err(_) => local
-            .record_mailbox_role_creation_unavailable(&account_id, role)
-            .map_err(safe_mail_error)?,
-    };
-    let capability = MailboxCapabilityDto::from(capability);
-    let _ = app.emit(
-        "mail:mailbox-capabilities-updated",
-        MailboxCapabilitiesUpdatedEvent {
-            account_id: account_id.clone(),
-        },
-    );
-    Ok(capability)
+    diagnostics::command_lifecycle_async("create_mailbox_role", Fields::default(), async {
+        validate_account_id(&account_id)?;
+        if role != MailboxRole::Trash {
+            return Err("Only Trash can be created.".to_owned());
+        }
+        let local = backend.local_for(&account_id)?;
+        // Refreshing all OAuth-backed runtimes is account-safe: the exact backend
+        // below is still selected by the caller's validated stable account ID.
+        let _ = account.refresh_oauth_backends(&backend).await;
+        let capability = match backend.network_for(&account_id) {
+            Ok(network) => network
+                .create_mailbox_role(&account_id, role)
+                .await
+                .map_err(safe_mail_error)?,
+            Err(_) => local
+                .record_mailbox_role_creation_unavailable(&account_id, role)
+                .map_err(safe_mail_error)?,
+        };
+        let capability = MailboxCapabilityDto::from(capability);
+        diagnostics::emit_event(
+            &app,
+            "mail:mailbox-capabilities-updated",
+            MailboxCapabilitiesUpdatedEvent {
+                account_id: account_id.clone(),
+            },
+        );
+        Ok(capability)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -536,25 +642,28 @@ pub(crate) async fn list_archive_folder_candidates(
     backend: State<'_, BackendState>,
     account_id: String,
 ) -> CommandResult<Vec<ArchiveFolderCandidateDto>> {
-    validate_account_id(&account_id)?;
-    let _ = account.refresh_oauth_backends(&backend).await;
-    let candidates = backend
-        .network_for(&account_id)?
-        .list_archive_folder_candidates(&account_id)
-        .await
-        .map_err(safe_mail_error)?;
-    backend.clear_archive_folder_selections(&account_id)?;
-    candidates
-        .into_iter()
-        .map(|candidate| {
-            backend
-                .register_archive_folder_selection(&account_id, candidate.mailbox_name)
-                .map(|selection_id| ArchiveFolderCandidateDto {
-                    selection_id,
-                    display_name: candidate.display_name,
-                })
-        })
-        .collect()
+    diagnostics::command_async("list_archive_folder_candidates", Fields::default(), async {
+        validate_account_id(&account_id)?;
+        let _ = account.refresh_oauth_backends(&backend).await;
+        let candidates = backend
+            .network_for(&account_id)?
+            .list_archive_folder_candidates(&account_id)
+            .await
+            .map_err(safe_mail_error)?;
+        backend.clear_archive_folder_selections(&account_id)?;
+        candidates
+            .into_iter()
+            .map(|candidate| {
+                backend
+                    .register_archive_folder_selection(&account_id, candidate.mailbox_name)
+                    .map(|selection_id| ArchiveFolderCandidateDto {
+                        selection_id,
+                        display_name: candidate.display_name,
+                    })
+            })
+            .collect()
+    })
+    .await
 }
 
 #[tauri::command]
@@ -565,26 +674,29 @@ pub(crate) async fn assign_archive_folder(
     account_id: String,
     selection_id: String,
 ) -> CommandResult<MailboxCapabilityDto> {
-    validate_account_id(&account_id)?;
-    validate_message_id(&selection_id)
-        .map_err(|_| "The Archive folder choice is invalid or expired.".to_owned())?;
-    let mailbox_name =
-        backend.resolve_archive_folder_selection(&account_id, &selection_id)?;
-    let _ = account.refresh_oauth_backends(&backend).await;
-    let capability = backend
-        .network_for(&account_id)?
-        .assign_archive_folder(&account_id, &mailbox_name)
-        .await
-        .map_err(safe_mail_error)?;
-    backend.clear_archive_folder_selections(&account_id)?;
-    let capability = MailboxCapabilityDto::from(capability);
-    let _ = app.emit(
-        "mail:mailbox-capabilities-updated",
-        MailboxCapabilitiesUpdatedEvent {
-            account_id: account_id.clone(),
-        },
-    );
-    Ok(capability)
+    diagnostics::command_lifecycle_async("assign_archive_folder", Fields::default(), async {
+        validate_account_id(&account_id)?;
+        validate_message_id(&selection_id)
+            .map_err(|_| "The Archive folder choice is invalid or expired.".to_owned())?;
+        let mailbox_name = backend.resolve_archive_folder_selection(&account_id, &selection_id)?;
+        let _ = account.refresh_oauth_backends(&backend).await;
+        let capability = backend
+            .network_for(&account_id)?
+            .assign_archive_folder(&account_id, &mailbox_name)
+            .await
+            .map_err(safe_mail_error)?;
+        backend.clear_archive_folder_selections(&account_id)?;
+        let capability = MailboxCapabilityDto::from(capability);
+        diagnostics::emit_event(
+            &app,
+            "mail:mailbox-capabilities-updated",
+            MailboxCapabilitiesUpdatedEvent {
+                account_id: account_id.clone(),
+            },
+        );
+        Ok(capability)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -596,22 +708,25 @@ pub(crate) async fn list_mailbox_page(
     page_size: usize,
     query: Option<String>,
 ) -> CommandResult<MessagePageDto> {
-    validate_account_id(&account_id)?;
-    validate_page_role(role)?;
-    validate_page_size(page_size)?;
-    let cursor = parse_cursor(cursor, false)?;
-    let query = normalize_query(query)?;
-    let page = backend
-        .local_for(&account_id)?
-        .list_mailbox_page(
-            &account_id,
-            role,
-            cursor.as_ref(),
-            page_size,
-            query.as_deref(),
-        )
-        .map_err(safe_mail_error)?;
-    Ok(page_with_prefetch(&backend, &account_id, page))
+    diagnostics::command_async("list_mailbox_page", Fields::default(), async {
+        validate_account_id(&account_id)?;
+        validate_page_role(role)?;
+        validate_page_size(page_size)?;
+        let cursor = parse_cursor(cursor, false)?;
+        let query = normalize_query(query)?;
+        let page = backend
+            .local_for(&account_id)?
+            .list_mailbox_page(
+                &account_id,
+                role,
+                cursor.as_ref(),
+                page_size,
+                query.as_deref(),
+            )
+            .map_err(safe_mail_error)?;
+        Ok(page_with_prefetch(&backend, &account_id, page))
+    })
+    .await
 }
 
 #[tauri::command]
@@ -624,48 +739,51 @@ pub(crate) async fn load_older_mailbox_page(
     page_size: usize,
     query: Option<String>,
 ) -> CommandResult<MessagePageDto> {
-    validate_account_id(&account_id)?;
-    validate_page_role(role)?;
-    validate_page_size(page_size)?;
-    let cursor = parse_cursor(Some(cursor), true)?.expect("required cursor was validated");
-    let query = normalize_query(query)?;
-    let local = backend
-        .local_for(&account_id)?
-        .list_mailbox_page(
-            &account_id,
-            role,
-            Some(&cursor),
-            page_size,
-            query.as_deref(),
-        )
-        .map_err(safe_mail_error)?;
-    if local.has_more_local
-        || local.remote_history_state != RemoteHistoryState::MayHaveMore
-        || query.is_some()
-    {
-        return Ok(page_with_prefetch(&backend, &account_id, local));
-    }
+    diagnostics::command_async("load_older_mailbox_page", Fields::default(), async {
+        validate_account_id(&account_id)?;
+        validate_page_role(role)?;
+        validate_page_size(page_size)?;
+        let cursor = parse_cursor(Some(cursor), true)?.expect("required cursor was validated");
+        let query = normalize_query(query)?;
+        let local = backend
+            .local_for(&account_id)?
+            .list_mailbox_page(
+                &account_id,
+                role,
+                Some(&cursor),
+                page_size,
+                query.as_deref(),
+            )
+            .map_err(safe_mail_error)?;
+        if local.has_more_local
+            || local.remote_history_state != RemoteHistoryState::MayHaveMore
+            || query.is_some()
+        {
+            return Ok(page_with_prefetch(&backend, &account_id, local));
+        }
 
-    let _ = account.refresh_oauth_backends(&backend).await;
-    let Ok(network) = backend.network_for(&account_id) else {
-        return Ok(page_with_prefetch(
-            &backend,
-            &account_id,
-            offline_page(local),
-        ));
-    };
-    match network
-        .load_older_mailbox_page(&account_id, role, &cursor, page_size, query.as_deref())
-        .await
-    {
-        Ok(page) => Ok(page_with_prefetch(&backend, &account_id, page)),
-        Err(error) if is_offline_history_error(&error) => Ok(page_with_prefetch(
-            &backend,
-            &account_id,
-            offline_page(local),
-        )),
-        Err(error) => Err(safe_mail_error(error)),
-    }
+        let _ = account.refresh_oauth_backends(&backend).await;
+        let Ok(network) = backend.network_for(&account_id) else {
+            return Ok(page_with_prefetch(
+                &backend,
+                &account_id,
+                offline_page(local),
+            ));
+        };
+        match network
+            .load_older_mailbox_page(&account_id, role, &cursor, page_size, query.as_deref())
+            .await
+        {
+            Ok(page) => Ok(page_with_prefetch(&backend, &account_id, page)),
+            Err(error) if is_offline_history_error(&error) => Ok(page_with_prefetch(
+                &backend,
+                &account_id,
+                offline_page(local),
+            )),
+            Err(error) => Err(safe_mail_error(error)),
+        }
+    })
+    .await
 }
 
 #[tauri::command]
@@ -677,22 +795,25 @@ pub(crate) async fn list_starred_mailbox_page(
     page_size: usize,
     query: Option<String>,
 ) -> CommandResult<MessagePageDto> {
-    validate_account_id(&account_id)?;
-    validate_starred_page_role(role)?;
-    validate_page_size(page_size)?;
-    let cursor = parse_cursor(cursor, false)?;
-    let query = normalize_query(query)?;
-    let page = backend
-        .local_for(&account_id)?
-        .list_starred_mailbox_page(
-            &account_id,
-            role,
-            cursor.as_ref(),
-            page_size,
-            query.as_deref(),
-        )
-        .map_err(safe_mail_error)?;
-    Ok(page_with_prefetch(&backend, &account_id, page))
+    diagnostics::command_async("list_starred_mailbox_page", Fields::default(), async {
+        validate_account_id(&account_id)?;
+        validate_starred_page_role(role)?;
+        validate_page_size(page_size)?;
+        let cursor = parse_cursor(cursor, false)?;
+        let query = normalize_query(query)?;
+        let page = backend
+            .local_for(&account_id)?
+            .list_starred_mailbox_page(
+                &account_id,
+                role,
+                cursor.as_ref(),
+                page_size,
+                query.as_deref(),
+            )
+            .map_err(safe_mail_error)?;
+        Ok(page_with_prefetch(&backend, &account_id, page))
+    })
+    .await
 }
 
 #[tauri::command]
@@ -705,48 +826,61 @@ pub(crate) async fn load_older_starred_mailbox_page(
     page_size: usize,
     query: Option<String>,
 ) -> CommandResult<MessagePageDto> {
-    validate_account_id(&account_id)?;
-    validate_starred_page_role(role)?;
-    validate_page_size(page_size)?;
-    let cursor = parse_cursor(Some(cursor), true)?.expect("required cursor was validated");
-    let query = normalize_query(query)?;
-    let local = backend
-        .local_for(&account_id)?
-        .list_starred_mailbox_page(
-            &account_id,
-            role,
-            Some(&cursor),
-            page_size,
-            query.as_deref(),
-        )
-        .map_err(safe_mail_error)?;
-    if local.has_more_local
-        || local.remote_history_state != RemoteHistoryState::MayHaveMore
-        || query.is_some()
-    {
-        return Ok(page_with_prefetch(&backend, &account_id, local));
-    }
+    diagnostics::command_async(
+        "load_older_starred_mailbox_page",
+        Fields::default(),
+        async {
+            validate_account_id(&account_id)?;
+            validate_starred_page_role(role)?;
+            validate_page_size(page_size)?;
+            let cursor = parse_cursor(Some(cursor), true)?.expect("required cursor was validated");
+            let query = normalize_query(query)?;
+            let local = backend
+                .local_for(&account_id)?
+                .list_starred_mailbox_page(
+                    &account_id,
+                    role,
+                    Some(&cursor),
+                    page_size,
+                    query.as_deref(),
+                )
+                .map_err(safe_mail_error)?;
+            if local.has_more_local
+                || local.remote_history_state != RemoteHistoryState::MayHaveMore
+                || query.is_some()
+            {
+                return Ok(page_with_prefetch(&backend, &account_id, local));
+            }
 
-    let _ = account.refresh_oauth_backends(&backend).await;
-    let Ok(network) = backend.network_for(&account_id) else {
-        return Ok(page_with_prefetch(
-            &backend,
-            &account_id,
-            offline_page(local),
-        ));
-    };
-    match network
-        .load_older_starred_mailbox_page(&account_id, role, &cursor, page_size, query.as_deref())
-        .await
-    {
-        Ok(page) => Ok(page_with_prefetch(&backend, &account_id, page)),
-        Err(error) if is_offline_history_error(&error) => Ok(page_with_prefetch(
-            &backend,
-            &account_id,
-            offline_page(local),
-        )),
-        Err(error) => Err(safe_mail_error(error)),
-    }
+            let _ = account.refresh_oauth_backends(&backend).await;
+            let Ok(network) = backend.network_for(&account_id) else {
+                return Ok(page_with_prefetch(
+                    &backend,
+                    &account_id,
+                    offline_page(local),
+                ));
+            };
+            match network
+                .load_older_starred_mailbox_page(
+                    &account_id,
+                    role,
+                    &cursor,
+                    page_size,
+                    query.as_deref(),
+                )
+                .await
+            {
+                Ok(page) => Ok(page_with_prefetch(&backend, &account_id, page)),
+                Err(error) if is_offline_history_error(&error) => Ok(page_with_prefetch(
+                    &backend,
+                    &account_id,
+                    offline_page(local),
+                )),
+                Err(error) => Err(safe_mail_error(error)),
+            }
+        },
+    )
+    .await
 }
 
 #[tauri::command]
@@ -757,110 +891,113 @@ pub(crate) async fn sync_mailbox(
     account_id: String,
     role: MailboxRole,
 ) -> CommandResult<MailboxSyncReportDto> {
-    let started = Instant::now();
-    validate_account_id(&account_id)?;
-    backend.local_for(&account_id)?;
-    let role_name = mailbox_role_name(role);
-    let operation_id = diagnostics::operation_id();
-    diagnostics::info(
-        "mailbox_sync_started",
-        Fields::default()
-            .operation_id(operation_id.clone())
-            .account(&account_id)
-            .operation("mailbox_sync")
-            .mode(role_name),
-    );
+    diagnostics::command_async("sync_mailbox", Fields::default(), async {
+        let started = Instant::now();
+        validate_account_id(&account_id)?;
+        backend.local_for(&account_id)?;
+        let role_name = mailbox_role_name(role);
+        let operation_id = diagnostics::operation_id();
+        diagnostics::info(
+            "mailbox_sync_started",
+            Fields::default()
+                .operation_id(operation_id.clone())
+                .account(&account_id)
+                .operation("mailbox_sync")
+                .mode(role_name),
+        );
 
-    let runtime = app.state::<desktop::DesktopRuntime>();
-    let access_started = Instant::now();
-    let _access_guard = runtime.acquire_sync_access().await;
-    diagnostics::info(
-        "mailbox_sync_stage_completed",
-        Fields::default()
-            .operation_id(operation_id.clone())
-            .account(&account_id)
-            .operation("lifecycle_wait")
-            .mode(role_name)
-            .duration(access_started.elapsed()),
-    );
+        let runtime = app.state::<desktop::DesktopRuntime>();
+        let access_started = Instant::now();
+        let _access_guard = runtime.acquire_sync_access().await;
+        diagnostics::info(
+            "mailbox_sync_stage_completed",
+            Fields::default()
+                .operation_id(operation_id.clone())
+                .account(&account_id)
+                .operation("lifecycle_wait")
+                .mode(role_name)
+                .duration(access_started.elapsed()),
+        );
 
-    let oauth_started = Instant::now();
-    let oauth_result = account
-        .refresh_oauth_backend_for(&backend, &account_id)
-        .await;
-    diagnostics::info(
-        "mailbox_sync_stage_completed",
-        Fields::default()
-            .operation_id(operation_id.clone())
-            .account(&account_id)
-            .operation("oauth_refresh_check")
-            .mode(role_name)
-            .outcome(if oauth_result.is_ok() {
-                "completed"
-            } else {
-                "degraded"
-            })
-            .duration(oauth_started.elapsed()),
-    );
-    let network = backend.network_for(&account_id)?;
-    let backend_started = Instant::now();
-    let sync_result = match role {
-        MailboxRole::Inbox => desktop::perform_inbox_mailbox_sync(&app, &account_id)
-            .await
-            .map(|report| (report.fetched, report.removed, report.uid_validity_reset))
-            .map_err(|message| (message, diagnostics::ErrorKind::Runtime)),
-        _ => network
-            .sync_mailbox(&account_id, role)
-            .await
-            .map(|synced| (synced, 0, false))
-            .map_err(|error| {
-                let kind = diagnostics::mail_error_kind(&error);
-                (safe_mail_error(error), kind)
-            }),
-    };
-    let (synced, removed, uid_validity_reset) = match sync_result {
-        Ok(report) => report,
-        Err((message, error_kind)) => {
-            diagnostics::error(
-                "mailbox_sync_completed",
-                Fields::default()
-                    .operation_id(operation_id)
-                    .account(&account_id)
-                    .operation("mailbox_sync")
-                    .mode(role_name)
-                    .outcome("failed")
-                    .error(error_kind)
-                    .duration(started.elapsed()),
-            );
-            return Err(message);
-        }
-    };
-    diagnostics::info(
-        "mailbox_sync_stage_completed",
-        Fields::default()
-            .operation_id(operation_id.clone())
-            .account(&account_id)
-            .operation("backend_sync")
-            .mode(role_name)
-            .outcome("completed")
-            .duration(backend_started.elapsed()),
-    );
-    emit_mailbox_updated(&app, &account_id, role);
-    diagnostics::info(
-        "mailbox_sync_completed",
-        Fields::default()
-            .operation_id(operation_id)
-            .account(&account_id)
-            .operation("mailbox_sync")
-            .mode(role_name)
-            .outcome("completed")
-            .duration(started.elapsed()),
-    );
-    Ok(MailboxSyncReportDto {
-        synced,
-        removed,
-        uid_validity_reset,
+        let oauth_started = Instant::now();
+        let oauth_result = account
+            .refresh_oauth_backend_for(&backend, &account_id)
+            .await;
+        diagnostics::info(
+            "mailbox_sync_stage_completed",
+            Fields::default()
+                .operation_id(operation_id.clone())
+                .account(&account_id)
+                .operation("oauth_refresh_check")
+                .mode(role_name)
+                .outcome(if oauth_result.is_ok() {
+                    "completed"
+                } else {
+                    "degraded"
+                })
+                .duration(oauth_started.elapsed()),
+        );
+        let network = backend.network_for(&account_id)?;
+        let backend_started = Instant::now();
+        let sync_result = match role {
+            MailboxRole::Inbox => desktop::perform_inbox_mailbox_sync(&app, &account_id)
+                .await
+                .map(|report| (report.fetched, report.removed, report.uid_validity_reset))
+                .map_err(|message| (message, diagnostics::ErrorKind::Runtime)),
+            _ => network
+                .sync_mailbox(&account_id, role)
+                .await
+                .map(|synced| (synced, 0, false))
+                .map_err(|error| {
+                    let kind = diagnostics::mail_error_kind(&error);
+                    (safe_mail_error(error), kind)
+                }),
+        };
+        let (synced, removed, uid_validity_reset) = match sync_result {
+            Ok(report) => report,
+            Err((message, error_kind)) => {
+                diagnostics::error(
+                    "mailbox_sync_completed",
+                    Fields::default()
+                        .operation_id(operation_id)
+                        .account(&account_id)
+                        .operation("mailbox_sync")
+                        .mode(role_name)
+                        .outcome("failed")
+                        .error(error_kind)
+                        .duration(started.elapsed()),
+                );
+                return Err(message);
+            }
+        };
+        diagnostics::info(
+            "mailbox_sync_stage_completed",
+            Fields::default()
+                .operation_id(operation_id.clone())
+                .account(&account_id)
+                .operation("backend_sync")
+                .mode(role_name)
+                .outcome("completed")
+                .duration(backend_started.elapsed()),
+        );
+        emit_mailbox_updated(&app, &account_id, role);
+        diagnostics::info(
+            "mailbox_sync_completed",
+            Fields::default()
+                .operation_id(operation_id)
+                .account(&account_id)
+                .operation("mailbox_sync")
+                .mode(role_name)
+                .outcome("completed")
+                .duration(started.elapsed()),
+        );
+        Ok(MailboxSyncReportDto {
+            synced,
+            removed,
+            uid_validity_reset,
+        })
     })
+    .await
 }
 
 fn mailbox_role_name(role: MailboxRole) -> &'static str {
@@ -879,32 +1016,54 @@ pub(crate) async fn fetch_mailbox_message(
     backend: State<'_, BackendState>,
     message_id: String,
 ) -> CommandResult<MailboxMessageDto> {
-    validate_message_id(&message_id)?;
-    let (account_id, local) = active_local_backend(&backend)?;
-    let _ = account.refresh_oauth_backends(&backend).await;
-    if let Ok(network) = backend.network_for(&account_id) {
-        network.promote_body_prefetch_for_selection(&message_id);
-        match network.fetch_message_view_by_id(&message_id, false).await {
-            Ok((message, attachments)) => {
-                return complete_mailbox_message_dto(
-                    &network,
-                    message_id,
-                    message,
-                    Some(attachments),
-                );
-            }
-            Err(network_error) => {
-                if let Ok(message) = local.cached_message_by_id(&message_id) {
-                    return complete_mailbox_message_dto(&local, message_id, message, None);
+    diagnostics::command_async("fetch_mailbox_message", Fields::default(), async {
+        validate_message_id(&message_id)?;
+        let (account_id, local) = active_local_backend(&backend)?;
+        let _ = account.refresh_oauth_backends(&backend).await;
+        if let Ok(network) = backend.network_for(&account_id) {
+            network.promote_body_prefetch_for_selection(&message_id);
+            match network.fetch_message_view_by_id(&message_id, false).await {
+                Ok((message, attachments)) => {
+                    diagnostics::limited_recovery(
+                        "message_fetch_network_failed",
+                        "message_fetch_network_recovered",
+                        "fetch_mailbox_message",
+                        Some(&account_id),
+                    );
+                    return complete_mailbox_message_dto(
+                        &network,
+                        message_id,
+                        message,
+                        Some(attachments),
+                    );
                 }
-                return Err(safe_mail_error(network_error));
+                Err(network_error) => {
+                    diagnostics::limited_failure(
+                        "message_fetch_network_failed",
+                        "fetch_mailbox_message",
+                        Some(&account_id),
+                        diagnostics::mail_error_kind(&network_error),
+                    );
+                    if let Ok(message) = local.cached_message_by_id(&message_id) {
+                        return complete_mailbox_message_dto(&local, message_id, message, None);
+                    }
+                    return Err(safe_mail_error(network_error));
+                }
             }
+        } else {
+            diagnostics::limited_failure(
+                "message_fetch_network_failed",
+                "fetch_mailbox_message",
+                Some(&account_id),
+                diagnostics::ErrorKind::Runtime,
+            );
         }
-    }
-    local
-        .cached_message_by_id(&message_id)
-        .map_err(safe_mail_error)
-        .and_then(|message| complete_mailbox_message_dto(&local, message_id, message, None))
+        local
+            .cached_message_by_id(&message_id)
+            .map_err(safe_mail_error)
+            .and_then(|message| complete_mailbox_message_dto(&local, message_id, message, None))
+    })
+    .await
 }
 
 #[tauri::command]
@@ -915,76 +1074,110 @@ pub(crate) async fn save_message_attachment(
     message_id: String,
     attachment_id: String,
 ) -> CommandResult<AttachmentSaveResultDto> {
-    validate_message_id(&message_id)?;
-    validate_attachment_id(&attachment_id)?;
-    let (account_id, local) = active_local_backend(&backend)?;
-    let _ = account.refresh_oauth_backends(&backend).await;
+    diagnostics::command_lifecycle_async("save_message_attachment", Fields::default(), async {
+        validate_message_id(&message_id)?;
+        validate_attachment_id(&attachment_id)?;
+        let (account_id, local) = active_local_backend(&backend)?;
+        let _ = account.refresh_oauth_backends(&backend).await;
 
-    let mut source = local.clone();
-    let attachments = if let Ok(network) = backend.network_for(&account_id) {
-        match network.message_attachments(&message_id).await {
-            Ok(attachments) => {
-                source = network;
-                attachments
+        let mut source = local.clone();
+        let attachments = if let Ok(network) = backend.network_for(&account_id) {
+            match network.message_attachments(&message_id).await {
+                Ok(attachments) => {
+                    diagnostics::limited_recovery(
+                        "attachment_fetch_network_failed",
+                        "attachment_fetch_network_recovered",
+                        "save_message_attachment",
+                        Some(&account_id),
+                    );
+                    source = network;
+                    attachments
+                }
+                Err(error) => {
+                    diagnostics::limited_failure(
+                        "attachment_fetch_network_failed",
+                        "save_message_attachment",
+                        Some(&account_id),
+                        diagnostics::mail_error_kind(&error),
+                    );
+                    match local.cached_message_attachments(&message_id) {
+                        Ok(attachments) => attachments,
+                        Err(_) => {
+                            return finish_attachment_save(
+                                &account_id,
+                                &attachment_id,
+                                AttachmentSaveResultDto::error(
+                                    AttachmentSaveErrorKind::MessageUnavailable,
+                                    true,
+                                ),
+                            );
+                        }
+                    }
+                }
             }
-            Err(_) => match local.cached_message_attachments(&message_id) {
+        } else {
+            diagnostics::limited_failure(
+                "attachment_fetch_network_failed",
+                "save_message_attachment",
+                Some(&account_id),
+                diagnostics::ErrorKind::Runtime,
+            );
+            match local.cached_message_attachments(&message_id) {
                 Ok(attachments) => attachments,
                 Err(_) => {
-                    return Ok(AttachmentSaveResultDto::error(
-                        AttachmentSaveErrorKind::MessageUnavailable,
-                        true,
-                    ));
+                    return finish_attachment_save(
+                        &account_id,
+                        &attachment_id,
+                        AttachmentSaveResultDto::error(
+                            AttachmentSaveErrorKind::MessageUnavailable,
+                            true,
+                        ),
+                    );
+                }
+            }
+        };
+        let Some(metadata) = attachments
+            .iter()
+            .find(|attachment| attachment.id == attachment_id)
+        else {
+            return finish_attachment_save(
+                &account_id,
+                &attachment_id,
+                AttachmentSaveResultDto::error(AttachmentSaveErrorKind::AttachmentNotFound, false),
+            );
+        };
+
+        let selected = app
+            .dialog()
+            .file()
+            .set_file_name(&metadata.safe_display_name)
+            .blocking_save_file();
+        let selected_path = match selected {
+            Some(path) => match path.into_path() {
+                Ok(path) => Some(path),
+                Err(_) => {
+                    return finish_attachment_save(
+                        &account_id,
+                        &attachment_id,
+                        AttachmentSaveResultDto::error(AttachmentSaveErrorKind::WriteFailed, true),
+                    );
                 }
             },
+            None => None,
+        };
+        match source
+            .save_message_attachment_to(&message_id, &attachment_id, selected_path.as_deref())
+            .await
+        {
+            Ok(result) => finish_attachment_save(&account_id, &attachment_id, result.into()),
+            Err(_) => finish_attachment_save(
+                &account_id,
+                &attachment_id,
+                AttachmentSaveResultDto::error(AttachmentSaveErrorKind::MessageUnavailable, true),
+            ),
         }
-    } else {
-        match local.cached_message_attachments(&message_id) {
-            Ok(attachments) => attachments,
-            Err(_) => {
-                return Ok(AttachmentSaveResultDto::error(
-                    AttachmentSaveErrorKind::MessageUnavailable,
-                    true,
-                ));
-            }
-        }
-    };
-    let Some(metadata) = attachments
-        .iter()
-        .find(|attachment| attachment.id == attachment_id)
-    else {
-        return Ok(AttachmentSaveResultDto::error(
-            AttachmentSaveErrorKind::AttachmentNotFound,
-            false,
-        ));
-    };
-
-    let selected = app
-        .dialog()
-        .file()
-        .set_file_name(&metadata.safe_display_name)
-        .blocking_save_file();
-    let selected_path = match selected {
-        Some(path) => match path.into_path() {
-            Ok(path) => Some(path),
-            Err(_) => {
-                return Ok(AttachmentSaveResultDto::error(
-                    AttachmentSaveErrorKind::WriteFailed,
-                    true,
-                ));
-            }
-        },
-        None => None,
-    };
-    match source
-        .save_message_attachment_to(&message_id, &attachment_id, selected_path.as_deref())
-        .await
-    {
-        Ok(result) => Ok(result.into()),
-        Err(_) => Ok(AttachmentSaveResultDto::error(
-            AttachmentSaveErrorKind::MessageUnavailable,
-            true,
-        )),
-    }
+    })
+    .await
 }
 
 fn should_retry_forward_from_cache(outcome: &ForwardPreparationOutcome) -> bool {
@@ -999,6 +1192,104 @@ fn should_retry_forward_from_cache(outcome: &ForwardPreparationOutcome) -> bool 
     )
 }
 
+fn attachment_save_error_name(kind: AttachmentSaveErrorKind) -> &'static str {
+    match kind {
+        AttachmentSaveErrorKind::MessageUnavailable => "message_unavailable",
+        AttachmentSaveErrorKind::AttachmentNotFound => "attachment_not_found",
+        AttachmentSaveErrorKind::PermissionDenied => "permission_denied",
+        AttachmentSaveErrorKind::DiskFull => "disk_full",
+        AttachmentSaveErrorKind::WriteFailed => "write_failed",
+    }
+}
+
+fn attachment_save_error_category(kind: AttachmentSaveErrorKind) -> diagnostics::ErrorKind {
+    match kind {
+        AttachmentSaveErrorKind::MessageUnavailable
+        | AttachmentSaveErrorKind::AttachmentNotFound => diagnostics::ErrorKind::NotFound,
+        AttachmentSaveErrorKind::PermissionDenied
+        | AttachmentSaveErrorKind::DiskFull
+        | AttachmentSaveErrorKind::WriteFailed => diagnostics::ErrorKind::Io,
+    }
+}
+
+fn finish_attachment_save(
+    account_id: &str,
+    attachment_id: &str,
+    result: AttachmentSaveResultDto,
+) -> CommandResult<AttachmentSaveResultDto> {
+    let fields = Fields::default()
+        .account(account_id)
+        .item("attachment", attachment_id)
+        .operation("save_message_attachment");
+    match result.status {
+        AttachmentSaveStatus::Saved => {
+            diagnostics::info("attachment_save_completed", fields.outcome("saved"))
+        }
+        AttachmentSaveStatus::Canceled => {
+            diagnostics::info("attachment_save_completed", fields.outcome("cancelled"))
+        }
+        AttachmentSaveStatus::Error => {
+            let (outcome, error_kind) =
+                result
+                    .error_kind
+                    .map_or(("unknown", diagnostics::ErrorKind::Runtime), |kind| {
+                        (
+                            attachment_save_error_name(kind),
+                            attachment_save_error_category(kind),
+                        )
+                    });
+            diagnostics::error(
+                "attachment_save_failed",
+                fields.outcome(outcome).error(error_kind),
+            );
+        }
+    }
+    Ok(result)
+}
+
+fn forward_error_name(kind: ForwardPreparationErrorKind) -> &'static str {
+    match kind {
+        ForwardPreparationErrorKind::MessageUnavailable => "message_unavailable",
+        ForwardPreparationErrorKind::BodyUnavailable => "body_unavailable",
+        ForwardPreparationErrorKind::AttachmentUnavailable => "attachment_unavailable",
+        ForwardPreparationErrorKind::AttachmentStageFailed => "attachment_stage_failed",
+        ForwardPreparationErrorKind::SourceChanged => "source_changed",
+    }
+}
+
+fn forward_error_category(kind: ForwardPreparationErrorKind) -> diagnostics::ErrorKind {
+    match kind {
+        ForwardPreparationErrorKind::MessageUnavailable
+        | ForwardPreparationErrorKind::BodyUnavailable
+        | ForwardPreparationErrorKind::AttachmentUnavailable => diagnostics::ErrorKind::NotFound,
+        ForwardPreparationErrorKind::AttachmentStageFailed => diagnostics::ErrorKind::Io,
+        ForwardPreparationErrorKind::SourceChanged => diagnostics::ErrorKind::Validation,
+    }
+}
+
+fn finish_forward_preparation(
+    account_id: &str,
+    message_id: &str,
+    outcome: ForwardPreparationOutcomeDto,
+) -> CommandResult<ForwardPreparationOutcomeDto> {
+    let fields = Fields::default()
+        .account(account_id)
+        .item("message", message_id)
+        .operation("prepare_forward");
+    match &outcome {
+        ForwardPreparationOutcomeDto::Prepared { .. } => {
+            diagnostics::info("forward_preparation_completed", fields.outcome("prepared"))
+        }
+        ForwardPreparationOutcomeDto::Error { error } => diagnostics::error(
+            "forward_preparation_failed",
+            fields
+                .outcome(forward_error_name(error.kind))
+                .error(forward_error_category(error.kind)),
+        ),
+    }
+    Ok(outcome)
+}
+
 #[tauri::command]
 pub(crate) async fn prepare_forward(
     account: State<'_, AccountRuntime>,
@@ -1006,31 +1297,72 @@ pub(crate) async fn prepare_forward(
     message_id: String,
     include_attachments: bool,
 ) -> CommandResult<ForwardPreparationOutcomeDto> {
-    validate_message_id(&message_id)?;
-    let (account_id, local) = active_local_backend(&backend)?;
-    let _ = account.refresh_oauth_backends(&backend).await;
-    if let Ok(network) = backend.network_for(&account_id) {
-        match network
+    diagnostics::command_async("prepare_forward", Fields::default(), async {
+        validate_message_id(&message_id)?;
+        let (account_id, local) = active_local_backend(&backend)?;
+        let _ = account.refresh_oauth_backends(&backend).await;
+        if let Ok(network) = backend.network_for(&account_id) {
+            match network
+                .prepare_forward(&message_id, include_attachments)
+                .await
+            {
+                Ok(outcome) if !should_retry_forward_from_cache(&outcome) => {
+                    diagnostics::limited_recovery(
+                        "forward_network_fallback",
+                        "forward_network_recovered",
+                        "prepare_forward",
+                        Some(&account_id),
+                    );
+                    return finish_forward_preparation(&account_id, &message_id, outcome.into());
+                }
+                Ok(outcome) => {
+                    let error_kind = match outcome {
+                        ForwardPreparationOutcome::Error { error } => {
+                            forward_error_category(error.kind)
+                        }
+                        ForwardPreparationOutcome::Prepared { .. } => {
+                            diagnostics::ErrorKind::Runtime
+                        }
+                    };
+                    diagnostics::limited_failure(
+                        "forward_network_fallback",
+                        "prepare_forward",
+                        Some(&account_id),
+                        error_kind,
+                    );
+                }
+                Err(error) => diagnostics::limited_failure(
+                    "forward_network_fallback",
+                    "prepare_forward",
+                    Some(&account_id),
+                    diagnostics::mail_error_kind(&error),
+                ),
+            }
+        } else {
+            diagnostics::limited_failure(
+                "forward_network_fallback",
+                "prepare_forward",
+                Some(&account_id),
+                diagnostics::ErrorKind::Runtime,
+            );
+        }
+        match local
             .prepare_forward(&message_id, include_attachments)
             .await
         {
-            Ok(outcome) if !should_retry_forward_from_cache(&outcome) => {
-                return Ok(outcome.into());
-            }
-            Ok(_) | Err(_) => {}
+            Ok(outcome) => finish_forward_preparation(&account_id, &message_id, outcome.into()),
+            Err(_) => finish_forward_preparation(
+                &account_id,
+                &message_id,
+                ForwardPreparationOutcomeDto::error(
+                    ForwardPreparationErrorKind::MessageUnavailable,
+                    Vec::new(),
+                    false,
+                ),
+            ),
         }
-    }
-    match local
-        .prepare_forward(&message_id, include_attachments)
-        .await
-    {
-        Ok(outcome) => Ok(outcome.into()),
-        Err(_) => Ok(ForwardPreparationOutcomeDto::error(
-            ForwardPreparationErrorKind::MessageUnavailable,
-            Vec::new(),
-            false,
-        )),
-    }
+    })
+    .await
 }
 
 #[tauri::command]
@@ -1040,13 +1372,23 @@ pub(crate) fn set_message_seen(
     message_id: String,
     seen: bool,
 ) -> CommandResult<SystemFlagMutationReceipt> {
-    validate_message_id(&message_id)?;
-    let (account_id, local) = active_local_backend(&backend)?;
-    let receipt = local
-        .set_message_seen(&message_id, seen)
-        .map_err(safe_mail_error)?;
-    schedule_seen_flush(&app, &backend, account_id, receipt.source_role);
-    Ok(receipt)
+    diagnostics::command("set_message_seen", Fields::default(), || {
+        validate_message_id(&message_id)?;
+        let (account_id, local) = active_local_backend(&backend)?;
+        let receipt = local
+            .set_message_seen(&message_id, seen)
+            .map_err(safe_mail_error)?;
+        diagnostics::info(
+            "message_mutation_queued",
+            Fields::default()
+                .account(&account_id)
+                .item("message", &message_id)
+                .operation("seen_mutation")
+                .outcome(if seen { "seen" } else { "unseen" }),
+        );
+        schedule_seen_flush(&app, &backend, account_id, receipt.source_role);
+        Ok(receipt)
+    })
 }
 
 #[tauri::command]
@@ -1056,13 +1398,23 @@ pub(crate) fn set_message_starred_by_id(
     message_id: String,
     starred: bool,
 ) -> CommandResult<SystemFlagMutationReceipt> {
-    validate_message_id(&message_id)?;
-    let (account_id, local) = active_local_backend(&backend)?;
-    let receipt = local
-        .set_message_starred_by_id(&message_id, starred)
-        .map_err(safe_mail_error)?;
-    schedule_flagged_flush(&app, &backend, account_id, receipt.source_role);
-    Ok(receipt)
+    diagnostics::command("set_message_starred_by_id", Fields::default(), || {
+        validate_message_id(&message_id)?;
+        let (account_id, local) = active_local_backend(&backend)?;
+        let receipt = local
+            .set_message_starred_by_id(&message_id, starred)
+            .map_err(safe_mail_error)?;
+        diagnostics::info(
+            "message_mutation_queued",
+            Fields::default()
+                .account(&account_id)
+                .item("message", &message_id)
+                .operation("flagged_mutation")
+                .outcome(if starred { "starred" } else { "unstarred" }),
+        );
+        schedule_flagged_flush(&app, &backend, account_id, receipt.source_role);
+        Ok(receipt)
+    })
 }
 
 #[tauri::command]
@@ -1071,19 +1423,29 @@ pub(crate) fn archive_message(
     backend: State<'_, BackendState>,
     message_id: String,
 ) -> CommandResult<MessageMutationReceipt> {
-    validate_message_id(&message_id)?;
-    let (account_id, local) = active_local_backend(&backend)?;
-    let receipt = local
-        .archive_message(&message_id)
-        .map_err(safe_mail_error)?;
-    schedule_message_action_flush(
-        &app,
-        &backend,
-        account_id,
-        receipt.source_role,
-        receipt.destination_role,
-    );
-    Ok(receipt)
+    diagnostics::command("archive_message", Fields::default(), || {
+        validate_message_id(&message_id)?;
+        let (account_id, local) = active_local_backend(&backend)?;
+        let receipt = local
+            .archive_message(&message_id)
+            .map_err(safe_mail_error)?;
+        diagnostics::info(
+            "message_mutation_queued",
+            Fields::default()
+                .account(&account_id)
+                .item("message", &message_id)
+                .operation("archive_message")
+                .outcome("queued"),
+        );
+        schedule_message_action_flush(
+            &app,
+            &backend,
+            account_id,
+            receipt.source_role,
+            receipt.destination_role,
+        );
+        Ok(receipt)
+    })
 }
 
 #[tauri::command]
@@ -1092,19 +1454,29 @@ pub(crate) fn move_message_to_trash(
     backend: State<'_, BackendState>,
     message_id: String,
 ) -> CommandResult<MessageMutationReceipt> {
-    validate_message_id(&message_id)?;
-    let (account_id, local) = active_local_backend(&backend)?;
-    let receipt = local
-        .move_message_to_trash(&message_id)
-        .map_err(safe_mail_error)?;
-    schedule_message_action_flush(
-        &app,
-        &backend,
-        account_id,
-        receipt.source_role,
-        receipt.destination_role,
-    );
-    Ok(receipt)
+    diagnostics::command("move_message_to_trash", Fields::default(), || {
+        validate_message_id(&message_id)?;
+        let (account_id, local) = active_local_backend(&backend)?;
+        let receipt = local
+            .move_message_to_trash(&message_id)
+            .map_err(safe_mail_error)?;
+        diagnostics::info(
+            "message_mutation_queued",
+            Fields::default()
+                .account(&account_id)
+                .item("message", &message_id)
+                .operation("move_message_to_trash")
+                .outcome("queued"),
+        );
+        schedule_message_action_flush(
+            &app,
+            &backend,
+            account_id,
+            receipt.source_role,
+            receipt.destination_role,
+        );
+        Ok(receipt)
+    })
 }
 
 #[tauri::command]
@@ -1113,19 +1485,29 @@ pub(crate) fn move_message_to_inbox(
     backend: State<'_, BackendState>,
     message_id: String,
 ) -> CommandResult<MessageMutationReceipt> {
-    validate_message_id(&message_id)?;
-    let (account_id, local) = active_local_backend(&backend)?;
-    let receipt = local
-        .move_message_to_inbox(&message_id)
-        .map_err(safe_mail_error)?;
-    schedule_message_action_flush(
-        &app,
-        &backend,
-        account_id,
-        receipt.source_role,
-        receipt.destination_role,
-    );
-    Ok(receipt)
+    diagnostics::command("move_message_to_inbox", Fields::default(), || {
+        validate_message_id(&message_id)?;
+        let (account_id, local) = active_local_backend(&backend)?;
+        let receipt = local
+            .move_message_to_inbox(&message_id)
+            .map_err(safe_mail_error)?;
+        diagnostics::info(
+            "message_mutation_queued",
+            Fields::default()
+                .account(&account_id)
+                .item("message", &message_id)
+                .operation("move_message_to_inbox")
+                .outcome("queued"),
+        );
+        schedule_message_action_flush(
+            &app,
+            &backend,
+            account_id,
+            receipt.source_role,
+            receipt.destination_role,
+        );
+        Ok(receipt)
+    })
 }
 
 #[tauri::command]
@@ -1133,12 +1515,15 @@ pub(crate) async fn prepare_permanent_delete(
     backend: State<'_, BackendState>,
     message_id: String,
 ) -> CommandResult<PermanentDeletePlan> {
-    validate_message_id(&message_id)?;
-    let (_, local) = active_local_backend(&backend)?;
-    local
-        .prepare_permanent_delete(&message_id)
-        .await
-        .map_err(safe_mail_error)
+    diagnostics::command_async("prepare_permanent_delete", Fields::default(), async {
+        validate_message_id(&message_id)?;
+        let (_, local) = active_local_backend(&backend)?;
+        local
+            .prepare_permanent_delete(&message_id)
+            .await
+            .map_err(safe_mail_error)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -1147,22 +1532,33 @@ pub(crate) async fn confirm_permanent_delete(
     backend: State<'_, BackendState>,
     plan_id: String,
 ) -> CommandResult<MessageMutationReceipt> {
-    if plan_id.is_empty() || plan_id.len() > 128 || plan_id.chars().any(char::is_control) {
-        return Err("The permanent-delete plan is invalid or expired.".to_owned());
-    }
-    let (account_id, local) = active_local_backend(&backend)?;
-    let receipt = local
-        .confirm_permanent_delete(&plan_id)
-        .await
-        .map_err(safe_mail_error)?;
-    schedule_message_action_flush(
-        &app,
-        &backend,
-        account_id,
-        receipt.source_role,
-        receipt.destination_role,
-    );
-    Ok(receipt)
+    diagnostics::command_lifecycle_async("confirm_permanent_delete", Fields::default(), async {
+        if plan_id.is_empty() || plan_id.len() > 128 || plan_id.chars().any(char::is_control) {
+            return Err("The permanent-delete plan is invalid or expired.".to_owned());
+        }
+        let (account_id, local) = active_local_backend(&backend)?;
+        let receipt = local
+            .confirm_permanent_delete(&plan_id)
+            .await
+            .map_err(safe_mail_error)?;
+        diagnostics::info(
+            "message_mutation_queued",
+            Fields::default()
+                .account(&account_id)
+                .item("delete_plan", &plan_id)
+                .operation("permanent_delete")
+                .outcome("queued"),
+        );
+        schedule_message_action_flush(
+            &app,
+            &backend,
+            account_id,
+            receipt.source_role,
+            receipt.destination_role,
+        );
+        Ok(receipt)
+    })
+    .await
 }
 
 #[cfg(test)]
@@ -1176,9 +1572,9 @@ mod tests {
     };
 
     use super::{
-        ArchiveFolderCandidateDto, MailboxBodySegmentDto, MailboxCapabilityDto,
-        MailboxMessageDto, MailboxSyncReportDto, MessagePageDto, is_offline_history_error,
-        normalize_query, offline_page, parse_cursor, validate_account_id, validate_attachment_id,
+        ArchiveFolderCandidateDto, MailboxBodySegmentDto, MailboxCapabilityDto, MailboxMessageDto,
+        MailboxSyncReportDto, MessagePageDto, is_offline_history_error, normalize_query,
+        offline_page, parse_cursor, validate_account_id, validate_attachment_id,
         validate_message_id, validate_page_role, validate_page_size, validate_starred_page_role,
     };
     use crate::{
@@ -1398,7 +1794,7 @@ mod tests {
             removed: 2,
             uid_validity_reset: true,
         })
-            .expect("serialize mailbox sync report");
+        .expect("serialize mailbox sync report");
 
         assert_eq!(json["synced"], 4);
         assert_eq!(json["removed"], 2);

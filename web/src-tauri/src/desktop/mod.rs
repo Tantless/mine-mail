@@ -346,7 +346,20 @@ impl DesktopRuntime {
             .settings
             .write()
             .map_err(|_| "Desktop settings are temporarily unavailable.".to_owned())? = settings;
-        let _ = self.sync_tx.try_send(BackgroundRequest::ScheduleChanged);
+        match self.sync_tx.try_send(BackgroundRequest::ScheduleChanged) {
+            Ok(()) => diagnostics::limited_recovery(
+                "background_request_enqueue_failed",
+                "background_request_enqueue_recovered",
+                "schedule_change",
+                None,
+            ),
+            Err(_) => diagnostics::limited_failure(
+                "background_request_enqueue_failed",
+                "schedule_change",
+                None,
+                ErrorKind::Runtime,
+            ),
+        }
         Ok(())
     }
 
@@ -510,6 +523,12 @@ impl DesktopRuntime {
     }
 
     pub(crate) fn record_startup_error(&self, error: impl Into<String>) {
+        diagnostics::limited_failure(
+            "desktop_runtime_degraded",
+            "record_startup_error",
+            None,
+            ErrorKind::Runtime,
+        );
         let error = error.into();
         if let Ok(mut current) = self.startup_error.write() {
             match current.as_mut() {
@@ -524,22 +543,67 @@ impl DesktopRuntime {
     }
 
     pub(crate) fn has_startup_error(&self) -> bool {
-        self.startup_error
-            .read()
-            .map(|error| error.is_some())
-            .unwrap_or(true)
+        match self.startup_error.read() {
+            Ok(error) => {
+                diagnostics::limited_recovery(
+                    "desktop_state_read_failed",
+                    "desktop_state_read_recovered",
+                    "startup_error_state",
+                    None,
+                );
+                error.is_some()
+            }
+            Err(_) => {
+                diagnostics::limited_failure(
+                    "desktop_state_read_failed",
+                    "startup_error_state",
+                    None,
+                    ErrorKind::Runtime,
+                );
+                true
+            }
+        }
     }
 
     pub(crate) fn request_sync(&self, force: bool, trigger: &'static str) {
-        let _ = self
+        match self
             .sync_tx
-            .try_send(BackgroundRequest::Sync { force, trigger });
+            .try_send(BackgroundRequest::Sync { force, trigger })
+        {
+            Ok(()) => diagnostics::limited_recovery(
+                "background_request_enqueue_failed",
+                "background_request_enqueue_recovered",
+                "sync_request",
+                None,
+            ),
+            Err(_) => diagnostics::limited_failure(
+                "background_request_enqueue_failed",
+                "sync_request",
+                None,
+                ErrorKind::Runtime,
+            ),
+        }
     }
 
     fn request_incremental_inbox_sync(&self, account_id: String, trigger: &'static str) {
-        let Ok(mut pending) = self.pending_inbox_syncs.lock() else {
-            return;
+        let mut pending = match self.pending_inbox_syncs.lock() {
+            Ok(pending) => pending,
+            Err(_) => {
+                diagnostics::limited_failure(
+                    "background_request_enqueue_failed",
+                    "inbox_request_state",
+                    Some(&account_id),
+                    ErrorKind::Runtime,
+                );
+                return;
+            }
         };
+        diagnostics::limited_recovery(
+            "background_request_enqueue_failed",
+            "background_request_enqueue_recovered",
+            "inbox_request_state",
+            Some(&account_id),
+        );
         if !pending.insert(account_id.clone()) {
             return;
         }
@@ -552,19 +616,63 @@ impl DesktopRuntime {
             .is_err()
         {
             pending.remove(&account_id);
+            diagnostics::limited_failure(
+                "background_request_enqueue_failed",
+                "inbox_sync_request",
+                Some(&account_id),
+                ErrorKind::Runtime,
+            );
+        } else {
+            diagnostics::limited_recovery(
+                "background_request_enqueue_failed",
+                "background_request_enqueue_recovered",
+                "inbox_sync_request",
+                Some(&account_id),
+            );
         }
     }
 
     fn begin_incremental_inbox_sync(&self, account_id: &str) {
-        if let Ok(mut pending) = self.pending_inbox_syncs.lock() {
-            pending.remove(account_id);
+        match self.pending_inbox_syncs.lock() {
+            Ok(mut pending) => {
+                pending.remove(account_id);
+                diagnostics::limited_recovery(
+                    "background_request_state_failed",
+                    "background_request_state_recovered",
+                    "begin_inbox_sync",
+                    Some(account_id),
+                );
+            }
+            Err(_) => diagnostics::limited_failure(
+                "background_request_state_failed",
+                "begin_inbox_sync",
+                Some(account_id),
+                ErrorKind::Runtime,
+            ),
         }
     }
 
     pub(crate) fn background_enabled(&self) -> bool {
-        self.settings()
-            .map(|settings| settings.background_enabled)
-            .unwrap_or(false)
+        match self.settings() {
+            Ok(settings) => {
+                diagnostics::limited_recovery(
+                    "desktop_state_read_failed",
+                    "desktop_state_read_recovered",
+                    "background_setting",
+                    None,
+                );
+                settings.background_enabled
+            }
+            Err(_) => {
+                diagnostics::limited_failure(
+                    "desktop_state_read_failed",
+                    "background_setting",
+                    None,
+                    ErrorKind::Runtime,
+                );
+                false
+            }
+        }
     }
 
     fn start_quit_handshake(&self) -> Result<Option<ExitHandshakeTicket>, String> {
@@ -607,21 +715,66 @@ impl DesktopRuntime {
     }
 
     pub(crate) fn finish_quit(&self) {
-        let _ = self.shutdown_tx.send(true);
+        match self.shutdown_tx.send(true) {
+            Ok(_) => diagnostics::limited_recovery(
+                "shutdown_signal_failed",
+                "shutdown_signal_recovered",
+                "app_exit",
+                None,
+            ),
+            Err(_) => diagnostics::limited_failure(
+                "shutdown_signal_failed",
+                "app_exit",
+                None,
+                ErrorKind::Runtime,
+            ),
+        }
     }
 
     pub(crate) fn is_quitting(&self) -> bool {
-        self.exit_handshake
-            .lock()
-            .map(|state| state.phase != ExitHandshakePhase::Idle)
-            .unwrap_or(true)
+        match self.exit_handshake.lock() {
+            Ok(state) => {
+                diagnostics::limited_recovery(
+                    "exit_state_read_failed",
+                    "exit_state_read_recovered",
+                    "is_quitting",
+                    None,
+                );
+                state.phase != ExitHandshakePhase::Idle
+            }
+            Err(_) => {
+                diagnostics::limited_failure(
+                    "exit_state_read_failed",
+                    "is_quitting",
+                    None,
+                    ErrorKind::Runtime,
+                );
+                true
+            }
+        }
     }
 
     pub(crate) fn is_exit_committed(&self) -> bool {
-        self.exit_handshake
-            .lock()
-            .map(|state| matches!(state.phase, ExitHandshakePhase::Committed(_)))
-            .unwrap_or(false)
+        match self.exit_handshake.lock() {
+            Ok(state) => {
+                diagnostics::limited_recovery(
+                    "exit_state_read_failed",
+                    "exit_state_read_recovered",
+                    "is_exit_committed",
+                    None,
+                );
+                matches!(state.phase, ExitHandshakePhase::Committed(_))
+            }
+            Err(_) => {
+                diagnostics::limited_failure(
+                    "exit_state_read_failed",
+                    "is_exit_committed",
+                    None,
+                    ErrorKind::Runtime,
+                );
+                false
+            }
+        }
     }
 
     pub(crate) fn begin_smtp_operation(&self) -> Result<SmtpOperationGuard<'_>, String> {
@@ -1358,7 +1511,8 @@ fn emit_sync_error(
     trigger: &'static str,
     message: String,
 ) {
-    let _ = app.emit(
+    diagnostics::emit_event(
+        app,
         "mail:sync-error",
         SyncErrorEvent {
             operation,
@@ -1373,7 +1527,8 @@ fn emit_account_status(
     account_runtime: &AccountRuntime,
     backend_state: &BackendState,
 ) {
-    let _ = app.emit(
+    diagnostics::emit_event(
+        app,
         "mail:account-updated",
         account_runtime.status(backend_state),
     );
@@ -1418,19 +1573,96 @@ async fn sync_optional_mailbox_for(
     account_id: &str,
     role: MailboxRole,
 ) -> Result<(), String> {
-    let backend = app.state::<BackendState>().network_for(account_id)?;
-    backend
-        .sync_mailbox(account_id, role)
-        .await
-        .map_err(crate::safe_mail_error)?;
-    let _ = app.emit(
+    let started = Instant::now();
+    let operation = match role {
+        MailboxRole::Archive => "archive_reconciliation",
+        MailboxRole::Trash => "trash_reconciliation",
+        _ => "optional_mailbox_reconciliation",
+    };
+    diagnostics::info(
+        "account_sync_started",
+        Fields::default().account(account_id).operation(operation),
+    );
+    let backend = match app.state::<BackendState>().network_for(account_id) {
+        Ok(backend) => backend,
+        Err(error) => {
+            diagnostics::limited_failure(
+                "account_sync_failed",
+                operation,
+                Some(account_id),
+                ErrorKind::Runtime,
+            );
+            return Err(error);
+        }
+    };
+    if let Err(error) = backend.sync_mailbox(account_id, role).await {
+        diagnostics::limited_failure(
+            "account_sync_failed",
+            operation,
+            Some(account_id),
+            diagnostics::mail_error_kind(&error),
+        );
+        return Err(crate::safe_mail_error(error));
+    }
+    diagnostics::emit_event(
+        app,
         "mail:mailbox-updated",
         MailboxUpdatedEvent {
             account_id: account_id.to_owned(),
             role,
         },
     );
+    diagnostics::limited_recovery(
+        "account_sync_failed",
+        "account_sync_recovered",
+        operation,
+        Some(account_id),
+    );
+    diagnostics::info(
+        "account_sync_completed",
+        Fields::default()
+            .account(account_id)
+            .operation(operation)
+            .outcome("completed")
+            .duration(started.elapsed()),
+    );
     Ok(())
+}
+
+async fn flush_pending_message_mutations_for(
+    backend: &MailBackend,
+    account_id: &str,
+) -> mine_mail::Result<usize> {
+    match backend.flush_pending_message_mutations(account_id).await {
+        Ok(changed) => {
+            diagnostics::limited_recovery(
+                "message_mutation_flush_failed",
+                "message_mutation_flush_recovered",
+                "queued_message_mutation_flush",
+                Some(account_id),
+            );
+            if changed > 0 {
+                diagnostics::info(
+                    "message_mutation_flush_completed",
+                    Fields::default()
+                        .account(account_id)
+                        .operation("queued_message_mutation_flush")
+                        .outcome("completed")
+                        .changes(changed),
+                );
+            }
+            Ok(changed)
+        }
+        Err(error) => {
+            diagnostics::limited_failure(
+                "message_mutation_flush_failed",
+                "queued_message_mutation_flush",
+                Some(account_id),
+                diagnostics::mail_error_kind(&error),
+            );
+            Err(error)
+        }
+    }
 }
 
 pub(crate) async fn perform_sync_all(
@@ -1503,7 +1735,8 @@ pub(crate) async fn perform_sync_all(
         if trigger_discovers_mailbox_roles(trigger) {
             match network.discover_mailbox_roles(&account_id).await {
                 Ok(_) => {
-                    let _ = app.emit(
+                    diagnostics::emit_event(
+                        app,
                         "mail:mailbox-capabilities-updated",
                         MailboxCapabilitiesUpdatedEvent {
                             account_id: account_id.clone(),
@@ -1516,7 +1749,7 @@ pub(crate) async fn perform_sync_all(
                 )),
             }
         }
-        if let Err(error) = network.flush_pending_message_mutations(&account_id).await {
+        if let Err(error) = flush_pending_message_mutations_for(&network, &account_id).await {
             account_errors.push(format!(
                 "{account_id} queued mutations: {}",
                 crate::safe_mail_error(error)
@@ -1678,19 +1911,20 @@ async fn perform_inbox_reconciliation_all(app: &AppHandle) -> Result<(), String>
         let mutation_activity_before_flush = network
             .has_message_mutation_activity(&account_id)
             .unwrap_or(false);
-        let mutation_activity = match network.flush_pending_message_mutations(&account_id).await {
-            Ok(confirmed) => confirmed > 0,
-            Err(error) => {
-                errors.push(format!(
-                    "{account_id} queued mutations: {}",
-                    crate::safe_mail_error(error)
-                ));
-                false
-            }
-        } || mutation_activity_before_flush
-            || network
-                .has_message_mutation_activity(&account_id)
-                .unwrap_or(false);
+        let mutation_activity =
+            match flush_pending_message_mutations_for(&network, &account_id).await {
+                Ok(confirmed) => confirmed > 0,
+                Err(error) => {
+                    errors.push(format!(
+                        "{account_id} queued mutations: {}",
+                        crate::safe_mail_error(error)
+                    ));
+                    false
+                }
+            } || mutation_activity_before_flush
+                || network
+                    .has_message_mutation_activity(&account_id)
+                    .unwrap_or(false);
         let optional_roles = network
             .get_mailbox_capabilities(&account_id)
             .map(|capabilities| {
@@ -1862,6 +2096,10 @@ async fn sync_inbox_network_with_operation(
     } else {
         "inbox_reconciliation"
     };
+    diagnostics::info(
+        "account_sync_started",
+        Fields::default().account(account_id).operation(operation),
+    );
     let backend = match app.state::<BackendState>().network_for(account_id) {
         Ok(backend) => backend,
         Err(error) => {
@@ -1874,7 +2112,8 @@ async fn sync_inbox_network_with_operation(
             return Err(error);
         }
     };
-    let _ = app.emit(
+    diagnostics::emit_event(
+        app,
         "mail:inbox-updated",
         InboxUpdatedEvent {
             account_id: account_id.to_owned(),
@@ -1889,7 +2128,8 @@ async fn sync_inbox_network_with_operation(
     let report = match if incremental {
         backend
             .sync_new_inbox_with_progress(crate::INBOX_SYNC_LIMIT, move |progress| {
-                let _ = progress_app.emit(
+                diagnostics::emit_event(
+                    &progress_app,
                     "mail:inbox-updated",
                     InboxUpdatedEvent {
                         account_id: progress_account_id.clone(),
@@ -1904,7 +2144,8 @@ async fn sync_inbox_network_with_operation(
     } else {
         backend
             .sync_inbox_with_progress(crate::INBOX_SYNC_LIMIT, move |progress| {
-                let _ = progress_app.emit(
+                diagnostics::emit_event(
+                    &progress_app,
                     "mail:inbox-updated",
                     InboxUpdatedEvent {
                         account_id: progress_account_id.clone(),
@@ -1955,6 +2196,10 @@ async fn sync_new_inbox_for(app: &AppHandle, account_id: &str) -> Result<SyncRep
 async fn sync_sent_for(app: &AppHandle, account_id: &str) -> Result<SyncReport, String> {
     let started = Instant::now();
     let operation = "sent_reconciliation";
+    diagnostics::info(
+        "account_sync_started",
+        Fields::default().account(account_id).operation(operation),
+    );
     let backend = match app.state::<BackendState>().network_for(account_id) {
         Ok(backend) => backend,
         Err(error) => {
@@ -1967,7 +2212,8 @@ async fn sync_sent_for(app: &AppHandle, account_id: &str) -> Result<SyncReport, 
             return Err(error);
         }
     };
-    let _ = app.emit(
+    diagnostics::emit_event(
+        app,
         "mail:sent-updated",
         SentUpdatedEvent {
             account_id: account_id.to_owned(),
@@ -1981,7 +2227,8 @@ async fn sync_sent_for(app: &AppHandle, account_id: &str) -> Result<SyncReport, 
     let progress_account_id = account_id.to_owned();
     let report = match backend
         .sync_sent_with_progress(crate::SENT_SYNC_LIMIT, move |progress| {
-            let _ = progress_app.emit(
+            diagnostics::emit_event(
+                &progress_app,
                 "mail:sent-updated",
                 SentUpdatedEvent {
                     account_id: progress_account_id.clone(),
@@ -2005,7 +2252,8 @@ async fn sync_sent_for(app: &AppHandle, account_id: &str) -> Result<SyncReport, 
             return Err(crate::safe_mail_error(error));
         }
     };
-    let _ = app.emit(
+    diagnostics::emit_event(
+        app,
         "mail:sent-updated",
         SentUpdatedEvent {
             account_id: account_id.to_owned(),
@@ -2015,11 +2263,24 @@ async fn sync_sent_for(app: &AppHandle, account_id: &str) -> Result<SyncReport, 
             report: Some(SyncReportDto::from(&report)),
         },
     );
-    let _ = backend.schedule_sent_body_prefetch(
+    match backend.schedule_sent_body_prefetch(
         crate::INBOX_PREFETCH_LIMIT,
         crate::INBOX_PREFETCH_TOTAL_BYTES,
         crate::INBOX_PREFETCH_MESSAGE_BYTES,
-    );
+    ) {
+        Ok(_) => diagnostics::limited_recovery(
+            "body_prefetch_schedule_failed",
+            "body_prefetch_schedule_recovered",
+            "sent_body_prefetch",
+            Some(account_id),
+        ),
+        Err(error) => diagnostics::limited_failure(
+            "body_prefetch_schedule_failed",
+            "sent_body_prefetch",
+            Some(account_id),
+            diagnostics::mail_error_kind(&error),
+        ),
+    }
     diagnostics::limited_recovery(
         "account_sync_failed",
         "account_sync_recovered",
@@ -2047,7 +2308,8 @@ fn finish_inbox_sync(
     if let Ok(messages) = backend.list_inbox(crate::INBOX_LIST_LIMIT) {
         update_notification_baseline_and_notify(app, account_id, &report, &messages);
     }
-    let _ = app.emit(
+    diagnostics::emit_event(
+        app,
         "mail:inbox-updated",
         InboxUpdatedEvent {
             account_id: account_id.to_owned(),
@@ -2057,16 +2319,33 @@ fn finish_inbox_sync(
             report: Some(SyncReportDto::from(&report)),
         },
     );
-    let _ = backend.schedule_inbox_body_prefetch(
+    match backend.schedule_inbox_body_prefetch(
         crate::INBOX_PREFETCH_LIMIT,
         crate::INBOX_PREFETCH_TOTAL_BYTES,
         crate::INBOX_PREFETCH_MESSAGE_BYTES,
-    );
+    ) {
+        Ok(_) => diagnostics::limited_recovery(
+            "body_prefetch_schedule_failed",
+            "body_prefetch_schedule_recovered",
+            "inbox_body_prefetch",
+            Some(account_id),
+        ),
+        Err(error) => diagnostics::limited_failure(
+            "body_prefetch_schedule_failed",
+            "inbox_body_prefetch",
+            Some(account_id),
+            diagnostics::mail_error_kind(&error),
+        ),
+    }
     Ok(report)
 }
 
 async fn sync_drafts_for(app: &AppHandle, account_id: &str) -> Result<DraftSyncReport, String> {
     let started = Instant::now();
+    diagnostics::info(
+        "account_sync_started",
+        Fields::default().account(account_id).operation("drafts"),
+    );
     let backend = match app.state::<BackendState>().network_for(account_id) {
         Ok(backend) => backend,
         Err(error) => {
@@ -2079,7 +2358,8 @@ async fn sync_drafts_for(app: &AppHandle, account_id: &str) -> Result<DraftSyncR
             return Err(error);
         }
     };
-    let _ = app.emit(
+    diagnostics::emit_event(
+        app,
         "mail:drafts-updated",
         DraftsUpdatedEvent::progress(
             account_id.to_owned(),
@@ -2093,7 +2373,8 @@ async fn sync_drafts_for(app: &AppHandle, account_id: &str) -> Result<DraftSyncR
     let progress_account_id = account_id.to_owned();
     let report = match backend
         .sync_drafts_with_progress(None, move |progress| {
-            let _ = progress_app.emit(
+            diagnostics::emit_event(
+                &progress_app,
                 "mail:drafts-updated",
                 DraftsUpdatedEvent::progress(progress_account_id.clone(), progress),
             );
@@ -2111,7 +2392,8 @@ async fn sync_drafts_for(app: &AppHandle, account_id: &str) -> Result<DraftSyncR
             return Err(crate::safe_mail_error(error));
         }
     };
-    let _ = app.emit(
+    diagnostics::emit_event(
+        app,
         "mail:drafts-updated",
         DraftsUpdatedEvent::synced(account_id.to_owned(), report.clone()),
     );
@@ -2140,12 +2422,29 @@ fn update_notification_baseline_and_notify(
     messages: &[InboxMessage],
 ) {
     let runtime = app.state::<DesktopRuntime>();
-    let (Ok(settings), Ok(mut baseline), Ok(baseline_pending)) = (
+    let (settings, mut baseline, baseline_pending) = match (
         runtime.settings(),
         runtime.notification_baseline(account_id),
         runtime.notification_baseline_pending(account_id),
-    ) else {
-        return;
+    ) {
+        (Ok(settings), Ok(baseline), Ok(pending)) => {
+            diagnostics::limited_recovery(
+                "notification_baseline_read_failed",
+                "notification_baseline_read_recovered",
+                "new_mail_notification",
+                Some(account_id),
+            );
+            (settings, baseline, pending)
+        }
+        _ => {
+            diagnostics::limited_failure(
+                "notification_baseline_read_failed",
+                "new_mail_notification",
+                Some(account_id),
+                ErrorKind::Database,
+            );
+            return;
+        }
     };
     if baseline_pending {
         baseline = NotificationBaseline::default();
@@ -2156,8 +2455,20 @@ fn update_notification_baseline_and_notify(
         .update_notification_baseline(account_id, next_baseline_uid)
         .is_err()
     {
+        diagnostics::limited_failure(
+            "notification_baseline_write_failed",
+            "new_mail_notification",
+            Some(account_id),
+            ErrorKind::Database,
+        );
         return;
     }
+    diagnostics::limited_recovery(
+        "notification_baseline_write_failed",
+        "notification_baseline_write_recovered",
+        "new_mail_notification",
+        Some(account_id),
+    );
     new_unread.sort_by_key(|message| message.uid);
     if new_unread.is_empty()
         || !should_deliver_new_mail_notification(settings, main_window_is_active(app))
@@ -2273,20 +2584,59 @@ fn show_new_mail_notification(
         count,
         web_sound,
     ) else {
+        diagnostics::limited_failure(
+            "notification_publish_failed",
+            "new_mail_notification",
+            None,
+            ErrorKind::Runtime,
+        );
         return;
     };
+    diagnostics::limited_recovery(
+        "notification_publish_failed",
+        "notification_publish_recovered",
+        "new_mail_notification",
+        None,
+    );
 
     if settings.notification_sound_enabled {
         play_native_notification_sound(settings.notification_sound);
     }
 
     if let Some(window) = app.get_webview_window(NEW_MAIL_NOTIFICATION_WINDOW) {
+        diagnostics::limited_recovery(
+            "notification_window_unavailable",
+            "notification_window_recovered",
+            "new_mail_notification",
+            None,
+        );
         position_notification_window(app, &window);
-        let _ = window.show();
-        let _ = app.emit_to(
+        match window.show() {
+            Ok(()) => diagnostics::limited_recovery(
+                "notification_window_show_failed",
+                "notification_window_show_recovered",
+                "new_mail_notification",
+                None,
+            ),
+            Err(_) => diagnostics::limited_failure(
+                "notification_window_show_failed",
+                "new_mail_notification",
+                None,
+                ErrorKind::Runtime,
+            ),
+        }
+        diagnostics::emit_to_event(
+            app,
             NEW_MAIL_NOTIFICATION_WINDOW,
             "mail:new-mail-notification",
             notification,
+        );
+    } else {
+        diagnostics::limited_failure(
+            "notification_window_unavailable",
+            "new_mail_notification",
+            None,
+            ErrorKind::NotFound,
         );
     }
 }
@@ -2341,10 +2691,13 @@ fn position_notification_window(app: &AppHandle, window: &WebviewWindow) {
     let y = work_area.position.y + work_area.size.height as i32
         - window_size.height as i32
         - NEW_MAIL_NOTIFICATION_MARGIN;
-    let _ = window.set_position(PhysicalPosition::new(
-        x.max(work_area.position.x),
-        y.max(work_area.position.y),
-    ));
+    observe_window_action(
+        "notification_window_position",
+        window.set_position(PhysicalPosition::new(
+            x.max(work_area.position.x),
+            y.max(work_area.position.y),
+        )),
+    );
 }
 
 #[cfg(target_os = "windows")]
@@ -2381,9 +2734,35 @@ fn play_native_notification_sound(sound: settings::NotificationSound) {
 fn play_native_notification_sound(_sound: settings::NotificationSound) {}
 
 fn main_window_is_active(app: &AppHandle) -> bool {
-    app.get_webview_window("main").is_some_and(|window| {
-        window.is_visible().unwrap_or(false) && window.is_focused().unwrap_or(false)
-    })
+    let Some(window) = app.get_webview_window("main") else {
+        diagnostics::limited_failure(
+            "main_window_state_failed",
+            "main_window_activity",
+            None,
+            ErrorKind::NotFound,
+        );
+        return false;
+    };
+    match (window.is_visible(), window.is_focused()) {
+        (Ok(visible), Ok(focused)) => {
+            diagnostics::limited_recovery(
+                "main_window_state_failed",
+                "main_window_state_recovered",
+                "main_window_activity",
+                None,
+            );
+            visible && focused
+        }
+        _ => {
+            diagnostics::limited_failure(
+                "main_window_state_failed",
+                "main_window_activity",
+                None,
+                ErrorKind::Runtime,
+            );
+            false
+        }
+    }
 }
 
 fn is_seen(message: &InboxMessage) -> bool {
@@ -2449,15 +2828,45 @@ pub(crate) fn build_tray(app: &App) -> tauri::Result<()> {
 
 pub(crate) fn show_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
-        let _ = window.unminimize();
-        let _ = window.show();
-        let _ = window.set_focus();
+        diagnostics::limited_recovery(
+            "main_window_unavailable",
+            "main_window_recovered",
+            "show_main_window",
+            None,
+        );
+        observe_window_action("main_window_unminimize", window.unminimize());
+        observe_window_action("main_window_show", window.show());
+        observe_window_action("main_window_focus", window.set_focus());
+    } else {
+        diagnostics::limited_failure(
+            "main_window_unavailable",
+            "show_main_window",
+            None,
+            ErrorKind::NotFound,
+        );
     }
 }
 
 pub(crate) fn show_main_window_and_refresh(app: &AppHandle) {
     show_main_window(app);
     request_sync(app, false, "window_open");
+}
+
+pub(crate) fn observe_window_action(operation: &'static str, result: tauri::Result<()>) {
+    match result {
+        Ok(()) => diagnostics::limited_recovery(
+            "window_action_failed",
+            "window_action_recovered",
+            operation,
+            None,
+        ),
+        Err(_) => diagnostics::limited_failure(
+            "window_action_failed",
+            operation,
+            None,
+            ErrorKind::Runtime,
+        ),
+    }
 }
 
 pub(crate) fn dismiss_new_mail_notification(
@@ -2576,7 +2985,8 @@ pub(crate) fn quit_app(app: &AppHandle) {
         Fields::default().operation("app_exit"),
     );
 
-    let _ = app.emit(
+    diagnostics::emit_event(
+        app,
         "mail:before-exit",
         BeforeExitEvent {
             request_id: ticket.request_id,
