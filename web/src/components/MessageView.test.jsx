@@ -195,6 +195,7 @@ describe("MessageView role-specific actions", () => {
         message={messageFixture()}
         onClose={vi.fn()}
         onArchive={onArchive}
+        onMoveToInbox={vi.fn()}
         onMoveToTrash={onMoveToTrash}
         onPermanentDelete={vi.fn()}
         onMarkUnread={onMarkUnread}
@@ -211,20 +212,44 @@ describe("MessageView role-specific actions", () => {
     expect(
       screen.queryByRole("button", { name: "永久删除" }),
     ).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "移到收件箱" }),
+    ).toBeNull();
   });
 
   it.each([
-    ["sent", ["移到垃圾箱", "标记为未读"], ["归档", "永久删除"]],
-    ["archive", ["移到垃圾箱", "标记为未读"], ["归档", "永久删除"]],
-    ["trash", ["永久删除", "标记为未读"], ["归档", "移到垃圾箱"]],
-    ["draft", [], ["归档", "移到垃圾箱", "永久删除", "标记为未读"]],
-    ["outbox", [], ["归档", "移到垃圾箱", "永久删除", "标记为未读"]],
+    [
+      "sent",
+      ["移到垃圾箱", "标记为未读"],
+      ["归档", "移到收件箱", "永久删除"],
+    ],
+    [
+      "archive",
+      ["移到收件箱", "移到垃圾箱", "标记为未读"],
+      ["归档", "永久删除"],
+    ],
+    [
+      "trash",
+      ["移到收件箱", "永久删除", "标记为未读"],
+      ["归档", "移到垃圾箱"],
+    ],
+    [
+      "draft",
+      [],
+      ["归档", "移到收件箱", "移到垃圾箱", "永久删除", "标记为未读"],
+    ],
+    [
+      "outbox",
+      [],
+      ["归档", "移到收件箱", "移到垃圾箱", "永久删除", "标记为未读"],
+    ],
   ])("uses the %s mailbox role contract", (kind, visible, hidden) => {
     render(
       <MessageView
         message={messageFixture({ kind })}
         onClose={vi.fn()}
         onArchive={vi.fn()}
+        onMoveToInbox={vi.fn()}
         onMoveToTrash={vi.fn()}
         onPermanentDelete={vi.fn()}
         onMarkUnread={vi.fn()}
@@ -249,6 +274,7 @@ describe("MessageView role-specific actions", () => {
         })}
         onClose={vi.fn()}
         onArchive={vi.fn()}
+        onMoveToInbox={vi.fn()}
         onMoveToTrash={vi.fn()}
         onPermanentDelete={vi.fn()}
         onMarkUnread={vi.fn()}
@@ -262,6 +288,7 @@ describe("MessageView role-specific actions", () => {
     expect(
       screen.queryByRole("button", { name: "移到垃圾箱" }),
     ).toBeNull();
+    expect(screen.getByRole("button", { name: "移到收件箱" })).toBeTruthy();
   });
 
   it("offers only explicit delivery-unknown decisions and never ordinary retry", async () => {

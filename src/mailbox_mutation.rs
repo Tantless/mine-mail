@@ -55,7 +55,9 @@ pub(crate) fn persisted_phase_work(
 
     match (kind, phase) {
         (
-            MessageActionKind::Archive | MessageActionKind::MoveToTrash,
+            MessageActionKind::Archive
+            | MessageActionKind::MoveToInbox
+            | MessageActionKind::MoveToTrash,
             RemoteMutationPhase::Queued,
         ) => PersistedPhaseWork::Transfer,
         (MessageActionKind::PermanentDelete, RemoteMutationPhase::Queued) => {
@@ -65,7 +67,9 @@ pub(crate) fn persisted_phase_work(
             PersistedPhaseWork::Reconcile
         }
         (
-            MessageActionKind::Archive | MessageActionKind::MoveToTrash,
+            MessageActionKind::Archive
+            | MessageActionKind::MoveToInbox
+            | MessageActionKind::MoveToTrash,
             RemoteMutationPhase::TransferAcknowledged,
         ) => PersistedPhaseWork::SourceDelete,
         (_, RemoteMutationPhase::SourceDeleteAcknowledged) => PersistedPhaseWork::Finalize,
@@ -107,6 +111,14 @@ mod tests {
 
     #[test]
     fn only_a_fresh_move_enters_transfer_and_permanent_delete_never_does() {
+        assert_eq!(
+            persisted_phase_work(
+                MessageActionKind::MoveToInbox,
+                MutationStatus::InFlight,
+                RemoteMutationPhase::Queued,
+            ),
+            PersistedPhaseWork::Transfer
+        );
         assert_eq!(
             persisted_phase_work(
                 MessageActionKind::MoveToTrash,

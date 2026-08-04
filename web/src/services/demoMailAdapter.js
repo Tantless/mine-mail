@@ -273,6 +273,8 @@ function demoMoveMessage(state, messageId, destinationRole, kind) {
   const sourceRole = demoRoleForMessage(message);
   if (
     (kind === "archive" && !["inbox", "sent"].includes(sourceRole)) ||
+    (kind === "move_to_inbox" &&
+      !["archive", "trash"].includes(sourceRole)) ||
     (kind === "move_to_trash" &&
       !["inbox", "sent", "archive"].includes(sourceRole))
   ) {
@@ -606,6 +608,10 @@ function createDemoActions(
 
     moveMessageToTrash(messageId) {
       return demoMoveMessage(state, messageId, "trash", "move_to_trash");
+    },
+
+    moveMessageToInbox(messageId) {
+      return demoMoveMessage(state, messageId, "inbox", "move_to_inbox");
     },
 
     preparePermanentDelete(messageId) {

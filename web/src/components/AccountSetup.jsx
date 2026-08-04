@@ -311,7 +311,10 @@ export function AccountSetupForm({
                 onChange={(event) => {
                   setEmail(
                     providerEmailDomain
-                      ? editableEmailValue(event.target.value, provider)
+                      ? editableEmailValue(
+                          event.target.value,
+                          provider,
+                        )
                       : event.target.value,
                   );
                   setValidationError(null);

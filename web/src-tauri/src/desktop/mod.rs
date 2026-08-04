@@ -23,8 +23,8 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
 use tokio::sync::{
-    Mutex as AsyncMutex, Notify, RwLock as AsyncRwLock, RwLockReadGuard,
-    RwLockWriteGuard, mpsc, watch,
+    Mutex as AsyncMutex, Notify, RwLock as AsyncRwLock, RwLockReadGuard, RwLockWriteGuard, mpsc,
+    watch,
 };
 use tokio::time::Instant as TokioInstant;
 
@@ -91,7 +91,10 @@ struct PendingNewMailNotification {
 
 #[derive(Clone, Debug)]
 pub(crate) enum BackgroundRequest {
-    Sync { force: bool, trigger: &'static str },
+    Sync {
+        force: bool,
+        trigger: &'static str,
+    },
     InboxChanged {
         account_id: String,
         trigger: &'static str,
@@ -764,8 +767,9 @@ impl DesktopRuntime {
                 };
                 let result = operation
                     .take()
-                    .expect("only the elected Inbox sync leader runs the operation")()
-                    .await;
+                    .expect("only the elected Inbox sync leader runs the operation")(
+                )
+                .await;
                 leader.settle(result.clone());
                 return result;
             };
@@ -2747,7 +2751,10 @@ mod tests {
         assert!(!second.is_finished());
         release.notify_one();
 
-        assert_eq!(first.await.expect("first task").expect("first sync"), expected);
+        assert_eq!(
+            first.await.expect("first task").expect("first sync"),
+            expected
+        );
         assert_eq!(
             second.await.expect("second task").expect("joined sync"),
             expected

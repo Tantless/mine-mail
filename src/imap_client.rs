@@ -422,6 +422,7 @@ impl ImapConnection {
         &mut self,
         role: CreatableMailboxRole,
     ) -> Result<MailboxRoleCreationMethod> {
+        let mailbox_name = role.canonical_name();
         let method = if self.supports_create_special_use {
             timeout(
                 COMMAND_TIMEOUT,
@@ -435,7 +436,7 @@ impl ImapConnection {
             .map_err(|error| MailError::Imap(error.to_string()))?;
             MailboxRoleCreationMethod::SpecialUse
         } else {
-            timeout(COMMAND_TIMEOUT, self.session.create(role.canonical_name()))
+            timeout(COMMAND_TIMEOUT, self.session.create(mailbox_name))
                 .await
                 .map_err(|_| MailError::Timeout {
                     operation: "IMAP CREATE product mailbox",

@@ -506,6 +506,13 @@ export const mailApi = {
     return callDemo("moveMessageToTrash", messageId);
   },
 
+  async moveMessageToInbox(messageId) {
+    if (isTauri) {
+      return desktopInvoke("move_message_to_inbox", { messageId });
+    }
+    return callDemo("moveMessageToInbox", messageId);
+  },
+
   async preparePermanentDelete(messageId) {
     if (isTauri) {
       return desktopInvoke("prepare_permanent_delete", { messageId });

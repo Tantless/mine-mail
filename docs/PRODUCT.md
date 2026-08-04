@@ -327,17 +327,21 @@ must be updated here when an intentional product change lands.
   in Trash offers permanent deletion, and every permanent deletion requires a
   Mine Mail confirmation. Draft and Outbox deletion keep their separate
   versioned lifecycle.
+- Archive and Trash offer **移到收件箱**. It moves the exact message to Inbox;
+  it does not claim to restore an unknown original mailbox. The action remains
+  available for a cached message while offline and uses the same account-scoped
+  durable mutation path as Archive and move-to-Trash.
 - Mark read and mark unread set the desired final state of the IMAP `\Seen`
   system flag. They are available for selectable remote mailboxes that permit
   persistent `\Seen` updates; Draft and Outbox do not expose them. Mark unread
   updates the local row immediately and continues synchronization silently. The
   reader does not show its pending state, and a pending automatic mark-read
   operation never disables or relabels the mark-unread action.
-- Star, read/unread, Archive, move-to-Trash, and permanent-delete actions update
-  SQLite and persist an account-scoped mutation before network work. Moving a
-  message removes it from the source view immediately and presents it in the
-  destination with a pending state. Restarting or going offline cannot lose that
-  intent.
+- Star, read/unread, Archive, move-to-Inbox, move-to-Trash, and permanent-delete
+  actions update SQLite and persist an account-scoped mutation before network
+  work. Moving a message removes it from the source view immediately and
+  presents it in the destination with a pending state. Restarting or going
+  offline cannot lose that intent.
 - Every queued mutation has an opaque operation ID, the exact source mailbox and
   UIDVALIDITY, source UID, optional destination role, a monotonic local revision,
   and one of `pending`, `in_flight`, `confirmed`, `needs_attention`, or

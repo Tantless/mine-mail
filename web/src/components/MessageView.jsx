@@ -19,6 +19,7 @@ import {
   FileVideo,
   Paperclip,
   SpinnerGap,
+  TrayArrowDown,
   Trash,
   WarningCircle,
 } from "@phosphor-icons/react";
@@ -34,6 +35,7 @@ import { messageNavigationKey } from "../utils/messageNavigation.js";
 import { userFacingErrorMessage } from "../utils/userFacingError.js";
 
 const REMOTE_MAILBOX_ROLES = new Set(["inbox", "sent", "archive", "trash"]);
+const MOVE_TO_INBOX_ROLES = new Set(["archive", "trash"]);
 const MOVE_TO_TRASH_ROLES = new Set(["inbox", "sent", "archive"]);
 const MAX_OUTBOX_ATTEMPTS = 0xffffffff;
 
@@ -461,6 +463,8 @@ export function MessageView({
   forwardState,
   onArchive,
   archiveState,
+  onMoveToInbox,
+  moveToInboxState,
   onMoveToTrash,
   moveToTrashState,
   onPermanentDelete,
@@ -583,6 +587,10 @@ export function MessageView({
   const feedbackCandidates = [
     ["归档", role === "inbox" ? archiveState : undefined],
     [
+      "移到收件箱",
+      MOVE_TO_INBOX_ROLES.has(role) ? moveToInboxState : undefined,
+    ],
+    [
       "移到垃圾箱",
       MOVE_TO_TRASH_ROLES.has(role) ? moveToTrashState : undefined,
     ],
@@ -628,6 +636,14 @@ export function MessageView({
               onAction={onArchive}
               state={archiveState}
               icon={<Archive aria-hidden="true" size={19} />}
+            />
+          ) : null}
+          {MOVE_TO_INBOX_ROLES.has(role) ? (
+            <MessageToolbarAction
+              label="移到收件箱"
+              onAction={onMoveToInbox}
+              state={moveToInboxState}
+              icon={<TrayArrowDown aria-hidden="true" size={19} />}
             />
           ) : null}
           {MOVE_TO_TRASH_ROLES.has(role) ? (

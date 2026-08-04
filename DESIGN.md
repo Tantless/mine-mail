@@ -403,10 +403,11 @@ family. Preserve the relative hierarchy when tuning optical values.
   within the reader without horizontal drift.
 - Reply history is a sequence of sibling collapsible cards, never recursively
   nested panels.
-- Reader actions are role-specific. Inbox, Sent, and Archive use Delete to move
-  to Trash; Trash replaces it with a clearly destructive permanent-delete action.
-  Archive is shown only where the account supports it, and Draft/Outbox never
-  expose remote read-state actions.
+- Reader actions are role-specific. Inbox uses Archive and Delete; Sent uses
+  Delete; Archive uses **移到收件箱** and Delete; Trash uses **移到收件箱** and a
+  clearly destructive permanent-delete action. Delete in Inbox, Sent, and
+  Archive moves to Trash. Archive is shown only where the account supports it,
+  and Draft/Outbox never expose remote read-state actions.
 - An Outbox item with an unknown delivery result never uses the ordinary retry
   action. Its reader offers exactly two consequential, confirmed decisions:
   **确认已投递** only after the user has checked the provider's Sent mailbox, or
@@ -417,11 +418,12 @@ family. Preserve the relative hierarchy when tuning optical values.
   list immediately. If its reader is open there, the reader closes instead of
   showing a completed queue item. The same immutable item may appear quietly in
   Sent as a local fallback until the provider's exact Sent copy is synchronized.
-- Archive, Trash, read/unread, and delete actions show local completion
-  immediately and keep a reasonable adjacent message selected. Archive, Trash,
-  and delete may expose actionable pending or failure feedback without blanking
-  the reader. Marking unread updates the list immediately and never adds a
-  reader-body banner or reuses the pending mark-read state as toolbar feedback.
+- Archive, move-to-Inbox, Trash, read/unread, and delete actions show local
+  completion immediately and keep a reasonable adjacent message selected.
+  Archive, move-to-Inbox, Trash, and delete may expose actionable pending or
+  failure feedback without blanking the reader. Marking unread updates the list
+  immediately and never adds a reader-body banner or reuses the pending
+  mark-read state as toolbar feedback.
 - A forward action enters a bounded preparation state and cannot open a composer
   from preview text. Failure leaves the current reader intact, adds no failure
   card to the body, and returns the forward control to a retryable state.

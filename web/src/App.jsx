@@ -4955,6 +4955,45 @@ export function App() {
     setMessageActionState,
   ]);
 
+  const handleMoveToInbox = useCallback(async () => {
+    const message = selectedMessage;
+    const accountId = activeAccountIdRef.current;
+    const messageId = localMessageId(message);
+    const sourceRole = messageRole(message);
+    if (
+      !accountId ||
+      messageId === null ||
+      !["archive", "trash"].includes(sourceRole)
+    ) {
+      return;
+    }
+    setMessageActionState(accountId, messageId, "move_to_inbox", {
+      status: "in_flight",
+    });
+    try {
+      const receipt = await mailApi.moveMessageToInbox(messageId);
+      setMessageActionState(
+        accountId,
+        messageId,
+        "move_to_inbox",
+        mutationActionState(receipt),
+      );
+      selectAdjacentAfterRemoval(message, sourceRole, "inbox", accountId);
+      refreshMutationRoles(accountId, sourceRole, "inbox");
+    } catch (error) {
+      setMessageActionState(accountId, messageId, "move_to_inbox", {
+        status: "error",
+        retryable: true,
+        error,
+      });
+    }
+  }, [
+    refreshMutationRoles,
+    selectAdjacentAfterRemoval,
+    selectedMessage,
+    setMessageActionState,
+  ]);
+
   const handleMarkUnread = useCallback(async () => {
     const message = selectedMessage;
     const accountId = activeAccountIdRef.current;
@@ -7458,6 +7497,13 @@ export function App() {
           : null
       }
       archiveState={actionStateFor("archive")}
+      onMoveToInbox={
+        selectedIsMailboxMessage &&
+        ["archive", "trash"].includes(selectedMailboxRole)
+          ? () => void handleMoveToInbox()
+          : null
+      }
+      moveToInboxState={actionStateFor("move_to_inbox")}
       onMoveToTrash={
         selectedIsMailboxMessage &&
         ["inbox", "sent", "archive"].includes(selectedMailboxRole)

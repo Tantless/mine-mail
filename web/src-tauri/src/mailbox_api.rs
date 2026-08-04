@@ -3,10 +3,9 @@ use std::time::Instant;
 use mine_mail::{
     AttachmentMeta, AttachmentSaveErrorKind, ForwardPreparationErrorKind,
     ForwardPreparationOutcome, InboxMessage, MailBackend, MailError, MailboxCapability,
-    MailboxCapabilityStatus,
-    MailboxCapabilityUnavailableReason, MailboxRole, MessageMutationReceipt, MessagePage,
-    MessagePageCursor, MessagePageItem, PendingMessageProjection, PermanentDeletePlan,
-    RemoteHistoryState, SystemFlagMutationReceipt,
+    MailboxCapabilityStatus, MailboxCapabilityUnavailableReason, MailboxRole,
+    MessageMutationReceipt, MessagePage, MessagePageCursor, MessagePageItem,
+    PendingMessageProjection, PermanentDeletePlan, RemoteHistoryState, SystemFlagMutationReceipt,
 };
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -298,7 +297,10 @@ fn validate_page_role(role: MailboxRole) -> CommandResult<()> {
 }
 
 fn validate_starred_page_role(role: MailboxRole) -> CommandResult<()> {
-    if matches!(role, MailboxRole::Inbox | MailboxRole::Sent | MailboxRole::Archive) {
+    if matches!(
+        role,
+        MailboxRole::Inbox | MailboxRole::Sent | MailboxRole::Archive
+    ) {
         Ok(())
     } else {
         Err("This mailbox does not participate in the starred aggregate.".to_owned())
@@ -734,13 +736,7 @@ pub(crate) async fn load_older_starred_mailbox_page(
         ));
     };
     match network
-        .load_older_starred_mailbox_page(
-            &account_id,
-            role,
-            &cursor,
-            page_size,
-            query.as_deref(),
-        )
+        .load_older_starred_mailbox_page(&account_id, role, &cursor, page_size, query.as_deref())
         .await
     {
         Ok(page) => Ok(page_with_prefetch(&backend, &account_id, page)),
@@ -789,7 +785,9 @@ pub(crate) async fn sync_mailbox(
     );
 
     let oauth_started = Instant::now();
-    let oauth_result = account.refresh_oauth_backend_for(&backend, &account_id).await;
+    let oauth_result = account
+        .refresh_oauth_backend_for(&backend, &account_id)
+        .await;
     diagnostics::info(
         "mailbox_sync_stage_completed",
         Fields::default()
@@ -1110,6 +1108,27 @@ pub(crate) fn move_message_to_trash(
 }
 
 #[tauri::command]
+pub(crate) fn move_message_to_inbox(
+    app: AppHandle,
+    backend: State<'_, BackendState>,
+    message_id: String,
+) -> CommandResult<MessageMutationReceipt> {
+    validate_message_id(&message_id)?;
+    let (account_id, local) = active_local_backend(&backend)?;
+    let receipt = local
+        .move_message_to_inbox(&message_id)
+        .map_err(safe_mail_error)?;
+    schedule_message_action_flush(
+        &app,
+        &backend,
+        account_id,
+        receipt.source_role,
+        receipt.destination_role,
+    );
+    Ok(receipt)
+}
+
+#[tauri::command]
 pub(crate) async fn prepare_permanent_delete(
     backend: State<'_, BackendState>,
     message_id: String,
@@ -1379,7 +1398,7 @@ mod tests {
             removed: 2,
             uid_validity_reset: true,
         })
-        .expect("serialize mailbox sync report");
+            .expect("serialize mailbox sync report");
 
         assert_eq!(json["synced"], 4);
         assert_eq!(json["removed"], 2);

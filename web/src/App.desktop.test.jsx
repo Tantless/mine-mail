@@ -43,6 +43,7 @@ const desktop = vi.hoisted(() => {
       setMessageSeen: vi.fn(),
       setMessageStarredById: vi.fn(),
       archiveMessage: vi.fn(),
+      moveMessageToInbox: vi.fn(),
       moveMessageToTrash: vi.fn(),
       preparePermanentDelete: vi.fn(),
       confirmPermanentDelete: vi.fn(),
@@ -473,6 +474,13 @@ describe("Mine Mail desktop state bridge", () => {
       status: "pending",
       source_role: "inbox",
       destination_role: "archive",
+    }));
+    desktop.mailApi.moveMessageToInbox.mockImplementation(async (messageId) => ({
+      operation_id: `inbox-${messageId}`,
+      local_revision: 1,
+      status: "pending",
+      source_role: "archive",
+      destination_role: "inbox",
     }));
     desktop.mailApi.moveMessageToTrash.mockImplementation(
       async (messageId) => ({
@@ -3328,6 +3336,97 @@ describe("Mine Mail desktop state bridge", () => {
     );
     expect(screen.queryByText("Archive opaque message")).toBeNull();
     expect(screen.queryByText("Trash opaque message")).toBeNull();
+  });
+
+  it("moves Archive and Trash messages back to Inbox", async () => {
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: 600,
+    });
+    const archived = {
+      ...summary("archived-message", "Archived restore target"),
+      uid: undefined,
+      body_text: "Archived restore body",
+      body_fetched: true,
+    };
+    const trashed = {
+      ...summary("trashed-message", "Trash restore target"),
+      uid: undefined,
+      body_text: "Trash restore body",
+      body_fetched: true,
+    };
+    let inboxRows = [];
+    let archiveRows = [archived];
+    let trashRows = [trashed];
+    desktop.mailApi.listMailboxPage.mockImplementation(async (_, role) =>
+      mailboxPage(
+        role === "inbox"
+          ? inboxRows
+          : role === "archive"
+            ? archiveRows
+            : role === "trash"
+              ? trashRows
+              : [],
+        role,
+      ),
+    );
+    desktop.mailApi.moveMessageToInbox.mockImplementation(async (messageId) => {
+      const sourceRole = archiveRows.some((message) => message.id === messageId)
+        ? "archive"
+        : "trash";
+      const source =
+        sourceRole === "archive"
+          ? archiveRows.find((message) => message.id === messageId)
+          : trashRows.find((message) => message.id === messageId);
+      archiveRows = archiveRows.filter((message) => message.id !== messageId);
+      trashRows = trashRows.filter((message) => message.id !== messageId);
+      inboxRows = source ? [...inboxRows, source] : inboxRows;
+      return {
+        operation_id: `inbox-${messageId}`,
+        local_revision: 1,
+        status: "pending",
+        source_role: sourceRole,
+        destination_role: "inbox",
+      };
+    });
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: /^归档$/ }));
+    await user.click(
+      await screen.findByRole("button", {
+        name: /打开邮件：.*Archived restore target/,
+      }),
+    );
+    await user.click(
+      within(screen.getByLabelText("邮件阅读区")).getByRole("button", {
+        name: "移到收件箱",
+      }),
+    );
+    await waitFor(() =>
+      expect(desktop.mailApi.moveMessageToInbox).toHaveBeenCalledWith(
+        "archived-message",
+      ),
+    );
+    expect(screen.queryByText("Archived restore target")).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: /^垃圾箱$/ }));
+    await user.click(
+      await screen.findByRole("button", {
+        name: /打开邮件：.*Trash restore target/,
+      }),
+    );
+    await user.click(
+      within(screen.getByLabelText("邮件阅读区")).getByRole("button", {
+        name: "移到收件箱",
+      }),
+    );
+    await waitFor(() =>
+      expect(desktop.mailApi.moveMessageToInbox).toHaveBeenCalledWith(
+        "trashed-message",
+      ),
+    );
+    expect(screen.queryByText("Trash restore target")).toBeNull();
   });
 
   it("keeps a delayed mailbox mutation scoped to its captured account", async () => {

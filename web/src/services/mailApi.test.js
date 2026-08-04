@@ -283,6 +283,7 @@ describe("mailApi desktop IPC contract", () => {
     await mailApi.setMessageSeen(OPAQUE_MESSAGE_ID, false);
     await mailApi.setMessageStarredById(OPAQUE_MESSAGE_ID, true);
     await mailApi.archiveMessage(OPAQUE_MESSAGE_ID);
+    await mailApi.moveMessageToInbox(OPAQUE_MESSAGE_ID);
     await mailApi.moveMessageToTrash(OPAQUE_MESSAGE_ID);
     await mailApi.preparePermanentDelete(OPAQUE_MESSAGE_ID);
     await mailApi.confirmPermanentDelete("plan-1");
@@ -326,6 +327,7 @@ describe("mailApi desktop IPC contract", () => {
         { messageId: OPAQUE_MESSAGE_ID, starred: true },
       ],
       ["archive_message", { messageId: OPAQUE_MESSAGE_ID }],
+      ["move_message_to_inbox", { messageId: OPAQUE_MESSAGE_ID }],
       ["move_message_to_trash", { messageId: OPAQUE_MESSAGE_ID }],
       ["prepare_permanent_delete", { messageId: OPAQUE_MESSAGE_ID }],
       ["confirm_permanent_delete", { planId: "plan-1" }],
@@ -1002,6 +1004,30 @@ describe("mailApi desktop IPC contract", () => {
         id: "demo-message-01",
         displayed_role: "archive",
         pending_mutation: expect.objectContaining({ status: "pending" }),
+      }),
+    );
+    await expect(mailApi.moveMessageToInbox("demo-message-01")).resolves.toEqual(
+      expect.objectContaining({
+        operation_id: "demo-move_to_inbox-3",
+        source_role: "archive",
+        destination_role: "inbox",
+      }),
+    );
+    const restoredInbox = await mailApi.listMailboxPage(
+      "demo-primary",
+      "inbox",
+      null,
+      50,
+      null,
+    );
+    expect(restoredInbox.items[0]).toEqual(
+      expect.objectContaining({
+        id: "demo-message-01",
+        displayed_role: "inbox",
+        pending_mutation: expect.objectContaining({
+          kind: "move_to_inbox",
+          status: "pending",
+        }),
       }),
     );
     const selected = await mailApi.fetchMailboxMessage("demo-message-01");

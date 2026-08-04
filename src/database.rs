@@ -436,7 +436,9 @@ impl Repository {
                      )
                  ),
                  kind TEXT NOT NULL CHECK (
-                     kind IN ('archive', 'move_to_trash', 'permanent_delete')
+                     kind IN (
+                         'archive', 'move_to_inbox', 'move_to_trash', 'permanent_delete'
+                     )
                  ),
                  revision INTEGER NOT NULL DEFAULT 1 CHECK (revision > 0),
                  status TEXT NOT NULL CHECK (
@@ -473,6 +475,10 @@ impl Repository {
                          kind = 'archive'
                          AND source_role IN ('inbox', 'sent')
                          AND destination_role = 'archive'
+                     ) OR (
+                         kind = 'move_to_inbox'
+                         AND source_role IN ('archive', 'trash')
+                         AND destination_role = 'inbox'
                      ) OR (
                          kind = 'move_to_trash'
                          AND source_role IN ('inbox', 'sent', 'archive')
@@ -587,6 +593,7 @@ impl Repository {
         migrate_message_body_cache_v18(&connection)?;
         migrate_message_contact_emails_v19(&connection)?;
         migrate_starred_history_v20(&connection)?;
+        migrate_move_to_inbox_v21(&connection)?;
         connection.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_drafts_remote_identity
                  ON drafts(account_id, remote_mailbox, remote_uid);
@@ -596,7 +603,7 @@ impl Repository {
              CREATE INDEX IF NOT EXISTS idx_messages_body_cache_lru
                  ON messages(account_id, body_last_accessed_at, id)
                  WHERE body_fetched = 1;
-             PRAGMA user_version = 20;",
+             PRAGMA user_version = 21;",
         )?;
         Ok(repository)
     }
@@ -5934,6 +5941,10 @@ fn migrate_mailboxes_and_mutations_v12(connection: &Connection) -> Result<()> {
                  AND NEW.source_role IN ('inbox', 'sent')
                  AND NEW.destination_role = 'archive'
              ) OR (
+                 NEW.kind = 'move_to_inbox'
+                 AND NEW.source_role IN ('archive', 'trash')
+                 AND NEW.destination_role = 'inbox'
+             ) OR (
                  NEW.kind = 'move_to_trash'
                  AND NEW.source_role IN ('inbox', 'sent', 'archive')
                  AND NEW.destination_role = 'trash'
@@ -5953,6 +5964,10 @@ fn migrate_mailboxes_and_mutations_v12(connection: &Connection) -> Result<()> {
                  NEW.kind = 'archive'
                  AND NEW.source_role IN ('inbox', 'sent')
                  AND NEW.destination_role = 'archive'
+             ) OR (
+                 NEW.kind = 'move_to_inbox'
+                 AND NEW.source_role IN ('archive', 'trash')
+                 AND NEW.destination_role = 'inbox'
              ) OR (
                  NEW.kind = 'move_to_trash'
                  AND NEW.source_role IN ('inbox', 'sent', 'archive')
@@ -6659,6 +6674,167 @@ fn migrate_starred_history_v20(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn migrate_move_to_inbox_v21(connection: &Connection) -> Result<()> {
+    let supports_move_to_inbox: bool = connection.query_row(
+        "SELECT instr(lower(sql), 'move_to_inbox') > 0
+         FROM sqlite_master
+         WHERE type = 'table' AND name = 'pending_message_actions'",
+        [],
+        |row| row.get(0),
+    )?;
+
+    if !supports_move_to_inbox {
+        let transaction = connection.unchecked_transaction()?;
+        transaction.execute_batch(
+            "DROP TRIGGER IF EXISTS trg_pending_message_actions_validate_insert;
+             DROP TRIGGER IF EXISTS trg_pending_message_actions_validate_update;
+             ALTER TABLE pending_message_actions RENAME TO pending_message_actions_v20;
+             CREATE TABLE pending_message_actions (
+                 operation_id TEXT PRIMARY KEY NOT NULL,
+                 account_id TEXT NOT NULL,
+                 source_mailbox TEXT NOT NULL,
+                 source_uid_validity INTEGER NOT NULL CHECK (source_uid_validity > 0),
+                 source_uid INTEGER NOT NULL CHECK (source_uid > 0),
+                 source_role TEXT NOT NULL CHECK (
+                     source_role IN ('inbox', 'sent', 'drafts', 'archive', 'trash')
+                 ),
+                 destination_role TEXT CHECK (
+                     destination_role IS NULL OR destination_role IN (
+                         'inbox', 'sent', 'drafts', 'archive', 'trash'
+                     )
+                 ),
+                 kind TEXT NOT NULL CHECK (
+                     kind IN (
+                         'archive', 'move_to_inbox', 'move_to_trash', 'permanent_delete'
+                     )
+                 ),
+                 revision INTEGER NOT NULL DEFAULT 1 CHECK (revision > 0),
+                 status TEXT NOT NULL CHECK (
+                     status IN (
+                         'pending', 'in_flight', 'confirmed',
+                         'needs_attention', 'outcome_unknown'
+                     )
+                 ),
+                 remote_phase TEXT NOT NULL DEFAULT 'queued' CHECK (
+                     remote_phase IN (
+                         'queued', 'transfer_started', 'transfer_acknowledged',
+                         'source_delete_started', 'source_delete_acknowledged'
+                     )
+                 ),
+                 source_message_id TEXT,
+                 source_internal_date TEXT,
+                 source_size_bytes INTEGER NOT NULL DEFAULT 0,
+                 error_kind TEXT CHECK (
+                     error_kind IS NULL OR error_kind IN (
+                         'uid_validity_changed', 'source_missing',
+                         'ambiguous_remote_state', 'network_unavailable',
+                         'mailbox_unavailable', 'permission_denied',
+                         'server_rejected', 'unsupported', 'unknown'
+                     )
+                 ),
+                 source_cleanup_pending INTEGER NOT NULL DEFAULT 0
+                     CHECK (source_cleanup_pending IN (0, 1)),
+                 destination_reconciled INTEGER NOT NULL DEFAULT 0
+                     CHECK (destination_reconciled IN (0, 1)),
+                 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                 updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                 CHECK (
+                     (
+                         kind = 'archive'
+                         AND source_role IN ('inbox', 'sent')
+                         AND destination_role = 'archive'
+                     ) OR (
+                         kind = 'move_to_inbox'
+                         AND source_role IN ('archive', 'trash')
+                         AND destination_role = 'inbox'
+                     ) OR (
+                         kind = 'move_to_trash'
+                         AND source_role IN ('inbox', 'sent', 'archive')
+                         AND destination_role = 'trash'
+                     ) OR (
+                         kind = 'permanent_delete'
+                         AND source_role = 'trash'
+                         AND destination_role IS NULL
+                     )
+                 ),
+                 UNIQUE (account_id, source_mailbox, source_uid_validity, source_uid),
+                 FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
+             );
+             INSERT INTO pending_message_actions (
+                 operation_id, account_id, source_mailbox, source_uid_validity, source_uid,
+                 source_role, destination_role, kind, revision, status, remote_phase,
+                 source_message_id, source_internal_date, source_size_bytes, error_kind,
+                 source_cleanup_pending, destination_reconciled, created_at, updated_at
+             )
+             SELECT operation_id, account_id, source_mailbox, source_uid_validity, source_uid,
+                    source_role, destination_role, kind, revision, status, remote_phase,
+                    source_message_id, source_internal_date, source_size_bytes, error_kind,
+                    source_cleanup_pending, destination_reconciled, created_at, updated_at
+             FROM pending_message_actions_v20;
+             DROP TABLE pending_message_actions_v20;
+             CREATE INDEX idx_pending_message_actions_account_status
+                 ON pending_message_actions(account_id, status, updated_at);
+             CREATE INDEX idx_pending_message_actions_destination
+                 ON pending_message_actions(account_id, destination_role, status);",
+        )?;
+        transaction.commit()?;
+    }
+
+    connection.execute_batch(
+        "DROP TRIGGER IF EXISTS trg_pending_message_actions_validate_insert;
+         DROP TRIGGER IF EXISTS trg_pending_message_actions_validate_update;
+         CREATE TRIGGER trg_pending_message_actions_validate_insert
+         BEFORE INSERT ON pending_message_actions
+         WHEN NOT (
+             (
+                 NEW.kind = 'archive'
+                 AND NEW.source_role IN ('inbox', 'sent')
+                 AND NEW.destination_role = 'archive'
+             ) OR (
+                 NEW.kind = 'move_to_inbox'
+                 AND NEW.source_role IN ('archive', 'trash')
+                 AND NEW.destination_role = 'inbox'
+             ) OR (
+                 NEW.kind = 'move_to_trash'
+                 AND NEW.source_role IN ('inbox', 'sent', 'archive')
+                 AND NEW.destination_role = 'trash'
+             ) OR (
+                 NEW.kind = 'permanent_delete'
+                 AND NEW.source_role = 'trash'
+                 AND NEW.destination_role IS NULL
+             )
+         )
+         BEGIN
+             SELECT RAISE(ABORT, 'invalid message action role combination');
+         END;
+         CREATE TRIGGER trg_pending_message_actions_validate_update
+         BEFORE UPDATE OF source_role, destination_role, kind ON pending_message_actions
+         WHEN NOT (
+             (
+                 NEW.kind = 'archive'
+                 AND NEW.source_role IN ('inbox', 'sent')
+                 AND NEW.destination_role = 'archive'
+             ) OR (
+                 NEW.kind = 'move_to_inbox'
+                 AND NEW.source_role IN ('archive', 'trash')
+                 AND NEW.destination_role = 'inbox'
+             ) OR (
+                 NEW.kind = 'move_to_trash'
+                 AND NEW.source_role IN ('inbox', 'sent', 'archive')
+                 AND NEW.destination_role = 'trash'
+             ) OR (
+                 NEW.kind = 'permanent_delete'
+                 AND NEW.source_role = 'trash'
+                 AND NEW.destination_role IS NULL
+             )
+         )
+         BEGIN
+             SELECT RAISE(ABORT, 'invalid message action role combination');
+         END;",
+    )?;
+    Ok(())
+}
+
 fn flags_with_pending_updates(
     connection: &Connection,
     account_id: &str,
@@ -7048,6 +7224,10 @@ fn validate_message_action(
             matches!(source_role, MailboxRole::Inbox | MailboxRole::Sent)
                 && destination_role == Some(MailboxRole::Archive)
         }
+        MessageActionKind::MoveToInbox => {
+            matches!(source_role, MailboxRole::Archive | MailboxRole::Trash)
+                && destination_role == Some(MailboxRole::Inbox)
+        }
         MessageActionKind::MoveToTrash => {
             matches!(
                 source_role,
@@ -7125,7 +7305,9 @@ fn valid_remote_phase_transition(
     next: RemoteMutationPhase,
 ) -> bool {
     match kind {
-        MessageActionKind::Archive | MessageActionKind::MoveToTrash => matches!(
+        MessageActionKind::Archive
+        | MessageActionKind::MoveToInbox
+        | MessageActionKind::MoveToTrash => matches!(
             (current, next),
             (
                 RemoteMutationPhase::Queued,
@@ -13755,7 +13937,7 @@ mod tests {
         let version: u32 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("schema version");
-        assert_eq!(version, 20);
+        assert_eq!(version, 21);
         assert!(
             connection
                 .execute(
@@ -13812,7 +13994,7 @@ mod tests {
         let version: u32 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("schema version");
-        assert_eq!(version, 20);
+        assert_eq!(version, 21);
         assert!(
             super::table_has_column(&connection, "mailboxes", "starred_history_before_uid")
                 .unwrap()
@@ -13969,7 +14151,7 @@ mod tests {
                     .expect("schema version connection")
                     .pragma_query_value(None, "user_version", |row| row.get::<_, u32>(0))
                     .expect("schema version"),
-                20
+                21
             );
 
             assert_eq!(
@@ -14708,7 +14890,7 @@ mod tests {
         let version: u32 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("schema version");
-        assert_eq!(version, 20);
+        assert_eq!(version, 21);
         for column in ["source_cleanup_pending", "destination_reconciled"] {
             assert!(
                 super::table_has_column(&connection, "pending_message_actions", column).unwrap()
@@ -14744,6 +14926,34 @@ mod tests {
                 .expect("foreign key targets")
         };
         assert_eq!(targets, ["accounts"]);
+        connection
+            .execute(
+                "INSERT INTO pending_message_actions (
+                     operation_id, account_id, source_mailbox, source_uid_validity, source_uid,
+                     source_role, destination_role, kind, revision, status, remote_phase,
+                     source_size_bytes
+                 ) VALUES (
+                     'move-to-inbox-v21', 'fixture', 'Archive', 91, 50,
+                     'archive', 'inbox', 'move_to_inbox', 1, 'pending', 'queued', 10
+                 )",
+                [],
+            )
+            .expect("v21 move-to-Inbox constraint");
+        assert!(
+            connection
+                .execute(
+                    "INSERT INTO pending_message_actions (
+                         operation_id, account_id, source_mailbox, source_uid_validity,
+                         source_uid, source_role, destination_role, kind, revision, status,
+                         remote_phase, source_size_bytes
+                     ) VALUES (
+                         'invalid-move-to-inbox-v21', 'fixture', 'Trash', 92, 51,
+                         'trash', 'archive', 'move_to_inbox', 1, 'pending', 'queued', 10
+                     )",
+                    [],
+                )
+                .is_err()
+        );
         connection
             .execute(
                 "DELETE FROM messages
@@ -14825,7 +15035,7 @@ mod tests {
         let version: u32 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("schema version");
-        assert_eq!(version, 20);
+        assert_eq!(version, 21);
         for column in [
             "operation_id",
             "source_uid_validity",
@@ -14974,7 +15184,7 @@ Body' AS BLOB)
         let version: u32 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("schema version");
-        assert_eq!(version, 20);
+        assert_eq!(version, 21);
         for column in [
             "local_version",
             "has_unsupported_content",

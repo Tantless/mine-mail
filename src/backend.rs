@@ -2765,6 +2765,9 @@ impl MailBackend {
             MessageActionKind::Archive => {
                 matches!(source_role, MailboxRole::Inbox | MailboxRole::Sent)
             }
+            MessageActionKind::MoveToInbox => {
+                matches!(source_role, MailboxRole::Archive | MailboxRole::Trash)
+            }
             MessageActionKind::MoveToTrash => matches!(
                 source_role,
                 MailboxRole::Inbox | MailboxRole::Sent | MailboxRole::Archive
@@ -2820,6 +2823,19 @@ impl MailBackend {
             message.id,
             MessageActionKind::MoveToTrash,
             Some(MailboxRole::Trash),
+        )
+    }
+
+    /// Persists the Inbox projection for one Archive or Trash message and
+    /// returns without waiting for IMAP.
+    pub fn move_message_to_inbox(&self, public_id: &str) -> Result<MessageMutationReceipt> {
+        let message = self
+            .repository
+            .get_message_by_public_id(&self.config.account_id, public_id)?;
+        self.queue_remote_message_action(
+            message.id,
+            MessageActionKind::MoveToInbox,
+            Some(MailboxRole::Inbox),
         )
     }
 
@@ -7375,7 +7391,8 @@ mod tests {
     use crate::{
         AccountConfig, ComposeFormat, ComposeRequest, ContactMessageDirection, Draft,
         DraftDeleteKind, DraftSaveKind, InboxMessage, MailAddress, MailError, MailboxRole,
-        OutboxItem, OutboxStatus, ServerConfig, SmtpSecurity, StationeryTheme, SyncReport,
+        MessageActionKind, OutboxItem, OutboxStatus, ServerConfig, SmtpSecurity, StationeryTheme,
+        SyncReport,
         database::{DraftRecord, MailboxState, Repository},
         imap_client::{
             MailboxHint, MailboxMessageScope, MailboxSnapshot, RemoteMailbox, RemoteMessage,
@@ -8338,6 +8355,89 @@ mod tests {
                 .map(|pending| pending.operation_id.as_str()),
             Some(receipt.operation_id.as_str())
         );
+    }
+
+    #[test]
+    fn archive_and_trash_move_to_inbox_immediately_and_durably() {
+        let directory = tempdir().expect("tempdir");
+        let config =
+            AccountConfig::from_163_lines(["demo@163.com", "not-a-real-secret"]).expect("config");
+        let backend = MailBackend::open(config, directory.path().join("mail.db")).expect("backend");
+        backend.initialize().expect("initialize");
+
+        for (role, mailbox, uid_validity) in [
+            (MailboxRole::Archive, "Archive", 81),
+            (MailboxRole::Trash, "Trash", 82),
+        ] {
+            backend
+                .repository
+                .set_mailbox_capability(
+                    &backend.config.account_id,
+                    &MailboxCapability {
+                        role,
+                        status: MailboxCapabilityStatus::Available,
+                        display_name: Some(mailbox.to_owned()),
+                        unavailable_reason: None,
+                        retryable: false,
+                    },
+                )
+                .unwrap();
+            backend
+                .repository
+                .upsert_mailbox_state(&MailboxState {
+                    account_id: backend.config.account_id.clone(),
+                    mailbox: mailbox.to_owned(),
+                    uid_validity: Some(uid_validity),
+                    uid_next: Some(3),
+                    highest_uid: Some(2),
+                    highest_modseq: None,
+                    last_synced_at: None,
+                })
+                .unwrap();
+            let mut message = cached_message(
+                &backend.config.account_id,
+                2,
+                &format!("<move-{mailbox}@example.com>"),
+                "move to inbox",
+                "sender@example.com",
+                "demo@163.com",
+            );
+            message.mailbox = mailbox.to_owned();
+            let message_id = backend.repository.upsert_message(&message).unwrap();
+            let public_id = public_message_id(&backend, role, message_id);
+
+            let receipt = backend
+                .move_message_to_inbox(&public_id)
+                .expect("queue move to Inbox");
+            assert_eq!(receipt.status, MutationStatus::Pending);
+            assert_eq!(receipt.source_role, role);
+            assert_eq!(receipt.destination_role, Some(MailboxRole::Inbox));
+            assert!(
+                backend
+                    .list_mailbox_page(&backend.config.account_id, role, None, 50, None)
+                    .unwrap()
+                    .items
+                    .is_empty()
+            );
+        }
+
+        let inbox = backend
+            .list_mailbox_page(
+                &backend.config.account_id,
+                MailboxRole::Inbox,
+                None,
+                50,
+                None,
+            )
+            .unwrap();
+        assert_eq!(inbox.items.len(), 2);
+        assert!(inbox.items.iter().all(|item| {
+            item.displayed_role == MailboxRole::Inbox
+                && item.pending_mutation.as_ref().is_some_and(|pending| {
+                    pending.kind == MessageActionKind::MoveToInbox
+                        && pending.destination_role == MailboxRole::Inbox
+                })
+        }));
     }
 
     #[tokio::test]

@@ -285,6 +285,7 @@ impl RemoteMutationPhase {
 #[serde(rename_all = "snake_case")]
 pub enum MessageActionKind {
     Archive,
+    MoveToInbox,
     MoveToTrash,
     PermanentDelete,
 }
@@ -293,6 +294,7 @@ impl MessageActionKind {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Archive => "archive",
+            Self::MoveToInbox => "move_to_inbox",
             Self::MoveToTrash => "move_to_trash",
             Self::PermanentDelete => "permanent_delete",
         }
@@ -301,6 +303,7 @@ impl MessageActionKind {
     pub(crate) fn from_str(value: &str) -> Option<Self> {
         match value {
             "archive" => Some(Self::Archive),
+            "move_to_inbox" => Some(Self::MoveToInbox),
             "move_to_trash" => Some(Self::MoveToTrash),
             "permanent_delete" => Some(Self::PermanentDelete),
             _ => None,
@@ -1106,6 +1109,10 @@ mod tests {
             (
                 serde_json::to_string(&MutationStatus::OutcomeUnknown).unwrap(),
                 "\"outcome_unknown\"",
+            ),
+            (
+                serde_json::to_string(&MessageActionKind::MoveToInbox).unwrap(),
+                "\"move_to_inbox\"",
             ),
             (
                 serde_json::to_string(&MessageActionKind::MoveToTrash).unwrap(),
