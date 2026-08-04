@@ -263,7 +263,7 @@ must be updated here when an intentional product change lands.
   pagination, and older remote discovery uses bounded IMAP UID searches with
   the `FLAGGED` criterion. Exhausting or refreshing Starred history must not
   advance, complete, or invalidate ordinary folder history.
-- When a user unstars a message while viewing **???**, its star state still
+- When a user unstars a message while viewing **已收藏**, its star state still
   updates in SQLite immediately and follows the ordinary remote-mutation rules,
   but that row remains in the current visible Starred visit so it can be starred
   again after an accidental click. Repeated star or unstar actions update the
