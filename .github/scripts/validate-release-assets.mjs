@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
+import { releaseAssetDownloadUrl } from "./normalize-updater-manifest.mjs";
 
 function minisignKeyId(encodedEnvelope, label) {
   const envelope = Buffer.from(
@@ -32,6 +33,7 @@ function normalizedUrl(value) {
 export function validateReleaseAssets({
   manifest,
   releaseAssets,
+  repository,
   tauriConfig,
   tag,
 }) {
@@ -72,17 +74,21 @@ export function validateReleaseAssets({
   }
 
   const assetNameByUrl = new Map();
-  const browserUrlByAssetName = new Map();
+  const stableUrlByAssetName = new Map();
   for (const asset of releaseAssets) {
-    for (const url of [asset.url, asset.browser_download_url].filter(Boolean)) {
+    const stableDownloadUrl = releaseAssetDownloadUrl({
+      repository,
+      tag,
+      assetName: asset.name,
+    });
+    for (const url of [
+      asset.url,
+      asset.browser_download_url,
+      stableDownloadUrl,
+    ].filter(Boolean)) {
       assetNameByUrl.set(normalizedUrl(url), asset.name);
     }
-    if (asset.browser_download_url) {
-      browserUrlByAssetName.set(
-        asset.name,
-        normalizedUrl(asset.browser_download_url),
-      );
-    }
+    stableUrlByAssetName.set(asset.name, stableDownloadUrl);
   }
 
   const requiredPlatformAssets = {
@@ -133,9 +139,9 @@ export function validateReleaseAssets({
         `${platform} must reference ${expectedAsset}, not ${referencedAsset}.`,
       );
     }
-    if (url !== browserUrlByAssetName.get(expectedAsset)) {
+    if (url !== stableUrlByAssetName.get(expectedAsset)) {
       throw new Error(
-        `${platform} must use the GitHub browser download URL for ${expectedAsset}.`,
+        `${platform} must use the version-pinned GitHub download URL for ${expectedAsset}.`,
       );
     }
     const signatureKeyId = minisignKeyId(
@@ -172,6 +178,7 @@ if (isMain) {
     validateReleaseAssets({
       manifest,
       releaseAssets,
+      repository: process.env.GITHUB_REPOSITORY,
       tauriConfig,
       tag: process.env.RELEASE_TAG,
     }),

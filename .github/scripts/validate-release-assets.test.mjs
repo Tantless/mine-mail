@@ -8,6 +8,7 @@ import { validateReleaseAssets } from "./validate-release-assets.mjs";
 const tag = "v1.2.3";
 const version = tag.slice(1);
 const keyId = "0123456789abcdef";
+const repository = "example/mine-mail";
 
 function minisignEnvelope() {
   const payload = Buffer.alloc(10);
@@ -17,7 +18,7 @@ function minisignEnvelope() {
   ).toString("base64");
 }
 
-function releaseFixture() {
+function releaseFixture({ draft = false } = {}) {
   const names = [
     "latest.json",
     `Mine-Mail_${version}_x64-setup.exe`,
@@ -30,7 +31,7 @@ function releaseFixture() {
   const releaseAssets = names.map((name, index) => ({
     name,
     url: `https://api.github.com/repos/example/mine-mail/releases/assets/${index + 1}`,
-    browser_download_url: `https://github.com/example/mine-mail/releases/download/${tag}/${name}`,
+    browser_download_url: `https://github.com/${repository}/releases/download/${draft ? "untagged-a8cd3177c258479dab31" : tag}/${name}`,
   }));
   const urlFor = (name) =>
     releaseAssets.find((asset) => asset.name === name).browser_download_url;
@@ -53,6 +54,7 @@ function releaseFixture() {
   return {
     manifest: { version, platforms },
     releaseAssets,
+    repository,
     tauriConfig: {
       plugins: { updater: { pubkey: minisignEnvelope() } },
     },
@@ -67,7 +69,7 @@ test("accepts the supported release asset and updater matrix", () => {
   );
 });
 
-test("normalizes updater API asset URLs to browser download URLs", () => {
+test("normalizes updater API asset URLs to version-pinned download URLs", () => {
   const fixture = releaseFixture();
   for (const entry of Object.values(fixture.manifest.platforms)) {
     const asset = fixture.releaseAssets.find(
@@ -94,6 +96,27 @@ test("normalizes updater API asset URLs to browser download URLs", () => {
   );
 });
 
+test("replaces draft release URLs with version-pinned download URLs", () => {
+  const fixture = releaseFixture({ draft: true });
+  const normalized = normalizeUpdaterManifest(fixture);
+
+  for (const entry of Object.values(normalized.platforms)) {
+    assert.match(
+      entry.url,
+      /^https:\/\/github\.com\/example\/mine-mail\/releases\/download\/v1\.2\.3\//,
+    );
+    assert.doesNotMatch(entry.url, /\/untagged-/);
+  }
+  assert.equal(
+    validateReleaseAssets({ ...fixture, manifest: normalized }),
+    `Validated the ${tag} release asset and updater matrix.`,
+  );
+  assert.deepEqual(
+    normalizeUpdaterManifest({ ...fixture, manifest: normalized }),
+    normalized,
+  );
+});
+
 test("rejects updater URLs outside the release during normalization", () => {
   const fixture = releaseFixture();
   fixture.manifest.platforms["windows-x86_64-nsis"].url =
@@ -105,7 +128,7 @@ test("rejects updater URLs outside the release during normalization", () => {
   );
 });
 
-test("requires browser download URLs in the validated manifest", () => {
+test("requires version-pinned download URLs in the validated manifest", () => {
   const fixture = releaseFixture();
   const updaterAsset = fixture.releaseAssets.find(
     (asset) => asset.name === `Mine.Mail_${version}_x64-setup.exe`,
@@ -114,7 +137,16 @@ test("requires browser download URLs in the validated manifest", () => {
 
   assert.throws(
     () => validateReleaseAssets(fixture),
-    /must use the GitHub browser download URL/,
+    /must use the version-pinned GitHub download URL/,
+  );
+});
+
+test("rejects draft release URLs in the validated manifest", () => {
+  const fixture = releaseFixture({ draft: true });
+
+  assert.throws(
+    () => validateReleaseAssets(fixture),
+    /must use the version-pinned GitHub download URL/,
   );
 });
 
