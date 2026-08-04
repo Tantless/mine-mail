@@ -44,8 +44,10 @@ function panelProps(overrides = {}) {
     accountStatus,
     accountSubmitStatus: "idle",
     accountError: null,
+    accountErrorProvider: null,
     onConfigureAccount: vi.fn(),
     onConnectGoogle: vi.fn(),
+    onAccountProviderChange: vi.fn(),
     onSwitchAccount: vi.fn(),
     onSaveAccountRemark: vi.fn().mockResolvedValue(accountStatus),
     onRemoveAccount: vi.fn(),
@@ -177,6 +179,35 @@ describe("SettingsPanel account flow", () => {
 
     await user.click(screen.getByRole("button", { name: "添加账户" }));
     expect(screen.getByRole("heading", { name: "选择邮箱服务商" })).toBeTruthy();
+  });
+
+  it("keeps a Google timeout error out of another provider form", async () => {
+    const user = userEvent.setup();
+    const onAccountProviderChange = vi.fn();
+    const props = panelProps({ onAccountProviderChange });
+    const view = render(<SettingsPanel {...props} />);
+
+    await user.click(screen.getByRole("button", { name: "添加账户" }));
+    await user.click(screen.getByRole("button", { name: /Gmail/ }));
+    view.rerender(
+      <SettingsPanel
+        {...props}
+        accountSubmitStatus="error"
+        accountError="Google 登录等待超时，请重试。"
+        accountErrorProvider="gmail"
+      />,
+    );
+    expect(screen.getByRole("alert").textContent).toBe(
+      "Google 登录等待超时，请重试。",
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: "返回选择邮箱服务商" }),
+    );
+    await user.click(screen.getByRole("button", { name: /QQ 邮箱/ }));
+
+    expect(screen.queryByText("Google 登录等待超时，请重试。")).toBeNull();
+    expect(onAccountProviderChange).toHaveBeenLastCalledWith("qq");
   });
 
   it("keeps Chinese connection headings free of inserted whitespace", async () => {

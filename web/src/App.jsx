@@ -782,6 +782,7 @@ export function App() {
   const [accountStatus, setAccountStatus] = useState({ configured: null });
   const [accountSubmitStatus, setAccountSubmitStatus] = useState("idle");
   const [accountError, setAccountError] = useState(null);
+  const [accountErrorProvider, setAccountErrorProvider] = useState(null);
   const [isAccountRepairVisible, setIsAccountRepairVisible] = useState(false);
   const [profileAvatars, setProfileAvatars] = useState([]);
   const [toast, setToast] = useState(null);
@@ -6698,6 +6699,7 @@ export function App() {
     rememberActiveAccountViewRef.current(previousAccountId);
     setAccountSubmitStatus("saving");
     setAccountError(null);
+    setAccountErrorProvider(request.provider);
     try {
       const status = await mailApi.configureAccount(request);
       setAccountStatus(status);
@@ -6754,6 +6756,7 @@ export function App() {
         "账户配置失败，请检查地址和授权信息",
       );
       setAccountError(message);
+      setAccountErrorProvider(request.provider);
       setAccountSubmitStatus("error");
     }
   };
@@ -6795,6 +6798,7 @@ export function App() {
     void prefetchAccountViews(status);
     setAccountSubmitStatus("saved");
     setAccountError(null);
+    setAccountErrorProvider(null);
   };
 
   const handleConnectGoogle = async () => {
@@ -6805,12 +6809,14 @@ export function App() {
     rememberActiveAccountViewRef.current(previousAccountId);
     setAccountSubmitStatus("saving");
     setAccountError(null);
+    setAccountErrorProvider("gmail");
     try {
       const status = await mailApi.connectGoogleAccount();
       await applyActiveAccount(status, previousAccountId);
     } catch (error) {
       const message = describeError(error, "Google 登录失败，请重试");
       setAccountError(message);
+      setAccountErrorProvider("gmail");
       setAccountSubmitStatus("error");
     }
   };
@@ -7080,6 +7086,7 @@ export function App() {
       }
       setAccountSubmitStatus("saved");
       setAccountError(null);
+      setAccountErrorProvider(null);
       void loadMailboxData({
         accountId,
         selectFirst: false,
@@ -7369,8 +7376,15 @@ export function App() {
   const openAccountSetup = () => {
     invalidatePreparedFolderMotion();
     setSettingsSaveStatus("idle");
+    setAccountError(null);
+    setAccountErrorProvider(null);
     setSettingsFocusTarget(`account-form:${Date.now()}`);
     setIsSettingsOpen(true);
+  };
+
+  const handleAccountProviderChange = () => {
+    setAccountError(null);
+    setAccountErrorProvider(null);
   };
 
   const openAccountRepair = () => {
@@ -7733,8 +7747,10 @@ export function App() {
               accountStatus={accountStatus}
               accountSubmitStatus={accountSubmitStatus}
               accountError={accountError}
+              accountErrorProvider={accountErrorProvider}
               onConfigureAccount={handleConfigureAccount}
               onConnectGoogle={handleConnectGoogle}
+              onAccountProviderChange={handleAccountProviderChange}
               onSwitchAccount={(accountId) => void handleSwitchAccount(accountId)}
               onSaveAccountRemark={handleSaveAccountRemark}
               onRemoveAccount={(connectedAccount, options) =>
