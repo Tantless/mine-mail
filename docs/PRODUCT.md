@@ -824,6 +824,36 @@ must be updated here when an intentional product change lands.
   are not persistent main-interface status chrome. Show action-specific progress
   and failures requiring a user decision.
 
+## Local diagnostics
+
+- Rust writes newline-delimited, versioned structured diagnostic events to the
+  operating-system application log directory. Every event includes a session
+  ID, monotonic sequence, UTC timestamp, session uptime, severity, event name,
+  and schema version. The session-start event adds application version,
+  platform, and architecture.
+- Diagnostic coverage is measured over registered Tauri command functions. At
+  least 95% of that command surface must be observed, and every command that can
+  return a failure must record a bounded failure and later recovery. Pure,
+  in-memory, infallible lookups may remain silent.
+- Account connection and removal, synchronization, OAuth refresh, message
+  mutations and their remote flush, drafts, SMTP and Outbox decisions,
+  attachment saves, settings, storage migration, notifications, frontend event
+  delivery, startup, shutdown, and Rust panics are diagnosable operational
+  boundaries. Consequential or long-running operations also record start,
+  completion, safe outcome, and duration; successful routine reads stay quiet
+  unless slow or recovering from a failure.
+- Diagnostic events never include raw error text, mailbox addresses, subjects,
+  recipients, message bodies, raw HTML/RFC822, credentials, tokens, attachment
+  names, user-selected paths, or complete local paths. Stable account and item
+  identifiers are represented only by bounded one-way references.
+- Repeated equivalent background or automatically retried failures are
+  rate-limited and summarized with attempt and suppression counts; a later
+  success records recovery. Frontend event payloads are never copied into
+  diagnostics even when event delivery fails.
+- The active file is limited to 5 MiB, at most three archives are retained, the
+  total envelope is 20 MiB, and startup removes owned archives older than seven
+  days. Cleanup never removes unrelated files.
+
 ## Local data location and migration
 
 - The branded Windows installer treats a selected drive root as a parent and

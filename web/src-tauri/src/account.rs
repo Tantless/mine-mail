@@ -576,10 +576,7 @@ impl BackendState {
             })
     }
 
-    pub(crate) fn clear_archive_folder_selections(
-        &self,
-        account_id: &str,
-    ) -> Result<(), String> {
+    pub(crate) fn clear_archive_folder_selections(&self, account_id: &str) -> Result<(), String> {
         let mut selections = self
             .archive_folder_selections
             .lock()
@@ -721,11 +718,24 @@ impl BackendState {
             .unwrap_or(u64::MAX)
             .max(1);
         let per_account_budget = crate::BODY_CACHE_TOTAL_BYTES / account_count;
-        for account in slots.accounts.values() {
+        for (account_id, account) in &slots.accounts {
             account
                 .local
                 .set_body_cache_budget_bytes(per_account_budget);
-            let _ = account.local.enforce_body_cache_budget(None);
+            match account.local.enforce_body_cache_budget(None) {
+                Ok(_) => diagnostics::limited_recovery(
+                    "body_cache_budget_enforcement_failed",
+                    "body_cache_budget_enforcement_recovered",
+                    "body_cache_rebalance",
+                    Some(account_id),
+                ),
+                Err(error) => diagnostics::limited_failure(
+                    "body_cache_budget_enforcement_failed",
+                    "body_cache_rebalance",
+                    Some(account_id),
+                    diagnostics::mail_error_kind(&error),
+                ),
+            }
             if let Some(network) = &account.network {
                 network.set_body_cache_budget_bytes(per_account_budget);
             }
@@ -865,7 +875,15 @@ impl AccountRuntime {
         let store = AccountStore::new(app_data.join(ACCOUNT_METADATA_FILE));
         let (stored, mut startup_error) = match store.load() {
             Ok(stored) => (stored, None),
-            Err(error) => (StoredAccounts::default(), Some(error)),
+            Err(error) => {
+                diagnostics::error(
+                    "account_metadata_load_failed",
+                    DiagnosticFields::default()
+                        .operation("account_runtime_open")
+                        .error(DiagnosticErrorKind::Serialization),
+                );
+                (StoredAccounts::default(), Some(error))
+            }
         };
 
         let mut backends = Vec::new();
@@ -875,8 +893,26 @@ impl AccountRuntime {
                 Ok(local) => {
                     let (network, credential_available) =
                         match load_network_backend(metadata, &database_path) {
-                            Ok(result) => result,
+                            Ok(result) => {
+                                if !result.1 {
+                                    diagnostics::warn(
+                                        "account_credential_unavailable",
+                                        DiagnosticFields::default()
+                                            .account(&metadata.account_id)
+                                            .operation("account_runtime_open")
+                                            .outcome("cached_mail_only"),
+                                    );
+                                }
+                                result
+                            }
                             Err(error) => {
+                                diagnostics::error(
+                                    "account_network_backend_open_failed",
+                                    DiagnosticFields::default()
+                                        .account(&metadata.account_id)
+                                        .operation("account_runtime_open")
+                                        .error(DiagnosticErrorKind::Runtime),
+                                );
                                 record_startup_error(&mut startup_error, error);
                                 (None, false)
                             }
@@ -888,7 +924,16 @@ impl AccountRuntime {
                         credential_available,
                     ));
                 }
-                Err(error) => record_startup_error(&mut startup_error, error),
+                Err(error) => {
+                    diagnostics::error(
+                        "account_local_backend_open_failed",
+                        DiagnosticFields::default()
+                            .account(&metadata.account_id)
+                            .operation("account_runtime_open")
+                            .error(DiagnosticErrorKind::Database),
+                    );
+                    record_startup_error(&mut startup_error, error);
+                }
             }
         }
         let backend_state = BackendState::new(backends, stored.active_account_id.clone());
@@ -1046,12 +1091,37 @@ impl AccountRuntime {
         backend_state: &BackendState,
         mut input: ConfigureAccountRequest,
     ) -> Result<(AccountStatusDto, bool), String> {
-        let password = input.take_password()?;
-        let mut metadata = AccountMetadata::from_input(&input)?;
+        let password = input.take_password().inspect_err(|_| {
+            log_account_operation_failure(
+                "account_configuration_failed",
+                "configure_account",
+                "input_validation",
+                None,
+                DiagnosticErrorKind::Validation,
+            );
+        })?;
+        let mut metadata = AccountMetadata::from_input(&input).inspect_err(|_| {
+            log_account_operation_failure(
+                "account_configuration_failed",
+                "configure_account",
+                "account_validation",
+                None,
+                DiagnosticErrorKind::Validation,
+            );
+        })?;
         let previous_stored = self
             .stored
             .read()
-            .map_err(|_| "Account state is temporarily unavailable.".to_owned())?
+            .map_err(|_| "Account state is temporarily unavailable.".to_owned())
+            .inspect_err(|_| {
+                log_account_operation_failure(
+                    "account_configuration_failed",
+                    "configure_account",
+                    "account_state_read",
+                    Some(&metadata.account_id),
+                    DiagnosticErrorKind::Runtime,
+                );
+            })?
             .clone();
         let account_added = !previous_stored
             .accounts
@@ -1065,30 +1135,122 @@ impl AccountRuntime {
             metadata.account_id = existing.account_id.clone();
         }
         let database_path = account_database_path(&self.app_data, &metadata);
-        let local_backend = if account_added {
-            open_local_backend(&metadata, &database_path)?
+        let local_backend_result = if account_added {
+            open_local_backend(&metadata, &database_path)
         } else {
-            open_local_backend_without_outbox_recovery(&metadata, &database_path)?
+            open_local_backend_without_outbox_recovery(&metadata, &database_path)
         };
+        let local_backend = local_backend_result.inspect_err(|_| {
+            log_account_operation_failure(
+                "account_configuration_failed",
+                "configure_account",
+                "local_database_open",
+                Some(&metadata.account_id),
+                DiagnosticErrorKind::Database,
+            );
+        })?;
         let network_backend =
-            open_backend_without_outbox_recovery(&metadata, &database_path, password.as_str())?;
-        verify_connections(&network_backend, metadata.authentication).await?;
+            open_backend_without_outbox_recovery(&metadata, &database_path, password.as_str())
+                .inspect_err(|_| {
+                    log_account_operation_failure(
+                        "account_configuration_failed",
+                        "configure_account",
+                        "network_backend_open",
+                        Some(&metadata.account_id),
+                        DiagnosticErrorKind::Config,
+                    );
+                })?;
+        verify_connections(&network_backend, metadata.authentication)
+            .await
+            .inspect_err(|_| {
+                log_account_operation_failure(
+                    "account_configuration_failed",
+                    "configure_account",
+                    "connection_verification",
+                    Some(&metadata.account_id),
+                    DiagnosticErrorKind::Runtime,
+                );
+            })?;
 
-        let credential_gate = self.credential_gate(&metadata.account_id)?;
+        let credential_gate = self
+            .credential_gate(&metadata.account_id)
+            .inspect_err(|_| {
+                log_account_operation_failure(
+                    "account_configuration_failed",
+                    "configure_account",
+                    "credential_gate_open",
+                    Some(&metadata.account_id),
+                    DiagnosticErrorKind::Runtime,
+                );
+            })?;
         let _credential_guard = credential_gate.lock().await;
-        let entry = keyring_entry(&metadata)?;
-        let previous_credential = read_previous_credential(&entry)?;
+        let entry = keyring_entry(&metadata).inspect_err(|_| {
+            log_account_operation_failure(
+                "account_configuration_failed",
+                "configure_account",
+                "credential_store_open",
+                Some(&metadata.account_id),
+                DiagnosticErrorKind::Runtime,
+            );
+        })?;
+        let previous_credential = read_previous_credential(&entry).inspect_err(|_| {
+            log_account_operation_failure(
+                "account_configuration_failed",
+                "configure_account",
+                "credential_store_read",
+                Some(&metadata.account_id),
+                DiagnosticErrorKind::Runtime,
+            );
+        })?;
         entry
             .set_password(password.as_str())
-            .map_err(|_| "The OS credential store could not save this account.".to_owned())?;
+            .map_err(|_| "The OS credential store could not save this account.".to_owned())
+            .inspect_err(|_| {
+                log_account_operation_failure(
+                    "account_configuration_failed",
+                    "configure_account",
+                    "credential_store_write",
+                    Some(&metadata.account_id),
+                    DiagnosticErrorKind::Runtime,
+                );
+            })?;
 
         let mut next_stored = previous_stored.clone();
         if let Err(error) = next_stored.upsert_and_activate(metadata.clone()) {
-            let _ = restore_previous_credential(&entry, previous_credential.as_ref());
+            log_account_operation_failure(
+                "account_configuration_failed",
+                "configure_account",
+                "account_limit_or_state",
+                Some(&metadata.account_id),
+                DiagnosticErrorKind::Validation,
+            );
+            if restore_previous_credential(&entry, previous_credential.as_ref()).is_err() {
+                log_account_operation_failure(
+                    "account_configuration_failed",
+                    "configure_account",
+                    "credential_rollback",
+                    Some(&metadata.account_id),
+                    DiagnosticErrorKind::Runtime,
+                );
+            }
             return Err(error);
         }
         if let Err(error) = self.store.save(&next_stored) {
+            log_account_operation_failure(
+                "account_configuration_failed",
+                "configure_account",
+                "account_metadata_save",
+                Some(&metadata.account_id),
+                DiagnosticErrorKind::Io,
+            );
             if restore_previous_credential(&entry, previous_credential.as_ref()).is_err() {
+                log_account_operation_failure(
+                    "account_configuration_failed",
+                    "configure_account",
+                    "credential_rollback",
+                    Some(&metadata.account_id),
+                    DiagnosticErrorKind::Runtime,
+                );
                 return Err(format!(
                     "{error} The previous OS credential could not be restored."
                 ));
@@ -1099,12 +1261,31 @@ impl AccountRuntime {
         *self
             .stored
             .write()
-            .map_err(|_| "Account state is temporarily unavailable.".to_owned())? = next_stored;
+            .map_err(|_| "Account state is temporarily unavailable.".to_owned())
+            .inspect_err(|_| {
+                log_account_operation_failure(
+                    "account_configuration_failed",
+                    "configure_account",
+                    "account_state_commit",
+                    Some(&metadata.account_id),
+                    DiagnosticErrorKind::Runtime,
+                );
+            })? = next_stored;
         *self
             .startup_error
             .write()
             .map_err(|_| "Account state is temporarily unavailable.".to_owned())? = None;
-        backend_state.replace_account(metadata.account_id, local_backend, network_backend)?;
+        backend_state
+            .replace_account(metadata.account_id, local_backend, network_backend)
+            .inspect_err(|_| {
+                log_account_operation_failure(
+                    "account_configuration_failed",
+                    "configure_account",
+                    "backend_runtime_replace",
+                    None,
+                    DiagnosticErrorKind::Runtime,
+                );
+            })?;
         Ok((self.status(backend_state), account_added))
     }
 
@@ -1137,11 +1318,28 @@ impl AccountRuntime {
         backend_state: &BackendState,
         oauth: GoogleAuthorization,
     ) -> Result<(AccountStatusDto, bool), String> {
-        let mut metadata = AccountMetadata::google(oauth.email.clone())?;
+        let mut metadata = AccountMetadata::google(oauth.email.clone()).inspect_err(|_| {
+            log_account_operation_failure(
+                "google_account_connection_failed",
+                "connect_google_account",
+                "account_validation",
+                None,
+                DiagnosticErrorKind::Validation,
+            );
+        })?;
         let previous_stored = self
             .stored
             .read()
-            .map_err(|_| "Account state is temporarily unavailable.".to_owned())?
+            .map_err(|_| "Account state is temporarily unavailable.".to_owned())
+            .inspect_err(|_| {
+                log_account_operation_failure(
+                    "google_account_connection_failed",
+                    "connect_google_account",
+                    "account_state_read",
+                    Some(&metadata.account_id),
+                    DiagnosticErrorKind::Runtime,
+                );
+            })?
             .clone();
         let account_added = !previous_stored
             .accounts
@@ -1156,35 +1354,126 @@ impl AccountRuntime {
         }
 
         let database_path = account_database_path(&self.app_data, &metadata);
-        let local_backend = if account_added {
-            open_local_backend(&metadata, &database_path)?
+        let local_backend_result = if account_added {
+            open_local_backend(&metadata, &database_path)
         } else {
-            open_local_backend_without_outbox_recovery(&metadata, &database_path)?
+            open_local_backend_without_outbox_recovery(&metadata, &database_path)
         };
+        let local_backend = local_backend_result.inspect_err(|_| {
+            log_account_operation_failure(
+                "google_account_connection_failed",
+                "connect_google_account",
+                "local_database_open",
+                Some(&metadata.account_id),
+                DiagnosticErrorKind::Database,
+            );
+        })?;
         let network_backend = open_backend_without_outbox_recovery(
             &metadata,
             &database_path,
             &oauth.tokens.access_token,
-        )?;
-        let credential_gate = self.credential_gate(&metadata.account_id)?;
+        )
+        .inspect_err(|_| {
+            log_account_operation_failure(
+                "google_account_connection_failed",
+                "connect_google_account",
+                "network_backend_open",
+                Some(&metadata.account_id),
+                DiagnosticErrorKind::Config,
+            );
+        })?;
+        let credential_gate = self
+            .credential_gate(&metadata.account_id)
+            .inspect_err(|_| {
+                log_account_operation_failure(
+                    "google_account_connection_failed",
+                    "connect_google_account",
+                    "credential_gate_open",
+                    Some(&metadata.account_id),
+                    DiagnosticErrorKind::Runtime,
+                );
+            })?;
         let _credential_guard = credential_gate.lock().await;
-        let entry = keyring_entry(&metadata)?;
-        let previous_credential = read_previous_credential(&entry)?;
+        let entry = keyring_entry(&metadata).inspect_err(|_| {
+            log_account_operation_failure(
+                "google_account_connection_failed",
+                "connect_google_account",
+                "credential_store_open",
+                Some(&metadata.account_id),
+                DiagnosticErrorKind::Runtime,
+            );
+        })?;
+        let previous_credential = read_previous_credential(&entry).inspect_err(|_| {
+            log_account_operation_failure(
+                "google_account_connection_failed",
+                "connect_google_account",
+                "credential_store_read",
+                Some(&metadata.account_id),
+                DiagnosticErrorKind::Runtime,
+            );
+        })?;
         let encoded = Zeroizing::new(
             serde_json::to_string(&oauth.tokens)
-                .map_err(|_| "Google credentials could not be encoded.".to_owned())?,
+                .map_err(|_| "Google credentials could not be encoded.".to_owned())
+                .inspect_err(|_| {
+                    log_account_operation_failure(
+                        "google_account_connection_failed",
+                        "connect_google_account",
+                        "credential_encoding",
+                        Some(&metadata.account_id),
+                        DiagnosticErrorKind::Serialization,
+                    );
+                })?,
         );
-        entry.set_password(encoded.as_str()).map_err(|_| {
-            "The OS credential store could not save Google authorization.".to_owned()
-        })?;
+        entry
+            .set_password(encoded.as_str())
+            .map_err(|_| "The OS credential store could not save Google authorization.".to_owned())
+            .inspect_err(|_| {
+                log_account_operation_failure(
+                    "google_account_connection_failed",
+                    "connect_google_account",
+                    "credential_store_write",
+                    Some(&metadata.account_id),
+                    DiagnosticErrorKind::Runtime,
+                );
+            })?;
 
         let mut next_stored = previous_stored.clone();
         if let Err(error) = next_stored.upsert_and_activate(metadata.clone()) {
-            let _ = restore_previous_credential(&entry, previous_credential.as_ref());
+            log_account_operation_failure(
+                "google_account_connection_failed",
+                "connect_google_account",
+                "account_limit_or_state",
+                Some(&metadata.account_id),
+                DiagnosticErrorKind::Validation,
+            );
+            if restore_previous_credential(&entry, previous_credential.as_ref()).is_err() {
+                log_account_operation_failure(
+                    "google_account_connection_failed",
+                    "connect_google_account",
+                    "credential_rollback",
+                    Some(&metadata.account_id),
+                    DiagnosticErrorKind::Runtime,
+                );
+            }
             return Err(error);
         }
         if let Err(error) = self.store.save(&next_stored) {
+            log_account_operation_failure(
+                "google_account_connection_failed",
+                "connect_google_account",
+                "account_metadata_save",
+                Some(&metadata.account_id),
+                DiagnosticErrorKind::Io,
+            );
             if restore_previous_credential(&entry, previous_credential.as_ref()).is_err() {
+                log_account_operation_failure(
+                    "google_account_connection_failed",
+                    "connect_google_account",
+                    "credential_rollback",
+                    Some(&metadata.account_id),
+                    DiagnosticErrorKind::Runtime,
+                );
                 return Err(format!(
                     "{error} The previous OS credential could not be restored."
                 ));
@@ -1200,7 +1489,17 @@ impl AccountRuntime {
             .startup_error
             .write()
             .map_err(|_| "Account state is temporarily unavailable.".to_owned())? = None;
-        backend_state.replace_account(metadata.account_id, local_backend, network_backend)?;
+        backend_state
+            .replace_account(metadata.account_id, local_backend, network_backend)
+            .inspect_err(|_| {
+                log_account_operation_failure(
+                    "google_account_connection_failed",
+                    "connect_google_account",
+                    "backend_runtime_replace",
+                    None,
+                    DiagnosticErrorKind::Runtime,
+                );
+            })?;
         Ok((self.status(backend_state), account_added))
     }
 
@@ -1283,29 +1582,79 @@ impl AccountRuntime {
         let previous_stored = self
             .stored
             .read()
-            .map_err(|_| "Account state is temporarily unavailable.".to_owned())?
+            .map_err(|_| "Account state is temporarily unavailable.".to_owned())
+            .inspect_err(|_| {
+                log_account_operation_failure(
+                    "account_removal_failed",
+                    "remove_account",
+                    "account_state_read",
+                    Some(account_id),
+                    DiagnosticErrorKind::Runtime,
+                );
+            })?
             .clone();
         let metadata = previous_stored
             .accounts
             .iter()
             .find(|metadata| metadata.account_id == account_id)
             .cloned()
-            .ok_or_else(|| "The selected account does not exist.".to_owned())?;
+            .ok_or_else(|| "The selected account does not exist.".to_owned())
+            .inspect_err(|_| {
+                log_account_operation_failure(
+                    "account_removal_failed",
+                    "remove_account",
+                    "account_validation",
+                    Some(account_id),
+                    DiagnosticErrorKind::Validation,
+                );
+            })?;
         let is_google_oauth = metadata.authentication == AccountAuthentication::GoogleOAuth;
         if request.revoke_google_authorization && !is_google_oauth {
+            log_account_operation_failure(
+                "account_removal_failed",
+                "remove_account",
+                "authorization_validation",
+                Some(account_id),
+                DiagnosticErrorKind::Validation,
+            );
             return Err(
                 "Google authorization can only be revoked for a Google OAuth account.".to_owned(),
             );
         }
         if request.revoke_google_authorization != google_authorization_revoked {
+            log_account_operation_failure(
+                "account_removal_failed",
+                "remove_account",
+                "authorization_confirmation",
+                Some(account_id),
+                DiagnosticErrorKind::Validation,
+            );
             return Err(
                 "Google authorization must be confirmed before the account can be removed."
                     .to_owned(),
             );
         }
-        let credential_gate = self.credential_gate(&metadata.account_id)?;
+        let credential_gate = self
+            .credential_gate(&metadata.account_id)
+            .inspect_err(|_| {
+                log_account_operation_failure(
+                    "account_removal_failed",
+                    "remove_account",
+                    "credential_gate_open",
+                    Some(account_id),
+                    DiagnosticErrorKind::Runtime,
+                );
+            })?;
         let _credential_guard = credential_gate.lock().await;
-        let entry = keyring_entry(&metadata)?;
+        let entry = keyring_entry(&metadata).inspect_err(|_| {
+            log_account_operation_failure(
+                "account_removal_failed",
+                "remove_account",
+                "credential_store_open",
+                Some(account_id),
+                DiagnosticErrorKind::Runtime,
+            );
+        })?;
 
         let mut next_stored = previous_stored.clone();
         next_stored
@@ -1318,6 +1667,13 @@ impl AccountRuntime {
                 .map(|metadata| metadata.account_id.clone());
         }
         if let Err(error) = self.store.save(&next_stored) {
+            log_account_operation_failure(
+                "account_removal_failed",
+                "remove_account",
+                "account_metadata_save",
+                Some(account_id),
+                DiagnosticErrorKind::Io,
+            );
             return Err(if google_authorization_revoked {
                 format!(
                     "Google authorization was revoked, but Mine Mail could not update its local account list: {error} Restart the app and retry local removal."
@@ -1330,7 +1686,22 @@ impl AccountRuntime {
         match entry.delete_credential() {
             Ok(()) | Err(keyring::Error::NoEntry) => {}
             Err(_) => {
-                let _ = self.store.save(&previous_stored);
+                log_account_operation_failure(
+                    "account_removal_failed",
+                    "remove_account",
+                    "credential_delete",
+                    Some(account_id),
+                    DiagnosticErrorKind::Runtime,
+                );
+                if self.store.save(&previous_stored).is_err() {
+                    log_account_operation_failure(
+                        "account_removal_failed",
+                        "remove_account",
+                        "account_metadata_rollback",
+                        Some(account_id),
+                        DiagnosticErrorKind::Io,
+                    );
+                }
                 return Err(if google_authorization_revoked {
                     "Google authorization was revoked, but the OS credential could not be removed. The account remains listed so you can retry the local cleanup."
                         .to_owned()
@@ -1344,19 +1715,47 @@ impl AccountRuntime {
             account_id,
             request.delete_local_data,
         );
+        if managed_attachment_warning.is_some() {
+            log_account_operation_failure(
+                "account_removal_cleanup_failed",
+                "remove_account",
+                "managed_attachment_cleanup",
+                Some(account_id),
+                DiagnosticErrorKind::Io,
+            );
+        }
         if backend_state
             .remove(account_id, next_stored.active_account_id.clone())
             .is_err()
         {
+            log_account_operation_failure(
+                "account_removal_failed",
+                "remove_account",
+                "backend_runtime_remove",
+                Some(account_id),
+                DiagnosticErrorKind::Runtime,
+            );
             return Err(
                 "The account credential and saved account entry were removed, but the running interface could not finish the update. Restart Mine Mail."
                     .to_owned(),
             );
         }
-        let mut stored = self.stored.write().map_err(|_| {
-            "The account credential and saved account entry were removed, but the running interface could not refresh. Restart Mine Mail."
-                .to_owned()
-        })?;
+        let mut stored = self
+            .stored
+            .write()
+            .map_err(|_| {
+                "The account credential and saved account entry were removed, but the running interface could not refresh. Restart Mine Mail."
+                    .to_owned()
+            })
+            .inspect_err(|_| {
+                log_account_operation_failure(
+                    "account_removal_failed",
+                    "remove_account",
+                    "account_state_commit",
+                    Some(account_id),
+                    DiagnosticErrorKind::Runtime,
+                );
+            })?;
         *stored = next_stored;
         drop(stored);
 
@@ -1364,6 +1763,13 @@ impl AccountRuntime {
             let mut warnings = managed_attachment_warning.into_iter().collect::<Vec<_>>();
             let database_path = account_database_path(&self.app_data, &metadata);
             if remove_sqlite_cache_files(&database_path).is_err() {
+                log_account_operation_failure(
+                    "account_removal_cleanup_failed",
+                    "remove_account",
+                    "local_cache_cleanup",
+                    Some(account_id),
+                    DiagnosticErrorKind::Io,
+                );
                 warnings.push("The account mail cache could not be deleted.".to_owned());
             }
             (
@@ -1452,23 +1858,43 @@ impl AccountRuntime {
         if !force && backend_state.credential_invalid_for(&metadata.account_id) {
             return Ok(());
         }
-        let credential_gate = self.credential_gate(&metadata.account_id)?;
+        let started = Instant::now();
+        let credential_gate = self
+            .credential_gate(&metadata.account_id)
+            .inspect_err(|_| {
+                log_oauth_refresh_failure(&metadata.account_id, started);
+            })?;
         let _credential_guard = credential_gate.lock().await;
-        let entry = keyring_entry(metadata)?;
-        let encoded = Zeroizing::new(entry.get_password().map_err(|error| match error {
-            keyring::Error::NoEntry => "Google authorization is missing; sign in again.".to_owned(),
-            _ => "The OS credential store is unavailable.".to_owned(),
+        let entry = keyring_entry(metadata).inspect_err(|_| {
+            log_oauth_refresh_failure(&metadata.account_id, started);
+        })?;
+        let encoded = Zeroizing::new(entry.get_password().map_err(|error| {
+            log_oauth_refresh_failure(&metadata.account_id, started);
+            match error {
+                keyring::Error::NoEntry => {
+                    "Google authorization is missing; sign in again.".to_owned()
+                }
+                _ => "The OS credential store is unavailable.".to_owned(),
+            }
         })?);
-        let mut tokens: OAuthTokenBundle = serde_json::from_str(encoded.as_str())
-            .map_err(|_| "Saved Google authorization is invalid; sign in again.".to_owned())?;
+        let mut tokens: OAuthTokenBundle =
+            serde_json::from_str(encoded.as_str()).map_err(|_| {
+                log_oauth_refresh_failure(&metadata.account_id, started);
+                "Saved Google authorization is invalid; sign in again.".to_owned()
+            })?;
         let now = unix_timestamp();
         if !force
             && tokens.expires_at_unix > now.saturating_add(OAUTH_REFRESH_MARGIN_SECONDS)
             && backend_state.network_for(&metadata.account_id).is_ok()
         {
+            diagnostics::limited_recovery(
+                "oauth_refresh_failed",
+                "oauth_refresh_recovered",
+                "google_oauth_refresh",
+                Some(&metadata.account_id),
+            );
             return Ok(());
         }
-        let started = Instant::now();
         diagnostics::info(
             "oauth_refresh_started",
             DiagnosticFields::default()
@@ -1486,7 +1912,20 @@ impl AccountRuntime {
                 Ok(refreshed) => refreshed,
                 Err(error) => {
                     if error.credential_invalid {
-                        let _ = backend_state.invalidate_credential(&metadata.account_id);
+                        match backend_state.invalidate_credential(&metadata.account_id) {
+                            Ok(()) => diagnostics::limited_recovery(
+                                "credential_invalidation_failed",
+                                "credential_invalidation_recovered",
+                                "google_oauth_refresh",
+                                Some(&metadata.account_id),
+                            ),
+                            Err(_) => diagnostics::limited_failure(
+                                "credential_invalidation_failed",
+                                "google_oauth_refresh",
+                                Some(&metadata.account_id),
+                                DiagnosticErrorKind::Runtime,
+                            ),
+                        }
                     }
                     log_oauth_refresh_failure(&metadata.account_id, started);
                     return Err(error.message);
@@ -1511,6 +1950,12 @@ impl AccountRuntime {
                 })?;
         match backend_state.replace_network(&metadata.account_id, network, true) {
             Ok(()) => {
+                diagnostics::limited_recovery(
+                    "oauth_refresh_failed",
+                    "oauth_refresh_recovered",
+                    "google_oauth_refresh",
+                    Some(&metadata.account_id),
+                );
                 diagnostics::info(
                     "oauth_refresh_completed",
                     DiagnosticFields::default()
@@ -1554,14 +1999,31 @@ fn remove_managed_attachment_data_if_requested(
 }
 
 fn log_oauth_refresh_failure(account_id: &str, started: Instant) {
-    diagnostics::error(
+    diagnostics::limited_failure_with_fields(
         "oauth_refresh_failed",
+        "google_oauth_refresh",
+        DiagnosticErrorKind::Runtime,
         DiagnosticFields::default()
             .account(account_id)
-            .operation("google_oauth_refresh")
-            .error(DiagnosticErrorKind::Runtime)
             .duration(started.elapsed()),
     );
+}
+
+fn log_account_operation_failure(
+    event: &'static str,
+    operation: &'static str,
+    stage: &'static str,
+    account_id: Option<&str>,
+    error_kind: DiagnosticErrorKind,
+) {
+    let mut fields = DiagnosticFields::default()
+        .operation(operation)
+        .outcome(stage)
+        .error(error_kind);
+    if let Some(account_id) = account_id {
+        fields = fields.account(account_id);
+    }
+    diagnostics::error(event, fields);
 }
 
 async fn verify_connections(
@@ -2170,8 +2632,34 @@ async fn wait_for_oauth_callback(
             "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n{}",
             body.len(), body
         );
-        let _ = stream.write_all(response.as_bytes()).await;
-        let _ = stream.shutdown().await;
+        match stream.write_all(response.as_bytes()).await {
+            Ok(()) => diagnostics::limited_recovery(
+                "oauth_callback_response_failed",
+                "oauth_callback_response_recovered",
+                "google_oauth_callback",
+                None,
+            ),
+            Err(_) => diagnostics::limited_failure(
+                "oauth_callback_response_failed",
+                "google_oauth_callback",
+                None,
+                DiagnosticErrorKind::Io,
+            ),
+        }
+        match stream.shutdown().await {
+            Ok(()) => diagnostics::limited_recovery(
+                "oauth_callback_shutdown_failed",
+                "oauth_callback_shutdown_recovered",
+                "google_oauth_callback",
+                None,
+            ),
+            Err(_) => diagnostics::limited_failure(
+                "oauth_callback_shutdown_failed",
+                "google_oauth_callback",
+                None,
+                DiagnosticErrorKind::Io,
+            ),
+        }
         result
     })
     .await
