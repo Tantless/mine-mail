@@ -1,0 +1,4 @@
+interface:
+  display_name: "Isolated Worktree"
+  short_description: "Create, integrate, and clean task worktrees"
+  default_prompt: "Use $isolate-worktree to allocate a task worktree before modifying this repository."
