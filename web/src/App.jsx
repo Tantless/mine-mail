@@ -733,6 +733,10 @@ export function App() {
   const [starredMailboxPageStates, setStarredMailboxPageStates] = useState(
     createStarredMailboxPageStates,
   );
+  const [starredViewRetention, setStarredViewRetention] = useState({
+    accountId: null,
+    items: [],
+  });
   const [mailboxCapabilities, setMailboxCapabilities] = useState(null);
   const [remoteSearch, setRemoteSearch] = useState(null);
   const [messageActionStates, setMessageActionStates] = useState({});
@@ -784,6 +788,7 @@ export function App() {
   const accountViewSnapshotLockRef = useRef(null);
   const rememberActiveAccountViewRef = useRef(() => null);
   const mailListScrollPositionsRef = useRef(new Map());
+  const starredViewMessagesRef = useRef({ accountId: null, items: [] });
   const draftsRequestRef = useRef(0);
   const outboxRequestRef = useRef(0);
   const mailboxPageRequestsRef = useRef(new Map());
@@ -855,6 +860,48 @@ export function App() {
   activeFolderRef.current = activeFolder;
   selectedContactEmailRef.current = selectedContactEmail;
   selectedContactAccountIdRef.current = selectedContactAccountId;
+
+  useEffect(() => {
+    const visibleAccountId =
+      activeFolder === "starred" && !isSettingsOpen
+        ? activeAccountId
+        : null;
+    setStarredViewRetention((current) => {
+      if (
+        visibleAccountId !== null &&
+        current.accountId === visibleAccountId
+      ) {
+        return current;
+      }
+      if (
+        visibleAccountId === null &&
+        current.accountId === null &&
+        current.items.length === 0
+      ) {
+        return current;
+      }
+      return { accountId: visibleAccountId, items: [] };
+    });
+  }, [activeAccountId, activeFolder, isSettingsOpen]);
+
+  useEffect(() => {
+    if (activeFolder !== "starred" || mailListMotion !== "collapsed") {
+      return;
+    }
+    setStarredViewRetention((current) =>
+      current.items.length
+        ? { accountId: activeAccountId, items: [] }
+        : current,
+    );
+  }, [activeAccountId, activeFolder, mailListMotion]);
+
+  useEffect(() => {
+    setStarredViewRetention((current) =>
+      current.items.length
+        ? { accountId: current.accountId, items: [] }
+        : current,
+    );
+  }, [query]);
 
   const markSentAttention = useCallback((accountId) => {
     if (!accountId) return;
@@ -1665,6 +1712,42 @@ export function App() {
     );
   }, [mergeRemoteMessage]);
 
+  const updateStarredViewRetention = useCallback(
+    (message, starred, accountId) => {
+      if (
+        activeFolderRef.current !== "starred" ||
+        activeAccountIdRef.current !== accountId
+      ) {
+        return;
+      }
+      const messageId = localMessageId(message);
+      if (messageId === null) return;
+      setStarredViewRetention((current) => {
+        const displayedItems =
+          starredViewMessagesRef.current.accountId === accountId
+            ? starredViewMessagesRef.current.items
+            : [];
+        const snapshotItems =
+          current.accountId === accountId && current.items.length
+            ? current.items
+            : displayedItems;
+        let found = false;
+        const nextItems = snapshotItems.map((item) => {
+          if (localMessageId(item) !== messageId) return item;
+          found = true;
+          return withSystemFlag(item, "\\Flagged", starred);
+        });
+        return {
+          accountId,
+          items: found
+            ? nextItems
+            : [...nextItems, withSystemFlag(message, "\\Flagged", starred)],
+        };
+      });
+    },
+    [],
+  );
+
   const handleToggleStar = useCallback(
     async (message) => {
       const accountId = activeAccountIdRef.current || "unscoped";
@@ -1674,6 +1757,7 @@ export function App() {
       const starred = !hasFlag(message, "\\Flagged");
       const requestId = (starRequestRef.current.get(key)?.requestId || 0) + 1;
       starRequestRef.current.set(key, { requestId, starred });
+      updateStarredViewRetention(message, starred, accountId);
       applyMessageStarState(message, starred, accountId);
       try {
         const receipt = await mailApi.setMessageStarredById(
@@ -1691,11 +1775,12 @@ export function App() {
       } catch (error) {
         if (starRequestRef.current.get(key)?.requestId !== requestId) return;
         starRequestRef.current.delete(key);
+        updateStarredViewRetention(message, !starred, accountId);
         applyMessageStarState(message, !starred, accountId);
         showToast(describeError(error, "收藏状态保存失败"), "error");
       }
     },
-    [applyMessageStarState, showToast],
+    [applyMessageStarState, showToast, updateStarredViewRetention],
   );
 
   const refreshMailboxCapabilities = useCallback(async (accountId) => {
@@ -4096,19 +4181,51 @@ export function App() {
       remoteSearch?.query === normalizedQuery
         ? remoteSearch
         : null;
-    if (activeSearch) return activeSearch.items;
+    if (activeSearch && activeFolder !== "starred") {
+      return activeSearch.items;
+    }
     if (activeFolder === "inbox") return messages;
     if (activeFolder === "starred") {
+      const snapshotItems =
+        starredViewRetention.accountId === activeAccountId
+          ? starredViewRetention.items
+          : [];
+      const currentItems = activeSearch
+        ? activeSearch.items
+        : appendMailboxItems([], [
+            ...starredMailboxRoles.flatMap(
+              (role) => starredMailboxPageStates[role]?.items || [],
+            ),
+            ...messages,
+            ...sentMessages,
+            ...archiveMessages,
+          ]);
+      if (!snapshotItems.length) {
+        return currentItems.filter((message) =>
+          hasFlag(message, "\\Flagged"),
+        );
+      }
+      const currentById = new Map(
+        currentItems
+          .map((message) => [localMessageId(message), message])
+          .filter(([id]) => id !== null),
+      );
+      const snapshotIds = new Set(
+        snapshotItems.map(localMessageId).filter((id) => id !== null),
+      );
+      const stableItems = snapshotItems.map((message) => {
+        const messageId = localMessageId(message);
+        return messageId === null
+          ? message
+          : currentById.get(messageId) || message;
+      });
       return appendMailboxItems(
-        [],
-        [
-          ...starredMailboxRoles.flatMap(
-            (role) => starredMailboxPageStates[role]?.items || [],
-          ),
-          ...messages,
-          ...sentMessages,
-          ...archiveMessages,
-        ].filter((message) => hasFlag(message, "\\Flagged")),
+        stableItems,
+        currentItems.filter(
+          (message) =>
+            hasFlag(message, "\\Flagged") &&
+            !snapshotIds.has(localMessageId(message)),
+        ),
       );
     }
     if (activeFolder === "drafts") {
@@ -4133,6 +4250,7 @@ export function App() {
     remoteSearch,
     sentMessages,
     starredMailboxPageStates,
+    starredViewRetention,
     trashMessages,
   ]);
 
@@ -4155,6 +4273,31 @@ export function App() {
       ].some((value) => value?.toLowerCase().includes(normalizedQuery));
     });
   }, [activeFolder, contactRemarkForEmail, filter, folderMessages, query]);
+
+  useEffect(() => {
+    if (activeFolder !== "starred" || !activeAccountId) {
+      starredViewMessagesRef.current = { accountId: null, items: [] };
+      return;
+    }
+    starredViewMessagesRef.current = {
+      accountId: activeAccountId,
+      items: visibleMessages,
+    };
+    setStarredViewRetention((current) => {
+      if (current.accountId !== activeAccountId || !current.items.length) {
+        return current;
+      }
+      const snapshotIds = new Set(
+        current.items.map(localMessageId).filter((id) => id !== null),
+      );
+      const appendedItems = visibleMessages.filter(
+        (message) => !snapshotIds.has(localMessageId(message)),
+      );
+      return appendedItems.length
+        ? { ...current, items: [...current.items, ...appendedItems] }
+        : current;
+    });
+  }, [activeAccountId, activeFolder, visibleMessages]);
 
   const selectedMessageKey = remoteFlagKey(selectedMessage);
   const selectedIndex = visibleMessages.findIndex((message) => {
@@ -5605,6 +5748,9 @@ export function App() {
         );
         if (roles.includes("sent")) await refreshOutbox();
       } else if (folder === "drafts") {
+    if (folder === "starred") {
+      setStarredViewRetention({ accountId, items: [] });
+    }
         const report = await mailApi.syncDrafts();
         synchronizedCount = synchronizedMessageCount(report);
         await Promise.all([refreshDrafts(), refreshOutbox()]);

@@ -2586,26 +2586,24 @@ describe("Mine Mail desktop state bridge", () => {
     });
   });
 
-  it("combines starred Inbox and remote Sent messages by opaque local IDs", async () => {
+  it("keeps unstarred rows until Starred is refreshed or revisited", async () => {
     Object.defineProperty(window, "innerWidth", {
       configurable: true,
       value: 600,
     });
-    desktop.fixtures.inboxPageSource.mockResolvedValue([
-      {
-        ...summary(21, "Starred Inbox"),
-        mailbox: "INBOX",
-        flags: ["\\Flagged"],
-      },
-    ]);
-    desktop.fixtures.sentPageSource.mockResolvedValue([
-      {
-        ...summary(22, "Starred Sent"),
-        mailbox: "Sent",
-        to: [{ name: "Friend", email: "friend@example.com" }],
-        flags: ["\\Seen", "\\Flagged"],
-      },
-    ]);
+    const starredInbox = {
+      ...summary(21, "Starred Inbox"),
+      mailbox: "INBOX",
+      flags: ["\\Flagged"],
+    };
+    const starredSent = {
+      ...summary(22, "Starred Sent"),
+      mailbox: "Sent",
+      to: [{ name: "Friend", email: "friend@example.com" }],
+      flags: ["\\Seen", "\\Flagged"],
+    };
+    desktop.fixtures.inboxPageSource.mockResolvedValue([starredInbox]);
+    desktop.fixtures.sentPageSource.mockResolvedValue([starredSent]);
     const user = userEvent.setup();
     render(<App />);
 
@@ -2619,19 +2617,120 @@ describe("Mine Mail desktop state bridge", () => {
       desktop.mailApi.listStarredMailboxPage.mock.calls.map(([, role]) => role),
     ).toEqual(expect.arrayContaining(["inbox", "sent", "archive"]));
     expect(desktop.mailApi.loadOlderMailboxPage).not.toHaveBeenCalled();
+    const starredSubjectOrder = () =>
+      Array.from(
+        screen
+          .getByLabelText("已收藏邮件列表")
+          .querySelectorAll(".mail-row__subject"),
+        (subject) => subject.textContent,
+      );
+    expect(starredSubjectOrder()).toEqual([
+      "Starred Inbox",
+      "Starred Sent",
+    ]);
 
     await user.click(
-      screen.getByRole("button", { name: "取消收藏：Starred Sent" }),
+      screen.getByRole("button", { name: "取消收藏：Starred Inbox" }),
     );
     await waitFor(() =>
       expect(desktop.fixtures.recordStarred).toHaveBeenCalledWith(
-        "Sent",
-        22,
+        "INBOX",
+        21,
         false,
       ),
     );
     expect(screen.getByText("Starred Inbox")).toBeTruthy();
-    expect(screen.queryByText("Starred Sent")).toBeNull();
+    expect(screen.getByText("Starred Sent")).toBeTruthy();
+    expect(
+      screen
+        .getByRole("button", { name: "添加收藏：Starred Inbox" })
+        .getAttribute("aria-pressed"),
+    ).toBe("false");
+    await user.unhover(
+      screen.getByRole("button", { name: "添加收藏：Starred Inbox" }),
+    );
+    expect(starredSubjectOrder()).toEqual([
+      "Starred Inbox",
+      "Starred Sent",
+    ]);
+
+    await user.click(
+      screen.getByRole("button", { name: "添加收藏：Starred Inbox" }),
+    );
+    await waitFor(() =>
+      expect(desktop.fixtures.recordStarred).toHaveBeenLastCalledWith(
+        "INBOX",
+        21,
+        true,
+      ),
+    );
+    await user.unhover(
+      screen.getByRole("button", { name: "取消收藏：Starred Inbox" }),
+    );
+    expect(starredSubjectOrder()).toEqual([
+      "Starred Inbox",
+      "Starred Sent",
+    ]);
+    await user.click(
+      screen.getByRole("button", { name: "取消收藏：Starred Inbox" }),
+    );
+    await waitFor(() =>
+      expect(desktop.fixtures.recordStarred).toHaveBeenLastCalledWith(
+        "INBOX",
+        21,
+        false,
+      ),
+    );
+    expect(starredSubjectOrder()).toEqual([
+      "Starred Inbox",
+      "Starred Sent",
+    ]);
+
+    desktop.fixtures.inboxPageSource.mockResolvedValue([
+      { ...starredInbox, flags: [] },
+    ]);
+    const inboxPageCallsBeforeBackgroundRefresh =
+      desktop.fixtures.inboxPageSource.mock.calls.length;
+    await act(async () => {
+      desktop.listeners.get("mail:inbox-updated")?.({
+        payload: {
+          account_id: "desktop-account",
+          completed: 1,
+          total: 1,
+          is_complete: true,
+        },
+      });
+    });
+    await waitFor(() =>
+      expect(
+        desktop.fixtures.inboxPageSource.mock.calls.length,
+      ).toBeGreaterThan(inboxPageCallsBeforeBackgroundRefresh),
+    );
+    expect(starredSubjectOrder()).toEqual([
+      "Starred Inbox",
+      "Starred Sent",
+    ]);
+
+    await user.click(screen.getByRole("button", { name: "已发送" }));
+    await user.click(screen.getByRole("button", { name: /已收藏/ }));
+    await waitFor(() =>
+      expect(screen.queryByText("Starred Inbox")).toBeNull(),
+    );
+    expect(screen.getByText("Starred Sent")).toBeTruthy();
+
+    await user.click(
+      screen.getByRole("button", { name: "取消收藏：Starred Sent" }),
+    );
+    expect(screen.getByText("Starred Sent")).toBeTruthy();
+    desktop.fixtures.sentPageSource.mockResolvedValue([
+      { ...starredSent, flags: ["\\Seen"] },
+    ]);
+    await user.click(
+      screen.getByRole("button", { name: "同步已收藏邮件" }),
+    );
+    await waitFor(() =>
+      expect(screen.queryByText("Starred Sent")).toBeNull(),
+    );
     Object.defineProperty(window, "innerWidth", {
       configurable: true,
       value: 1024,

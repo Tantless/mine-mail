@@ -366,6 +366,15 @@ family. Preserve the relative hierarchy when tuning optical values.
   uncached server history.
 - The Starred workspace presents its aggregate directly without **全部 / 未读**
   tabs. Its status row retains only the current visible-message count.
+- Unstarring a message inside Starred updates the visible star control
+  immediately but keeps that row in the list for the rest of the visible
+  Starred visit, so the user can restore an accidental change. Unstarring or
+  starring again never reorders existing rows during that visit; newly arriving
+  rows may append without moving them. Explicit refresh removes rows that are no
+  longer starred. Leaving and re-entering the workspace, switching accounts,
+  opening another workspace, or retracting and revealing the list also starts a
+  fresh Starred view from current state; background reconciliation alone must
+  neither remove nor reorder the retained row mid-visit.
 - Archive and Trash paint cached summaries before synchronization. Their sidebar
   entries stay visually neutral and never expose discovery, capability, or
   pending-queue status. Opening an available Archive shows cached mail
