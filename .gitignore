@@ -17,3 +17,4 @@ web/src-tauri/google-oauth-client.json
 .env
 .env.*
 !.env.example
+todo.txt
