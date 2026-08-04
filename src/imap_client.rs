@@ -86,6 +86,16 @@ pub(crate) struct RemoteMessage {
     pub raw: Vec<u8>,
 }
 
+/// Lightweight ordering metadata for one selected-mailbox message. This is
+/// intentionally separate from [`RemoteMessage`] so providers whose UID order
+/// differs from `INTERNALDATE` can choose a bounded newest-summary set without
+/// downloading a preview for every message.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RemoteMessageInternalDate {
+    pub uid: u32,
+    pub internal_date: Option<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum RemoteTransferEncoding {
     SevenBit,
@@ -757,6 +767,50 @@ impl ImapConnection {
     pub async fn fetch_summaries(&mut self, uids: &[u32]) -> Result<Vec<RemoteMessage>> {
         let query = summary_fetch_query();
         self.fetch_messages(uids, &query, true).await
+    }
+
+    /// Fetches only UID and INTERNALDATE for the currently selected mailbox.
+    /// A numeric range keeps the command bounded in size even when the mailbox
+    /// contains many sparse UIDs; the server returns only existing messages.
+    pub async fn fetch_internal_date_index(
+        &mut self,
+        first_uid: u32,
+        last_uid: u32,
+    ) -> Result<Vec<RemoteMessageInternalDate>> {
+        if first_uid == 0 || last_uid == 0 || first_uid > last_uid {
+            return Err(MailError::Validation(
+                "a valid remote UID range is required".to_owned(),
+            ));
+        }
+        let sequence_set = format!("{first_uid}:{last_uid}");
+        let stream = timeout(
+            COMMAND_TIMEOUT,
+            self.session.uid_fetch(sequence_set, "(UID INTERNALDATE)"),
+        )
+        .await
+        .map_err(|_| MailError::Timeout {
+            operation: "IMAP message date index fetch",
+        })?
+        .map_err(|error| MailError::Imap(error.to_string()))?;
+        let fetched = timeout(COMMAND_TIMEOUT, stream.try_collect::<Vec<_>>())
+            .await
+            .map_err(|_| MailError::Timeout {
+                operation: "IMAP message date index response",
+            })?
+            .map_err(|error| MailError::Imap(error.to_string()))?;
+
+        fetched
+            .into_iter()
+            .map(|message| {
+                let uid = message.uid.ok_or_else(|| {
+                    MailError::Imap("server returned date metadata without UID".to_owned())
+                })?;
+                Ok(RemoteMessageInternalDate {
+                    uid,
+                    internal_date: message.internal_date().map(|date| date.to_rfc3339()),
+                })
+            })
+            .collect()
     }
 
     pub async fn fetch_full_message(&mut self, uid: u32) -> Result<RemoteMessage> {

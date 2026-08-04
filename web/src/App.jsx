@@ -317,6 +317,12 @@ function appendMailboxItems(current, incoming) {
   return appended;
 }
 
+export function mergeRefreshedMailboxItems(current, refreshed) {
+  // The refreshed first page is authoritative for duplicate summaries and
+  // order, while already loaded older pages remain mounted behind it.
+  return appendMailboxItems(refreshed, current);
+}
+
 function capabilityMap(capabilities) {
   return Object.fromEntries(
     (capabilities || [])
@@ -1812,6 +1818,7 @@ export function App() {
       cursor = null,
       query: pageQuery = null,
       append = false,
+      mergeExisting = false,
       selectFirst = false,
       preserveSyncing = false,
     }) => {
@@ -1888,14 +1895,30 @@ export function App() {
         const existingView = accountViewsRef.current.get(accountId) || {};
         const existingItems =
           existingView[mailboxViewField(role)] || [];
-        const committedItems = append
-          ? appendMailboxItems(existingItems, normalized.items)
-          : normalized.items;
+        const existingPageState =
+          existingView.mailboxPageStates?.[role] || null;
+        const shouldMergeRefresh =
+          mergeExisting && !append && existingItems.length > 0;
+        const committedItems = shouldMergeRefresh
+          ? mergeRefreshedMailboxItems(existingItems, normalized.items)
+          : append
+            ? appendMailboxItems(existingItems, normalized.items)
+            : normalized.items;
+        const committedPageState =
+          shouldMergeRefresh && existingPageState?.initialized
+            ? {
+                ...normalized.state,
+                nextCursor: existingPageState.nextCursor,
+                hasMoreLocal: existingPageState.hasMoreLocal,
+                remoteHistoryState: existingPageState.remoteHistoryState,
+                endReached: existingPageState.endReached,
+              }
+            : normalized.state;
         commitRoleItems(role, committedItems, accountId);
         commitMailboxPageState(
           role,
           {
-            ...normalized.state,
+            ...committedPageState,
             loadMorePhase: "idle",
             loadMoreError: null,
           },
@@ -1940,7 +1963,11 @@ export function App() {
             void handleSelect(committedItems[0]);
           }
         }
-        return { ...normalized, items: committedItems };
+        return {
+          ...normalized,
+          items: committedItems,
+          state: committedPageState,
+        };
       } catch (error) {
         if (mailboxPageRequestsRef.current.get(requestKey) === requestToken) {
           if (!normalizedQuery && activeAccountIdRef.current === accountId) {
@@ -2092,12 +2119,14 @@ export function App() {
       selectFirst = false,
       accountId = activeAccountIdRef.current,
       preserveSyncing = false,
+      mergeExisting = false,
     } = {}) =>
       loadMailboxRolePage({
         accountId,
         role: "inbox",
         selectFirst,
         preserveSyncing,
+        mergeExisting,
       }).then(
         (page) => page?.items || [],
       ),
@@ -2108,11 +2137,13 @@ export function App() {
     ({
       accountId = activeAccountIdRef.current,
       preserveSyncing = false,
+      mergeExisting = false,
     } = {}) =>
       loadMailboxRolePage({
         accountId,
         role: "sent",
         preserveSyncing,
+        mergeExisting,
       }).then(
         (page) => page?.items || [],
       ),
@@ -3453,7 +3484,12 @@ export function App() {
           total: progress.total,
         };
       });
-      void refresh({ preserveSyncing: !progress.complete })
+      void refresh({
+        preserveSyncing: !progress.complete,
+        mergeExisting:
+          !Boolean(payload.report?.uid_validity_reset) &&
+          Number(payload.report?.removed || 0) === 0,
+      })
         .then(() => {
           if (refreshContacts) scheduleContactsRefresh();
         })
@@ -5730,7 +5766,14 @@ export function App() {
       if (paginatedMailboxRoles.includes(folder)) {
         const report = await mailApi.syncMailbox(accountId, folder);
         synchronizedCount = synchronizedMessageCount(report);
-        await loadMailboxRolePage({ accountId, role: folder });
+        await loadMailboxRolePage({
+          accountId,
+          role: folder,
+          mergeExisting:
+            folder === "inbox" &&
+            !Boolean(report?.uid_validity_reset) &&
+            Number(report?.removed || 0) === 0,
+        });
         if (folder === "sent") await refreshOutbox();
       } else if (folder === "starred") {
         const roles = starredMailboxRoles.filter((role) =>

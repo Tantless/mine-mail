@@ -31,6 +31,8 @@ const MAX_MESSAGE_PAGE_SIZE: usize = 100;
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct MailboxSyncReportDto {
     synced: usize,
+    removed: usize,
+    uid_validity_reset: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -743,17 +745,19 @@ pub(crate) async fn sync_mailbox(
     let sync_result = match role {
         MailboxRole::Inbox => desktop::perform_inbox_mailbox_sync(&app, &account_id)
             .await
+            .map(|report| (report.fetched, report.removed, report.uid_validity_reset))
             .map_err(|message| (message, diagnostics::ErrorKind::Runtime)),
         _ => network
             .sync_mailbox(&account_id, role)
             .await
+            .map(|synced| (synced, 0, false))
             .map_err(|error| {
                 let kind = diagnostics::mail_error_kind(&error);
                 (safe_mail_error(error), kind)
             }),
     };
-    let synced = match sync_result {
-        Ok(synced) => synced,
+    let (synced, removed, uid_validity_reset) = match sync_result {
+        Ok(report) => report,
         Err((message, error_kind)) => {
             diagnostics::error(
                 "mailbox_sync_completed",
@@ -790,7 +794,11 @@ pub(crate) async fn sync_mailbox(
             .outcome("completed")
             .duration(started.elapsed()),
     );
-    Ok(MailboxSyncReportDto { synced })
+    Ok(MailboxSyncReportDto {
+        synced,
+        removed,
+        uid_validity_reset,
+    })
 }
 
 fn mailbox_role_name(role: MailboxRole) -> &'static str {
@@ -1286,12 +1294,18 @@ mod tests {
     }
 
     #[test]
-    fn mailbox_sync_report_exposes_only_the_bounded_count() {
-        let json = serde_json::to_value(MailboxSyncReportDto { synced: 4 })
-            .expect("serialize mailbox sync report");
+    fn mailbox_sync_report_exposes_only_bounded_state() {
+        let json = serde_json::to_value(MailboxSyncReportDto {
+            synced: 4,
+            removed: 2,
+            uid_validity_reset: true,
+        })
+        .expect("serialize mailbox sync report");
 
         assert_eq!(json["synced"], 4);
-        assert_eq!(json.as_object().map(|fields| fields.len()), Some(1));
+        assert_eq!(json["removed"], 2);
+        assert_eq!(json["uid_validity_reset"], true);
+        assert_eq!(json.as_object().map(|fields| fields.len()), Some(3));
         assert_no_private_mail_coordinates(&json);
     }
 

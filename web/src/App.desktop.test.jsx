@@ -3108,6 +3108,36 @@ describe("Mine Mail desktop state bridge", () => {
     expect(
       screen.queryByRole("button", { name: /加载更早邮件/ }),
     ).toBeNull();
+
+    const arrival = {
+      ...summary("message-new-arrival", "New arrival after refresh"),
+      uid: undefined,
+      flags: ["\\Seen"],
+    };
+    const refreshedNewest = {
+      ...newest,
+      subject: "Newest refreshed summary",
+    };
+    desktop.mailApi.syncMailbox.mockResolvedValue({
+      synced: 1,
+      removed: 0,
+      uid_validity_reset: false,
+    });
+    desktop.mailApi.listMailboxPage.mockImplementation(
+      async (_, role, _cursor, _pageSize, query) =>
+        role === "inbox" && !query
+          ? mailboxPage([arrival, refreshedNewest], role)
+          : mailboxPage([], role),
+    );
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "同步收件箱" }),
+    );
+
+    expect(await screen.findByText("New arrival after refresh")).toBeTruthy();
+    expect(screen.getByText("Newest refreshed summary")).toBeTruthy();
+    expect(screen.getByText("Older local page")).toBeTruthy();
+    expect(screen.queryByText("Newest local page")).toBeNull();
   });
 
   it("keeps cached rows visible while backend mailbox search is pending", async () => {

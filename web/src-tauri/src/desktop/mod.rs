@@ -1798,7 +1798,7 @@ async fn sync_inbox_for(app: &AppHandle, account_id: &str) -> Result<SyncReport,
 pub(crate) async fn perform_inbox_mailbox_sync(
     app: &AppHandle,
     account_id: &str,
-) -> Result<usize, String> {
+) -> Result<SyncReport, String> {
     let backend = app.state::<BackendState>().network_for(account_id)?;
     app.state::<DesktopRuntime>()
         .coordinate_inbox_sync(account_id, "inbox_reconciliation", || async move {
@@ -1808,7 +1808,6 @@ pub(crate) async fn perform_inbox_mailbox_sync(
                 .map_err(crate::safe_mail_error)
         })
         .await
-        .map(|report| report.fetched)
 }
 
 async fn sync_inbox_with_operation(

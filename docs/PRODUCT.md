@@ -227,6 +227,12 @@ must be updated here when an intentional product change lands.
   without invalidating an older keyset cursor, duplicating rows, changing the
   current selection, or moving the visible scroll position. A UIDVALIDITY change
   invalidates cursors for that mailbox and starts a fresh bounded listing.
+- Full reconciliation may remove cached summaries only after an independent
+  fresh IMAP connection confirms the same UIDVALIDITY and destructive UID-set
+  contraction. Empty, partial, or mutually inconsistent snapshots leave cached
+  mail readable and retry later. Providers whose UID order can differ from
+  `INTERNALDATE` choose the bounded newest summary set by `INTERNALDATE`; a high
+  UID alone never makes an imported or copied old message chronologically new.
 - Search is local-only in this version. It queries every synchronized SQLite
   summary in the active account and current folder, not only the React page, and
   matches subject, From, To, Cc, and bounded preview. Bcc is deliberately

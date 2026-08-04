@@ -33,8 +33,9 @@ use crate::{
     },
     imap_client::{
         CreatableMailboxRole, DeleteFinalization, ImapConnection, MailboxHint, MailboxMessageScope,
-        MailboxRoleCreationMethod, MessageMoveMethod, RemoteBodyPart, RemoteMailbox, RemoteMessage,
-        RemoteMessageStructure, RemoteMimePart, RemoteTransferEncoding,
+        MailboxRoleCreationMethod, MailboxSnapshot, MessageMoveMethod, RemoteBodyPart,
+        RemoteMailbox, RemoteMessage, RemoteMessageInternalDate, RemoteMessageStructure,
+        RemoteMimePart, RemoteTransferEncoding,
     },
     mailbox_mutation::{
         PersistedFlagWork, PersistedPhaseWork, persisted_flag_work, persisted_phase_work,
@@ -714,6 +715,10 @@ impl MailBackend {
         self.config.imap.host.eq_ignore_ascii_case("imap.gmail.com")
     }
 
+    fn uses_qq_imap(&self) -> bool {
+        self.config.imap.host.eq_ignore_ascii_case("imap.qq.com")
+    }
+
     fn mailbox_message_scope(&self, role: MailboxRole) -> MailboxMessageScope {
         if role == MailboxRole::Archive && self.uses_gmail_archive_adapter() {
             MailboxMessageScope::GmailArchive
@@ -895,12 +900,8 @@ impl MailBackend {
                 return Ok(capability);
             }
         };
-        let existing = discovered_mailbox_capability(
-            role,
-            &before,
-            gmail_adapter,
-            &self.config.imap.host,
-        );
+        let existing =
+            discovered_mailbox_capability(role, &before, gmail_adapter, &self.config.imap.host);
         if existing.status == MailboxCapabilityStatus::Available {
             self.repository
                 .set_mailbox_capability(account_id, &existing)?;
@@ -1058,7 +1059,8 @@ impl MailBackend {
 
     async fn take_inbox_sync_connection(&self) -> Result<ImapConnection> {
         let cached = self.inbox_sync_imap.lock().await.take();
-        if let Some(mut connection) = cached
+        if !self.uses_qq_imap()
+            && let Some(mut connection) = cached
             && connection.noop().await.is_ok()
         {
             return Ok(connection);
@@ -1066,8 +1068,12 @@ impl MailBackend {
         ImapConnection::connect(&self.config).await
     }
 
-    async fn store_inbox_sync_connection(&self, connection: ImapConnection) {
-        *self.inbox_sync_imap.lock().await = Some(connection);
+    async fn store_inbox_sync_connection(&self, mut connection: ImapConnection) {
+        if self.uses_qq_imap() {
+            let _ = connection.logout().await;
+        } else {
+            *self.inbox_sync_imap.lock().await = Some(connection);
+        }
     }
 
     /// Synchronize Inbox metadata without downloading message bodies.
@@ -1238,6 +1244,29 @@ impl MailBackend {
         Ok(fetched)
     }
 
+    async fn fetch_and_cache_required_summaries(
+        &self,
+        connection: &mut ImapConnection,
+        mailbox: &str,
+        uids: &[u32],
+    ) -> Result<usize> {
+        let remotes = connection.fetch_summaries(uids).await?;
+        let returned_uids: HashSet<u32> = remotes.iter().map(|message| message.uid).collect();
+        let requested_uids: HashSet<u32> = uids.iter().copied().collect();
+        if returned_uids != requested_uids {
+            return Err(MailError::Imap(
+                "server did not return the complete requested summary set; cached messages were preserved"
+                    .to_owned(),
+            ));
+        }
+        let fetched = remotes.len();
+        for remote in remotes {
+            let message = self.parse_remote_summary(mailbox, remote);
+            self.repository.upsert_message_summary(&message)?;
+        }
+        Ok(fetched)
+    }
+
     fn parse_remote_summary(&self, mailbox: &str, remote: RemoteMessage) -> InboxMessage {
         parse_incoming_summary_or_fallback(
             &remote.raw,
@@ -1252,6 +1281,77 @@ impl MailBackend {
                 body_fetched: false,
             },
         )
+    }
+
+    async fn confirm_destructive_mailbox_snapshot(
+        &self,
+        connection: &mut ImapConnection,
+        mailbox: &str,
+        scope: MailboxMessageScope,
+        previous_state: Option<&MailboxState>,
+        cached_uids: &HashSet<u32>,
+        first: &MailboxSnapshot,
+    ) -> Result<MailboxSnapshot> {
+        let mut confirming = ImapConnection::connect(&self.config).await?;
+        let confirmed = confirming.select_mailbox_with_scope(mailbox, scope).await?;
+        let confirmed_is_safe = mailbox_snapshot_has_usable_epoch(previous_state, &confirmed)
+            && mailbox_snapshot_is_self_consistent(&confirmed)
+            && (!mailbox_snapshot_requires_confirmation(previous_state, cached_uids, &confirmed)
+                || mailbox_snapshots_confirm_same_membership(first, &confirmed));
+        if !confirmed_is_safe {
+            let _ = confirming.logout().await;
+            return Err(MailError::Imap(
+                "mailbox reconciliation returned inconsistent snapshots; local cache was left unchanged"
+                    .to_owned(),
+            ));
+        }
+
+        // Continue on the independently selected session that supplied the
+        // confirmed snapshot. The suspect session must never be cached again.
+        let mut suspect = std::mem::replace(connection, confirming);
+        let _ = suspect.logout().await;
+        Ok(confirmed)
+    }
+
+    async fn newest_summary_uids(
+        &self,
+        connection: &mut ImapConnection,
+        mailbox: &str,
+        snapshot: &MailboxSnapshot,
+        initial_limit: usize,
+    ) -> Result<Vec<u32>> {
+        let fallback = || {
+            snapshot
+                .all_uids
+                .iter()
+                .rev()
+                .take(initial_limit)
+                .copied()
+                .collect()
+        };
+        if !self.uses_qq_imap() || !mailbox.eq_ignore_ascii_case(INBOX) {
+            return Ok(fallback());
+        }
+        let Some((first_uid, last_uid)) = snapshot
+            .all_uids
+            .first()
+            .copied()
+            .zip(snapshot.all_uids.last().copied())
+        else {
+            return Ok(Vec::new());
+        };
+        let index = connection
+            .fetch_internal_date_index(first_uid, last_uid)
+            .await?;
+        let indexed_uids: HashSet<u32> = index.iter().map(|message| message.uid).collect();
+        let remote_uids: HashSet<u32> = snapshot.all_uids.iter().copied().collect();
+        if indexed_uids != remote_uids {
+            return Err(MailError::Imap(
+                "mailbox date index did not match the selected UID snapshot; local cache was left unchanged"
+                    .to_owned(),
+            ));
+        }
+        Ok(newest_uids_by_internal_date(&index, initial_limit))
     }
 
     async fn sync_selected_mailbox<F>(
@@ -1285,18 +1385,27 @@ impl MailBackend {
     where
         F: FnMut(SyncBatchProgress) + Send,
     {
-        let snapshot = connection.select_mailbox_with_scope(mailbox, scope).await?;
-
-        if snapshot.exists > 0 && snapshot.all_uids.is_empty() {
-            return Err(MailError::Imap(
-                "server reported mailbox messages but returned an empty UID search; local cache was left unchanged"
-                    .to_owned(),
-            ));
-        }
-
+        let mut snapshot = connection.select_mailbox_with_scope(mailbox, scope).await?;
         let previous_state = self
             .repository
             .mailbox_state(&self.config.account_id, mailbox)?;
+        let mut cached_uids = self
+            .repository
+            .cached_uids(&self.config.account_id, mailbox)?;
+        if mailbox_snapshot_requires_confirmation(previous_state.as_ref(), &cached_uids, &snapshot)
+        {
+            snapshot = self
+                .confirm_destructive_mailbox_snapshot(
+                    connection,
+                    mailbox,
+                    scope,
+                    previous_state.as_ref(),
+                    &cached_uids,
+                    &snapshot,
+                )
+                .await?;
+        }
+
         let uid_validity_reset = previous_state
             .as_ref()
             .and_then(|state| state.uid_validity)
@@ -1306,15 +1415,10 @@ impl MailBackend {
         if uid_validity_reset {
             self.repository
                 .reset_mailbox(&self.config.account_id, mailbox)?;
+            cached_uids.clear();
         }
 
-        let cached_uids = self
-            .repository
-            .cached_uids(&self.config.account_id, mailbox)?;
         let remote_uids: HashSet<u32> = snapshot.all_uids.iter().copied().collect();
-        let removed =
-            self.repository
-                .delete_missing_uids(&self.config.account_id, mailbox, &remote_uids)?;
 
         // A read action is committed locally before the network round trip.
         // Push those durable intents before accepting a remote flag snapshot,
@@ -1334,10 +1438,18 @@ impl MailBackend {
         };
 
         let mut requested = BTreeSet::new();
-        for uid in snapshot.all_uids.iter().rev().take(initial_limit) {
-            if !cached_uids.contains(uid) {
-                requested.insert(*uid);
+        for uid in self
+            .newest_summary_uids(connection, mailbox, &snapshot, initial_limit)
+            .await?
+        {
+            if !cached_uids.contains(&uid) {
+                requested.insert(uid);
             }
+        }
+        if let Some(highest_uid) = snapshot.all_uids.last().copied()
+            && !cached_uids.contains(&highest_uid)
+        {
+            requested.insert(highest_uid);
         }
         if let Some(highest_uid) = previous_highest_uid {
             for uid in snapshot
@@ -1351,11 +1463,16 @@ impl MailBackend {
         }
 
         let requested: Vec<u32> = requested.into_iter().collect();
-        let preview_backfill = self.repository.mailbox_preview_backfill_candidates(
-            &self.config.account_id,
-            mailbox,
-            PREVIEW_BACKFILL_LIMIT,
-        )?;
+        let preview_backfill: Vec<u32> = self
+            .repository
+            .mailbox_preview_backfill_candidates(
+                &self.config.account_id,
+                mailbox,
+                PREVIEW_BACKFILL_LIMIT,
+            )?
+            .into_iter()
+            .filter(|uid| remote_uids.contains(uid))
+            .collect();
         let total = requested.len() + preview_backfill.len();
         on_progress(SyncBatchProgress {
             completed: 0,
@@ -1365,7 +1482,7 @@ impl MailBackend {
         let mut completed = 0;
         for batch in requested.chunks(SUMMARY_BATCH_SIZE) {
             fetched += self
-                .fetch_and_cache_summaries(connection, mailbox, batch)
+                .fetch_and_cache_required_summaries(connection, mailbox, batch)
                 .await?;
             completed += batch.len();
             on_progress(SyncBatchProgress { completed, total });
@@ -1404,6 +1521,12 @@ impl MailBackend {
             )?;
         }
 
+        // Destructive reconciliation is deliberately last. A failed summary,
+        // date-index, or flag fetch must leave every cached row recoverable.
+        let removed =
+            self.repository
+                .delete_missing_uids(&self.config.account_id, mailbox, &remote_uids)?;
+
         self.repository.upsert_mailbox_state(&MailboxState {
             account_id: self.config.account_id.clone(),
             mailbox: mailbox.to_owned(),
@@ -1417,11 +1540,9 @@ impl MailBackend {
         let cached_total = self
             .repository
             .count_messages(&self.config.account_id, mailbox)?;
-        let oldest_cached_uid = self
+        let cached_uids_after_sync = self
             .repository
-            .cached_uids(&self.config.account_id, mailbox)?
-            .into_iter()
-            .min();
+            .cached_uids(&self.config.account_id, mailbox)?;
         if let Some(uid_validity) = snapshot.uid_validity.filter(|value| *value > 0) {
             let history = self
                 .repository
@@ -1431,24 +1552,17 @@ impl MailBackend {
             let next_before_uid = if complete {
                 None
             } else {
-                earlier_history_bound(history.before_uid, oldest_cached_uid)
+                next_missing_history_bound(&snapshot.all_uids, &cached_uids_after_sync)
             };
-            let cursor_advances = match (history.before_uid, next_before_uid) {
-                (None, Some(_)) | (Some(_), None) => true,
-                (Some(current), Some(next)) => next < current,
-                (None, None) => complete,
-            };
-            if cursor_advances {
-                self.repository.advance_mailbox_history(
-                    &self.config.account_id,
-                    mailbox,
-                    uid_validity,
-                    history.before_uid,
-                    next_before_uid,
-                    complete,
-                    Some(snapshot.exists),
-                )?;
-            }
+            self.repository.reconcile_mailbox_history(
+                &self.config.account_id,
+                mailbox,
+                uid_validity,
+                history.before_uid,
+                next_before_uid,
+                complete,
+                snapshot.exists,
+            )?;
         }
 
         Ok(SyncReport {
@@ -6790,6 +6904,82 @@ fn classify_inbox_uid_scope(
     }
 }
 
+fn mailbox_snapshot_is_self_consistent(snapshot: &MailboxSnapshot) -> bool {
+    snapshot.all_uids.len() == snapshot.exists as usize
+}
+
+fn mailbox_snapshot_has_usable_epoch(
+    previous_state: Option<&MailboxState>,
+    snapshot: &MailboxSnapshot,
+) -> bool {
+    previous_state
+        .and_then(|state| state.uid_validity)
+        .is_none()
+        || snapshot.uid_validity.is_some()
+}
+
+fn mailbox_snapshot_requires_confirmation(
+    previous_state: Option<&MailboxState>,
+    cached_uids: &HashSet<u32>,
+    snapshot: &MailboxSnapshot,
+) -> bool {
+    if !mailbox_snapshot_is_self_consistent(snapshot) {
+        return true;
+    }
+    let epoch_changed = previous_state
+        .and_then(|state| state.uid_validity)
+        .is_some_and(|local| snapshot.uid_validity != Some(local));
+    let prior_non_empty = !cached_uids.is_empty()
+        || previous_state.is_some_and(|state| {
+            state.highest_uid.is_some() || state.uid_next.is_some_and(|uid_next| uid_next > 1)
+        });
+    let became_empty = prior_non_empty && snapshot.all_uids.is_empty();
+    let remote_uids: HashSet<u32> = snapshot.all_uids.iter().copied().collect();
+    let cached_message_disappeared = !cached_uids.is_subset(&remote_uids);
+    epoch_changed || became_empty || cached_message_disappeared
+}
+
+fn mailbox_snapshots_confirm_same_membership(
+    first: &MailboxSnapshot,
+    confirmed: &MailboxSnapshot,
+) -> bool {
+    mailbox_snapshot_is_self_consistent(first)
+        && mailbox_snapshot_is_self_consistent(confirmed)
+        && first.uid_validity == confirmed.uid_validity
+        && first.all_uids == confirmed.all_uids
+}
+
+fn next_missing_history_bound(all_uids: &[u32], cached_uids: &HashSet<u32>) -> Option<u32> {
+    all_uids
+        .iter()
+        .rev()
+        .find(|uid| !cached_uids.contains(uid))
+        .and_then(|uid| uid.checked_add(1))
+}
+
+fn newest_uids_by_internal_date(index: &[RemoteMessageInternalDate], limit: usize) -> Vec<u32> {
+    let mut ordered = index.to_vec();
+    ordered.sort_unstable_by(|left, right| {
+        remote_internal_date_timestamp(left)
+            .cmp(&remote_internal_date_timestamp(right))
+            .then_with(|| left.uid.cmp(&right.uid))
+    });
+    ordered
+        .into_iter()
+        .rev()
+        .take(limit)
+        .map(|message| message.uid)
+        .collect()
+}
+
+fn remote_internal_date_timestamp(message: &RemoteMessageInternalDate) -> Option<i64> {
+    message
+        .internal_date
+        .as_deref()
+        .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+        .map(|value| value.timestamp_millis())
+}
+
 fn changed_flags_cursor(
     supports_condstore: bool,
     uid_validity_reset: bool,
@@ -6927,6 +7117,7 @@ fn now() -> String {
 #[cfg(test)]
 mod tests {
     use std::{
+        collections::HashSet,
         fs, io,
         path::{Path, PathBuf},
         sync::{Arc, Barrier},
@@ -6943,9 +7134,11 @@ mod tests {
         changed_flags_cursor, classify_draft_reconciliation, classify_inbox_uid_scope,
         confirmed_created_mailbox_capability, discovered_mailbox_capability,
         draft_record_matches_remote, earlier_history_bound, mailbox_hint_changed,
-        normalized_message_page_size, remote_attachment_listing, remote_candidates_equivalent,
-        remote_draft_candidate, selected_remote_body_paths, validate_delivery_unknown_attempt,
-        validate_manual_retry,
+        mailbox_snapshot_has_usable_epoch, mailbox_snapshot_requires_confirmation,
+        mailbox_snapshots_confirm_same_membership, newest_uids_by_internal_date,
+        next_missing_history_bound, normalized_message_page_size, remote_attachment_listing,
+        remote_candidates_equivalent, remote_draft_candidate, selected_remote_body_paths,
+        validate_delivery_unknown_attempt, validate_manual_retry,
     };
     use crate::{
         AccountConfig, ComposeFormat, ComposeRequest, ContactMessageDirection, Draft,
@@ -6953,8 +7146,9 @@ mod tests {
         OutboxItem, OutboxStatus, ServerConfig, SmtpSecurity, StationeryTheme, SyncReport,
         database::{DraftRecord, MailboxState, Repository},
         imap_client::{
-            MailboxHint, MailboxMessageScope, RemoteMailbox, RemoteMessage, RemoteMessageStructure,
-            RemoteMimePart, RemoteTransferEncoding,
+            MailboxHint, MailboxMessageScope, MailboxSnapshot, RemoteMailbox, RemoteMessage,
+            RemoteMessageInternalDate, RemoteMessageStructure, RemoteMimePart,
+            RemoteTransferEncoding,
         },
         mime::{
             MimeSourceCompleteness, build_outgoing_message_with_attachments,
@@ -7314,14 +7508,13 @@ mod tests {
     #[test]
     fn confirmed_create_accepts_only_the_exact_selectable_canonical_name() {
         let ordinary = [remote_mailbox("Archive", false, false, true)];
-        let confirmed =
-            confirmed_created_mailbox_capability(
-                MailboxRole::Archive,
-                &ordinary,
-                false,
-                "imap.example.com",
-                true,
-            );
+        let confirmed = confirmed_created_mailbox_capability(
+            MailboxRole::Archive,
+            &ordinary,
+            false,
+            "imap.example.com",
+            true,
+        );
         assert_eq!(confirmed.status, MailboxCapabilityStatus::Available);
         assert_eq!(confirmed.display_name.as_deref(), Some("Archive"));
         assert_eq!(
@@ -7419,22 +7612,12 @@ mod tests {
         let localized_trash = remote_mailbox("[Gmail]/垃圾箱", false, true, true);
         let all_mail = [localized_all_mail, localized_trash];
         assert_eq!(
-            discovered_mailbox_capability(
-                MailboxRole::Archive,
-                &all_mail,
-                true,
-                "imap.gmail.com",
-            )
-            .status,
+            discovered_mailbox_capability(MailboxRole::Archive, &all_mail, true, "imap.gmail.com",)
+                .status,
             MailboxCapabilityStatus::Available
         );
         assert_eq!(
-            discovered_mailbox_capability(
-                MailboxRole::Trash,
-                &all_mail,
-                true,
-                "imap.gmail.com",
-            )
+            discovered_mailbox_capability(MailboxRole::Trash, &all_mail, true, "imap.gmail.com",)
                 .display_name
                 .as_deref(),
             Some("[Gmail]/垃圾箱")
@@ -7486,13 +7669,8 @@ mod tests {
             Some("&XfJSIJZk-")
         );
         assert_eq!(
-            discovered_mailbox_capability(
-                MailboxRole::Trash,
-                &qq,
-                false,
-                "imap.example.com",
-            )
-            .status,
+            discovered_mailbox_capability(MailboxRole::Trash, &qq, false, "imap.example.com",)
+                .status,
             MailboxCapabilityStatus::NeedsCreationConfirmation
         );
     }
@@ -7535,6 +7713,104 @@ mod tests {
                 .inbox_sync_completed_after(next_generation)
                 .expect("new request")
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn destructive_mailbox_snapshots_require_consistent_confirmation() {
+        let previous = MailboxState {
+            account_id: "account".to_owned(),
+            mailbox: INBOX.to_owned(),
+            uid_validity: Some(17),
+            uid_next: Some(5),
+            highest_uid: Some(4),
+            highest_modseq: None,
+            last_synced_at: None,
+        };
+        let cached = HashSet::from([1, 2, 3, 4]);
+        let empty = MailboxSnapshot {
+            exists: 0,
+            uid_validity: Some(17),
+            uid_next: Some(5),
+            highest_modseq: None,
+            all_uids: Vec::new(),
+        };
+        assert!(mailbox_snapshot_requires_confirmation(
+            Some(&previous),
+            &cached,
+            &empty,
+        ));
+        assert!(mailbox_snapshot_has_usable_epoch(Some(&previous), &empty));
+        assert!(mailbox_snapshots_confirm_same_membership(&empty, &empty));
+
+        let missing_epoch = MailboxSnapshot {
+            uid_validity: None,
+            ..empty.clone()
+        };
+        assert!(!mailbox_snapshot_has_usable_epoch(
+            Some(&previous),
+            &missing_epoch,
+        ));
+
+        let recovered = MailboxSnapshot {
+            exists: 4,
+            uid_validity: Some(17),
+            uid_next: Some(5),
+            highest_modseq: None,
+            all_uids: vec![1, 2, 3, 4],
+        };
+        assert!(!mailbox_snapshot_requires_confirmation(
+            Some(&previous),
+            &cached,
+            &recovered,
+        ));
+        assert!(!mailbox_snapshots_confirm_same_membership(
+            &empty, &recovered,
+        ));
+
+        let partial = MailboxSnapshot {
+            exists: 2,
+            all_uids: vec![1, 4],
+            ..recovered.clone()
+        };
+        assert!(mailbox_snapshot_requires_confirmation(
+            Some(&previous),
+            &cached,
+            &partial,
+        ));
+        let inconsistent = MailboxSnapshot {
+            exists: 4,
+            all_uids: vec![1, 2, 3],
+            ..recovered
+        };
+        assert!(mailbox_snapshot_requires_confirmation(
+            Some(&previous),
+            &cached,
+            &inconsistent,
+        ));
+    }
+
+    #[test]
+    fn newest_qq_summaries_follow_internal_date_instead_of_uid() {
+        let index = [
+            RemoteMessageInternalDate {
+                uid: 1_956,
+                internal_date: Some("2022-05-08T10:00:00+08:00".to_owned()),
+            },
+            RemoteMessageInternalDate {
+                uid: 1_836,
+                internal_date: Some("2026-08-02T10:00:00+08:00".to_owned()),
+            },
+            RemoteMessageInternalDate {
+                uid: 1_700,
+                internal_date: Some("2025-11-03T10:00:00+08:00".to_owned()),
+            },
+        ];
+
+        assert_eq!(newest_uids_by_internal_date(&index, 2), vec![1_836, 1_700]);
+        assert_eq!(
+            next_missing_history_bound(&[1_700, 1_836, 1_956], &HashSet::from([1_700, 1_956])),
+            Some(1_837)
         );
     }
 

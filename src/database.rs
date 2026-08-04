@@ -859,6 +859,56 @@ impl Repository {
         Ok(changed == 1)
     }
 
+    /// Reconciles the exclusive history bound from one complete, confirmed UID
+    /// snapshot. Unlike page advancement, this may move toward a higher UID
+    /// when date-ordered initial caching proves that newer UID positions were
+    /// intentionally skipped. Epoch and prior-bound CAS still reject stale
+    /// writers.
+    pub(crate) fn reconcile_mailbox_history(
+        &self,
+        expected_account_id: &str,
+        mailbox: &str,
+        expected_uid_validity: u32,
+        expected_before_uid: Option<u32>,
+        next_before_uid: Option<u32>,
+        complete: bool,
+        remote_total: u32,
+    ) -> Result<bool> {
+        if expected_uid_validity == 0
+            || next_before_uid == Some(0)
+            || (complete && next_before_uid.is_some())
+            || (!complete && next_before_uid.is_none())
+        {
+            return Err(MailError::Validation(
+                "the confirmed mailbox history snapshot is invalid".to_owned(),
+            ));
+        }
+        let connection = self.connection()?;
+        let changed = connection.execute(
+            "UPDATE mailboxes
+             SET history_before_uid = CASE
+                     WHEN history_complete = 1 THEN history_before_uid
+                     ELSE ?5
+                 END,
+                 history_complete = MAX(history_complete, ?6),
+                 remote_total = ?7
+             WHERE account_id = ?1 AND name = ?2
+               AND uid_validity = ?3
+               AND history_before_uid IS ?4
+               AND (history_complete = 0 OR ?6 = 1)",
+            params![
+                expected_account_id,
+                mailbox,
+                expected_uid_validity,
+                expected_before_uid,
+                next_before_uid,
+                complete,
+                remote_total,
+            ],
+        )?;
+        Ok(changed == 1)
+    }
+
     /// Advances the independent remote `\Flagged` discovery boundary. A
     /// starred scan must never mark ordinary message history as complete.
     pub(crate) fn advance_starred_mailbox_history(
@@ -10505,6 +10555,68 @@ mod tests {
                 .expect("reset history")
                 .expect("archive row"),
             MailboxHistory::default()
+        );
+    }
+
+    #[test]
+    fn confirmed_uid_snapshot_can_rebase_an_incomplete_history_boundary() {
+        let (_directory, repository, account) = setup();
+        initialize_mailbox(
+            &repository,
+            &account.account_id,
+            MailboxRole::Inbox,
+            "INBOX",
+            601,
+        );
+        assert!(
+            repository
+                .reconcile_mailbox_history(
+                    &account.account_id,
+                    "INBOX",
+                    601,
+                    None,
+                    Some(500),
+                    false,
+                    2_000,
+                )
+                .expect("initial confirmed boundary")
+        );
+        assert!(
+            repository
+                .reconcile_mailbox_history(
+                    &account.account_id,
+                    "INBOX",
+                    601,
+                    Some(500),
+                    Some(900),
+                    false,
+                    2_000,
+                )
+                .expect("rebase skipped higher UIDs")
+        );
+        assert!(
+            !repository
+                .reconcile_mailbox_history(
+                    &account.account_id,
+                    "INBOX",
+                    601,
+                    Some(500),
+                    Some(700),
+                    false,
+                    2_000,
+                )
+                .expect("stale confirmed writer")
+        );
+        assert_eq!(
+            repository
+                .mailbox_history(&account.account_id, "INBOX")
+                .expect("history state")
+                .expect("mailbox row"),
+            MailboxHistory {
+                before_uid: Some(900),
+                complete: false,
+                remote_total: Some(2_000),
+            }
         );
     }
 

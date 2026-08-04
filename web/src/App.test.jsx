@@ -1,12 +1,29 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { App } from "./App.jsx";
+import { App, mergeRefreshedMailboxItems } from "./App.jsx";
 import { bundledAppVersion } from "./services/appUpdate.js";
 import { mailApi } from "./services/mailApi.js";
 import { useProseMirrorTestGeometry } from "./test/proseMirrorTestGeometry.js";
 
 useProseMirrorTestGeometry();
+
+it("merges a refreshed first page without dropping loaded older mail", () => {
+  const existing = [
+    { id: "newest", subject: "stale summary" },
+    { id: "older", subject: "loaded older mail" },
+  ];
+  const refreshed = [
+    { id: "arrival", subject: "new arrival" },
+    { id: "newest", subject: "refreshed summary" },
+  ];
+
+  expect(mergeRefreshedMailboxItems(existing, refreshed)).toEqual([
+    refreshed[0],
+    refreshed[1],
+    existing[1],
+  ]);
+});
 
 function deferred() {
   let resolve;
