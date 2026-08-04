@@ -244,8 +244,10 @@ export function SettingsPanel({
   accountStatus,
   accountSubmitStatus,
   accountError,
+  accountErrorProvider,
   onConfigureAccount,
   onConnectGoogle,
+  onAccountProviderChange,
   onSwitchAccount,
   onSaveAccountRemark,
   onRemoveAccount,
@@ -486,6 +488,11 @@ export function SettingsPanel({
     setSelectedProvider(null);
     setRepairingAccount(false);
     setAuthorizationGuideProvider(null);
+  };
+
+  const selectAccountProvider = (provider) => {
+    onAccountProviderChange?.(provider);
+    setSelectedProvider(provider);
   };
 
   const closeAuthorizationGuide = () => {
@@ -1111,7 +1118,7 @@ export function SettingsPanel({
                   <button
                     key={provider.id}
                     type="button"
-                    onClick={() => setSelectedProvider(provider.id)}
+                    onClick={() => selectAccountProvider(provider.id)}
                   >
                     <ProviderMark provider={provider.id} />
                     <span>
@@ -1185,7 +1192,12 @@ export function SettingsPanel({
                       presets={accountPresets}
                       status={repairingAccount ? accountStatus : null}
                       submitStatus={accountSubmitStatus}
-                      error={accountError}
+                      error={
+                        accountErrorProvider &&
+                        accountErrorProvider !== selectedProvider
+                          ? null
+                          : accountError
+                      }
                       initialProvider={selectedProvider}
                       showProviderPicker={false}
                       onSubmit={onConfigureAccount}

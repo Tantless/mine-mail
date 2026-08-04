@@ -2339,6 +2339,36 @@ describe("Mine Mail desktop state bridge", () => {
     expect(screen.getByLabelText("主题").value).toBe("登录前正在编辑");
   });
 
+  it("clears a Google timeout before showing another provider form", async () => {
+    desktop.mailApi.connectGoogleAccount.mockRejectedValueOnce(
+      new Error("Google 登录等待超时，请重试。"),
+    );
+    const user = userEvent.setup();
+    render(<App />);
+
+    await screen.findByRole("button", { name: "当前账户 me@163.com" });
+    await user.click(
+      screen.getByRole("button", { name: /添加邮箱账户/ }),
+    );
+    await user.click(
+      await screen.findByRole("button", { name: /Gmail/ }),
+    );
+    await user.click(
+      screen.getByRole("button", { name: "使用 Google 登录" }),
+    );
+    expect(
+      await screen.findByText("Google 登录等待超时，请重试。"),
+    ).toBeTruthy();
+
+    await user.click(
+      screen.getByRole("button", { name: "返回选择邮箱服务商" }),
+    );
+    await user.click(screen.getByRole("button", { name: /QQ 邮箱/ }));
+
+    expect(screen.getByRole("heading", { name: "连接QQ 邮箱" })).toBeTruthy();
+    expect(screen.queryByText("Google 登录等待超时，请重试。")).toBeNull();
+  });
+
   it("stabilizes the current compose session before connecting a password account", async () => {
     desktop.mailApi.configureAccount.mockResolvedValue({
       configured: true,
