@@ -1972,6 +1972,7 @@ async fn configure_account(
     desktop_runtime: State<'_, DesktopRuntime>,
     request: ConfigureAccountRequest,
 ) -> CommandResult<AccountStatusDto> {
+    let _account_mutation_guard = desktop_runtime.acquire_account_mutation_gate().await;
     let _sync_guard = desktop_runtime.acquire_sync_gate().await;
     let (status, account_added) = account.configure(&backend, request).await?;
     if account_added
@@ -1992,8 +1993,103 @@ async fn connect_google_account(
     backend: State<'_, BackendState>,
     desktop_runtime: State<'_, DesktopRuntime>,
 ) -> CommandResult<AccountStatusDto> {
-    let _sync_guard = desktop_runtime.acquire_sync_gate().await;
-    let (status, account_added) = account.connect_google(&backend).await?;
+    let started = Instant::now();
+    let operation_id = diagnostics::operation_id();
+    diagnostics::info(
+        "oauth_connect_started",
+        DiagnosticFields::default()
+            .operation_id(operation_id.clone())
+            .operation("google_oauth"),
+    );
+    let authorization_started = Instant::now();
+    let oauth = match account.begin_google_authorization(&operation_id).await {
+        Ok(oauth) => oauth,
+        Err(error) => {
+            diagnostics::error(
+                "oauth_connect_failed",
+                DiagnosticFields::default()
+                    .operation_id(operation_id)
+                    .operation("authorization_flow")
+                    .error(DiagnosticErrorKind::Runtime)
+                    .duration(started.elapsed()),
+            );
+            return Err(error);
+        }
+    };
+    diagnostics::info(
+        "oauth_connect_stage_completed",
+        DiagnosticFields::default()
+            .operation_id(operation_id.clone())
+            .operation("authorization_flow")
+            .outcome("completed")
+            .duration(authorization_started.elapsed()),
+    );
+
+    let mutation_wait_started = Instant::now();
+    let _account_mutation_guard = desktop_runtime.acquire_account_mutation_gate().await;
+    diagnostics::info(
+        "oauth_connect_stage_completed",
+        DiagnosticFields::default()
+            .operation_id(operation_id.clone())
+            .operation("account_mutation_gate_wait")
+            .outcome("completed")
+            .duration(mutation_wait_started.elapsed()),
+    );
+    let account_added = match account.google_authorization_adds_account(&oauth) {
+        Ok(account_added) => account_added,
+        Err(error) => {
+            diagnostics::error(
+                "oauth_connect_failed",
+                DiagnosticFields::default()
+                    .operation_id(operation_id)
+                    .operation("account_binding")
+                    .error(DiagnosticErrorKind::Runtime)
+                    .duration(started.elapsed()),
+            );
+            return Err(error);
+        }
+    };
+    let lifecycle_wait_started = Instant::now();
+    let binding_result = if account_added {
+        let _account_add_guard = desktop_runtime.acquire_account_add_access().await;
+        diagnostics::info(
+            "oauth_connect_stage_completed",
+            DiagnosticFields::default()
+                .operation_id(operation_id.clone())
+                .operation("lifecycle_gate_wait")
+                .mode("shared_add")
+                .outcome("completed")
+                .duration(lifecycle_wait_started.elapsed()),
+        );
+        account.connect_google(&backend, oauth).await
+    } else {
+        let _sync_guard = desktop_runtime.acquire_sync_gate().await;
+        diagnostics::info(
+            "oauth_connect_stage_completed",
+            DiagnosticFields::default()
+                .operation_id(operation_id.clone())
+                .operation("lifecycle_gate_wait")
+                .mode("exclusive_replace")
+                .outcome("completed")
+                .duration(lifecycle_wait_started.elapsed()),
+        );
+        account.connect_google(&backend, oauth).await
+    };
+    let (status, committed_account_added) = match binding_result {
+        Ok(result) => result,
+        Err(error) => {
+            diagnostics::error(
+                "oauth_connect_failed",
+                DiagnosticFields::default()
+                    .operation_id(operation_id)
+                    .operation("account_binding")
+                    .error(DiagnosticErrorKind::Runtime)
+                    .duration(started.elapsed()),
+            );
+            return Err(error);
+        }
+    };
+    debug_assert_eq!(committed_account_added, account_added);
     if account_added
         && let Some(account_id) = backend.active_account_id()
         && let Err(error) = desktop_runtime.begin_notification_baseline(&account_id)
@@ -2002,29 +2098,41 @@ async fn connect_google_account(
     }
     let _ = app.emit("mail:account-updated", status.clone());
     desktop::request_sync(&app, true, "account_change");
+    diagnostics::info(
+        "oauth_connect_completed",
+        DiagnosticFields::default()
+            .operation_id(operation_id)
+            .operation("google_oauth")
+            .outcome("completed")
+            .duration(started.elapsed()),
+    );
     Ok(status)
 }
 
 #[tauri::command]
-fn switch_account(
+async fn switch_account(
     app: AppHandle,
     account: State<'_, AccountRuntime>,
     backend: State<'_, BackendState>,
+    desktop_runtime: State<'_, DesktopRuntime>,
     account_id: String,
 ) -> CommandResult<AccountStatusDto> {
+    let _account_mutation_guard = desktop_runtime.acquire_account_mutation_gate().await;
     let status = account.switch_account(&backend, &account_id)?;
     let _ = app.emit("mail:account-updated", status.clone());
     Ok(status)
 }
 
 #[tauri::command]
-fn set_account_remark(
+async fn set_account_remark(
     app: AppHandle,
     account: State<'_, AccountRuntime>,
     backend: State<'_, BackendState>,
+    desktop_runtime: State<'_, DesktopRuntime>,
     account_id: String,
     remark: String,
 ) -> CommandResult<AccountStatusDto> {
+    let _account_mutation_guard = desktop_runtime.acquire_account_mutation_gate().await;
     let status = account.set_remark(&backend, &account_id, &remark)?;
     let _ = app.emit("mail:account-updated", status.clone());
     Ok(status)
@@ -2039,9 +2147,110 @@ async fn remove_account(
     desktop_runtime: State<'_, DesktopRuntime>,
     request: RemoveAccountRequest,
 ) -> CommandResult<RemoveAccountResultDto> {
-    let _sync_guard = desktop_runtime.acquire_sync_gate().await;
+    let started = Instant::now();
+    let operation_id = diagnostics::operation_id();
     let account_id = request.account_id.clone();
-    let mut result = account.remove_account(&backend, &request).await?;
+    diagnostics::info(
+        "account_removal_started",
+        DiagnosticFields::default()
+            .operation_id(operation_id.clone())
+            .account(&account_id)
+            .operation("remove_account")
+            .mode(if request.revoke_google_authorization {
+                "revoke"
+            } else {
+                "disconnect"
+            }),
+    );
+    let mutation_wait_started = Instant::now();
+    let _account_mutation_guard = desktop_runtime.acquire_account_mutation_gate().await;
+    diagnostics::info(
+        "account_removal_stage_completed",
+        DiagnosticFields::default()
+            .operation_id(operation_id.clone())
+            .account(&account_id)
+            .operation("account_mutation_gate_wait")
+            .outcome("completed")
+            .duration(mutation_wait_started.elapsed()),
+    );
+    let revocation_started = Instant::now();
+    let google_authorization_revoked = match account
+        .revoke_google_authorization_for_removal(&request, &operation_id)
+        .await
+    {
+        Ok(revoked) => revoked,
+        Err(error) => {
+            diagnostics::error(
+                "account_removal_failed",
+                DiagnosticFields::default()
+                    .operation_id(operation_id)
+                    .account(&account_id)
+                    .operation("google_oauth_revocation")
+                    .error(DiagnosticErrorKind::Runtime)
+                    .duration(started.elapsed()),
+            );
+            return Err(error);
+        }
+    };
+    if google_authorization_revoked {
+        diagnostics::info(
+            "account_removal_stage_completed",
+            DiagnosticFields::default()
+                .operation_id(operation_id.clone())
+                .account(&account_id)
+                .operation("google_oauth_revocation")
+                .outcome("completed")
+                .duration(revocation_started.elapsed()),
+        );
+    }
+
+    let lifecycle_wait_started = Instant::now();
+    let removal_result = if request.delete_local_data {
+        let _sync_guard = desktop_runtime.acquire_sync_gate().await;
+        diagnostics::info(
+            "account_removal_stage_completed",
+            DiagnosticFields::default()
+                .operation_id(operation_id.clone())
+                .account(&account_id)
+                .operation("lifecycle_gate_wait")
+                .mode("exclusive_cache_delete")
+                .outcome("completed")
+                .duration(lifecycle_wait_started.elapsed()),
+        );
+        account
+            .remove_account(&backend, &request, google_authorization_revoked)
+            .await
+    } else {
+        let _disconnect_guard = desktop_runtime.acquire_account_disconnect_access().await;
+        diagnostics::info(
+            "account_removal_stage_completed",
+            DiagnosticFields::default()
+                .operation_id(operation_id.clone())
+                .account(&account_id)
+                .operation("lifecycle_gate_wait")
+                .mode("shared_disconnect")
+                .outcome("completed")
+                .duration(lifecycle_wait_started.elapsed()),
+        );
+        account
+            .remove_account(&backend, &request, google_authorization_revoked)
+            .await
+    };
+    let mut result = match removal_result {
+        Ok(result) => result,
+        Err(error) => {
+            diagnostics::error(
+                "account_removal_failed",
+                DiagnosticFields::default()
+                    .operation_id(operation_id)
+                    .account(&account_id)
+                    .operation("local_removal")
+                    .error(DiagnosticErrorKind::Runtime)
+                    .duration(started.elapsed()),
+            );
+            return Err(error);
+        }
+    };
     if request.delete_local_data {
         let mut cleanup_warnings = result.warning.take().into_iter().collect::<Vec<_>>();
         if let Err(error) = desktop_runtime.remove_notification_baseline(&account_id) {
@@ -2064,6 +2273,15 @@ async fn remove_account(
     if result.status.configured {
         desktop::request_sync(&app, true, "account_change");
     }
+    diagnostics::info(
+        "account_removal_completed",
+        DiagnosticFields::default()
+            .operation_id(operation_id)
+            .account(&account_id)
+            .operation("remove_account")
+            .outcome("completed")
+            .duration(started.elapsed()),
+    );
     Ok(result)
 }
 
@@ -2172,13 +2390,17 @@ fn initialize_state(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Erro
             .degraded(path_degraded || account_degraded || startup_degraded || !tray_available),
     );
 
-    if background_launch && tray_available && local_backend_ready && !startup_degraded {
+    let (show_window, request_startup_sync) = startup_actions(
+        background_launch,
+        tray_available,
+        local_backend_ready,
+        startup_degraded,
+    );
+    if show_window {
+        desktop::show_main_window(app.handle());
+    }
+    if request_startup_sync {
         desktop::request_sync(app.handle(), true, "startup");
-    } else {
-        desktop::show_main_window(app.handle(), true);
-        if local_backend_ready && !startup_degraded {
-            desktop::request_sync(app.handle(), true, "startup");
-        }
     }
     Ok(())
 }
@@ -2221,6 +2443,17 @@ fn is_background_launch(args: impl IntoIterator<Item = String>) -> bool {
     args.into_iter().any(|argument| argument == "--background")
 }
 
+fn startup_actions(
+    background_launch: bool,
+    tray_available: bool,
+    local_backend_ready: bool,
+    startup_degraded: bool,
+) -> (bool, bool) {
+    let request_startup_sync = local_backend_ready && !startup_degraded;
+    let show_window = !(background_launch && tray_available && request_startup_sync);
+    (show_window, request_startup_sync)
+}
+
 pub fn run() {
     let app = tauri::Builder::default()
         // The single-instance plugin must remain the first plugin registered.
@@ -2228,7 +2461,7 @@ pub fn run() {
             if is_background_launch(args) {
                 desktop::request_sync(app, true, "single_instance");
             } else {
-                desktop::show_main_window(app, true);
+                desktop::show_main_window_and_refresh(app);
             }
         }))
         .plugin(diagnostics::plugin())
@@ -2338,7 +2571,7 @@ pub fn run() {
     app.run(|app, event| match event {
         RunEvent::Resumed => desktop::request_sync(app, false, "resume"),
         #[cfg(target_os = "macos")]
-        RunEvent::Reopen { .. } => desktop::show_main_window(app, false),
+        RunEvent::Reopen { .. } => desktop::show_main_window_and_refresh(app),
         RunEvent::ExitRequested { api, .. } => {
             diagnostics::info(
                 "shutdown_requested",
@@ -2382,8 +2615,8 @@ mod tests {
         OutboxMessageDto, ReplyContextDto, Url, WebviewNavigationDecision,
         assert_no_private_mail_coordinates, classify_webview_navigation,
         delivery_unknown_decision_name, is_background_launch, requested_autostart_change,
-        sanitize_compose_request, validate_delivery_unknown_request, validate_external_url,
-        validate_outbox_id,
+        sanitize_compose_request, startup_actions, validate_delivery_unknown_request,
+        validate_external_url, validate_outbox_id,
     };
 
     fn rich_message() -> InboxMessage {
@@ -2660,6 +2893,14 @@ mod tests {
             "Mine Mail.exe".to_owned(),
             "--background=false".to_owned(),
         ]));
+    }
+
+    #[test]
+    fn foreground_startup_shows_once_and_requests_one_explicit_sync() {
+        assert_eq!(startup_actions(false, true, true, false), (true, true));
+        assert_eq!(startup_actions(false, false, true, false), (true, true));
+        assert_eq!(startup_actions(true, true, true, false), (false, true));
+        assert_eq!(startup_actions(true, true, true, true), (true, false));
     }
 
     #[test]

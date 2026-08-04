@@ -23,8 +23,8 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
 use tokio::sync::{
-    Mutex as AsyncMutex, Notify, RwLock as AsyncRwLock, RwLockReadGuard, RwLockWriteGuard, mpsc,
-    watch,
+    Mutex as AsyncMutex, MutexGuard as AsyncMutexGuard, Notify, RwLock as AsyncRwLock,
+    RwLockReadGuard, RwLockWriteGuard, mpsc, watch,
 };
 use tokio::time::Instant as TokioInstant;
 
@@ -193,6 +193,7 @@ pub(crate) struct DesktopRuntime {
     startup_error: RwLock<Option<String>>,
     sync_tx: mpsc::Sender<BackgroundRequest>,
     shutdown_tx: watch::Sender<bool>,
+    account_mutation_gate: AsyncMutex<()>,
     lifecycle_gate: AsyncRwLock<()>,
     batch_sync_gate: AsyncMutex<()>,
     last_sync_started: StdMutex<Option<Instant>>,
@@ -277,6 +278,7 @@ impl DesktopRuntime {
                 startup_error: RwLock::new(startup_error),
                 sync_tx,
                 shutdown_tx,
+                account_mutation_gate: AsyncMutex::new(()),
                 lifecycle_gate: AsyncRwLock::new(()),
                 batch_sync_gate: AsyncMutex::new(()),
                 last_sync_started: StdMutex::new(None),
@@ -714,9 +716,27 @@ impl DesktopRuntime {
         Ok(true)
     }
 
-    /// Prevent account replacement/removal while a network operation retains
-    /// one of its backend handles.
+    /// Serialize user-initiated changes to account metadata and backend slots.
+    /// Acquire this before either lifecycle access mode below.
+    pub(crate) async fn acquire_account_mutation_gate(&self) -> AsyncMutexGuard<'_, ()> {
+        self.account_mutation_gate.lock().await
+    }
+
+    /// Prevent account replacement or cache-deleting removal while a network
+    /// operation retains one of its backend handles.
     pub(crate) async fn acquire_sync_access(&self) -> RwLockReadGuard<'_, ()> {
+        self.lifecycle_gate.read().await
+    }
+
+    /// Adding a distinct account does not invalidate handles retained by syncs
+    /// for existing accounts, so it shares lifecycle access with those syncs.
+    pub(crate) async fn acquire_account_add_access(&self) -> RwLockReadGuard<'_, ()> {
+        self.lifecycle_gate.read().await
+    }
+
+    /// Disconnecting an account without deleting its cache can remove the
+    /// runtime slot while an existing sync finishes through its retained Arc.
+    pub(crate) async fn acquire_account_disconnect_access(&self) -> RwLockReadGuard<'_, ()> {
         self.lifecycle_gate.read().await
     }
 
@@ -2405,7 +2425,7 @@ pub(crate) fn build_tray(app: &App) -> tauri::Result<()> {
         .menu(&menu)
         .show_menu_on_left_click(!cfg!(target_os = "windows"))
         .on_menu_event(|app, event| match event.id.as_ref() {
-            "open" => show_main_window(app, true),
+            "open" => show_main_window_and_refresh(app),
             "refresh" => request_sync(app, true, "tray"),
             "quit" => quit_app(app),
             _ => {}
@@ -2417,7 +2437,7 @@ pub(crate) fn build_tray(app: &App) -> tauri::Result<()> {
                 ..
             } = event
             {
-                show_main_window(tray.app_handle(), true);
+                show_main_window_and_refresh(tray.app_handle());
             }
         });
     if let Some(icon) = app.default_window_icon() {
@@ -2427,13 +2447,17 @@ pub(crate) fn build_tray(app: &App) -> tauri::Result<()> {
     Ok(())
 }
 
-pub(crate) fn show_main_window(app: &AppHandle, force_sync: bool) {
+pub(crate) fn show_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.unminimize();
         let _ = window.show();
         let _ = window.set_focus();
     }
-    request_sync(app, force_sync, "window_open");
+}
+
+pub(crate) fn show_main_window_and_refresh(app: &AppHandle) {
+    show_main_window(app);
+    request_sync(app, false, "window_open");
 }
 
 pub(crate) fn dismiss_new_mail_notification(
@@ -2484,7 +2508,7 @@ pub(crate) fn open_new_mail_notification(
         &runtime,
         notification_id,
         |target| {
-            show_main_window(app, false);
+            show_main_window(app);
             app.emit_to(
                 "main",
                 "mail:open-message",
@@ -2694,6 +2718,40 @@ mod tests {
             raw_rfc822: vec![],
             synced_at: "2026-07-14T00:00:00Z".to_owned(),
         }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn account_add_and_disconnect_share_access_with_an_existing_sync() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let (runtime, _sync_rx, _shutdown_rx) = DesktopRuntime::open(directory.path());
+        let sync_guard = runtime.acquire_sync_access().await;
+
+        let add_guard = tokio::time::timeout(
+            Duration::from_millis(20),
+            runtime.acquire_account_add_access(),
+        )
+        .await
+        .expect("adding a distinct account must not wait for an existing sync");
+        drop(add_guard);
+        let disconnect_guard = tokio::time::timeout(
+            Duration::from_millis(20),
+            runtime.acquire_account_disconnect_access(),
+        )
+        .await
+        .expect("disconnect without cache deletion must not wait for an existing sync");
+        drop(disconnect_guard);
+
+        let mut exclusive = Box::pin(runtime.acquire_sync_gate());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), &mut exclusive)
+                .await
+                .is_err(),
+            "replacement and cache deletion must still wait for retained handles"
+        );
+        drop(sync_guard);
+        let _exclusive_guard = tokio::time::timeout(Duration::from_millis(100), exclusive)
+            .await
+            .expect("exclusive lifecycle access after the sync settles");
     }
 
     #[tokio::test(flavor = "current_thread")]

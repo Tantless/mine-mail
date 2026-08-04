@@ -194,6 +194,11 @@ impl Fields {
         self
     }
 
+    pub(crate) fn attempt(mut self, value: u64) -> Self {
+        self.attempt_count = Some(value);
+        self
+    }
+
     pub(crate) fn draft_version(mut self, value: u64) -> Self {
         self.draft_version = Some(value);
         self

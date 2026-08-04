@@ -8,6 +8,8 @@ use std::{
 };
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+#[cfg(target_os = "linux")]
+use gio::prelude::ProxyResolverExt;
 use keyring::Entry;
 use mine_mail::{
     AccountConfig, ConnectionFailure, ConnectionFailureKind, ConnectionProtocol, ConnectionReport,
@@ -18,12 +20,16 @@ use sha2::{Digest, Sha256};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
+    sync::Mutex as AsyncMutex,
     time::timeout,
 };
 use uuid::Uuid;
 use zeroize::{Zeroize, Zeroizing};
 
-use crate::diagnostics::{self, ErrorKind as DiagnosticErrorKind, Fields as DiagnosticFields};
+use crate::diagnostics::{
+    self, ErrorKind as DiagnosticErrorKind, Fields as DiagnosticFields,
+    OperationId as DiagnosticOperationId,
+};
 
 include!(concat!(env!("OUT_DIR"), "/google_oauth_config.rs"));
 
@@ -47,6 +53,10 @@ const GOOGLE_USERINFO_URL: &str = "https://openidconnect.googleapis.com/v1/useri
 const GOOGLE_MAIL_SCOPE: &str = "https://mail.google.com/";
 const OAUTH_CALLBACK_TIMEOUT: Duration = Duration::from_secs(180);
 const OAUTH_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
+const OAUTH_REVOCATION_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(5);
+const OAUTH_REVOCATION_MAX_ATTEMPTS: u64 = 2;
+#[cfg(target_os = "linux")]
+const SYSTEM_PROXY_RESOLUTION_TIMEOUT: Duration = Duration::from_secs(3);
 const OAUTH_REFRESH_MARGIN_SECONDS: u64 = 300;
 const ARCHIVE_FOLDER_SELECTION_TTL: Duration = Duration::from_secs(5 * 60);
 const MAX_ARCHIVE_FOLDER_SELECTIONS: usize = 3 * 128;
@@ -845,6 +855,7 @@ pub(crate) struct AccountRuntime {
     app_data: PathBuf,
     stored: RwLock<StoredAccounts>,
     startup_error: RwLock<Option<String>>,
+    credential_gates: Mutex<HashMap<String, Arc<AsyncMutex<()>>>>,
 }
 
 impl AccountRuntime {
@@ -886,6 +897,7 @@ impl AccountRuntime {
             app_data: app_data.to_path_buf(),
             stored: RwLock::new(stored),
             startup_error: RwLock::new(startup_error),
+            credential_gates: Mutex::new(HashMap::new()),
         };
         Ok((runtime, backend_state))
     }
@@ -897,9 +909,21 @@ impl AccountRuntime {
                 app_data: app_data.to_path_buf(),
                 stored: RwLock::new(StoredAccounts::default()),
                 startup_error: RwLock::new(Some(error)),
+                credential_gates: Mutex::new(HashMap::new()),
             },
             BackendState::empty(),
         )
+    }
+
+    fn credential_gate(&self, account_id: &str) -> Result<Arc<AsyncMutex<()>>, String> {
+        let mut gates = self
+            .credential_gates
+            .lock()
+            .map_err(|_| "Credential coordination is temporarily unavailable.".to_owned())?;
+        Ok(gates
+            .entry(account_id.to_owned())
+            .or_insert_with(|| Arc::new(AsyncMutex::new(())))
+            .clone())
     }
 
     pub(crate) fn status(&self, backend: &BackendState) -> AccountStatusDto {
@@ -1050,6 +1074,8 @@ impl AccountRuntime {
             open_backend_without_outbox_recovery(&metadata, &database_path, password.as_str())?;
         verify_connections(&network_backend, metadata.authentication).await?;
 
+        let credential_gate = self.credential_gate(&metadata.account_id)?;
+        let _credential_guard = credential_gate.lock().await;
         let entry = keyring_entry(&metadata)?;
         let previous_credential = read_previous_credential(&entry)?;
         entry
@@ -1082,13 +1108,35 @@ impl AccountRuntime {
         Ok((self.status(backend_state), account_added))
     }
 
+    pub(crate) async fn begin_google_authorization(
+        &self,
+        operation_id: &DiagnosticOperationId,
+    ) -> Result<GoogleAuthorization, String> {
+        let client_id = google_client_id()?;
+        let client_secret = google_client_secret()?;
+        authorize_google(&client_id, client_secret, operation_id).await
+    }
+
+    pub(crate) fn google_authorization_adds_account(
+        &self,
+        oauth: &GoogleAuthorization,
+    ) -> Result<bool, String> {
+        let metadata = AccountMetadata::google(oauth.email.clone())?;
+        let stored = self
+            .stored
+            .read()
+            .map_err(|_| "Account state is temporarily unavailable.".to_owned())?;
+        Ok(!stored
+            .accounts
+            .iter()
+            .any(|existing| existing.same_identity(&metadata)))
+    }
+
     pub(crate) async fn connect_google(
         &self,
         backend_state: &BackendState,
+        oauth: GoogleAuthorization,
     ) -> Result<(AccountStatusDto, bool), String> {
-        let client_id = google_client_id()?;
-        let client_secret = google_client_secret()?;
-        let oauth = authorize_google(&client_id, client_secret).await?;
         let mut metadata = AccountMetadata::google(oauth.email.clone())?;
         let previous_stored = self
             .stored
@@ -1118,8 +1166,8 @@ impl AccountRuntime {
             &database_path,
             &oauth.tokens.access_token,
         )?;
-        verify_connections(&network_backend, metadata.authentication).await?;
-
+        let credential_gate = self.credential_gate(&metadata.account_id)?;
+        let _credential_guard = credential_gate.lock().await;
         let entry = keyring_entry(&metadata)?;
         let previous_credential = read_previous_credential(&entry)?;
         let encoded = Zeroizing::new(
@@ -1183,10 +1231,53 @@ impl AccountRuntime {
         Ok(self.status(backend_state))
     }
 
+    pub(crate) async fn revoke_google_authorization_for_removal(
+        &self,
+        request: &RemoveAccountRequest,
+        operation_id: &DiagnosticOperationId,
+    ) -> Result<bool, String> {
+        if !request.revoke_google_authorization {
+            return Ok(false);
+        }
+        let account_id = request.account_id.trim();
+        let metadata = self
+            .stored
+            .read()
+            .map_err(|_| "Account state is temporarily unavailable.".to_owned())?
+            .accounts
+            .iter()
+            .find(|metadata| metadata.account_id == account_id)
+            .cloned()
+            .ok_or_else(|| "The selected account does not exist.".to_owned())?;
+        if metadata.authentication != AccountAuthentication::GoogleOAuth {
+            return Err(
+                "Google authorization can only be revoked for a Google OAuth account.".to_owned(),
+            );
+        }
+        let credential_gate = self.credential_gate(&metadata.account_id)?;
+        let _credential_guard = credential_gate.lock().await;
+        let entry = keyring_entry(&metadata)?;
+        let encoded = Zeroizing::new(entry.get_password().map_err(|error| match error {
+            keyring::Error::NoEntry => {
+                "Google authorization is not available locally, so Mine Mail cannot revoke it. Disconnect the account here and remove Mine Mail from your Google Account permissions."
+                    .to_owned()
+            }
+            _ => "The OS credential store could not read Google authorization; nothing was removed."
+                .to_owned(),
+        })?);
+        let tokens: OAuthTokenBundle = serde_json::from_str(encoded.as_str()).map_err(|_| {
+            "Saved Google authorization is invalid, so Mine Mail cannot revoke it. Nothing was removed."
+                .to_owned()
+        })?;
+        revoke_google_authorization(&tokens, operation_id).await?;
+        Ok(true)
+    }
+
     pub(crate) async fn remove_account(
         &self,
         backend_state: &BackendState,
         request: &RemoveAccountRequest,
+        google_authorization_revoked: bool,
     ) -> Result<RemoveAccountResultDto, String> {
         let account_id = request.account_id.trim();
         let previous_stored = self
@@ -1206,25 +1297,15 @@ impl AccountRuntime {
                 "Google authorization can only be revoked for a Google OAuth account.".to_owned(),
             );
         }
-        let entry = keyring_entry(&metadata)?;
-        let google_authorization_revoked = if request.revoke_google_authorization {
-            let encoded = Zeroizing::new(entry.get_password().map_err(|error| match error {
-                keyring::Error::NoEntry => {
-                    "Google authorization is not available locally, so Mine Mail cannot revoke it. Disconnect the account here and remove Mine Mail from your Google Account permissions."
-                        .to_owned()
-                }
-                _ => "The OS credential store could not read Google authorization; nothing was removed."
+        if request.revoke_google_authorization != google_authorization_revoked {
+            return Err(
+                "Google authorization must be confirmed before the account can be removed."
                     .to_owned(),
-            })?);
-            let tokens: OAuthTokenBundle = serde_json::from_str(encoded.as_str()).map_err(|_| {
-                "Saved Google authorization is invalid, so Mine Mail cannot revoke it. Nothing was removed."
-                    .to_owned()
-            })?;
-            revoke_google_token(&tokens.refresh_token).await?;
-            true
-        } else {
-            false
-        };
+            );
+        }
+        let credential_gate = self.credential_gate(&metadata.account_id)?;
+        let _credential_guard = credential_gate.lock().await;
+        let entry = keyring_entry(&metadata)?;
 
         let mut next_stored = previous_stored.clone();
         next_stored
@@ -1371,6 +1452,8 @@ impl AccountRuntime {
         if !force && backend_state.credential_invalid_for(&metadata.account_id) {
             return Ok(());
         }
+        let credential_gate = self.credential_gate(&metadata.account_id)?;
+        let _credential_guard = credential_gate.lock().await;
         let entry = keyring_entry(metadata)?;
         let encoded = Zeroizing::new(entry.get_password().map_err(|error| match error {
             keyring::Error::NoEntry => "Google authorization is missing; sign in again.".to_owned(),
@@ -1821,7 +1904,7 @@ impl Drop for OAuthTokenBundle {
     }
 }
 
-struct GoogleAuthorization {
+pub(crate) struct GoogleAuthorization {
     email: String,
     tokens: OAuthTokenBundle,
 }
@@ -1844,6 +1927,12 @@ struct GoogleRefreshResponse {
 struct GoogleRefreshFailure {
     message: String,
     credential_invalid: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GoogleTokenRevocation {
+    Revoked,
+    AlreadyInvalid,
 }
 
 #[derive(Deserialize)]
@@ -1883,6 +1972,7 @@ fn google_oauth_configured() -> bool {
 async fn authorize_google(
     client_id: &str,
     client_secret: &str,
+    operation_id: &DiagnosticOperationId,
 ) -> Result<GoogleAuthorization, String> {
     let listener = TcpListener::bind(("127.0.0.1", 0))
         .await
@@ -1909,13 +1999,30 @@ async fn authorize_google(
         .append_pair("code_challenge_method", "S256")
         .append_pair("state", &state);
 
+    let (client, proxy_mode) = google_http_client(GOOGLE_TOKEN_URL)
+        .await
+        .map_err(|_| "Google 登录网络客户端无法初始化。".to_owned())?;
+    diagnostics::info(
+        "oauth_http_client_ready",
+        DiagnosticFields::default()
+            .operation_id(operation_id.clone())
+            .operation("google_oauth_authorization")
+            .mode(proxy_mode),
+    );
+
+    let callback_started = Instant::now();
     open::that(authorization_url.as_str())
         .map_err(|_| "无法打开系统浏览器完成 Google 登录。".to_owned())?;
     let code = wait_for_oauth_callback(listener, &state).await?;
-    let client = reqwest::Client::builder()
-        .timeout(OAUTH_HTTP_TIMEOUT)
-        .build()
-        .map_err(|_| "Google 登录网络客户端无法初始化。".to_owned())?;
+    diagnostics::info(
+        "oauth_authorization_stage_completed",
+        DiagnosticFields::default()
+            .operation_id(operation_id.clone())
+            .operation("loopback_callback")
+            .outcome("completed")
+            .duration(callback_started.elapsed()),
+    );
+    let token_exchange_started = Instant::now();
     let response = client
         .post(GOOGLE_TOKEN_URL)
         .form(&[
@@ -1948,7 +2055,26 @@ async fn authorize_google(
     let refresh_token = token
         .refresh_token
         .ok_or_else(|| "Google 未返回离线刷新令牌，请重新授权。".to_owned())?;
-    let user_info_response = client
+    diagnostics::info(
+        "oauth_authorization_stage_completed",
+        DiagnosticFields::default()
+            .operation_id(operation_id.clone())
+            .operation("token_exchange")
+            .outcome("completed")
+            .duration(token_exchange_started.elapsed()),
+    );
+    let user_info_started = Instant::now();
+    let (user_info_client, user_info_proxy_mode) = google_http_client(GOOGLE_USERINFO_URL)
+        .await
+        .map_err(|_| "Google 登录网络客户端无法初始化。".to_owned())?;
+    diagnostics::info(
+        "oauth_http_client_ready",
+        DiagnosticFields::default()
+            .operation_id(operation_id.clone())
+            .operation("google_oauth_userinfo")
+            .mode(user_info_proxy_mode),
+    );
+    let user_info_response = user_info_client
         .get(GOOGLE_USERINFO_URL)
         .bearer_auth(&token.access_token)
         .send()
@@ -1964,6 +2090,14 @@ async fn authorize_google(
     if !user_info.email_verified || user_info.email.trim().is_empty() {
         return Err("Google 账户邮箱尚未验证。".to_owned());
     }
+    diagnostics::info(
+        "oauth_authorization_stage_completed",
+        DiagnosticFields::default()
+            .operation_id(operation_id.clone())
+            .operation("user_info")
+            .outcome("completed")
+            .duration(user_info_started.elapsed()),
+    );
     Ok(GoogleAuthorization {
         email: user_info.email,
         tokens: OAuthTokenBundle {
@@ -2049,13 +2183,19 @@ async fn refresh_google_tokens(
     client_secret: &str,
     refresh_token: &str,
 ) -> Result<GoogleRefreshResponse, GoogleRefreshFailure> {
-    let client = reqwest::Client::builder()
-        .timeout(OAUTH_HTTP_TIMEOUT)
-        .build()
-        .map_err(|_| GoogleRefreshFailure {
-            message: "Google 登录网络客户端无法初始化。".to_owned(),
-            credential_invalid: false,
-        })?;
+    let (client, proxy_mode) =
+        google_http_client(GOOGLE_TOKEN_URL)
+            .await
+            .map_err(|_| GoogleRefreshFailure {
+                message: "Google 登录网络客户端无法初始化。".to_owned(),
+                credential_invalid: false,
+            })?;
+    diagnostics::info(
+        "oauth_http_client_ready",
+        DiagnosticFields::default()
+            .operation("google_oauth_refresh")
+            .mode(proxy_mode),
+    );
     let response = client
         .post(GOOGLE_TOKEN_URL)
         .form(&[
@@ -2088,34 +2228,241 @@ fn google_refresh_failure(status: u16, error: Option<&GoogleOAuthError>) -> Goog
     }
 }
 
-async fn revoke_google_token(refresh_token: &str) -> Result<(), String> {
-    if refresh_token.trim().is_empty() {
+async fn revoke_google_authorization(
+    tokens: &OAuthTokenBundle,
+    operation_id: &DiagnosticOperationId,
+) -> Result<(), String> {
+    if tokens.refresh_token.trim().is_empty() {
         return Err(
             "Saved Google authorization has no refresh token, so Mine Mail cannot revoke it. Nothing was removed."
                 .to_owned(),
         );
     }
-    let client = reqwest::Client::builder()
-        .timeout(OAUTH_HTTP_TIMEOUT)
-        .build()
-        .map_err(|_| "Google authorization revocation could not be initialized.".to_owned())?;
-    let response = client
-        .post(GOOGLE_REVOCATION_URL)
-        .form(&[("token", refresh_token)])
-        .send()
-        .await
-        .map_err(|_| {
-            "Mine Mail could not reach Google to revoke authorization. Nothing was removed; check the network and retry."
-                .to_owned()
-        })?;
-    if response.status().is_success() {
-        Ok(())
-    } else {
-        Err(format!(
-            "Google did not confirm authorization revocation (HTTP {}). Nothing was removed; retry or remove Mine Mail from your Google Account permissions.",
-            response.status().as_u16()
-        ))
+
+    match revoke_google_token(&tokens.refresh_token, "refresh_token", operation_id).await? {
+        GoogleTokenRevocation::Revoked => Ok(()),
+        GoogleTokenRevocation::AlreadyInvalid if tokens.access_token.trim().is_empty() => Ok(()),
+        GoogleTokenRevocation::AlreadyInvalid => {
+            match revoke_google_token(&tokens.access_token, "access_token", operation_id).await? {
+                GoogleTokenRevocation::Revoked | GoogleTokenRevocation::AlreadyInvalid => Ok(()),
+            }
+        }
     }
+}
+
+async fn revoke_google_token(
+    token: &str,
+    token_kind: &'static str,
+    operation_id: &DiagnosticOperationId,
+) -> Result<GoogleTokenRevocation, String> {
+    for attempt in 1..=OAUTH_REVOCATION_MAX_ATTEMPTS {
+        let attempt_started = Instant::now();
+        let (client, proxy_mode) = google_http_client(GOOGLE_REVOCATION_URL)
+            .await
+            .map_err(|_| "Google authorization revocation could not be initialized.".to_owned())?;
+        diagnostics::info(
+            "oauth_http_client_ready",
+            DiagnosticFields::default()
+                .operation_id(operation_id.clone())
+                .operation("google_oauth_revocation")
+                .trigger(token_kind)
+                .mode(proxy_mode)
+                .attempt(attempt),
+        );
+        let response = timeout(
+            OAUTH_REVOCATION_ATTEMPT_TIMEOUT,
+            client
+                .post(GOOGLE_REVOCATION_URL)
+                .form(&[("token", token)])
+                .send(),
+        )
+        .await;
+        let response = match response {
+            Ok(Ok(response)) => response,
+            Ok(Err(error)) => {
+                let (outcome, error_kind) = reqwest_failure_diagnostic(&error);
+                diagnostics::error(
+                    "oauth_revocation_attempt_failed",
+                    DiagnosticFields::default()
+                        .operation_id(operation_id.clone())
+                        .operation("google_oauth_revocation")
+                        .trigger(token_kind)
+                        .mode(proxy_mode)
+                        .outcome(outcome)
+                        .error(error_kind)
+                        .attempt(attempt)
+                        .duration(attempt_started.elapsed()),
+                );
+                if attempt < OAUTH_REVOCATION_MAX_ATTEMPTS {
+                    continue;
+                }
+                return Err(
+                    "Mine Mail could not reach Google to revoke authorization after two attempts. Nothing was removed; check the proxy or network and retry."
+                        .to_owned(),
+                );
+            }
+            Err(_) => {
+                diagnostics::error(
+                    "oauth_revocation_attempt_failed",
+                    DiagnosticFields::default()
+                        .operation_id(operation_id.clone())
+                        .operation("google_oauth_revocation")
+                        .trigger(token_kind)
+                        .mode(proxy_mode)
+                        .outcome("timeout")
+                        .error(DiagnosticErrorKind::Timeout)
+                        .attempt(attempt)
+                        .duration(attempt_started.elapsed()),
+                );
+                if attempt < OAUTH_REVOCATION_MAX_ATTEMPTS {
+                    continue;
+                }
+                return Err(
+                    "Google authorization revocation timed out after two attempts. Nothing was removed; check the proxy or network and retry."
+                        .to_owned(),
+                );
+            }
+        };
+        let status = response.status().as_u16();
+        let error = if response.status().is_success() {
+            None
+        } else {
+            response.json::<GoogleOAuthError>().await.ok()
+        };
+        let outcome = google_revocation_response(status, error.as_ref())?;
+        diagnostics::info(
+            "oauth_revocation_completed",
+            DiagnosticFields::default()
+                .operation_id(operation_id.clone())
+                .operation("google_oauth_revocation")
+                .trigger(token_kind)
+                .mode(proxy_mode)
+                .outcome(match outcome {
+                    GoogleTokenRevocation::Revoked => "revoked",
+                    GoogleTokenRevocation::AlreadyInvalid => "already_invalid",
+                })
+                .attempt(attempt)
+                .duration(attempt_started.elapsed()),
+        );
+        return Ok(outcome);
+    }
+    unreachable!("the bounded Google revocation loop always returns")
+}
+
+fn google_revocation_response(
+    status: u16,
+    error: Option<&GoogleOAuthError>,
+) -> Result<GoogleTokenRevocation, String> {
+    if (200..300).contains(&status) {
+        return Ok(GoogleTokenRevocation::Revoked);
+    }
+    if error.is_some_and(|error| error.error == "invalid_token") {
+        return Ok(GoogleTokenRevocation::AlreadyInvalid);
+    }
+    let error_code = error
+        .map(|error| format!(", error code {}", error.error))
+        .unwrap_or_default();
+    Err(format!(
+        "Google did not confirm authorization revocation (HTTP {status}{error_code}). Nothing was removed; retry or remove Mine Mail from your Google Account permissions."
+    ))
+}
+
+fn reqwest_failure_diagnostic(error: &reqwest::Error) -> (&'static str, DiagnosticErrorKind) {
+    if error.is_timeout() {
+        ("timeout", DiagnosticErrorKind::Timeout)
+    } else if error.is_connect() {
+        ("connect_error", DiagnosticErrorKind::Runtime)
+    } else if error.is_request() {
+        ("request_error", DiagnosticErrorKind::Runtime)
+    } else if error.is_body() {
+        ("body_error", DiagnosticErrorKind::Runtime)
+    } else {
+        ("transport_error", DiagnosticErrorKind::Runtime)
+    }
+}
+
+async fn google_http_client(
+    target_url: &'static str,
+) -> Result<(reqwest::Client, &'static str), reqwest::Error> {
+    let builder = reqwest::Client::builder().timeout(OAUTH_HTTP_TIMEOUT);
+
+    #[cfg(target_os = "linux")]
+    let (builder, proxy_mode) = if linux_https_proxy_environment_configured() {
+        (builder, "environment_proxy")
+    } else if let Some(proxy_uri) = linux_system_proxy_uri(target_url).await {
+        (
+            builder.proxy(reqwest::Proxy::https(proxy_uri)?),
+            "system_proxy",
+        )
+    } else {
+        (builder, "direct")
+    };
+
+    #[cfg(not(target_os = "linux"))]
+    let (builder, proxy_mode) = (builder, "automatic");
+
+    builder.build().map(|client| (client, proxy_mode))
+}
+
+#[cfg(target_os = "linux")]
+fn linux_https_proxy_environment_configured() -> bool {
+    ["HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"]
+        .into_iter()
+        .any(|name| std::env::var(name).is_ok_and(|value| !value.trim().is_empty()))
+}
+
+#[cfg(target_os = "linux")]
+async fn linux_system_proxy_uri(target_url: &'static str) -> Option<String> {
+    timeout(
+        SYSTEM_PROXY_RESOLUTION_TIMEOUT,
+        tokio::task::spawn_blocking(move || resolve_linux_system_proxy(target_url)),
+    )
+    .await
+    .ok()
+    .and_then(Result::ok)
+    .flatten()
+}
+
+#[cfg(target_os = "linux")]
+fn resolve_linux_system_proxy(target_url: &str) -> Option<String> {
+    let resolver = gio::ProxyResolver::default();
+    if !resolver.is_supported() {
+        return None;
+    }
+    let candidates = resolver
+        .lookup(target_url, None::<&gio::Cancellable>)
+        .ok()?;
+    select_linux_system_proxy(candidates)
+}
+
+#[cfg(target_os = "linux")]
+fn select_linux_system_proxy<I, S>(candidates: I) -> Option<String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    for candidate in candidates {
+        let candidate = candidate.as_ref().trim();
+        if candidate.eq_ignore_ascii_case("direct://") {
+            return None;
+        }
+        if let Some(proxy_uri) = normalize_linux_proxy_uri(candidate) {
+            return Some(proxy_uri);
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn normalize_linux_proxy_uri(candidate: &str) -> Option<String> {
+    let mut proxy = url::Url::parse(candidate).ok()?;
+    match proxy.scheme() {
+        "http" | "https" | "socks4" | "socks4a" | "socks5" | "socks5h" => {}
+        "socks" => proxy.set_scheme("socks5h").ok()?,
+        _ => return None,
+    }
+    proxy.host_str()?;
+    Some(proxy.to_string())
 }
 
 fn describe_google_token_error(
@@ -2163,6 +2510,8 @@ fn unix_timestamp() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use mine_mail::{
         ComposeRequest, ConnectionFailure, ConnectionFailureKind, ConnectionProtocol,
         ConnectionReport, SmtpSecurity,
@@ -2170,13 +2519,17 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        AccountAuthentication, AccountMetadata, AccountProvider, AccountStore, BackendState,
-        ConfigureAccountRequest, GoogleOAuthError, MAX_ACCOUNTS, StoredAccounts,
+        AccountAuthentication, AccountMetadata, AccountProvider, AccountRuntime, AccountStore,
+        BackendState, ConfigureAccountRequest, GoogleAuthorization, GoogleOAuthError,
+        GoogleTokenRevocation, MAX_ACCOUNTS, OAuthTokenBundle, StoredAccounts,
         account_database_path, account_presets, connection_report_result,
-        describe_google_token_error, google_client_id, google_refresh_failure, keyring_username,
-        normalize_account_remark, open_local_backend, remove_managed_attachment_data_if_requested,
-        remove_sqlite_cache_files, sqlite_sidecar_path,
+        describe_google_token_error, google_client_id, google_refresh_failure,
+        google_revocation_response, keyring_username, normalize_account_remark, open_local_backend,
+        remove_managed_attachment_data_if_requested, remove_sqlite_cache_files,
+        sqlite_sidecar_path,
     };
+    #[cfg(target_os = "linux")]
+    use super::{normalize_linux_proxy_uri, select_linux_system_proxy};
 
     #[test]
     fn archive_folder_choices_are_opaque_account_bound_and_clearable() {
@@ -2293,6 +2646,93 @@ mod tests {
     }
 
     #[test]
+    fn google_binding_distinguishes_new_accounts_from_reauthorization() {
+        let directory = tempdir().expect("temporary directory");
+        let (runtime, _backend) =
+            AccountRuntime::fallback(directory.path(), "test fallback".to_owned());
+        let authorization = GoogleAuthorization {
+            email: "demo@gmail.com".to_owned(),
+            tokens: OAuthTokenBundle {
+                schema_version: 1,
+                refresh_token: "refresh-token".to_owned(),
+                access_token: "access-token".to_owned(),
+                expires_at_unix: 1,
+            },
+        };
+
+        assert!(
+            runtime
+                .google_authorization_adds_account(&authorization)
+                .expect("new Google identity")
+        );
+        runtime
+            .stored
+            .write()
+            .expect("account state")
+            .upsert_and_activate(
+                AccountMetadata::google(authorization.email.clone()).expect("Google metadata"),
+            )
+            .expect("store Google identity");
+        assert!(
+            !runtime
+                .google_authorization_adds_account(&authorization)
+                .expect("existing Google identity")
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn credential_mutations_serialize_only_within_one_account() {
+        let directory = tempdir().expect("temporary directory");
+        let (runtime, _backend) =
+            AccountRuntime::fallback(directory.path(), "test fallback".to_owned());
+        let first = runtime.credential_gate("account-a").expect("first gate");
+        let same = runtime.credential_gate("account-a").expect("same gate");
+        let other = runtime.credential_gate("account-b").expect("other gate");
+        let first_guard = first.lock().await;
+
+        let mut waiting_same = Box::pin(same.lock());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), &mut waiting_same)
+                .await
+                .is_err(),
+            "the same account must serialize credential writes"
+        );
+        let other_guard = tokio::time::timeout(Duration::from_millis(20), other.lock())
+            .await
+            .expect("another account must remain independent");
+        drop(other_guard);
+        drop(first_guard);
+        let _same_guard = tokio::time::timeout(Duration::from_millis(100), waiting_same)
+            .await
+            .expect("the waiting credential write resumes after release");
+    }
+
+    #[test]
+    fn google_revocation_is_idempotent_for_tokens_google_already_invalidated() {
+        assert_eq!(
+            google_revocation_response(200, None).expect("successful revocation"),
+            GoogleTokenRevocation::Revoked
+        );
+        let invalid_token = GoogleOAuthError {
+            error: "invalid_token".to_owned(),
+            error_description: "server detail must stay private".to_owned(),
+        };
+        assert_eq!(
+            google_revocation_response(400, Some(&invalid_token))
+                .expect("already invalid is idempotent"),
+            GoogleTokenRevocation::AlreadyInvalid
+        );
+        let invalid_request = GoogleOAuthError {
+            error: "invalid_request".to_owned(),
+            error_description: "server detail must stay private".to_owned(),
+        };
+        let error = google_revocation_response(400, Some(&invalid_request))
+            .expect_err("malformed revocation remains an error");
+        assert!(error.contains("invalid_request"));
+        assert!(!error.contains("server detail"));
+    }
+
+    #[test]
     fn google_token_errors_explain_misconfigured_desktop_clients_without_echoing_payloads() {
         let invalid_client = GoogleOAuthError {
             error: "invalid_client".to_owned(),
@@ -2328,6 +2768,28 @@ mod tests {
 
         let transient = google_refresh_failure(503, None);
         assert!(!transient.credential_invalid);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_system_proxy_candidates_are_safely_normalized() {
+        assert_eq!(
+            select_linux_system_proxy(["http://127.0.0.1:7897"]),
+            Some("http://127.0.0.1:7897/".to_owned())
+        );
+        assert_eq!(
+            select_linux_system_proxy([
+                "direct://",
+                "http://proxy-that-must-not-be-used.example:8080",
+            ]),
+            None
+        );
+        assert_eq!(
+            normalize_linux_proxy_uri("socks://127.0.0.1:1080"),
+            Some("socks5h://127.0.0.1:1080".to_owned())
+        );
+        assert_eq!(normalize_linux_proxy_uri("file:///tmp/proxy"), None);
+        assert_eq!(normalize_linux_proxy_uri("not a proxy"), None);
     }
 
     #[test]
