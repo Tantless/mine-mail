@@ -55,7 +55,7 @@ jobs:
           ref: ${{ inputs.release_tag }}
           persist-credentials: false
 
-      - name: Normalize and validate updater manifest
+      - name: Consolidate and validate release assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ inputs.release_tag }}
@@ -64,11 +64,9 @@ jobs:
           manifest_dir="$(mktemp -d)"
           remote_manifest_dir="$(mktemp -d)"
           trap 'rm -rf "$manifest_dir" "$remote_manifest_dir"' EXIT
-
-          gh release download "$RELEASE_TAG" \
-            --repo "$GITHUB_REPOSITORY" \
-            --pattern latest.json \
-            --dir "$manifest_dir"
+          version="${RELEASE_TAG#v}"
+          branded_signature="Mine-Mail_${version}_x64-setup.exe.sig"
+          internal_updater="Mine.Mail_${version}_x64-setup.exe"
           release_id="$(
             gh release view "$RELEASE_TAG" \
               --repo "$GITHUB_REPOSITORY" \
@@ -78,12 +76,36 @@ jobs:
           gh api --paginate \
             "repos/$GITHUB_REPOSITORY/releases/$release_id/assets?per_page=100" \
             | jq -s "add" > "$manifest_dir/release-assets.json"
+          gh release download "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern latest.json \
+            --dir "$manifest_dir"
+          consolidate_args=(
+            "$manifest_dir/latest.json"
+            "$manifest_dir/release-assets.json"
+          )
+          if jq -e --arg name "$branded_signature" \
+            'any(.[]; .name == $name)' \
+            "$manifest_dir/release-assets.json" >/dev/null; then
+            gh release download "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --pattern "$branded_signature" \
+              --dir "$manifest_dir"
+            consolidate_args+=("$manifest_dir/$branded_signature")
+          fi
+          node .github/scripts/consolidate-windows-updater.mjs \
+            "${consolidate_args[@]}"
           node .github/scripts/normalize-updater-manifest.mjs \
             "$manifest_dir/latest.json" \
             "$manifest_dir/release-assets.json"
+          jq --arg internal "$internal_updater" \
+            --arg signature "$branded_signature" \
+            '[.[] | select(.name != $internal and .name != $signature)]' \
+            "$manifest_dir/release-assets.json" \
+            > "$manifest_dir/public-release-assets.json"
           node .github/scripts/validate-release-assets.mjs \
             "$manifest_dir/latest.json" \
-            "$manifest_dir/release-assets.json"
+            "$manifest_dir/public-release-assets.json"
           gh release upload "$RELEASE_TAG" \
             "$manifest_dir/latest.json" \
             --repo "$GITHUB_REPOSITORY" \
@@ -95,7 +117,22 @@ jobs:
           cmp "$manifest_dir/latest.json" "$remote_manifest_dir/latest.json"
           node .github/scripts/validate-release-assets.mjs \
             "$remote_manifest_dir/latest.json" \
-            "$manifest_dir/release-assets.json"
+            "$manifest_dir/public-release-assets.json"
+          for asset in "$internal_updater" "$branded_signature"; do
+            if jq -e --arg name "$asset" \
+              'any(.[]; .name == $name)' \
+              "$manifest_dir/release-assets.json" >/dev/null; then
+              gh release delete-asset "$RELEASE_TAG" "$asset" \
+                --repo "$GITHUB_REPOSITORY" \
+                --yes
+            fi
+          done
+          gh api --paginate \
+            "repos/$GITHUB_REPOSITORY/releases/$release_id/assets?per_page=100" \
+            | jq -s "add" > "$manifest_dir/public-release-assets.json"
+          node .github/scripts/validate-release-assets.mjs \
+            "$remote_manifest_dir/latest.json" \
+            "$manifest_dir/public-release-assets.json"
 
       - name: Publish GitHub Release
         env:
