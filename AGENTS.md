@@ -96,6 +96,12 @@ screen-specific copy, timing constants, pixel values, or speculative future plan
 - Do not merge a task branch into `main` unless the user explicitly requests
   integration. A request to implement, finish, verify, or commit is not an
   integration request. Integrations must be serialized across sessions.
+- An explicitly invoked `$release-mine-mail` workflow with a target version is
+  the only exception to worktree isolation: it may modify a clean primary
+  `main` directly under the release skill's stricter checks. It must not invoke
+  `$isolate-worktree`, must not overlap another integration, and must not touch
+  other sessions' worktrees. Release checks or preparation without an explicit
+  publish target do not inherit this exception.
 - After an explicitly requested merge, run the applicable verification from the
   primary checkout. Use the skill's safe cleanup only after the merge succeeds,
   verification passes, the task branch is contained in `main`, and both
