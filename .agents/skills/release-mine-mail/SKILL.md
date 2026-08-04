@@ -13,31 +13,41 @@ mixing unrelated work.
 - Require an explicit target matching `vX.Y.Z` or `vX.Y.Z-prerelease`.
 - Treat an explicit request to release or invocation of this skill with a target
   version as authority to edit the version, commit, tag, and push.
+- Treat that explicit target-version release as the sole exception to the
+  repository's worktree-isolation rule. Work directly on a clean primary `main`
+  and do not invoke `$isolate-worktree`. A check-only or preparation request is
+  not an exception and remains read-only until publication is explicitly
+  authorized.
 - If the user asks only to check or prepare a release, stop before the first
   unrequested commit, tag, or push.
 - Read repository `AGENTS.md`, `contributing.md`, `.github/workflows/release.yml`,
   and the relevant open items in `docs/RELEASE.md` before changing files.
 - Work only on Mine Mail's `main` branch and `origin` remote. Never force-push,
   move/delete an existing tag, rewrite history, or open a PR for this workflow.
+- Serialize this workflow with every other integration or publication. Never
+  modify, merge, remove, or clean another session's branch or worktree.
 
 ## Workflow
 
 ### 1. Preflight the repository
 
-1. Inspect `git status -sb`, the current branch, `origin`, recent commits, and
-   local tags.
-2. Require a clean, understood worktree. If changes already exist, continue only
-   when they are entirely part of this exact release and safe to preserve;
-   otherwise stop and ask which changes belong.
-3. Run `git fetch origin --prune --tags`.
-4. Compare `main` with `origin/main`.
+1. Inspect `git status -sb`, the current branch, `origin`, recent commits, local
+   tags, and `git worktree list --porcelain`.
+2. List local `codex/*` branches not contained in `main`. Never touch them. If
+   any exist, require confirmation that they are intentionally excluded unless
+   the release request already explicitly says to publish current `main` as-is.
+3. Require a clean, understood primary worktree. If changes already exist,
+   continue only when they are entirely part of this exact release and safe to
+   preserve; otherwise stop and ask which changes belong.
+4. Run `git fetch origin --prune --tags`.
+5. Compare `main` with `origin/main`.
    - Fast-forward a clean behind-only branch with `git merge --ff-only
      origin/main`.
    - Allow an ahead-only branch after inspecting and reporting the commits that
      the release push will include.
    - Stop on divergence. Do not rebase, merge, reset, or force-push implicitly.
-5. Confirm the target tag is absent locally and remotely. Stop if it exists.
-6. Confirm the target version is greater than the current canonical version.
+6. Confirm the target tag is absent locally and remotely. Stop if it exists.
+7. Confirm the target version is greater than the current canonical version.
 
 ### 2. Set the version once
 

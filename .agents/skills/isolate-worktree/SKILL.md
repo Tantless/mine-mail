@@ -1,6 +1,6 @@
 ---
 name: isolate-worktree
-description: Create, integrate, and safely clean a dedicated Git worktree and unique task branch for one Codex session. Use immediately before the first repository write after read-only investigation determines that code, tests, documentation, configuration, generated files, or dependencies must change; use again when the user explicitly asks to merge that session into the base branch or when a verified merged worktree is ready for cleanup. Do not allocate a worktree for read-only diagnosis, explanation, review, or status reporting.
+description: Create, integrate, and safely clean a dedicated Git worktree and unique task branch for one Codex session. Use immediately before the first repository write after read-only investigation determines that code, tests, documentation, configuration, generated files, or dependencies must change; use again when the user explicitly asks to merge that session into the base branch or when a verified merged worktree is ready for cleanup. Do not allocate a worktree for read-only diagnosis, explanation, review, status reporting, or an explicitly authorized $release-mine-mail workflow with a target version.
 ---
 
 # Isolate Worktree
@@ -18,6 +18,9 @@ allocation, integration, and cleanup. Resolve the script relative to this
   exactly one task worktree.
 - Reuse the worktree already recorded by the session. Never allocate a second
   worktree for the same task.
+- Do not allocate during an explicitly invoked `$release-mine-mail` workflow
+  with a target version. That workflow owns the sole clean-`main` mutation
+  exception and its stricter release checks apply.
 - Enter integration mode only when the user explicitly asks to merge this
   session's result into the base branch.
 
