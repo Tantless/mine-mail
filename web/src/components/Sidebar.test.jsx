@@ -601,9 +601,11 @@ describe("Sidebar account switcher", () => {
       },
     });
 
-    const archive = screen.getByRole("button", { name: "归档" });
-    expect(archive.disabled).toBe(true);
+    const archive = screen.getByRole("button", { name: "设置归档文件夹" });
+    expect(archive.disabled).toBe(false);
     expect(archive.textContent).toBe("归档");
+    await user.click(archive);
+    expect(onMailboxCapabilityRetry).toHaveBeenCalledWith("archive");
 
     const trashRetry = screen.getByRole("button", { name: "重新确认垃圾箱" });
     expect(trashRetry.disabled).toBe(false);

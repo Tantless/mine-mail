@@ -23,6 +23,7 @@ import { ComposePanel } from "./components/ComposePanel.jsx";
 import { ConsequentialConfirmDialog } from "./components/ConsequentialConfirmDialog.jsx";
 import { AccountEmptyWorkspace } from "./components/AccountEmptyWorkspace.jsx";
 import { PermanentDeleteDialog } from "./components/PermanentDeleteDialog.jsx";
+import { ArchiveFolderDialog } from "./components/ArchiveFolderDialog.jsx";
 import { Toast } from "./components/Toast.jsx";
 import { normalizeAvatarEmail } from "./components/ProfileAvatar.jsx";
 import { hasFlag } from "./utils/formatters.js";
@@ -347,7 +348,22 @@ function mailboxSetupFailureMessage(capability, role) {
   if (capability?.unavailable_reason === "provider_unsupported") {
     return `当前邮箱服务不支持${mailboxLabel}`;
   }
-  return `${mailboxLabel}创建失败，请重试`;
+  return role === "archive"
+    ? `${mailboxLabel}设置失败，请重试`
+    : `${mailboxLabel}创建失败，请重试`;
+}
+
+const archiveFolderSelectionCancelledCode =
+  "archive_folder_selection_cancelled";
+
+function archiveFolderSelectionCancelledError() {
+  const error = new Error("已取消设置归档文件夹");
+  error.code = archiveFolderSelectionCancelledCode;
+  return error;
+}
+
+function isArchiveFolderSelectionCancelled(error) {
+  return error?.code === archiveFolderSelectionCancelledCode;
 }
 
 function mailboxViewField(role) {
@@ -749,6 +765,7 @@ export function App() {
   const [attachmentSaveStates, setAttachmentSaveStates] = useState({});
   const [forwardPreparationStates, setForwardPreparationStates] = useState({});
   const [permanentDelete, setPermanentDelete] = useState(null);
+  const [archiveFolderDialog, setArchiveFolderDialog] = useState(null);
   const [isThemeMenuOpen, setIsThemeMenuOpen] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [composer, setComposer] = useState(null);
@@ -800,6 +817,7 @@ export function App() {
   const mailboxPageRequestsRef = useRef(new Map());
   const mailboxCapabilityRequestRef = useRef(new Map());
   const mailboxRoleCreationRequestsRef = useRef(new Map());
+  const archiveFolderRequestRef = useRef(null);
   const remoteSearchRequestRef = useRef(0);
   const accountStatusRef = useRef(accountStatus);
   const activeAccountIdRef = useRef(null);
@@ -4532,6 +4550,64 @@ export function App() {
     [messages],
   );
 
+  const requestArchiveFolderSelection = useCallback(async (accountId) => {
+    const candidates = await mailApi.listArchiveFolderCandidates(accountId);
+    return new Promise((resolve, reject) => {
+      archiveFolderRequestRef.current = { accountId, resolve, reject };
+      setArchiveFolderDialog({
+        accountId,
+        candidates,
+        selectedId: candidates[0]?.selectionId || "",
+        pending: false,
+        error: null,
+      });
+    });
+  }, []);
+
+  const cancelArchiveFolderSelection = useCallback(() => {
+    const request = archiveFolderRequestRef.current;
+    if (!request || archiveFolderDialog?.pending) return;
+    archiveFolderRequestRef.current = null;
+    setArchiveFolderDialog(null);
+    request.reject(archiveFolderSelectionCancelledError());
+  }, [archiveFolderDialog?.pending]);
+
+  const confirmArchiveFolderSelection = useCallback(async () => {
+    const request = archiveFolderRequestRef.current;
+    const dialog = archiveFolderDialog;
+    if (
+      !request ||
+      !dialog ||
+      dialog.pending ||
+      !dialog.selectedId ||
+      request.accountId !== dialog.accountId
+    ) {
+      return;
+    }
+    setArchiveFolderDialog((current) =>
+      current ? { ...current, pending: true, error: null } : current,
+    );
+    try {
+      const capability = await mailApi.assignArchiveFolder(
+        dialog.accountId,
+        dialog.selectedId,
+      );
+      archiveFolderRequestRef.current = null;
+      setArchiveFolderDialog(null);
+      request.resolve(capability);
+    } catch (error) {
+      setArchiveFolderDialog((current) =>
+        current
+          ? {
+              ...current,
+              pending: false,
+              error: describeError(error, "归档文件夹设置失败，请重试"),
+            }
+          : current,
+      );
+    }
+  }, [archiveFolderDialog]);
+
   const ensureMailboxRoleAvailable = useCallback(
     async (role, accountId = activeAccountIdRef.current) => {
       if (!accountId || !["archive", "trash"].includes(role)) {
@@ -4552,6 +4628,7 @@ export function App() {
       if (existingRequest) return existingRequest;
 
       const canEnsure =
+        role === "archive" ||
         !currentCapability ||
         currentCapability.status === "discovery_pending" ||
         currentCapability.status === "needs_creation_confirmation" ||
@@ -4563,7 +4640,10 @@ export function App() {
       }
 
       const request = (async () => {
-        const capability = await mailApi.createMailboxRole(accountId, role);
+        const capability =
+          role === "archive"
+            ? await requestArchiveFolderSelection(accountId)
+            : await mailApi.createMailboxRole(accountId, role);
         const latestView = accountViewsRef.current.get(accountId) || {};
         accountViewsRef.current.set(accountId, {
           ...latestView,
@@ -4592,7 +4672,7 @@ export function App() {
       mailboxRoleCreationRequestsRef.current.set(requestKey, request);
       return request;
     },
-    [mailboxCapabilities],
+    [mailboxCapabilities, requestArchiveFolderSelection],
   );
 
   const handleMailboxCapabilityRetry = useCallback(
@@ -4601,8 +4681,9 @@ export function App() {
       const capability = mailboxCapabilities?.[role];
       if (!accountId || !["archive", "trash"].includes(role)) return;
       if (
-        capability?.unavailable_reason === "create_failed" &&
-        capability.retryable
+        role === "archive" ||
+        (capability?.unavailable_reason === "create_failed" &&
+          capability.retryable)
       ) {
         try {
           await ensureMailboxRoleAvailable(role, accountId);
@@ -4613,6 +4694,7 @@ export function App() {
           clearSelection();
           await loadMailboxRolePage({ accountId, role });
         } catch (error) {
+          if (isArchiveFolderSelectionCancelled(error)) return;
           showToast(describeError(error, "邮箱文件夹创建失败"), "error");
         }
         return;
@@ -4764,6 +4846,12 @@ export function App() {
       selectAdjacentAfterRemoval(message, "inbox", "archive", accountId);
       refreshMutationRoles(accountId, "inbox", "archive");
     } catch (error) {
+      if (isArchiveFolderSelectionCancelled(error)) {
+        setMessageActionState(accountId, messageId, "archive", {
+          status: "idle",
+        });
+        return;
+      }
       setMessageActionState(accountId, messageId, "archive", {
         status: "error",
         retryable: true,
@@ -4800,6 +4888,12 @@ export function App() {
       }
       await executeArchiveMessage(message, accountId);
     } catch (error) {
+      if (isArchiveFolderSelectionCancelled(error)) {
+        setMessageActionState(accountId, messageId, "archive", {
+          status: "idle",
+        });
+        return;
+      }
       setMessageActionState(accountId, messageId, "archive", {
         status: "error",
         retryable: true,
@@ -5389,6 +5483,25 @@ export function App() {
       !capabilityAvailable(mailboxCapabilities, folder);
     setIsSettingsOpen(false);
     setSettingsFocusTarget(null);
+
+    if (shouldEnsureMailboxRole) {
+      try {
+        await ensureMailboxRoleAvailable(folder, targetAccountId);
+        if (activeAccountIdRef.current !== targetAccountId) return;
+      } catch (error) {
+        if (isArchiveFolderSelectionCancelled(error)) return;
+        showToast(
+          describeError(
+            error,
+            folder === "archive"
+              ? "归档文件夹设置失败，请重试"
+              : "垃圾箱创建失败，请重试",
+          ),
+          "error",
+        );
+        return;
+      }
+    }
     setActiveFolder(folder);
     if (folder === "contacts") {
       setContactFilter("all");
@@ -5400,19 +5513,6 @@ export function App() {
     clearContactSelection();
     clearSelection();
     setIsSidebarOpen(false);
-
-    if (shouldEnsureMailboxRole) {
-      try {
-        await ensureMailboxRoleAvailable(folder, targetAccountId);
-        if (activeAccountIdRef.current !== targetAccountId) return;
-      } catch (error) {
-        showToast(
-          describeError(error, `${folderLabels[folder]}创建失败，请重试`),
-          "error",
-        );
-        return;
-      }
-    }
     if (paginatedMailboxRoles.includes(folder) && targetAccountId) {
       void loadMailboxRolePage({
         accountId: targetAccountId,
@@ -7727,6 +7827,21 @@ export function App() {
         returnFocusRef={consequentialActionRef}
         onCancel={() => setPermanentDelete(null)}
         onConfirm={() => void handleConfirmPermanentDelete()}
+      />
+
+      <ArchiveFolderDialog
+        open={Boolean(archiveFolderDialog)}
+        candidates={archiveFolderDialog?.candidates || []}
+        selectedId={archiveFolderDialog?.selectedId || ""}
+        isPending={Boolean(archiveFolderDialog?.pending)}
+        errorMessage={archiveFolderDialog?.error || null}
+        onSelectedIdChange={(selectedId) =>
+          setArchiveFolderDialog((current) =>
+            current ? { ...current, selectedId, error: null } : current,
+          )
+        }
+        onCancel={cancelArchiveFolderSelection}
+        onConfirm={() => void confirmArchiveFolderSelection()}
       />
 
       <ConsequentialConfirmDialog

@@ -137,27 +137,25 @@ pub(crate) struct RemoteMailbox {
     pub is_drafts: bool,
     pub is_sent: bool,
     pub is_archive: bool,
+    pub is_junk: bool,
     pub is_trash: bool,
     pub is_selectable: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CreatableMailboxRole {
-    Archive,
     Trash,
 }
 
 impl CreatableMailboxRole {
     pub fn canonical_name(self) -> &'static str {
         match self {
-            Self::Archive => "Archive",
             Self::Trash => "Trash",
         }
     }
 
     fn special_use_attribute(self) -> &'static str {
         match self {
-            Self::Archive => "\\Archive",
             Self::Trash => "\\Trash",
         }
     }
@@ -1533,6 +1531,9 @@ fn classify_remote_mailbox(name: &str, attributes: &[NameAttribute<'_>]) -> Remo
         is_archive: attributes
             .iter()
             .any(|attribute| matches!(attribute, NameAttribute::Archive)),
+        is_junk: attributes
+            .iter()
+            .any(|attribute| matches!(attribute, NameAttribute::Junk)),
         is_trash: attributes
             .iter()
             .any(|attribute| matches!(attribute, NameAttribute::Trash)),
@@ -1850,6 +1851,7 @@ mod tests {
         assert!(archive.is_archive);
         assert!(archive.is_drafts);
         assert!(!archive.is_sent);
+        assert!(!archive.is_junk);
         assert!(!archive.is_trash);
         assert!(archive.is_selectable);
 
@@ -1860,13 +1862,8 @@ mod tests {
     }
 
     #[test]
-    fn product_managed_create_roles_have_fixed_names() {
-        assert_eq!(CreatableMailboxRole::Archive.canonical_name(), "Archive");
+    fn product_managed_trash_creation_has_a_bounded_name() {
         assert_eq!(CreatableMailboxRole::Trash.canonical_name(), "Trash");
-        assert_eq!(
-            CreatableMailboxRole::Archive.special_use_create_command(),
-            "CREATE Archive (USE (\\Archive))"
-        );
         assert_eq!(
             CreatableMailboxRole::Trash.special_use_create_command(),
             "CREATE Trash (USE (\\Trash))"

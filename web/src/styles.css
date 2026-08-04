@@ -5443,6 +5443,42 @@ html[data-surface="new-mail-notification"] #root {
   width: min(450px, calc(100vw - 34px));
 }
 
+.archive-folder-dialog {
+  width: min(470px, calc(100vw - 34px));
+}
+
+.archive-folder-dialog__field {
+  display: grid;
+  gap: 7px;
+  margin-top: 16px;
+}
+
+.archive-folder-dialog__field > span {
+  color: var(--color-text-secondary);
+  font-size: 10px;
+  font-weight: 680;
+}
+
+.archive-folder-dialog__empty,
+.archive-folder-dialog__error {
+  margin-top: 14px !important;
+  padding: 10px 11px;
+  border-radius: var(--control-radius);
+  overflow-wrap: anywhere;
+}
+
+.archive-folder-dialog__empty {
+  border: 1px solid var(--state-warning-edge);
+  background: var(--state-warning-surface);
+  color: var(--color-text-secondary) !important;
+}
+
+.archive-folder-dialog__error {
+  border: 1px solid var(--state-danger-edge);
+  background: var(--state-danger-surface);
+  color: var(--color-danger) !important;
+}
+
 .consequential-confirm-dialog .confirm-dialog__subject {
   margin-top: 16px;
 }

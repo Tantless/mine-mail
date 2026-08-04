@@ -90,8 +90,9 @@ function capabilityStateFor(role, capability) {
   }
 
   return {
-    actionLabel: `重新确认${copy.mailbox}`,
-    action: capability.retryable ? "retry" : null,
+    actionLabel:
+      role === "archive" ? "设置归档文件夹" : `重新确认${copy.mailbox}`,
+    action: role === "archive" || capability.retryable ? "retry" : null,
   };
 }
 

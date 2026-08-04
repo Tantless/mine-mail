@@ -30,6 +30,8 @@ const desktop = vi.hoisted(() => {
     mailApi: {
       getMailboxCapabilities: vi.fn(),
       createMailboxRole: vi.fn(),
+      listArchiveFolderCandidates: vi.fn(),
+      assignArchiveFolder: vi.fn(),
       listMailboxPage: vi.fn(),
       loadOlderMailboxPage: vi.fn(),
       listStarredMailboxPage: vi.fn(),
@@ -288,6 +290,21 @@ describe("Mine Mail desktop state bridge", () => {
       status: "available",
       retryable: false,
     }));
+    desktop.mailApi.listArchiveFolderCandidates.mockResolvedValue([
+      {
+        selectionId: "archive-choice-a",
+        displayName: "Mine Archive",
+      },
+      {
+        selectionId: "archive-choice-b",
+        displayName: "往年邮件",
+      },
+    ]);
+    desktop.mailApi.assignArchiveFolder.mockResolvedValue({
+      role: "archive",
+      status: "available",
+      retryable: false,
+    });
     desktop.mailApi.listMailboxPage.mockImplementation(
       async (_, role, _cursor, _pageSize, query) => {
         const source =
@@ -2765,7 +2782,6 @@ describe("Mine Mail desktop state bridge", () => {
   });
 
   it("resolves pending Archive and Trash roles from explicit navigation", async () => {
-    const archiveEnsure = deferred();
     desktop.mailApi.getMailboxCapabilities.mockResolvedValue([
       { role: "inbox", status: "available", retryable: false },
       { role: "sent", status: "available", retryable: false },
@@ -2780,10 +2796,6 @@ describe("Mine Mail desktop state bridge", () => {
         retryable: true,
       },
     ]);
-    desktop.mailApi.createMailboxRole.mockImplementation(async (_, role) => {
-      if (role === "archive") return archiveEnsure.promise;
-      return { role, status: "available", retryable: false };
-    });
     const user = userEvent.setup();
     render(<App />);
 
@@ -2793,25 +2805,22 @@ describe("Mine Mail desktop state bridge", () => {
     const archive = within(sidebar).getByRole("button", { name: "归档" });
     await user.click(archive);
 
-    expect(
-      await screen.findByRole("heading", { name: "归档" }),
-    ).toBeTruthy();
-    await user.click(archive);
-    expect(desktop.mailApi.createMailboxRole).toHaveBeenCalledTimes(1);
-
-    archiveEnsure.resolve({
-      role: "archive",
-      status: "available",
-      retryable: false,
+    const dialog = await screen.findByRole("dialog", {
+      name: "选择归档文件夹",
     });
-    await waitFor(() =>
-      expect(
-        desktop.mailApi.listMailboxPage.mock.calls.some(
-          ([accountId, role]) =>
-            accountId === "desktop-account" && role === "archive",
-        ),
-      ).toBe(true),
+    expect(desktop.mailApi.listArchiveFolderCandidates).toHaveBeenCalledWith(
+      "desktop-account",
     );
+    await user.click(
+      within(dialog).getByRole("button", { name: "使用此文件夹" }),
+    );
+    await waitFor(() =>
+      expect(desktop.mailApi.assignArchiveFolder).toHaveBeenCalledWith(
+        "desktop-account",
+        "archive-choice-a",
+      ),
+    );
+    expect(await screen.findByRole("heading", { name: "归档" })).toBeTruthy();
 
     await user.click(
       within(sidebar).getByRole("button", { name: "垃圾箱" }),
@@ -2827,7 +2836,7 @@ describe("Mine Mail desktop state bridge", () => {
     ).toBeTruthy();
   });
 
-  it("creates a missing Archive directly when its workspace is opened", async () => {
+  it("asks for an existing server folder when Archive is missing", async () => {
     desktop.mailApi.getMailboxCapabilities.mockResolvedValue([
       { role: "inbox", status: "available", retryable: false },
       { role: "sent", status: "available", retryable: false },
@@ -2854,10 +2863,24 @@ describe("Mine Mail desktop state bridge", () => {
     ).toBe(false);
 
     await user.click(archive);
+    const dialog = await screen.findByRole("dialog", {
+      name: "选择归档文件夹",
+    });
+    const folderSelect = within(dialog).getByRole("combobox", {
+      name: "已有服务器文件夹",
+    });
+    expect(folderSelect.textContent).toBe("Mine Archive");
+    await user.click(folderSelect);
+    await user.click(
+      within(dialog).getByRole("option", { name: "往年邮件" }),
+    );
+    await user.click(
+      within(dialog).getByRole("button", { name: "使用此文件夹" }),
+    );
     await waitFor(() =>
-      expect(desktop.mailApi.createMailboxRole).toHaveBeenCalledWith(
+      expect(desktop.mailApi.assignArchiveFolder).toHaveBeenCalledWith(
         "desktop-account",
-        "archive",
+        "archive-choice-b",
       ),
     );
     expect(
@@ -2867,10 +2890,14 @@ describe("Mine Mail desktop state bridge", () => {
     expect(
       screen.queryByRole("button", { name: "设置归档文件夹" }),
     ).toBeNull();
-    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(screen.queryByRole("dialog", { name: "选择归档文件夹" })).toBeNull();
+    expect(desktop.mailApi.createMailboxRole).not.toHaveBeenCalledWith(
+      "desktop-account",
+      "archive",
+    );
   });
 
-  it("creates a missing Archive without a dialog and continues the message action", async () => {
+  it("uses the selected existing folder and continues the message action", async () => {
     desktop.mailApi.getMailboxCapabilities.mockResolvedValue([
       { role: "inbox", status: "available", retryable: false },
       { role: "sent", status: "available", retryable: false },
@@ -2891,67 +2918,32 @@ describe("Mine Mail desktop state bridge", () => {
     const archive = within(reader).getByRole("button", { name: "归档" });
     await user.click(archive);
 
-    await waitFor(() =>
-      expect(desktop.mailApi.createMailboxRole).toHaveBeenCalledWith(
-        "desktop-account",
-        "archive",
-      ),
-    );
-    await waitFor(() =>
-      expect(desktop.mailApi.archiveMessage).toHaveBeenCalledWith("1"),
-    );
-    expect(screen.queryByRole("alertdialog")).toBeNull();
-  });
-
-  it("resolves a pending Archive role and continues the triggering message action", async () => {
-    desktop.mailApi.getMailboxCapabilities.mockResolvedValue([
-      { role: "inbox", status: "available", retryable: false },
-      { role: "sent", status: "available", retryable: false },
-      {
-        role: "archive",
-        status: "discovery_pending",
-        retryable: true,
-      },
-      { role: "trash", status: "available", retryable: false },
-    ]);
-    const user = userEvent.setup();
-    render(<App />);
-
-    await user.click(
-      await screen.findByRole("button", { name: /打开邮件：.*First mail/ }),
-    );
-    const reader = screen.getByLabelText("邮件阅读区");
-    await user.click(within(reader).getByRole("button", { name: "归档" }));
-
-    await waitFor(() =>
-      expect(desktop.mailApi.createMailboxRole).toHaveBeenCalledWith(
-        "desktop-account",
-        "archive",
-      ),
-    );
-    await waitFor(() =>
-      expect(desktop.mailApi.archiveMessage).toHaveBeenCalledWith("1"),
-    );
-    expect(screen.queryByText("正在确认归档文件夹，请稍后重试")).toBeNull();
-  });
-
-  it("keeps the message intact when a pending Archive role cannot be ensured", async () => {
-    desktop.mailApi.getMailboxCapabilities.mockResolvedValue([
-      { role: "inbox", status: "available", retryable: false },
-      { role: "sent", status: "available", retryable: false },
-      {
-        role: "archive",
-        status: "discovery_pending",
-        retryable: true,
-      },
-      { role: "trash", status: "available", retryable: false },
-    ]);
-    desktop.mailApi.createMailboxRole.mockResolvedValue({
-      role: "archive",
-      status: "unavailable",
-      unavailable_reason: "create_failed",
-      retryable: true,
+    const dialog = await screen.findByRole("dialog", {
+      name: "选择归档文件夹",
     });
+    await user.click(
+      within(dialog).getByRole("button", { name: "使用此文件夹" }),
+    );
+    await waitFor(() =>
+      expect(desktop.mailApi.archiveMessage).toHaveBeenCalledWith("1"),
+    );
+    expect(desktop.mailApi.createMailboxRole).not.toHaveBeenCalledWith(
+      "desktop-account",
+      "archive",
+    );
+  });
+
+  it("cancels Archive folder selection without moving the message", async () => {
+    desktop.mailApi.getMailboxCapabilities.mockResolvedValue([
+      { role: "inbox", status: "available", retryable: false },
+      { role: "sent", status: "available", retryable: false },
+      {
+        role: "archive",
+        status: "discovery_pending",
+        retryable: true,
+      },
+      { role: "trash", status: "available", retryable: false },
+    ]);
     const user = userEvent.setup();
     render(<App />);
 
@@ -2961,9 +2953,63 @@ describe("Mine Mail desktop state bridge", () => {
     const reader = screen.getByLabelText("邮件阅读区");
     await user.click(within(reader).getByRole("button", { name: "归档" }));
 
+    const dialog = await screen.findByRole("dialog", {
+      name: "选择归档文件夹",
+    });
+    await user.click(
+      within(dialog).getByRole("combobox", { name: "已有服务器文件夹" }),
+    );
     expect(
-      await within(reader).findByRole("button", { name: /重试归档/ }),
+      within(dialog).getByRole("listbox", { name: "已有服务器文件夹" }),
     ).toBeTruthy();
+    await user.keyboard("{Escape}");
+    expect(
+      screen.getByRole("dialog", { name: "选择归档文件夹" }),
+    ).toBeTruthy();
+    expect(within(dialog).queryByRole("listbox")).toBeNull();
+    await user.keyboard("{Escape}");
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("dialog", { name: "选择归档文件夹" }),
+      ).toBeNull(),
+    );
+    expect(desktop.mailApi.assignArchiveFolder).not.toHaveBeenCalled();
+    expect(desktop.mailApi.archiveMessage).not.toHaveBeenCalled();
+    expect(within(reader).getByText("First mail")).toBeTruthy();
+  });
+
+  it("keeps the message intact when Archive folder assignment fails", async () => {
+    desktop.mailApi.getMailboxCapabilities.mockResolvedValue([
+      { role: "inbox", status: "available", retryable: false },
+      { role: "sent", status: "available", retryable: false },
+      {
+        role: "archive",
+        status: "discovery_pending",
+        retryable: true,
+      },
+      { role: "trash", status: "available", retryable: false },
+    ]);
+    desktop.mailApi.assignArchiveFolder.mockRejectedValue(
+      new Error("服务器拒绝了归档文件夹设置"),
+    );
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(
+      await screen.findByRole("button", { name: /打开邮件：.*First mail/ }),
+    );
+    const reader = screen.getByLabelText("邮件阅读区");
+    await user.click(within(reader).getByRole("button", { name: "归档" }));
+
+    const dialog = await screen.findByRole("dialog", {
+      name: "选择归档文件夹",
+    });
+    await user.click(
+      within(dialog).getByRole("button", { name: "使用此文件夹" }),
+    );
+    expect((await within(dialog).findByRole("alert")).textContent).toContain(
+      "服务器拒绝了归档文件夹设置",
+    );
     expect(within(reader).getByText("First mail")).toBeTruthy();
     expect(desktop.mailApi.archiveMessage).not.toHaveBeenCalled();
   });

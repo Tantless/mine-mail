@@ -3,7 +3,7 @@ use std::{
     fs,
     io::Write,
     path::{Path, PathBuf},
-    sync::{Arc, RwLock},
+    sync::{Arc, Mutex, RwLock},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -48,6 +48,8 @@ const GOOGLE_MAIL_SCOPE: &str = "https://mail.google.com/";
 const OAUTH_CALLBACK_TIMEOUT: Duration = Duration::from_secs(180);
 const OAUTH_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 const OAUTH_REFRESH_MARGIN_SECONDS: u64 = 300;
+const ARCHIVE_FOLDER_SELECTION_TTL: Duration = Duration::from_secs(5 * 60);
+const MAX_ARCHIVE_FOLDER_SELECTIONS: usize = 3 * 128;
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -482,8 +484,15 @@ struct BackendSlots {
     accounts: HashMap<String, BackendAccountSlots>,
 }
 
+struct ArchiveFolderSelection {
+    account_id: String,
+    mailbox_name: String,
+    expires_at: Instant,
+}
+
 pub(crate) struct BackendState {
     slots: RwLock<BackendSlots>,
+    archive_folder_selections: Mutex<HashMap<String, ArchiveFolderSelection>>,
 }
 
 impl BackendState {
@@ -512,6 +521,7 @@ impl BackendState {
         Self::rebalance_body_cache_budgets(&slots);
         Self {
             slots: RwLock::new(slots),
+            archive_folder_selections: Mutex::new(HashMap::new()),
         }
     }
 
@@ -554,6 +564,62 @@ impl BackendState {
                 "Network mail features are unavailable until the account credential is restored."
                     .to_owned()
             })
+    }
+
+    pub(crate) fn clear_archive_folder_selections(
+        &self,
+        account_id: &str,
+    ) -> Result<(), String> {
+        let mut selections = self
+            .archive_folder_selections
+            .lock()
+            .map_err(|_| "Archive folder choices are temporarily unavailable.".to_owned())?;
+        selections.retain(|_, selection| selection.account_id != account_id);
+        Ok(())
+    }
+
+    pub(crate) fn register_archive_folder_selection(
+        &self,
+        account_id: &str,
+        mailbox_name: String,
+    ) -> Result<String, String> {
+        let now = Instant::now();
+        let mut selections = self
+            .archive_folder_selections
+            .lock()
+            .map_err(|_| "Archive folder choices are temporarily unavailable.".to_owned())?;
+        selections.retain(|_, selection| selection.expires_at > now);
+        if selections.len() >= MAX_ARCHIVE_FOLDER_SELECTIONS {
+            return Err("Too many Archive folder choices are pending. Please retry.".to_owned());
+        }
+        let selection_id = Uuid::new_v4().to_string();
+        selections.insert(
+            selection_id.clone(),
+            ArchiveFolderSelection {
+                account_id: account_id.to_owned(),
+                mailbox_name,
+                expires_at: now + ARCHIVE_FOLDER_SELECTION_TTL,
+            },
+        );
+        Ok(selection_id)
+    }
+
+    pub(crate) fn resolve_archive_folder_selection(
+        &self,
+        account_id: &str,
+        selection_id: &str,
+    ) -> Result<String, String> {
+        let now = Instant::now();
+        let mut selections = self
+            .archive_folder_selections
+            .lock()
+            .map_err(|_| "Archive folder choices are temporarily unavailable.".to_owned())?;
+        selections.retain(|_, selection| selection.expires_at > now);
+        selections
+            .get(selection_id)
+            .filter(|selection| selection.account_id == account_id)
+            .map(|selection| selection.mailbox_name.clone())
+            .ok_or_else(|| "The Archive folder choice is invalid or expired.".to_owned())
     }
 
     fn replace_account(
@@ -2113,6 +2179,38 @@ mod tests {
     };
 
     #[test]
+    fn archive_folder_choices_are_opaque_account_bound_and_clearable() {
+        let backend = BackendState::empty();
+        let selection_id = backend
+            .register_archive_folder_selection(
+                "account-a",
+                "&UXZO1mWHTvZZOQ-/MineArchive".to_owned(),
+            )
+            .expect("register Archive folder choice");
+
+        assert_ne!(selection_id, "&UXZO1mWHTvZZOQ-/MineArchive");
+        assert_eq!(
+            backend
+                .resolve_archive_folder_selection("account-a", &selection_id)
+                .expect("resolve same-account choice"),
+            "&UXZO1mWHTvZZOQ-/MineArchive"
+        );
+        assert!(
+            backend
+                .resolve_archive_folder_selection("account-b", &selection_id)
+                .is_err()
+        );
+        backend
+            .clear_archive_folder_selections("account-a")
+            .expect("clear Archive folder choices");
+        assert!(
+            backend
+                .resolve_archive_folder_selection("account-a", &selection_id)
+                .is_err()
+        );
+    }
+
+    #[test]
     fn connection_report_accepts_both_successful_protocols() {
         let report = ConnectionReport {
             imap_ok: true,
@@ -2121,9 +2219,7 @@ mod tests {
             smtp_failure: None,
         };
 
-        assert!(
-            connection_report_result(&report, AccountAuthentication::GoogleOAuth).is_ok()
-        );
+        assert!(connection_report_result(&report, AccountAuthentication::GoogleOAuth).is_ok());
     }
 
     #[test]

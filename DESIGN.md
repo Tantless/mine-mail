@@ -656,12 +656,21 @@ family. Preserve the relative hierarchy when tuning optical values.
 - Lower-right toasts are reserved for failures and bounded information that
   requires attention. Routine successful actions use their resulting UI state or
   nearby inline status and never produce a success toast.
-- Creating a missing Archive or Trash mailbox follows explicit folder navigation
-  or a message action automatically, without a confirmation dialog. Initial
-  sidebar presentation never creates server state. A triggering message action
-  continues only after the server role is verified; creation progress blocks
-  duplicate submission without dismissing cached content, and failure leaves the
-  message unchanged with recoverable feedback.
+- A missing Archive role is configured only after explicit folder navigation or
+  a message Archive action. Mine Mail opens a compact, theme-owned selection
+  dialog containing eligible existing server-folder display labels; it does not
+  auto-create Archive. The dialog uses the themed select control, starts on the
+  safe cancel action, supports Escape before work begins, blocks dismissal while
+  saving, and restores focus. Cancellation keeps the current workspace and
+  message unchanged; confirmation continues the triggering action only after the
+  selected folder is verified. An empty candidate list explains that the user
+  must first create a normal folder in the provider UI.
+- Creating a missing Trash mailbox follows explicit folder navigation or a
+  message action automatically, without a confirmation dialog. Initial sidebar
+  presentation never creates server state. A triggering message action continues
+  only after the server role is verified; creation progress blocks duplicate
+  submission without dismissing cached content, and failure leaves the message
+  unchanged with recoverable feedback.
 - Permanent deletion from Trash requires a confirmation every time. The dialog
   names the irreversible consequence, uses the semantic danger action, starts on
   a safe non-destructive focus target, traps focus, supports Escape before work

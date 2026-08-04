@@ -1005,18 +1005,26 @@ impl Repository {
         account_id: &str,
         role: MailboxRole,
     ) -> Result<String> {
+        self.assigned_mailbox_for_semantic_role(account_id, role)?
+            .ok_or_else(|| MailError::NotFound {
+                entity: "mailbox role",
+                id: format!("{account_id}:{}", role.as_str()),
+            })
+    }
+
+    pub(crate) fn assigned_mailbox_for_semantic_role(
+        &self,
+        account_id: &str,
+        role: MailboxRole,
+    ) -> Result<Option<String>> {
         let connection = self.connection()?;
-        connection
+        Ok(connection
             .query_row(
                 "SELECT mailbox FROM mailbox_roles WHERE account_id = ?1 AND role = ?2",
                 params![account_id, role.as_str()],
                 |row| row.get(0),
             )
-            .optional()?
-            .ok_or_else(|| MailError::NotFound {
-                entity: "mailbox role",
-                id: format!("{account_id}:{}", role.as_str()),
-            })
+            .optional()?)
     }
 
     pub(crate) fn set_mailbox_capability(

@@ -10,7 +10,10 @@ use std::{
     time::Duration,
 };
 
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use base64::{
+    Engine as _,
+    engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
+};
 use chrono::{DateTime, SecondsFormat, TimeDelta, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -84,6 +87,7 @@ const MAX_MESSAGE_PAGE_SIZE: usize = 100;
 const HISTORY_FETCH_PAGE_SIZE: usize = 50;
 const PERMANENT_DELETE_PLAN_MINUTES: i64 = 5;
 const MAX_PENDING_DELETE_PLANS: usize = 64;
+const MAX_ARCHIVE_FOLDER_CANDIDATES: usize = 128;
 const BODY_PREFETCH_PRIORITY_RECENT: u8 = 0;
 const BODY_PREFETCH_PRIORITY_PAGE: u8 = 1;
 const BODY_PREFETCH_PRIORITY_NEIGHBOR: u8 = 2;
@@ -273,6 +277,16 @@ fn bounded_body_prefetch_ids(
 pub struct PermanentDeletePlan {
     pub plan_id: String,
     pub expires_at: String,
+}
+
+/// One selectable server folder that may be assigned as this account's
+/// Archive destination. `mailbox_name` is an internal IMAP coordinate and must
+/// never be serialized to React; the desktop boundary replaces it with an
+/// opaque, short-lived selection ID.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ArchiveFolderCandidate {
+    pub mailbox_name: String,
+    pub display_name: String,
 }
 
 #[derive(Clone, Debug)]
@@ -529,6 +543,131 @@ fn sent_fallback_name_matches(name: &str) -> bool {
         .any(|fallback| name.eq_ignore_ascii_case(fallback) || leaf.eq_ignore_ascii_case(fallback))
 }
 
+fn decode_modified_utf7_mailbox_name(value: &str) -> String {
+    let mut decoded = String::with_capacity(value.len());
+    let mut cursor = 0;
+    while let Some(relative_start) = value[cursor..].find('&') {
+        let start = cursor + relative_start;
+        decoded.push_str(&value[cursor..start]);
+        let Some(relative_end) = value[start + 1..].find('-') else {
+            decoded.push_str(&value[start..]);
+            return decoded;
+        };
+        let end = start + 1 + relative_end;
+        let encoded = &value[start + 1..end];
+        if encoded.is_empty() {
+            decoded.push('&');
+            cursor = end + 1;
+            continue;
+        }
+        let mut standard = encoded.replace(',', "/");
+        while standard.len() % 4 != 0 {
+            standard.push('=');
+        }
+        let segment = STANDARD.decode(standard).ok().and_then(|bytes| {
+            if bytes.len() % 2 != 0 {
+                return None;
+            }
+            let utf16 = bytes
+                .chunks_exact(2)
+                .map(|chunk| u16::from_be_bytes([chunk[0], chunk[1]]))
+                .collect::<Vec<_>>();
+            String::from_utf16(&utf16).ok()
+        });
+        match segment {
+            Some(segment) => decoded.push_str(&segment),
+            None => decoded.push_str(&value[start..=end]),
+        }
+        cursor = end + 1;
+    }
+    decoded.push_str(&value[cursor..]);
+    decoded
+}
+
+fn user_facing_mailbox_label(mailbox_name: &str) -> String {
+    let decoded = decode_modified_utf7_mailbox_name(mailbox_name);
+    let mut label = decoded
+        .chars()
+        .map(|character| {
+            if character.is_control() {
+                '�'
+            } else {
+                character
+            }
+        })
+        .take(160)
+        .collect::<String>();
+    if decoded.chars().count() > 160 {
+        label.push('…');
+    }
+    let label = label.trim();
+    if label.is_empty() {
+        "未命名文件夹".to_owned()
+    } else {
+        label.to_owned()
+    }
+}
+
+fn reserved_archive_candidate_name_matches(name: &str) -> bool {
+    const RESERVED_NAMES: &[&str] = &[
+        "Trash",
+        "Deleted Items",
+        "Deleted Messages",
+        "Junk",
+        "Junk E-mail",
+        "Spam",
+        "已删除",
+        "垃圾箱",
+        "垃圾邮件",
+    ];
+    let decoded = decode_modified_utf7_mailbox_name(name);
+    [name, decoded.as_str()].into_iter().any(|candidate| {
+        let leaf = candidate.rsplit(['/', '.']).next().unwrap_or(candidate);
+        RESERVED_NAMES.iter().any(|reserved| {
+            candidate.eq_ignore_ascii_case(reserved) || leaf.eq_ignore_ascii_case(reserved)
+        })
+    })
+}
+
+fn is_archive_folder_candidate(mailbox: &RemoteMailbox, assigned: &HashSet<String>) -> bool {
+    if !mailbox.is_selectable
+        || mailbox.name.eq_ignore_ascii_case(INBOX)
+        || mailbox.is_all
+        || mailbox.is_archive
+        || mailbox.is_drafts
+        || mailbox.is_sent
+        || mailbox.is_junk
+        || mailbox.is_trash
+        || sent_fallback_name_matches(&mailbox.name)
+        || reserved_archive_candidate_name_matches(&mailbox.name)
+    {
+        return false;
+    }
+    !assigned.contains(&mailbox.name.to_lowercase())
+}
+
+fn archive_folder_candidates(
+    mailboxes: &[RemoteMailbox],
+    assigned: &HashSet<String>,
+) -> Vec<ArchiveFolderCandidate> {
+    let mut candidates = mailboxes
+        .iter()
+        .filter(|mailbox| is_archive_folder_candidate(mailbox, assigned))
+        .map(|mailbox| ArchiveFolderCandidate {
+            mailbox_name: mailbox.name.clone(),
+            display_name: user_facing_mailbox_label(&mailbox.name),
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by(|left, right| {
+        left.display_name
+            .to_lowercase()
+            .cmp(&right.display_name.to_lowercase())
+            .then_with(|| left.mailbox_name.cmp(&right.mailbox_name))
+    });
+    candidates.truncate(MAX_ARCHIVE_FOLDER_CANDIDATES);
+    candidates
+}
+
 fn discovered_mailbox_capability(
     role: MailboxRole,
     mailboxes: &[RemoteMailbox],
@@ -538,6 +677,18 @@ fn discovered_mailbox_capability(
     selectable_role_mailbox(role, mailboxes, gmail_adapter, imap_host)
         .map(|mailbox| available_mailbox_capability(role, &mailbox.name))
         .unwrap_or_else(|| missing_mailbox_capability(role))
+}
+
+fn configured_archive_capability(
+    mailboxes: &[RemoteMailbox],
+    configured: Option<&str>,
+) -> Option<MailboxCapability> {
+    configured.and_then(|configured| {
+        mailboxes
+            .iter()
+            .find(|mailbox| mailbox.is_selectable && mailbox.name == configured)
+            .map(|mailbox| available_mailbox_capability(MailboxRole::Archive, &mailbox.name))
+    })
 }
 
 fn confirmed_created_mailbox_capability(
@@ -552,7 +703,6 @@ fn confirmed_created_mailbox_capability(
         return discovered;
     }
     let canonical_name = match role {
-        MailboxRole::Archive => Some(CreatableMailboxRole::Archive.canonical_name()),
         MailboxRole::Trash => Some(CreatableMailboxRole::Trash.canonical_name()),
         _ => None,
     };
@@ -830,6 +980,9 @@ impl MailBackend {
             .await
             .map_err(|_| privacy_safe_imap_error("mailbox discovery"))?;
         let gmail_adapter = self.uses_gmail_archive_adapter();
+        let configured_archive = self
+            .repository
+            .assigned_mailbox_for_semantic_role(account_id, MailboxRole::Archive)?;
         let mut capabilities = Vec::with_capacity(5);
         for role in [
             MailboxRole::Inbox,
@@ -838,12 +991,24 @@ impl MailBackend {
             MailboxRole::Archive,
             MailboxRole::Trash,
         ] {
-            let capability = discovered_mailbox_capability(
-                role,
-                &mailboxes,
-                gmail_adapter,
-                &self.config.imap.host,
-            );
+            let capability = if role == MailboxRole::Archive {
+                configured_archive_capability(&mailboxes, configured_archive.as_deref())
+                    .unwrap_or_else(|| {
+                        discovered_mailbox_capability(
+                            role,
+                            &mailboxes,
+                            gmail_adapter,
+                            &self.config.imap.host,
+                        )
+                    })
+            } else {
+                discovered_mailbox_capability(
+                    role,
+                    &mailboxes,
+                    gmail_adapter,
+                    &self.config.imap.host,
+                )
+            };
             self.repository
                 .set_mailbox_capability(account_id, &capability)?;
             capabilities.push(capability);
@@ -852,7 +1017,74 @@ impl MailBackend {
         Ok(capabilities)
     }
 
-    /// Ensures Archive or Trash after an explicit user action. LIST both before
+    fn assigned_mailbox_names(&self, account_id: &str) -> Result<HashSet<String>> {
+        let mut assigned = HashSet::new();
+        for role in MailboxRole::ALL {
+            if let Some(mailbox) = self
+                .repository
+                .assigned_mailbox_for_semantic_role(account_id, role)?
+            {
+                assigned.insert(mailbox.to_lowercase());
+            }
+        }
+        Ok(assigned)
+    }
+
+    /// Lists selectable, non-semantic server folders that the desktop may
+    /// present as Archive destinations. The raw names remain Rust-only.
+    pub async fn list_archive_folder_candidates(
+        &self,
+        account_id: &str,
+    ) -> Result<Vec<ArchiveFolderCandidate>> {
+        self.ensure_account_scope(account_id)?;
+        let assigned = self.assigned_mailbox_names(account_id)?;
+        let _guard = self.general_imap_gate.lock().await;
+        let mut connection = ImapConnection::connect(&self.config)
+            .await
+            .map_err(|_| privacy_safe_imap_error("archive folder discovery"))?;
+        let mailboxes = connection
+            .list_mailboxes()
+            .await
+            .map_err(|_| privacy_safe_imap_error("archive folder discovery"))?;
+        let candidates = archive_folder_candidates(&mailboxes, &assigned);
+        let _ = connection.logout().await;
+        Ok(candidates)
+    }
+
+    /// Assigns an existing server folder as Archive after a fresh LIST proves
+    /// it is still selectable and is not already a semantic/system mailbox.
+    pub async fn assign_archive_folder(
+        &self,
+        account_id: &str,
+        mailbox_name: &str,
+    ) -> Result<MailboxCapability> {
+        self.ensure_account_scope(account_id)?;
+        let assigned = self.assigned_mailbox_names(account_id)?;
+        let _guard = self.general_imap_gate.lock().await;
+        let mut connection = ImapConnection::connect(&self.config)
+            .await
+            .map_err(|_| privacy_safe_imap_error("archive folder assignment"))?;
+        let mailboxes = connection
+            .list_mailboxes()
+            .await
+            .map_err(|_| privacy_safe_imap_error("archive folder assignment"))?;
+        let selected = mailboxes.iter().find(|mailbox| {
+            mailbox.name == mailbox_name && is_archive_folder_candidate(mailbox, &assigned)
+        });
+        let Some(selected) = selected else {
+            let _ = connection.logout().await;
+            return Err(MailError::Validation(
+                "the selected Archive folder is no longer available".to_owned(),
+            ));
+        };
+        let capability = available_mailbox_capability(MailboxRole::Archive, &selected.name);
+        self.repository
+            .set_mailbox_capability(account_id, &capability)?;
+        let _ = connection.logout().await;
+        Ok(capability)
+    }
+
+    /// Ensures Trash after an explicit user action. LIST both before
     /// and after CREATE makes this idempotent. Provider-declared roles always
     /// win; RFC 6154 creation is verified by its role attribute, while legacy
     /// servers may use only the exact fixed-name fallback created here.
@@ -863,11 +1095,10 @@ impl MailBackend {
     ) -> Result<MailboxCapability> {
         self.ensure_account_scope(account_id)?;
         let creatable = match role {
-            MailboxRole::Archive => CreatableMailboxRole::Archive,
             MailboxRole::Trash => CreatableMailboxRole::Trash,
             _ => {
                 return Err(MailError::Validation(
-                    "only Archive or Trash can be created by Mine Mail".to_owned(),
+                    "only Trash can be created by Mine Mail".to_owned(),
                 ));
             }
         };
@@ -956,9 +1187,9 @@ impl MailBackend {
         role: MailboxRole,
     ) -> Result<MailboxCapability> {
         self.ensure_account_scope(account_id)?;
-        if !matches!(role, MailboxRole::Archive | MailboxRole::Trash) {
+        if role != MailboxRole::Trash {
             return Err(MailError::Validation(
-                "only Archive or Trash can record a role-creation failure".to_owned(),
+                "only Trash can record a role-creation failure".to_owned(),
             ));
         }
         let capability =
@@ -7130,8 +7361,9 @@ mod tests {
         BODY_PREFETCH_PRIORITY_NEIGHBOR, BODY_PREFETCH_PRIORITY_PAGE,
         BODY_PREFETCH_PRIORITY_RECENT, BodyDownloadKey, BodyDownloadOwner, BodyPrefetchQueue,
         DraftReconciliation, INBOX, InboxUidScope, MailBackend, RemoteDraftCandidate,
-        RemoteForkPreservation, advance_draft_sync_progress, bounded_body_prefetch_ids,
-        changed_flags_cursor, classify_draft_reconciliation, classify_inbox_uid_scope,
+        RemoteForkPreservation, advance_draft_sync_progress, archive_folder_candidates,
+        bounded_body_prefetch_ids, changed_flags_cursor, classify_draft_reconciliation,
+        classify_inbox_uid_scope, configured_archive_capability,
         confirmed_created_mailbox_capability, discovered_mailbox_capability,
         draft_record_matches_remote, earlier_history_bound, mailbox_hint_changed,
         mailbox_snapshot_has_usable_epoch, mailbox_snapshot_requires_confirmation,
@@ -7483,6 +7715,7 @@ mod tests {
             is_drafts: false,
             is_sent: false,
             is_archive,
+            is_junk: false,
             is_trash,
             is_selectable,
         }
@@ -7506,20 +7739,33 @@ mod tests {
     }
 
     #[test]
-    fn confirmed_create_accepts_only_the_exact_selectable_canonical_name() {
-        let ordinary = [remote_mailbox("Archive", false, false, true)];
+    fn explicit_archive_mapping_survives_discovery_while_selectable() {
+        let selectable = [remote_mailbox("Saved/2025", false, false, true)];
+        let configured = configured_archive_capability(&selectable, Some("Saved/2025"))
+            .expect("configured Archive");
+        assert_eq!(configured.status, MailboxCapabilityStatus::Available);
+        assert_eq!(configured.display_name.as_deref(), Some("Saved/2025"));
+
+        let unavailable = [remote_mailbox("Saved/2025", false, false, false)];
+        assert!(configured_archive_capability(&unavailable, Some("Saved/2025")).is_none());
+        assert!(configured_archive_capability(&selectable, Some("Saved/2024")).is_none());
+    }
+
+    #[test]
+    fn confirmed_trash_create_accepts_only_the_exact_selectable_canonical_name() {
+        let ordinary = [remote_mailbox("Trash", false, false, true)];
         let confirmed = confirmed_created_mailbox_capability(
-            MailboxRole::Archive,
+            MailboxRole::Trash,
             &ordinary,
             false,
             "imap.example.com",
             true,
         );
         assert_eq!(confirmed.status, MailboxCapabilityStatus::Available);
-        assert_eq!(confirmed.display_name.as_deref(), Some("Archive"));
+        assert_eq!(confirmed.display_name.as_deref(), Some("Trash"));
         assert_eq!(
             confirmed_created_mailbox_capability(
-                MailboxRole::Archive,
+                MailboxRole::Trash,
                 &ordinary,
                 false,
                 "imap.example.com",
@@ -7569,6 +7815,42 @@ mod tests {
     }
 
     #[test]
+    fn archive_candidates_are_selectable_existing_non_semantic_folders() {
+        let ordinary_archive = remote_mailbox("Archive", false, false, true);
+        let qq_child = remote_mailbox("&UXZO1mWHTvZZOQ-/MineArchive", false, false, true);
+        let mut sent = remote_mailbox("Provider/Sent", false, false, true);
+        sent.is_sent = true;
+        let mut junk = remote_mailbox("Provider/Junk", false, false, true);
+        junk.is_junk = true;
+        let ordinary_trash = remote_mailbox("Trash", false, false, true);
+        let ordinary_spam = remote_mailbox("Spam", false, false, true);
+        let unavailable = remote_mailbox("Parent", false, false, false);
+        let candidates = archive_folder_candidates(
+            &[
+                ordinary_archive,
+                qq_child,
+                sent,
+                junk,
+                ordinary_trash,
+                ordinary_spam,
+                unavailable,
+            ],
+            &HashSet::new(),
+        );
+
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(candidates[0].display_name, "Archive");
+        assert_eq!(candidates[1].display_name, "其他文件夹/MineArchive");
+        assert_eq!(candidates[1].mailbox_name, "&UXZO1mWHTvZZOQ-/MineArchive");
+
+        let assigned = HashSet::from(["archive".to_owned()]);
+        assert_eq!(
+            archive_folder_candidates(&[remote_mailbox("Archive", false, false, true)], &assigned,),
+            Vec::new()
+        );
+    }
+
+    #[test]
     fn role_creation_network_failure_is_typed_persisted_and_role_bounded() {
         let directory = tempdir().expect("tempdir");
         let config =
@@ -7579,7 +7861,7 @@ mod tests {
         let returned = backend
             .record_mailbox_role_creation_unavailable(
                 &backend.config.account_id,
-                MailboxRole::Archive,
+                MailboxRole::Trash,
             )
             .expect("typed failure");
         assert_eq!(returned.status, MailboxCapabilityStatus::Unavailable);
@@ -7591,7 +7873,7 @@ mod tests {
         assert_eq!(
             backend
                 .repository
-                .mailbox_capability(&backend.config.account_id, MailboxRole::Archive)
+                .mailbox_capability(&backend.config.account_id, MailboxRole::Trash)
                 .expect("persisted capability"),
             Some(returned)
         );
@@ -7599,7 +7881,7 @@ mod tests {
         assert!(matches!(
             backend.record_mailbox_role_creation_unavailable(
                 &backend.config.account_id,
-                MailboxRole::Inbox,
+                MailboxRole::Archive,
             ),
             Err(MailError::Validation(_))
         ));

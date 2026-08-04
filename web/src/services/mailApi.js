@@ -75,6 +75,7 @@ async function callDemo(method, ...args) {
 const commandFailureMessages = Object.freeze({
   add_draft_attachments: "添加附件没有完成",
   archive_message: "归档邮件没有完成",
+  assign_archive_folder: "归档文件夹设置没有完成",
   configure_account: "邮箱账户连接没有完成",
   confirm_permanent_delete: "永久删除没有完成",
   connect_google_account: "Google 登录没有完成",
@@ -87,6 +88,7 @@ const commandFailureMessages = Object.freeze({
   get_desktop_settings: "桌面设置读取没有完成",
   list_contact_messages: "往来邮件读取没有完成",
   list_contacts: "联系人读取没有完成",
+  list_archive_folder_candidates: "服务器文件夹读取没有完成",
   list_mailbox_page: "邮件列表读取没有完成",
   load_older_mailbox_page: "更早邮件读取没有完成",
   move_message_to_inbox: "移回收件箱没有完成",
@@ -326,6 +328,23 @@ export const mailApi = {
       return desktopInvoke("create_mailbox_role", { accountId, role });
     }
     return callDemo("createMailboxRole", accountId, role);
+  },
+
+  async listArchiveFolderCandidates(accountId) {
+    if (isTauri) {
+      return desktopInvoke("list_archive_folder_candidates", { accountId });
+    }
+    return callDemo("listArchiveFolderCandidates", accountId);
+  },
+
+  async assignArchiveFolder(accountId, selectionId) {
+    if (isTauri) {
+      return desktopInvoke("assign_archive_folder", {
+        accountId,
+        selectionId,
+      });
+    }
+    return callDemo("assignArchiveFolder", accountId, selectionId);
   },
 
   async listMailboxPage(

@@ -206,7 +206,15 @@ describe("mailApi desktop IPC contract", () => {
     };
     ipc.invoke
       .mockResolvedValueOnce(capabilities)
+      .mockResolvedValueOnce([
+        { selectionId: "choice-a", displayName: "Mine Archive" },
+      ])
       .mockResolvedValueOnce(capabilities[0])
+      .mockResolvedValueOnce({
+        role: "trash",
+        status: "available",
+        retryable: false,
+      })
       .mockResolvedValueOnce(page)
       .mockResolvedValueOnce(page)
       .mockResolvedValueOnce(undefined)
@@ -244,8 +252,20 @@ describe("mailApi desktop IPC contract", () => {
       mailApi.getMailboxCapabilities("account-a"),
     ).resolves.toEqual(capabilities);
     await expect(
-      mailApi.createMailboxRole("account-a", "archive"),
+      mailApi.listArchiveFolderCandidates("account-a"),
+    ).resolves.toEqual([
+      { selectionId: "choice-a", displayName: "Mine Archive" },
+    ]);
+    await expect(
+      mailApi.assignArchiveFolder("account-a", "choice-a"),
     ).resolves.toEqual(capabilities[0]);
+    await expect(
+      mailApi.createMailboxRole("account-a", "trash"),
+    ).resolves.toEqual({
+      role: "trash",
+      status: "available",
+      retryable: false,
+    });
     await expect(
       mailApi.listMailboxPage("account-a", "archive", null, 50, "needle"),
     ).resolves.toEqual(page);
@@ -269,9 +289,14 @@ describe("mailApi desktop IPC contract", () => {
 
     expect(ipc.invoke.mock.calls).toEqual([
       ["get_mailbox_capabilities", { accountId: "account-a" }],
+      ["list_archive_folder_candidates", { accountId: "account-a" }],
+      [
+        "assign_archive_folder",
+        { accountId: "account-a", selectionId: "choice-a" },
+      ],
       [
         "create_mailbox_role",
-        { accountId: "account-a", role: "archive" },
+        { accountId: "account-a", role: "trash" },
       ],
       [
         "list_mailbox_page",

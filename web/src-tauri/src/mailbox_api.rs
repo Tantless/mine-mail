@@ -44,6 +44,13 @@ pub(crate) struct MailboxCapabilityDto {
     retryable: bool,
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ArchiveFolderCandidateDto {
+    selection_id: String,
+    display_name: String,
+}
+
 impl From<MailboxCapability> for MailboxCapabilityDto {
     fn from(value: MailboxCapability) -> Self {
         // `display_name` is the concrete provider mailbox name. It is used by
@@ -495,8 +502,8 @@ pub(crate) async fn create_mailbox_role(
     role: MailboxRole,
 ) -> CommandResult<MailboxCapabilityDto> {
     validate_account_id(&account_id)?;
-    if !matches!(role, MailboxRole::Archive | MailboxRole::Trash) {
-        return Err("Only Archive or Trash can be created.".to_owned());
+    if role != MailboxRole::Trash {
+        return Err("Only Trash can be created.".to_owned());
     }
     let local = backend.local_for(&account_id)?;
     // Refreshing all OAuth-backed runtimes is account-safe: the exact backend
@@ -511,6 +518,63 @@ pub(crate) async fn create_mailbox_role(
             .record_mailbox_role_creation_unavailable(&account_id, role)
             .map_err(safe_mail_error)?,
     };
+    let capability = MailboxCapabilityDto::from(capability);
+    let _ = app.emit(
+        "mail:mailbox-capabilities-updated",
+        MailboxCapabilitiesUpdatedEvent {
+            account_id: account_id.clone(),
+        },
+    );
+    Ok(capability)
+}
+
+#[tauri::command]
+pub(crate) async fn list_archive_folder_candidates(
+    account: State<'_, AccountRuntime>,
+    backend: State<'_, BackendState>,
+    account_id: String,
+) -> CommandResult<Vec<ArchiveFolderCandidateDto>> {
+    validate_account_id(&account_id)?;
+    let _ = account.refresh_oauth_backends(&backend).await;
+    let candidates = backend
+        .network_for(&account_id)?
+        .list_archive_folder_candidates(&account_id)
+        .await
+        .map_err(safe_mail_error)?;
+    backend.clear_archive_folder_selections(&account_id)?;
+    candidates
+        .into_iter()
+        .map(|candidate| {
+            backend
+                .register_archive_folder_selection(&account_id, candidate.mailbox_name)
+                .map(|selection_id| ArchiveFolderCandidateDto {
+                    selection_id,
+                    display_name: candidate.display_name,
+                })
+        })
+        .collect()
+}
+
+#[tauri::command]
+pub(crate) async fn assign_archive_folder(
+    app: AppHandle,
+    account: State<'_, AccountRuntime>,
+    backend: State<'_, BackendState>,
+    account_id: String,
+    selection_id: String,
+) -> CommandResult<MailboxCapabilityDto> {
+    validate_account_id(&account_id)?;
+    validate_message_id(&selection_id)
+        .map_err(|_| "The Archive folder choice is invalid or expired.".to_owned())?;
+    let mailbox_name =
+        backend.resolve_archive_folder_selection(&account_id, &selection_id)?;
+    let _ = account.refresh_oauth_backends(&backend).await;
+    let capability = backend
+        .network_for(&account_id)?
+        .assign_archive_folder(&account_id, &mailbox_name)
+        .await
+        .map_err(safe_mail_error)?;
+    backend.clear_archive_folder_selections(&account_id)?;
     let capability = MailboxCapabilityDto::from(capability);
     let _ = app.emit(
         "mail:mailbox-capabilities-updated",
@@ -1093,10 +1157,10 @@ mod tests {
     };
 
     use super::{
-        MailboxBodySegmentDto, MailboxCapabilityDto, MailboxMessageDto, MailboxSyncReportDto,
-        MessagePageDto, is_offline_history_error, normalize_query, offline_page, parse_cursor,
-        validate_account_id, validate_attachment_id, validate_message_id, validate_page_role,
-        validate_page_size, validate_starred_page_role,
+        ArchiveFolderCandidateDto, MailboxBodySegmentDto, MailboxCapabilityDto,
+        MailboxMessageDto, MailboxSyncReportDto, MessagePageDto, is_offline_history_error,
+        normalize_query, offline_page, parse_cursor, validate_account_id, validate_attachment_id,
+        validate_message_id, validate_page_role, validate_page_size, validate_starred_page_role,
     };
     use crate::{
         AttachmentMetaDto, BodyRenderMode, BodySegmentConfidenceDto, BodySegmentDto,
@@ -1290,6 +1354,21 @@ mod tests {
         assert_eq!(json["status"], "available");
         assert!(json.get("display_name").is_none());
         assert!(!json.to_string().contains("所有邮件"));
+        assert_no_private_mail_coordinates(&json);
+    }
+
+    #[test]
+    fn archive_candidate_dto_exposes_only_an_opaque_choice_and_safe_label() {
+        let json = serde_json::to_value(ArchiveFolderCandidateDto {
+            selection_id: "9f1a7b32-4b55-4d6d-8db7-0e7bf1a32c41".to_owned(),
+            display_name: "其他文件夹/往年邮件".to_owned(),
+        })
+        .expect("serialize Archive folder candidate");
+
+        assert_eq!(json["selectionId"], "9f1a7b32-4b55-4d6d-8db7-0e7bf1a32c41");
+        assert_eq!(json["displayName"], "其他文件夹/往年邮件");
+        assert!(json.get("mailbox_name").is_none());
+        assert!(!json.to_string().contains("&UXZO1mWHTvZZOQ-"));
         assert_no_private_mail_coordinates(&json);
     }
 

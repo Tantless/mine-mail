@@ -16,7 +16,9 @@ mod mime;
 mod models;
 mod smtp_client;
 
-pub use backend::{InboxMonitor, InboxMonitorMode, MailBackend, PermanentDeletePlan};
+pub use backend::{
+    ArchiveFolderCandidate, InboxMonitor, InboxMonitorMode, MailBackend, PermanentDeletePlan,
+};
 pub use config::{AccountConfig, AuthenticationKind, ServerConfig, SmtpSecurity};
 pub use error::{MailError, Result};
 pub use models::{

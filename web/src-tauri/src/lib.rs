@@ -41,9 +41,10 @@ use mail_html::{
     segment_mail_body_with_metadata, segment_mail_body_with_metadata_chain,
 };
 use mailbox_api::{
-    archive_message, confirm_permanent_delete, create_mailbox_role, fetch_mailbox_message,
-    get_mailbox_capabilities, list_mailbox_page, list_starred_mailbox_page,
-    load_older_mailbox_page, load_older_starred_mailbox_page, move_message_to_trash,
+    archive_message, assign_archive_folder, confirm_permanent_delete, create_mailbox_role,
+    fetch_mailbox_message, get_mailbox_capabilities, list_archive_folder_candidates,
+    list_mailbox_page, list_starred_mailbox_page, load_older_mailbox_page,
+    load_older_starred_mailbox_page, move_message_to_trash,
     prepare_forward, prepare_permanent_delete, save_message_attachment, set_message_seen,
     set_message_starred_by_id, sync_mailbox,
 };
@@ -2287,6 +2288,8 @@ pub fn run() {
             set_message_starred_by_id,
             get_mailbox_capabilities,
             create_mailbox_role,
+            list_archive_folder_candidates,
+            assign_archive_folder,
             list_mailbox_page,
             load_older_mailbox_page,
             list_starred_mailbox_page,

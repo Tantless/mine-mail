@@ -12,7 +12,7 @@ const demoSyncRoles = new Set([
   "archive",
   "trash",
 ]);
-const creatableDemoRoles = new Set(["archive", "trash"]);
+const creatableDemoRoles = new Set(["trash"]);
 
 const wait = (milliseconds) =>
   new Promise((resolve) => window.setTimeout(resolve, milliseconds));
@@ -485,6 +485,32 @@ function createDemoActions(
       const capability = { role, status: "available", retryable: false };
       state.mailbox.capabilities = state.mailbox.capabilities.map((candidate) =>
         candidate.role === role ? capability : candidate,
+      );
+      return structuredClone(capability);
+    },
+
+    listArchiveFolderCandidates(accountId) {
+      requireDemoAccount(accountId);
+      return [
+        {
+          selectionId: "demo-archive-folder",
+          displayName: "Mine Mail 归档",
+        },
+      ];
+    },
+
+    assignArchiveFolder(accountId, selectionId) {
+      requireDemoAccount(accountId);
+      if (selectionId !== "demo-archive-folder") {
+        throw new Error("归档文件夹选择已失效，请重试。");
+      }
+      const capability = {
+        role: "archive",
+        status: "available",
+        retryable: false,
+      };
+      state.mailbox.capabilities = state.mailbox.capabilities.map((candidate) =>
+        candidate.role === "archive" ? capability : candidate,
       );
       return structuredClone(capability);
     },
