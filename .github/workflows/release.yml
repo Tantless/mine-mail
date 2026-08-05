@@ -66,7 +66,14 @@ jobs:
     needs: validate-version
     runs-on: ubuntu-22.04
     timeout-minutes: 5
+    outputs:
+      version: ${{ steps.release-version.outputs.version }}
     steps:
+      - name: Resolve release version
+        id: release-version
+        shell: bash
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
       - name: Create draft release when needed
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -91,8 +98,8 @@ jobs:
     strategy:
       fail-fast: false
       # tauri-action merges each platform into latest.json. The publish job
-      # consolidates Windows into the branded setup and validates every required
-      # platform before making the draft public.
+      # redirects Windows to the explicitly named Tauri updater and validates
+      # every required platform before making the draft public.
       max-parallel: 2
       matrix:
         include:
@@ -166,7 +173,14 @@ jobs:
           projectPath: web
           tagName: ${{ github.ref_name }}
           releaseName: Mine Mail ${{ github.ref_name }}
-          releaseBody: "Mine Mail installers for Windows 11 x64, macOS 14+ Apple Silicon, and Linux x64 (.deb or AppImage)."
+          releaseBody: |
+            ## 下载与系统要求
+
+            - **Windows 11 x64（AMD/Intel 64 位，推荐首次安装）**：`Mine-Mail_${{ needs.prepare-release.outputs.version }}_windows-x64-installer.exe`
+            - **Windows 11 x64（应用内自动更新专用）**：`Mine-Mail_${{ needs.prepare-release.outputs.version }}_windows-x64-updater.exe`；普通用户无需手动下载或运行
+            - **macOS 14+ Apple Silicon（首次安装）**：`Mine.Mail_${{ needs.prepare-release.outputs.version }}_aarch64.dmg`
+            - **macOS 14+ Apple Silicon（应用内自动更新专用）**：`Mine.Mail_${{ needs.prepare-release.outputs.version }}_aarch64.app.tar.gz`；普通用户无需手动下载或解压
+            - **Linux x64**：Ubuntu/Debian 使用 `Mine.Mail_${{ needs.prepare-release.outputs.version }}_amd64.deb`，其他现代发行版可使用 `Mine.Mail_${{ needs.prepare-release.outputs.version }}_amd64.AppImage`
           generateReleaseNotes: true
           releaseDraft: true
           prerelease: ${{ contains(github.ref_name, '-') }}
@@ -236,7 +250,14 @@ jobs:
           projectPath: web
           tagName: ${{ github.ref_name }}
           releaseName: Mine Mail ${{ github.ref_name }}
-          releaseBody: "Mine Mail installers for Windows 11 x64, macOS 14+ Apple Silicon, and Linux x64 (.deb or AppImage)."
+          releaseBody: |
+            ## 下载与系统要求
+
+            - **Windows 11 x64（AMD/Intel 64 位，推荐首次安装）**：`Mine-Mail_${{ needs.prepare-release.outputs.version }}_windows-x64-installer.exe`
+            - **Windows 11 x64（应用内自动更新专用）**：`Mine-Mail_${{ needs.prepare-release.outputs.version }}_windows-x64-updater.exe`；普通用户无需手动下载或运行
+            - **macOS 14+ Apple Silicon（首次安装）**：`Mine.Mail_${{ needs.prepare-release.outputs.version }}_aarch64.dmg`
+            - **macOS 14+ Apple Silicon（应用内自动更新专用）**：`Mine.Mail_${{ needs.prepare-release.outputs.version }}_aarch64.app.tar.gz`；普通用户无需手动下载或解压
+            - **Linux x64**：Ubuntu/Debian 使用 `Mine.Mail_${{ needs.prepare-release.outputs.version }}_amd64.deb`，其他现代发行版可使用 `Mine.Mail_${{ needs.prepare-release.outputs.version }}_amd64.AppImage`
           generateReleaseNotes: true
           releaseDraft: true
           prerelease: ${{ contains(github.ref_name, '-') }}
@@ -245,11 +266,8 @@ jobs:
           uploadUpdaterSignatures: false
           args: "--bundles nsis"
 
-      - name: Build and sign branded setup executable
+      - name: Build distinctly named Windows installer and updater packages
         shell: pwsh
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           $version = $env:GITHUB_REF_NAME.Substring(1)
           $payload = Get-ChildItem `
@@ -266,32 +284,37 @@ jobs:
             -Version $version
 
           $assetDirectory = "installer/windows/release-assets"
-          $setup = Get-ChildItem `
-            -LiteralPath $assetDirectory `
-            -Filter "*.exe" `
-            -File
-          if ($setup.Count -ne 1) {
-            throw "Expected exactly one branded setup executable."
-          }
-          npm --prefix web run tauri -- signer sign $setup[0].FullName
-          if ($LASTEXITCODE -ne 0) {
-            throw "Signing the branded Windows setup failed."
-          }
-          if (-not (Test-Path -LiteralPath "$($setup[0].FullName).sig" -PathType Leaf)) {
-            throw "The branded Windows updater signature was not produced."
+          $updaterName = "Mine-Mail_${version}_windows-x64-updater.exe"
+          Copy-Item `
+            -LiteralPath $payload.FullName `
+            -Destination (Join-Path $assetDirectory $updaterName) `
+            -Force
+
+          $expectedNames = @(
+            "Mine-Mail_${version}_windows-x64-installer.exe",
+            $updaterName
+          )
+          $actualNames = @(
+            Get-ChildItem -LiteralPath $assetDirectory -Filter "*.exe" -File |
+              ForEach-Object Name |
+              Sort-Object
+          )
+          if (Compare-Object ($expectedNames | Sort-Object) $actualNames) {
+            throw "Expected the distinctly named Windows installer and updater packages."
           }
 
-      - name: Upload branded Windows setup and temporary signature
+      - name: Upload Windows installer and updater packages
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $assets = Get-ChildItem `
             -LiteralPath "installer/windows/release-assets" `
+            -Filter "*.exe" `
             -File |
             ForEach-Object FullName
           if ($assets.Count -ne 2) {
-            throw "Expected the branded setup executable and its updater signature."
+            throw "Expected the branded installer and dedicated updater executable."
           }
           $arguments = @(
             "release",
@@ -318,7 +341,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v6
 
-      - name: Consolidate and validate release assets
+      - name: Configure and validate release assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ github.ref_name }}
@@ -328,8 +351,7 @@ jobs:
           remote_manifest_dir="$(mktemp -d)"
           trap 'rm -rf "$manifest_dir" "$remote_manifest_dir"' EXIT
           version="${RELEASE_TAG#v}"
-          branded_signature="Mine-Mail_${version}_x64-setup.exe.sig"
-          internal_updater="Mine.Mail_${version}_x64-setup.exe"
+          generated_updater="Mine.Mail_${version}_x64-setup.exe"
           release_id="$(
             gh release view "$RELEASE_TAG" \
               --repo "$GITHUB_REPOSITORY" \
@@ -343,27 +365,14 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --pattern latest.json \
             --dir "$manifest_dir"
-          consolidate_args=(
-            "$manifest_dir/latest.json"
+          node .github/scripts/configure-windows-updater.mjs \
+            "$manifest_dir/latest.json" \
             "$manifest_dir/release-assets.json"
-          )
-          if jq -e --arg name "$branded_signature" \
-            'any(.[]; .name == $name)' \
-            "$manifest_dir/release-assets.json" >/dev/null; then
-            gh release download "$RELEASE_TAG" \
-              --repo "$GITHUB_REPOSITORY" \
-              --pattern "$branded_signature" \
-              --dir "$manifest_dir"
-            consolidate_args+=("$manifest_dir/$branded_signature")
-          fi
-          node .github/scripts/consolidate-windows-updater.mjs \
-            "${consolidate_args[@]}"
           node .github/scripts/normalize-updater-manifest.mjs \
             "$manifest_dir/latest.json" \
             "$manifest_dir/release-assets.json"
-          jq --arg internal "$internal_updater" \
-            --arg signature "$branded_signature" \
-            '[.[] | select(.name != $internal and .name != $signature)]' \
+          jq --arg generated "$generated_updater" \
+            '[.[] | select(.name != $generated)]' \
             "$manifest_dir/release-assets.json" \
             > "$manifest_dir/public-release-assets.json"
           node .github/scripts/validate-release-assets.mjs \
@@ -381,15 +390,13 @@ jobs:
           node .github/scripts/validate-release-assets.mjs \
             "$remote_manifest_dir/latest.json" \
             "$manifest_dir/public-release-assets.json"
-          for asset in "$internal_updater" "$branded_signature"; do
-            if jq -e --arg name "$asset" \
-              'any(.[]; .name == $name)' \
-              "$manifest_dir/release-assets.json" >/dev/null; then
-              gh release delete-asset "$RELEASE_TAG" "$asset" \
-                --repo "$GITHUB_REPOSITORY" \
-                --yes
-            fi
-          done
+          if jq -e --arg name "$generated_updater" \
+            'any(.[]; .name == $name)' \
+            "$manifest_dir/release-assets.json" >/dev/null; then
+            gh release delete-asset "$RELEASE_TAG" "$generated_updater" \
+              --repo "$GITHUB_REPOSITORY" \
+              --yes
+          fi
           gh api --paginate \
             "repos/$GITHUB_REPOSITORY/releases/$release_id/assets?per_page=100" \
             | jq -s "add" > "$manifest_dir/public-release-assets.json"

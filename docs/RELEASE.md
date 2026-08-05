@@ -75,9 +75,10 @@ provider console, signing account, and a clean target device.
   creation one fail-closed pipeline.
 - [ ] Confirm every updater manifest uses the release's version-pinned GitHub
   browser download URLs rather than REST API asset endpoints.
-- [ ] Confirm the Windows updater points to the branded public setup and that the
-  internal NSIS payload and temporary updater signature are absent from the
-  public Release assets.
+- [ ] Confirm the Windows updater points only to the explicitly named public
+  `*_windows-x64-updater.exe`, while the recommended first-install asset is the
+  distinct `*_windows-x64-installer.exe`; remove only the generated intermediate
+  NSIS filename and standalone signature from the public Release.
 - [ ] Keep beta and stable update channels separate.
 - [ ] Test signed update success plus interruption, offline, invalid signature,
   disk-full, migration, skipped-version, rollback, and emergency withdrawal

@@ -44,9 +44,10 @@ Apple Silicon Mac，以及 Linux x64 发布。各平台安装包由统一发布�
 1. 打开 [Mine Mail 最新版本](https://github.com/Tantless/mine-mail/releases/latest)，
    阅读发行说明并下载与你的系统匹配的安装包：
 
-   - Windows 11 x64（AMD/Intel 64 位处理器）：
-     `Mine-Mail_<版本号>_x64-setup.exe`
-     （同时用于首次安装和签名后的应用内更新；Release 不会另列内部更新载荷）
+   - Windows 11 x64（AMD/Intel 64 位处理器）：优先下载品牌安装器
+     `Mine-Mail_<版本号>_windows-x64-installer.exe`。名称以
+     `_windows-x64-updater.exe` 结尾的文件仅供 Mine Mail 应用内自动更新，
+     首次安装无需手动下载或运行它。
    - macOS 14+ Apple Silicon：`Mine.Mail_<版本号>_aarch64.dmg`
    - Linux x64：Ubuntu/Debian 用户优先选择
      `Mine.Mail_<版本号>_amd64.deb`；其他现代发行版可使用免安装的

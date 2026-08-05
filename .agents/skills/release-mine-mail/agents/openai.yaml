@@ -1,4 +1,4 @@
 interface:
   display_name: "发布 Mine Mail"
-  short_description: "完成 Mine Mail 发布前检查、版本更新、提交和标签推送"
-  default_prompt: "使用 $release-mine-mail 发布我指定的 Mine Mail 版本，完成检查、提交和标签推送。"
+  short_description: "完成 Mine Mail 版本发布、发行日志、标签推送与安装包校验"
+  default_prompt: "使用 $release-mine-mail 发布我指定的 Mine Mail 版本，并写入发行日志、校验安装包和更新清单。"

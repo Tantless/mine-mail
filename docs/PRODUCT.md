@@ -930,10 +930,12 @@ must be updated here when an intentional product change lands.
 - The Tauri updater owns endpoint access, signature verification, download,
   installation, and relaunch. React only presents bounded metadata, progress, and
   the user-confirmed trigger.
-- A Windows release exposes one branded setup executable for both first install
-  and in-place updates. The setup accepts Tauri's passive or quiet updater
-  invocation and delegates it to the embedded maintained NSIS payload; that
-  internal payload is never a public Release asset.
+- A Windows release exposes two explicitly named Windows 11 x64 executables.
+  The branded `*_windows-x64-installer.exe` is the recommended first-install
+  package. The byte-identical maintained Tauri NSIS
+  `*_windows-x64-updater.exe` is public only as the in-place update payload;
+  updater metadata points to it and ordinary users are not asked to run it
+  manually.
 - An update failure preserves the installed version and local mail data and must
   not be reported as success.
 - Update failures distinguish version-information access, package download,

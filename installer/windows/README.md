@@ -46,8 +46,11 @@ cd ..
 
 Replace `<version>` with the version in `web/src-tauri/tauri.conf.json`.
 The resulting public asset is written to
-`installer/windows/release-assets/`. The branded setup accepts Tauri's passive
-and quiet updater arguments, then delegates them to its embedded maintained NSIS
-payload. Release builds sign this outer setup and point Windows updater metadata
-to it, so the public Release exposes only one Windows executable. The internal
-NSIS payload and the temporary outer signature are removed before publication.
+`installer/windows/release-assets/` as
+`Mine-Mail_<version>_windows-x64-installer.exe`. Release builds also copy the
+byte-identical maintained Tauri NSIS payload to
+`Mine-Mail_<version>_windows-x64-updater.exe`. The first file is the recommended
+Windows 11 x64 first-install experience; the second is the signed package used
+by the in-app updater. Updater metadata points only to the dedicated updater
+asset, while the generated intermediate NSIS filename is removed before the
+Release becomes public.

@@ -61,7 +61,7 @@ if (-not (Test-Path -LiteralPath $shellBinary -PathType Leaf)) {
   throw "The branded installer executable was not produced."
 }
 
-$assetName = "Mine-Mail_${Version}_x64-setup.exe"
+$assetName = "Mine-Mail_${Version}_windows-x64-installer.exe"
 $assetPath = Join-Path $resolvedOutput $assetName
 Copy-Item -LiteralPath $shellBinary -Destination $assetPath -Force
 
