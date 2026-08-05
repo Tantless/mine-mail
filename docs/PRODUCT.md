@@ -927,6 +927,10 @@ must be updated here when an intentional product change lands.
   Closing the dialog, pressing Escape, clicking its backdrop, navigating within
   the application, or hiding the main window does not cancel it. Cancellation is
   no longer offered after installation begins.
+- Mine Mail imposes no elapsed-time deadline on an active package download. A
+  slow but advancing download continues until it completes, the user explicitly
+  stops it, the application process exits, or a transport or server failure
+  makes the current request impossible.
 - The Tauri updater owns endpoint access, signature verification, download,
   installation, and relaunch. React only presents bounded metadata, progress, and
   the user-confirmed trigger.

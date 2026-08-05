@@ -1,9 +1,6 @@
-use std::{
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-    time::Duration,
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
 };
 
 use serde::Serialize;
@@ -14,7 +11,6 @@ use tauri::{
 };
 use tauri_plugin_updater::UpdaterExt;
 
-const UPDATE_OPERATION_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const MAX_UPDATE_IDENTIFIER_BYTES: usize = 64;
 
 #[derive(Clone, Default)]
@@ -81,7 +77,6 @@ async fn download_and_install(
 ) -> Result<(), String> {
     let updater = app
         .updater_builder()
-        .timeout(UPDATE_OPERATION_TIMEOUT)
         .build()
         .map_err(|error| error.to_string())?;
     let update = updater
