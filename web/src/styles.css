@@ -17,6 +17,24 @@
 }
 
 @font-face {
+  font-family: "ZCOOL XiaoWei";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src: url("@fontsource/zcool-xiaowei/files/zcool-xiaowei-chinese-simplified-400-normal.woff2")
+    format("woff2");
+}
+
+@font-face {
+  font-family: "ZCOOL KuaiLe";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src: url("@fontsource/zcool-kuaile/files/zcool-kuaile-chinese-simplified-400-normal.woff2")
+    format("woff2");
+}
+
+@font-face {
   font-family: "LXGW WenKai";
   font-style: normal;
   font-display: swap;
@@ -4752,6 +4770,7 @@ html[data-surface="new-mail-notification"] #root {
 .compose-rich-editor > .ProseMirror {
   min-height: 100%;
   outline: 0;
+  font-synthesis: weight style;
 }
 
 .compose-rich-editor > .ProseMirror:focus-visible {

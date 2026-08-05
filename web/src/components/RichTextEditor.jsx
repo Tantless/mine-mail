@@ -62,6 +62,13 @@ const notoSansFontFamily =
 const notoSerifFontFamily =
   "Noto Serif SC Variable,Noto Serif SC,Source Han Serif SC,Songti SC,SimSun,serif";
 const wenKaiFontFamily = "LXGW WenKai,KaiTi,STKaiti,cursive";
+const xiaoWeiFontFamily =
+  "ZCOOL XiaoWei,Noto Serif SC Variable,Songti SC,SimSun,serif";
+const kuaiLeFontFamily =
+  "ZCOOL KuaiLe,Noto Sans SC Variable,Microsoft YaHei,sans-serif";
+const maShanFontFamily = "Ma Shan Zheng,Zhi Mang Xing,STXingkai,cursive";
+const fangSongFontFamily =
+  "FangSong,STFangsong,Noto Serif SC Variable,serif";
 const monospaceFontFamily =
   "Cascadia Mono,Consolas,Liberation Mono,monospace";
 const fontOptions = [
@@ -70,6 +77,30 @@ const fontOptions = [
     label: "默认字体",
     family: null,
     previewFontFamily: uiFontPreview,
+  },
+  {
+    value: "microsoft-yahei",
+    label: "微软雅黑",
+    family: "Microsoft YaHei",
+    previewFontFamily: "Microsoft YaHei, Noto Sans SC Variable, sans-serif",
+  },
+  {
+    value: "simsun",
+    label: "宋体",
+    family: "SimSun",
+    previewFontFamily: "SimSun, Noto Serif SC Variable, serif",
+  },
+  {
+    value: "kaiti",
+    label: "楷体",
+    family: "KaiTi",
+    previewFontFamily: "KaiTi, LXGW WenKai, cursive",
+  },
+  {
+    value: "fangsong",
+    label: "仿宋",
+    family: fangSongFontFamily,
+    previewFontFamily: fangSongFontFamily,
   },
   {
     value: "noto-sans-sc",
@@ -90,22 +121,22 @@ const fontOptions = [
     previewFontFamily: wenKaiFontFamily,
   },
   {
-    value: "microsoft-yahei",
-    label: "微软雅黑",
-    family: "Microsoft YaHei",
-    previewFontFamily: "Microsoft YaHei, Noto Sans SC Variable, sans-serif",
+    value: "zcool-xiaowei",
+    label: "站酷小薇体",
+    family: xiaoWeiFontFamily,
+    previewFontFamily: xiaoWeiFontFamily,
   },
   {
-    value: "simsun",
-    label: "宋体",
-    family: "SimSun",
-    previewFontFamily: "SimSun, Noto Serif SC Variable, serif",
+    value: "zcool-kuaile",
+    label: "站酷快乐体",
+    family: kuaiLeFontFamily,
+    previewFontFamily: kuaiLeFontFamily,
   },
   {
-    value: "kaiti",
-    label: "楷体",
-    family: "KaiTi",
-    previewFontFamily: "KaiTi, LXGW WenKai, cursive",
+    value: "ma-shan-zheng",
+    label: "马善政毛笔体",
+    family: maShanFontFamily,
+    previewFontFamily: maShanFontFamily,
   },
   {
     value: "monospace",
@@ -146,9 +177,14 @@ registerFontAlias("Noto Sans SC", "noto-sans-sc", notoSansFontFamily);
 registerFontAlias("Noto Serif SC Variable", "noto-serif-sc", notoSerifFontFamily);
 registerFontAlias("Noto Serif SC", "noto-serif-sc", notoSerifFontFamily);
 registerFontAlias("LXGW WenKai", "lxgw-wenkai", wenKaiFontFamily);
+registerFontAlias("ZCOOL XiaoWei", "zcool-xiaowei", xiaoWeiFontFamily);
+registerFontAlias("ZCOOL KuaiLe", "zcool-kuaile", kuaiLeFontFamily);
+registerFontAlias("Ma Shan Zheng", "ma-shan-zheng", maShanFontFamily);
 registerFontAlias("Microsoft YaHei", "microsoft-yahei");
 registerFontAlias("SimSun", "simsun");
 registerFontAlias("serif", "simsun", "serif");
+registerFontAlias("FangSong", "fangsong", fangSongFontFamily);
+registerFontAlias("STFangsong", "fangsong", fangSongFontFamily);
 registerFontAlias("KaiTi", "kaiti");
 registerFontAlias("Consolas", "monospace", monospaceFontFamily);
 registerFontAlias("monospace", "monospace", monospaceFontFamily);

@@ -274,12 +274,15 @@ it("keeps only the editor formatting allowlist and converts safe text styles", (
 
 it("keeps semantic strike and canonicalizes bundled font fallback stacks", () => {
   const cleaned = normalizeComposeHtml(
-    '<p><s>旧内容</s><span style="font-family: Noto Serif SC Variable">宋体正文</span></p>',
+    '<p><s>旧内容</s><span style="font-family: Ma Shan Zheng">书写正文</span><span style="font-family: FangSong">仿宋正文</span></p>',
   );
 
   expect(cleaned).toContain("<s>旧内容</s>");
   expect(cleaned).toContain(
-    'face="Noto Serif SC Variable,Noto Serif SC,Source Han Serif SC,Songti SC,SimSun,serif"',
+    'face="Ma Shan Zheng,Zhi Mang Xing,STXingkai,cursive"',
+  );
+  expect(cleaned).toContain(
+    'face="FangSong,STFangsong,Noto Serif SC Variable,serif"',
   );
 });
 
@@ -380,17 +383,23 @@ it("previews and applies a bundled font with its safe fallback stack", async () 
   act(() => editor.commands.setTextSelection({ from: 1, to: 3 }));
 
   await user.click(screen.getByRole("combobox", { name: "字体" }));
-  const option = screen.getByRole("option", { name: "Noto 宋体" });
+  expect(
+    screen
+      .getAllByRole("option")
+      .slice(0, 5)
+      .map((item) => item.textContent),
+  ).toEqual(["默认字体", "微软雅黑", "宋体", "楷体", "仿宋"]);
+  const option = screen.getByRole("option", { name: "站酷小薇体" });
   expect(option.querySelector(".themed-select__option-label")?.style.fontFamily).toContain(
-    "Noto Serif SC Variable",
+    "ZCOOL XiaoWei",
   );
   await user.click(option);
 
   await waitFor(() =>
-    expect(editor.getHTML()).toContain("Noto Serif SC Variable"),
+    expect(editor.getHTML()).toContain("ZCOOL XiaoWei"),
   );
   expect(onChange.mock.calls.at(-1)?.[0].format.body_html).toContain(
-    'face="Noto Serif SC Variable,Noto Serif SC,Source Han Serif SC,Songti SC,SimSun,serif"',
+    'face="ZCOOL XiaoWei,Noto Serif SC Variable,Songti SC,SimSun,serif"',
   );
 });
 

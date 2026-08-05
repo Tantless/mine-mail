@@ -434,8 +434,9 @@ must be updated here when an intentional product change lands.
   draft. A stale delete never removes a newer canonical version.
 - Adding or removing a managed attachment is an editor write and follows the same
   `local_version`, conflict-copy, and stale-delete rules.
-- Font, size, emphasis (including strikethrough), list, alignment, link, and clear-format edits are part of
-  the same exact draft version as the plain authored body. Rust sanitizes the
+- Font, size, emphasis (including strikethrough), list, alignment, link, and
+  clear-format edits are part of the same exact draft version as the plain
+  authored body. Rust sanitizes the
   owned HTML fragment again at the desktop boundary; the plain body remains the
   interoperability fallback. A formatting command applies to the active range
   (or future input at a collapsed caret), preserves that range/caret after the

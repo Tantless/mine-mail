@@ -1362,6 +1362,10 @@ pub(crate) fn sanitize_compose_html(source: Option<&str>) -> Option<String> {
                         | "noto sans sc variable,noto sans sc,source han sans sc,microsoft yahei,sans-serif"
                         | "noto serif sc variable,noto serif sc,source han serif sc,songti sc,simsun,serif"
                         | "lxgw wenkai,kaiti,stkaiti,cursive"
+                        | "zcool xiaowei,noto serif sc variable,songti sc,simsun,serif"
+                        | "zcool kuaile,noto sans sc variable,microsoft yahei,sans-serif"
+                        | "ma shan zheng,zhi mang xing,stxingkai,cursive"
+                        | "fangsong,stfangsong,noto serif sc variable,serif"
                         | "cascadia mono,consolas,liberation mono,monospace"
                 )
             {
@@ -2977,12 +2981,22 @@ JVBERi0xLjcK
     #[test]
     fn compose_html_sanitizer_keeps_strike_and_only_known_font_stacks() {
         let cleaned = sanitize_compose_html(Some(
-            r#"<p><s>旧内容</s><font face="LXGW WenKai,KaiTi,STKaiti,cursive">文楷</font><font face="Comic Sans MS">未知字体</font></p>"#,
+            r#"<p><s>旧内容</s><font face="ZCOOL XiaoWei,Noto Serif SC Variable,Songti SC,SimSun,serif">小薇体</font><font face="ZCOOL KuaiLe,Noto Sans SC Variable,Microsoft YaHei,sans-serif">快乐体</font><font face="Ma Shan Zheng,Zhi Mang Xing,STXingkai,cursive">毛笔体</font><font face="FangSong,STFangsong,Noto Serif SC Variable,serif">仿宋</font><font face="Comic Sans MS">未知字体</font></p>"#,
         ))
         .expect("visible compose HTML");
 
         assert!(cleaned.contains("<s>旧内容</s>"));
-        assert!(cleaned.contains(r#"face="LXGW WenKai,KaiTi,STKaiti,cursive""#));
+        assert!(
+            cleaned
+                .contains(r#"face="ZCOOL XiaoWei,Noto Serif SC Variable,Songti SC,SimSun,serif""#)
+        );
+        assert!(
+            cleaned.contains(
+                r#"face="ZCOOL KuaiLe,Noto Sans SC Variable,Microsoft YaHei,sans-serif""#
+            )
+        );
+        assert!(cleaned.contains(r#"face="Ma Shan Zheng,Zhi Mang Xing,STXingkai,cursive""#));
+        assert!(cleaned.contains(r#"face="FangSong,STFangsong,Noto Serif SC Variable,serif""#));
         assert!(!cleaned.contains(r#"face="Comic Sans MS""#));
         assert!(cleaned.contains("未知字体"));
     }

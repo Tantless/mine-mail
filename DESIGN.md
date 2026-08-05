@@ -574,18 +574,22 @@ family. Preserve the relative hierarchy when tuning optical values.
   second app toolbar. Font and size triggers stay transparent at rest, gaining a
   restrained glass-tinted hover/focus surface rather than a persistent filled
   box. The font menu is wide enough to preview every option in its actual face.
-  Its bundled open-source choices are `Noto Sans SC`, `Noto Serif SC`, and
-  `LXGW WenKai`, alongside the supported system and monospace choices; authored
-  HTML records a fixed compatible fallback stack because recipients may not have
-  the same local font. Formatting preserves the active range and caret position;
+  Its bundled open-source choices are `Noto Sans SC`, `Noto Serif SC`,
+  `LXGW WenKai`, `ZCOOL XiaoWei`, `ZCOOL KuaiLe`, and `Ma Shan Zheng`, alongside
+  the supported system, Fangsong, and monospace choices. Single-weight display
+  faces may synthesize bold or italic inside the editor while retaining semantic
+  emphasis markup. Authored HTML records a fixed compatible fallback stack
+  because recipients may not have the same local font. Formatting preserves the
+  active range and caret position;
   the font and size controls follow the format inherited at a collapsed caret,
   and show a neutral mixed value for a selection containing more than one value.
   Applying a font size at a collapsed caret updates the visible caret scale and
   the next typed character without relayout of the complete editor. Plain-editor
   focus is communicated by its caret and must not add a full-height accent stripe.
   Emphasis uses real semantic bold, italic, underline, and strikethrough markup.
-  At the start of a paragraph, `1.` followed by Space starts a numbered list; Enter continues the
-  sequence, and Enter on the next empty item returns to an ordinary paragraph.
+  At the start of a paragraph, `1.` followed by Space starts a numbered list;
+  Enter continues the sequence, and Enter on the next empty item returns to an
+  ordinary paragraph.
   An empty authored editor shows only its writing surface and caret; it has no
   instructional body placeholder.
 - The footer starts with one compact icon-only **信纸** toggle. Its neutral state

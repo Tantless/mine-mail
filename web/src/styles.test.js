@@ -618,6 +618,11 @@ describe("compose page and stationery policy", () => {
   });
 
   it("renders semantic italic text and a zero-width stored-format caret probe", () => {
+    const editor = declarationsFor(
+      "\\.compose-rich-editor > \\.ProseMirror",
+    );
+    expect(editor).toMatch(/font-synthesis:\s*weight style/);
+
     const italic = declarationsFor(
       "\\.compose-rich-editor \\.ProseMirror em,\\s*\\.compose-rich-editor \\.ProseMirror i",
     );

@@ -20,6 +20,8 @@
     "@fontsource-variable/nunito": "^5.2.7",
     "@fontsource/lxgw-wenkai": "^5.3.0",
     "@fontsource/ma-shan-zheng": "^5.3.0",
+    "@fontsource/zcool-kuaile": "^5.3.0",
+    "@fontsource/zcool-xiaowei": "^5.3.0",
     "@phosphor-icons/react": "^2.1.10",
     "@tauri-apps/api": "^2.11.1",
     "@tauri-apps/plugin-dialog": "^2.7.2",

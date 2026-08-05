@@ -1,6 +1,7 @@
 .compose-rich-editor > .ProseMirror {
   min-height: 100%;
   outline: 0;
+  font-synthesis: weight style;
 }
 
 .compose-rich-editor > .ProseMirror:focus-visible {
