@@ -82,30 +82,6 @@ screen-specific copy, timing constants, pixel values, or speculative future plan
 
 - Inspect the working tree before editing. Preserve user changes and unrelated
   work; do not reformat or rewrite files outside the task.
-- Every session starts in investigation mode. Read-only inspection and
-  non-mutating diagnostics may use the primary checkout without creating a
-  branch or worktree.
-- Immediately before the first repository write, use the repository
-  `$isolate-worktree` skill and its bundled script to create a unique task branch
-  and dedicated worktree from `main`. If the primary checkout is dirty or
-  allocation fails, stop before writing; never fall back to editing `main`.
-- After allocation, treat the task worktree as the session's only writable
-  workspace. Every edit, formatter, generator, test, build, Git operation, and
-  commit for the task must explicitly target that worktree. Never switch the
-  branch of the primary checkout or touch another session's worktree.
-- Do not merge a task branch into `main` unless the user explicitly requests
-  integration. A request to implement, finish, verify, or commit is not an
-  integration request. Integrations must be serialized across sessions.
-- An explicitly invoked `$release-mine-mail` workflow with a target version is
-  the only exception to worktree isolation: it may modify a clean primary
-  `main` directly under the release skill's stricter checks. It must not invoke
-  `$isolate-worktree`, must not overlap another integration, and must not touch
-  other sessions' worktrees. Release checks or preparation without an explicit
-  publish target do not inherit this exception.
-- After an explicitly requested merge, run the applicable verification from the
-  primary checkout. Use the skill's safe cleanup only after the merge succeeds,
-  verification passes, the task branch is contained in `main`, and both
-  worktrees are clean. Never force-remove a worktree or force-delete a branch.
 - Prefer existing Rust boundaries, React components, semantic tokens, and tests.
   Fix shared primitives instead of copying a nearby implementation.
 - Keep Tauri commands narrow, typed, and privacy-safe. Validate inputs again at

@@ -1,6 +1,6 @@
 ---
 name: isolate-worktree
-description: Create, integrate, and safely clean a dedicated Git worktree and unique task branch for one Codex session. Use immediately before the first repository write after read-only investigation determines that code, tests, documentation, configuration, generated files, or dependencies must change; use again when the user explicitly asks to merge that session into the base branch or when a verified merged worktree is ready for cleanup. Do not allocate a worktree for read-only diagnosis, explanation, review, status reporting, or an explicitly authorized $release-mine-mail workflow with a target version.
+description: Create, integrate, and safely clean a dedicated Git worktree and unique task branch for one Codex session. Use only when the user explicitly invokes $isolate-worktree to isolate a task, and reuse it within that invoked workflow when the user explicitly requests integration or verified cleanup. Never invoke or select this skill implicitly for ordinary edits, diagnosis, review, release, or other repository work.
 ---
 
 # Isolate Worktree
@@ -8,6 +8,15 @@ description: Create, integrate, and safely clean a dedicated Git worktree and un
 Use the bundled `scripts/worktree.ps1` as the only implementation of Git
 allocation, integration, and cleanup. Resolve the script relative to this
 `SKILL.md`; do not rewrite its commands ad hoc.
+
+## Activation boundary
+
+- Run this workflow only after the user explicitly invokes `$isolate-worktree`.
+- Without explicit invocation, take no action and follow the repository's normal
+  workflow in its current checkout, including direct work on `main` when the
+  repository otherwise permits it.
+- Invocation authorizes allocating and working in a task worktree. It does not
+  authorize merging into the base branch.
 
 ## Choose the phase
 
@@ -18,9 +27,6 @@ allocation, integration, and cleanup. Resolve the script relative to this
   exactly one task worktree.
 - Reuse the worktree already recorded by the session. Never allocate a second
   worktree for the same task.
-- Do not allocate during an explicitly invoked `$release-mine-mail` workflow
-  with a target version. That workflow owns the sole clean-`main` mutation
-  exception and its stricter release checks apply.
 - Enter integration mode only when the user explicitly asks to merge this
   session's result into the base branch.
 
@@ -82,8 +88,7 @@ branch.
 ## Reuse in another repository
 
 Copy the complete `isolate-worktree` skill directory into the target
-repository's `.agents/skills/` directory. Add a concise `AGENTS.md` rule that
-requires `$isolate-worktree` immediately before the first repository write and
-forbids integration without an explicit user request. Keep repository-specific
-commit and verification rules in that repository's `AGENTS.md`, not in this
-skill.
+repository's `.agents/skills/` directory and invoke it explicitly when isolation
+is wanted. Do not add a mandatory repository-wide worktree rule unless that
+repository intentionally adopts one. Keep repository-specific commit and
+verification rules in that repository's `AGENTS.md`, not in this skill.
