@@ -671,16 +671,22 @@ describe("SettingsPanel account flow", () => {
     expect(
       within(reopenedDialog).getByText("正在下载并安装更新…"),
     ).toBeTruthy();
+    expect(
+      within(reopenedDialog).getByRole("button", { name: "取消更新下载" }),
+    ).toBeTruthy();
     fireEvent.keyDown(reopenedDialog, { key: "Escape" });
     expect(
-      screen.getByRole("dialog", { name: "发现 Mine Mail v0.1.3" }),
-    ).toBeTruthy();
+      screen.queryByRole("dialog", { name: "发现 Mine Mail v0.1.3" }),
+    ).toBeNull();
+    expect(installUpdate).toHaveBeenCalledOnce();
 
     await act(async () => {
       finishInstall();
     });
     expect(await screen.findByText(/更新已安装/)).toBeTruthy();
-    expect(document.activeElement).toBe(checkUpdate);
+    expect(document.activeElement).toBe(
+      screen.getByRole("button", { name: "关闭设置" }),
+    );
   });
 
   it("shows the classified reason when checking for updates fails", async () => {

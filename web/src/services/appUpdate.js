@@ -1,4 +1,5 @@
 import { getVersion } from "@tauri-apps/api/app";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check } from "@tauri-apps/plugin-updater";
 import tauriConfig from "../../src-tauri/tauri.conf.json";
@@ -7,6 +8,24 @@ const isTauriRuntime =
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
 export const bundledAppVersion = tauriConfig.version;
+
+let activeInstallSession = null;
+let updateSessionSequence = 0;
+
+function nextUpdateSessionId() {
+  updateSessionSequence += 1;
+  return `update-${Date.now().toString(36)}-${updateSessionSequence.toString(36)}`;
+}
+
+function updateCancelledError() {
+  const error = new Error("Mine Mail update download cancelled");
+  error.name = "AppUpdateCancelledError";
+  return error;
+}
+
+export function isUpdateCancelledError(error) {
+  return error?.name === "AppUpdateCancelledError";
+}
 
 function releaseNotes(value) {
   const notes = typeof value === "string" ? value.trim() : "";
@@ -228,13 +247,57 @@ export const appUpdateApi = {
   },
 
   async installUpdate(candidate, onEvent) {
-    if (!candidate?.resource?.downloadAndInstall) {
+    if (!isTauriRuntime || !candidate?.version) {
       throw new Error("没有可安装的 Mine Mail 更新。");
     }
-    await candidate.resource.downloadAndInstall(onEvent, {
-      timeout: 10 * 60_000,
+    if (activeInstallSession) {
+      throw new Error("Mine Mail 已有更新正在下载。");
+    }
+
+    const sessionId = nextUpdateSessionId();
+    const onProgress = new Channel();
+    let resolveCompletion;
+    let rejectCompletion;
+    const completion = new Promise((resolve, reject) => {
+      resolveCompletion = resolve;
+      rejectCompletion = reject;
     });
-    await relaunch();
+
+    onProgress.onmessage = (event) => {
+      onEvent?.(event);
+      if (event?.event === "Completed") {
+        resolveCompletion();
+      } else if (event?.event === "Cancelled") {
+        rejectCompletion(updateCancelledError());
+      } else if (event?.event === "Failed") {
+        rejectCompletion(
+          new Error(event?.data?.message || "Mine Mail update task failed"),
+        );
+      }
+    };
+
+    activeInstallSession = { sessionId };
+    try {
+      await invoke("start_app_update", {
+        expectedVersion: candidate.version,
+        sessionId,
+        onProgress,
+      });
+      await completion;
+      await relaunch();
+    } finally {
+      if (activeInstallSession?.sessionId === sessionId) {
+        activeInstallSession = null;
+      }
+      void candidate.resource?.close?.().catch(() => {});
+    }
+  },
+
+  async cancelUpdate() {
+    if (!isTauriRuntime || !activeInstallSession) return false;
+    return invoke("cancel_app_update", {
+      sessionId: activeInstallSession.sessionId,
+    });
   },
 };
 

@@ -14,15 +14,17 @@ import {
   Plus,
   Question,
   SlidersHorizontal,
+  StopCircle,
   Trash,
   UserCircle,
   X,
 } from "@phosphor-icons/react";
 import { appStorageApi } from "../services/appStorage.js";
+import { appUpdateApi } from "../services/appUpdate.js";
 import {
-  appUpdateApi,
-  describeUpdateFailure,
-} from "../services/appUpdate.js";
+  displayAppVersion,
+  useAppUpdate,
+} from "../hooks/useAppUpdate.js";
 import { AccountRemovalDialog } from "./AccountRemovalDialog.jsx";
 import { AccountSetupForm } from "./AccountSetup.jsx";
 import { AuthorizationGuide } from "./AuthorizationGuide.jsx";
@@ -165,10 +167,6 @@ function errorMessage(error, fallback) {
   return userFacingErrorMessage(error, fallback);
 }
 
-function displayVersion(version) {
-  return `v${String(version || "0.0.0").replace(/^v/i, "")}`;
-}
-
 function formatStorageBytes(bytes) {
   const value = Number(bytes) || 0;
   if (value < 1024) return `${value} B`;
@@ -257,8 +255,26 @@ export function SettingsPanel({
   onRemoveAccountAvatar,
   focusTarget,
   updateClient = appUpdateApi,
+  appUpdateController = null,
   storageClient = appStorageApi,
 }) {
+  const ownedAppUpdateController = useAppUpdate(updateClient, {
+    enabled: !appUpdateController,
+  });
+  const {
+    appVersion,
+    availableUpdate,
+    cancelDownload,
+    checkForUpdate,
+    closeDialog: closeUpdateDialogController,
+    installAvailableUpdate,
+    isDialogOpen: isUpdateDialogOpen,
+    isDownloadCancellable,
+    message: updateMessage,
+    minimizeDialog: minimizeUpdateDialogController,
+    progress: updateProgress,
+    status: updateStatus,
+  } = appUpdateController || ownedAppUpdateController;
   const addAccountRequested =
     typeof focusTarget === "string" && focusTarget.startsWith("account-form");
   const repairAccountRequested =
@@ -283,13 +299,6 @@ export function SettingsPanel({
   const [accountRemarkValue, setAccountRemarkValue] = useState("");
   const [accountRemarkError, setAccountRemarkError] = useState(null);
   const [isAccountRemarkSaving, setIsAccountRemarkSaving] = useState(false);
-  const [appVersion, setAppVersion] = useState(
-    updateClient.bundledVersion || "0.0.0",
-  );
-  const [updateStatus, setUpdateStatus] = useState("idle");
-  const [updateMessage, setUpdateMessage] = useState(null);
-  const [availableUpdate, setAvailableUpdate] = useState(null);
-  const [updateProgress, setUpdateProgress] = useState(null);
   const [storageStatus, setStorageStatus] = useState(null);
   const [storageState, setStorageState] = useState("idle");
   const [storageMessage, setStorageMessage] = useState(null);
@@ -303,6 +312,7 @@ export function SettingsPanel({
   const accountActionReturnFocusRef = useRef(null);
   const storageDialogReturnFocusRef = useRef(null);
   const updateDialogReturnFocusRef = useRef(null);
+  const settingsCloseRef = useRef(null);
   const storageCancelRef = useRef(null);
   const updateCancelRef = useRef(null);
   const accountRemarkInputRef = useRef(null);
@@ -337,19 +347,6 @@ export function SettingsPanel({
   useEffect(() => {
     setValue(settings);
   }, [settings]);
-
-  useEffect(() => {
-    let active = true;
-    void updateClient
-      .getCurrentVersion()
-      .then((version) => {
-        if (active && version) setAppVersion(version);
-      })
-      .catch(() => {});
-    return () => {
-      active = false;
-    };
-  }, [updateClient]);
 
   useEffect(() => {
     if (activeSection !== "version") return undefined;
@@ -557,84 +554,6 @@ export function SettingsPanel({
     }
   };
 
-  const checkForUpdate = async () => {
-    if (!updateClient.isSupported || ["checking", "installing"].includes(updateStatus)) {
-      return;
-    }
-    setUpdateStatus("checking");
-    setUpdateMessage(null);
-    setUpdateProgress(null);
-    try {
-      const result = await updateClient.checkForUpdate();
-      if (result.currentVersion) setAppVersion(result.currentVersion);
-      if (result.status === "available") {
-        setAvailableUpdate(result);
-        setUpdateStatus("available");
-        return;
-      }
-      if (result.status === "up-to-date") {
-        setUpdateStatus("up-to-date");
-        setUpdateMessage("已是最新版本。");
-        return;
-      }
-      setUpdateStatus("unsupported");
-      setUpdateMessage("请在 Mine Mail 桌面应用中检查更新。");
-    } catch (error) {
-      setUpdateStatus("error");
-      setUpdateMessage(describeUpdateFailure(error, "check").message);
-    }
-  };
-
-  const installAvailableUpdate = async () => {
-    if (!availableUpdate || updateStatus === "installing") return;
-    let downloaded = 0;
-    let total = null;
-    setUpdateStatus("installing");
-    setUpdateMessage(null);
-    setUpdateProgress({ stage: "starting", downloaded, total, percent: null });
-    try {
-      await updateClient.installUpdate(availableUpdate, (event) => {
-        if (event.event === "Started") {
-          total = event.data.contentLength || null;
-          setUpdateProgress({
-            stage: "downloading",
-            downloaded,
-            total,
-            percent: total ? 0 : null,
-          });
-          return;
-        }
-        if (event.event === "Progress") {
-          downloaded += event.data.chunkLength;
-          setUpdateProgress({
-            stage: "downloading",
-            downloaded,
-            total,
-            percent: total
-              ? Math.min(100, Math.round((downloaded / total) * 100))
-              : null,
-          });
-          return;
-        }
-        if (event.event === "Finished") {
-          setUpdateProgress({
-            stage: "installing",
-            downloaded,
-            total,
-            percent: 100,
-          });
-        }
-      });
-      setAvailableUpdate(null);
-      setUpdateStatus("installed");
-      setUpdateMessage("更新已安装，正在重新启动 Mine Mail…");
-    } catch (error) {
-      setUpdateStatus("error");
-      setUpdateProgress(null);
-      setUpdateMessage(describeUpdateFailure(error, "install").message);
-    }
-  };
-
   const chooseStorageDirectory = async () => {
     if (
       !storageClient.isSupported ||
@@ -691,13 +610,19 @@ export function SettingsPanel({
     if (storageState !== "migrating") setPendingStorageDirectory(null);
   };
 
+  const focusSettingsCloseAfterUpdateMinimize = () => {
+    Promise.resolve().then(() => settingsCloseRef.current?.focus());
+  };
+
   const closeUpdateDialog = () => {
-    if (!availableUpdate || updateStatus === "installing") return;
-    setAvailableUpdate(null);
-    setUpdateStatus("idle");
-    setUpdateMessage(
-      `已暂缓 ${displayVersion(availableUpdate.version)} 更新。`,
-    );
+    const downloadActive = ["installing", "cancelling"].includes(updateStatus);
+    closeUpdateDialogController();
+    if (downloadActive) focusSettingsCloseAfterUpdateMinimize();
+  };
+
+  const minimizeUpdateDialog = () => {
+    minimizeUpdateDialogController();
+    focusSettingsCloseAfterUpdateMinimize();
   };
 
   const closeAccountRemarkEditor = () => {
@@ -715,8 +640,9 @@ export function SettingsPanel({
     onCancel: closeStorageDialog,
   });
   const updateDialogFocus = useConfirmDialogFocus({
-    open: Boolean(availableUpdate),
-    isPending: updateStatus === "installing",
+    open: Boolean(availableUpdate && isUpdateDialogOpen),
+    isPending: ["installing", "cancelling"].includes(updateStatus),
+    allowCancelWhilePending: true,
     initialFocusRef: updateCancelRef,
     returnFocusRef: updateDialogReturnFocusRef,
     onCancel: closeUpdateDialog,
@@ -787,12 +713,11 @@ export function SettingsPanel({
             {saveStateLabel}
           </span>
           <IconButton
+            ref={settingsCloseRef}
             className="settings-close"
             label="关闭设置"
             onClick={onClose}
-            disabled={
-              updateStatus === "installing" || storageState === "migrating"
-            }
+            disabled={storageState === "migrating"}
           >
             <X size={18} />
           </IconButton>
@@ -1362,7 +1287,7 @@ export function SettingsPanel({
                 </span>
                 <span className="settings-version-card__copy">
                   <small>MINE MAIL FOR DESKTOP</small>
-                  <strong>{displayVersion(appVersion)}</strong>
+                  <strong>{displayAppVersion(appVersion)}</strong>
                   <span>当前安装版本</span>
                 </span>
                 <nav
@@ -1390,13 +1315,17 @@ export function SettingsPanel({
                   onClick={() => void checkForUpdate()}
                   disabled={
                     !updateClient.isSupported ||
-                    ["checking", "installing", "available"].includes(updateStatus)
+                    ["checking", "installing", "cancelling"].includes(
+                      updateStatus,
+                    )
                   }
                 >
                   {updateStatus === "checking"
                     ? "正在检查…"
-                    : updateStatus === "installing"
+                    : ["installing", "cancelling"].includes(updateStatus)
                       ? "正在更新…"
+                      : updateStatus === "available" && availableUpdate
+                        ? "查看更新"
                       : "检查更新"}
                 </button>
               </div>
@@ -1617,10 +1546,9 @@ export function SettingsPanel({
         </div>
       ) : null}
 
-      {availableUpdate ? (
+      {availableUpdate && isUpdateDialogOpen ? (
         <div
           className="confirm-layer"
-          data-pending={updateStatus === "installing" || undefined}
           onPointerDown={updateDialogFocus.onBackdropPointerDown}
         >
           <section
@@ -1638,19 +1566,42 @@ export function SettingsPanel({
               <span className="confirm-dialog__icon" aria-hidden="true">
                 <DownloadSimple size={22} weight="duotone" />
               </span>
-              <IconButton
-                label="暂不更新"
-                onClick={closeUpdateDialog}
-                disabled={updateStatus === "installing"}
-              >
-                <X size={18} />
-              </IconButton>
+              <span className="update-confirm-dialog__actions">
+                {["installing", "cancelling"].includes(updateStatus) ? (
+                  <IconButton
+                    className="update-confirm-dialog__cancel-download"
+                    label={
+                      updateStatus === "cancelling"
+                        ? "正在取消更新下载"
+                        : updateProgress?.stage === "installing"
+                          ? "更新已下载，无法取消"
+                          : "取消更新下载"
+                    }
+                    onClick={() => void cancelDownload()}
+                    disabled={
+                      !isDownloadCancellable || updateStatus === "cancelling"
+                    }
+                  >
+                    <StopCircle size={18} weight="regular" />
+                  </IconButton>
+                ) : null}
+                <IconButton
+                  label={
+                    ["installing", "cancelling"].includes(updateStatus)
+                      ? "收起下载进度"
+                      : "暂不更新"
+                  }
+                  onClick={closeUpdateDialog}
+                >
+                  <X size={18} />
+                </IconButton>
+              </span>
             </header>
             <h2 id="update-confirm-title">
-              发现 Mine Mail {displayVersion(availableUpdate.version)}
+              发现 Mine Mail {displayAppVersion(availableUpdate.version)}
             </h2>
             <p id="update-confirm-description">
-              当前为 {displayVersion(appVersion)}。是否下载并安装来自 GitHub
+              当前为 {displayAppVersion(appVersion)}。是否下载并安装来自 GitHub
               Release 的签名更新？
             </p>
             {availableUpdate.notes ? (
@@ -1659,7 +1610,7 @@ export function SettingsPanel({
                 <p>{availableUpdate.notes}</p>
               </div>
             ) : null}
-            {updateStatus === "installing" ? (
+            {["installing", "cancelling"].includes(updateStatus) ? (
               <div
                 className="update-confirm-dialog__progress"
                 role="status"
@@ -1669,6 +1620,8 @@ export function SettingsPanel({
                 <span>
                   {updateProgress?.stage === "installing"
                     ? "正在启动安装程序…"
+                    : updateStatus === "cancelling"
+                      ? "正在取消下载…"
                     : updateProgress?.percent != null
                       ? `正在下载… ${updateProgress.percent}%`
                       : "正在准备下载…"}
@@ -1691,28 +1644,40 @@ export function SettingsPanel({
                 {updateMessage}
               </p>
             ) : null}
-            <footer>
-              <button
-                ref={updateCancelRef}
-                type="button"
-                className="secondary-button"
-                onClick={closeUpdateDialog}
-                disabled={updateStatus === "installing"}
-              >
-                暂不更新
-              </button>
-              <button
-                type="button"
-                className="send-button"
-                onClick={() => void installAvailableUpdate()}
-                disabled={updateStatus === "installing"}
-              >
-                <DownloadSimple size={17} weight="bold" />
-                {updateStatus === "installing" ? "正在更新…" : "下载并安装"}
-              </button>
-            </footer>
+            {["installing", "cancelling"].includes(updateStatus) ? (
+              <footer>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={minimizeUpdateDialog}
+                >
+                  收起到后台
+                </button>
+              </footer>
+            ) : (
+              <footer>
+                <button
+                  ref={updateCancelRef}
+                  type="button"
+                  className="secondary-button"
+                  onClick={closeUpdateDialog}
+                >
+                  暂不更新
+                </button>
+                <button
+                  type="button"
+                  className="send-button"
+                  onClick={() => void installAvailableUpdate()}
+                >
+                  <DownloadSimple size={17} weight="bold" />
+                  下载并安装
+                </button>
+              </footer>
+            )}
             <ConfirmDialogStatus>
-              {updateStatus === "installing" ? "正在下载并安装更新…" : null}
+              {["installing", "cancelling"].includes(updateStatus)
+                ? "正在下载并安装更新…"
+                : null}
             </ConfirmDialogStatus>
           </section>
         </div>

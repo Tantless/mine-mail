@@ -919,6 +919,14 @@ must be updated here when an intentional product change lands.
   downloads or installs an update.
 - When a signed update is available, show its bounded version metadata and notes,
   then require a second explicit **下载并安装** confirmation.
+- After that confirmation, the download continues when the update dialog is
+  dismissed or Settings is closed. Mine Mail collapses it to a compact
+  bottom-right version-and-progress strip and installs and relaunches
+  automatically when the verified package is ready.
+- Only the explicit stop-download icon cancels an in-progress package download.
+  Closing the dialog, pressing Escape, clicking its backdrop, navigating within
+  the application, or hiding the main window does not cancel it. Cancellation is
+  no longer offered after installation begins.
 - The Tauri updater owns endpoint access, signature verification, download,
   installation, and relaunch. React only presents bounded metadata, progress, and
   the user-confirmed trigger.

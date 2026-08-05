@@ -25,6 +25,7 @@ export function useConfirmDialogFocus({
   initialFocusRef = null,
   returnFocusRef = null,
   onCancel,
+  allowCancelWhilePending = false,
 }) {
   const dialogRef = useRef(null);
   const previousFocusRef = useRef(null);
@@ -56,7 +57,7 @@ export function useConfirmDialogFocus({
       if (event.key === "Escape") {
         event.preventDefault();
         event.stopPropagation();
-        if (!isPending) onCancel?.();
+        if (!isPending || allowCancelWhilePending) onCancel?.();
         return;
       }
       if (event.key !== "Tab") return;
@@ -83,14 +84,19 @@ export function useConfirmDialogFocus({
         first.focus();
       }
     },
-    [isPending, onCancel],
+    [allowCancelWhilePending, isPending, onCancel],
   );
 
   const onBackdropPointerDown = useCallback(
     (event) => {
-      if (event.target === event.currentTarget && !isPending) onCancel?.();
+      if (
+        event.target === event.currentTarget &&
+        (!isPending || allowCancelWhilePending)
+      ) {
+        onCancel?.();
+      }
     },
-    [isPending, onCancel],
+    [allowCancelWhilePending, isPending, onCancel],
   );
 
   return {

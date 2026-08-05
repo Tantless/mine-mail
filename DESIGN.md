@@ -272,8 +272,24 @@ family. Preserve the relative hierarchy when tuning optical values.
   folder region keeps its visual gap below Compose outside the scrolling content
   and reserves scrollable buffer only after the final folder.
 - Preserve the layer order: wallpaper, app shell, contextual drawer/banner,
-  compose, consequential confirmation, native titlebar controls, toast, then
-  tooltip/listbox. Do not solve a local overlap with an arbitrary new z-index.
+  compose, consequential confirmation, native titlebar controls, background
+  update progress, toast, then tooltip/listbox. Do not solve a local overlap
+  with an arbitrary new z-index.
+
+### Background update progress
+
+- After the user explicitly starts an application update, dismissing its dialog
+  or leaving Settings minimizes progress instead of cancelling the download.
+- The minimized state is one quiet bottom-right frosted strip: the target
+  version, a slim progress bar, and one icon-only stop action. Its material stays
+  close to the active theme and does not compete with mail, compose, or toast
+  content.
+- The expanded update dialog uses that same stop icon as the only cancellation
+  action. Its close control, Escape, backdrop, Settings navigation, and other
+  surrounding interactions only move the download into the minimized state.
+- Once package installation starts, cancellation is unavailable; progress stays
+  visible until the updater relaunches the application or reports a bounded
+  failure.
 
 ## Workspace contracts
 

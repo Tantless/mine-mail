@@ -5636,6 +5636,18 @@ html[data-surface="new-mail-notification"] #root {
   width: min(490px, calc(100vw - 34px));
 }
 
+.update-confirm-dialog__actions {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.update-confirm-dialog__cancel-download.icon-button:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--color-danger) 24%, transparent);
+  background: color-mix(in srgb, var(--color-danger) 10%, transparent);
+  color: var(--color-danger);
+}
+
 .update-confirm-dialog__notes {
   display: grid;
   max-height: 170px;
@@ -5681,7 +5693,27 @@ html[data-surface="new-mail-notification"] #root {
   overflow: hidden;
   border: 0;
   border-radius: 999px;
+  appearance: none;
+  background: color-mix(in srgb, var(--color-text-muted) 22%, transparent);
   accent-color: var(--color-primary);
+}
+
+.update-confirm-dialog__progress progress::-webkit-progress-bar,
+.app-update-progress__body progress::-webkit-progress-bar {
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-text-muted) 22%, transparent);
+}
+
+.update-confirm-dialog__progress progress::-webkit-progress-value,
+.app-update-progress__body progress::-webkit-progress-value {
+  border-radius: 999px;
+  background: var(--color-primary);
+}
+
+.update-confirm-dialog__progress progress::-moz-progress-bar,
+.app-update-progress__body progress::-moz-progress-bar {
+  border-radius: 999px;
+  background: var(--color-primary);
 }
 
 .update-confirm-dialog__progress small {
@@ -7681,6 +7713,74 @@ html[data-surface="new-mail-notification"] #root {
   margin-top: 2px;
 }
 
+.app-update-progress {
+  position: fixed;
+  right: 24px;
+  bottom: 22px;
+  z-index: 55;
+  display: grid;
+  width: min(350px, calc(100vw - 32px));
+  min-height: 48px;
+  grid-template-columns: minmax(0, 1fr) 34px;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 8px 7px 14px;
+  border: 1px solid color-mix(in srgb, var(--surface-edge) 78%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--color-panel) 56%, transparent);
+  color: var(--color-text-secondary);
+  box-shadow:
+    0 10px 28px color-mix(in srgb, var(--color-text) 12%, transparent),
+    inset 0 1px 0 color-mix(in srgb, var(--surface-highlight) 72%, transparent);
+  backdrop-filter: blur(20px) saturate(var(--surface-saturation));
+  -webkit-backdrop-filter: blur(20px) saturate(var(--surface-saturation));
+  animation: notice-in var(--motion-normal) ease-out;
+}
+
+.app-update-progress[data-compose-minimized="true"] {
+  bottom: 76px;
+}
+
+.app-update-progress__body {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+}
+
+.app-update-progress__body span {
+  overflow: hidden;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  font-weight: 620;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-update-progress__body progress {
+  width: 100%;
+  height: 5px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 999px;
+  appearance: none;
+  background: color-mix(in srgb, var(--color-text-muted) 22%, transparent);
+  accent-color: var(--color-primary);
+}
+
+.app-update-progress__cancel.icon-button {
+  width: 34px;
+  height: 34px;
+  border-color: transparent;
+  background: transparent;
+}
+
+.app-update-progress__cancel.icon-button:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--color-danger) 22%, transparent);
+  background: color-mix(in srgb, var(--color-danger) 9%, transparent);
+  color: var(--color-danger);
+}
+
 .toast {
   --toast-accent: var(--color-success);
   position: fixed;
@@ -8406,6 +8506,16 @@ html[data-surface="new-mail-notification"] #root {
     bottom: 14px;
     left: 16px;
   }
+
+  .app-update-progress {
+    right: 16px;
+    bottom: 14px;
+    width: min(350px, calc(100vw - 32px));
+  }
+
+  .app-update-progress[data-compose-minimized="true"] {
+    bottom: 70px;
+  }
 }
 
 /* Embedded settings reflow lives after the legacy modal breakpoints so the
@@ -8653,7 +8763,8 @@ html[data-surface="new-mail-notification"] #root {
   }
 
   .compose-minimized-shell,
-  .compose-panel[data-window-motion="restoring"] .compose-expanded-shell {
+  .compose-panel[data-window-motion="restoring"] .compose-expanded-shell,
+  .app-update-progress {
     animation-delay: 0ms !important;
   }
 

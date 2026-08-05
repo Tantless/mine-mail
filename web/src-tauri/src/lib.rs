@@ -1,4 +1,5 @@
 mod account;
+mod app_update;
 mod contacts;
 mod desktop;
 mod diagnostics;
@@ -2546,6 +2547,7 @@ fn initialize_state(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Erro
     app.manage(desktop);
     app.manage(contacts);
     app.manage(storage.runtime);
+    app.manage(app_update::AppUpdateRuntime::default());
     build_configured_windows(app, &app_data)?;
     let tray_available = match desktop::build_tray(app) {
         Ok(()) => {
@@ -2750,6 +2752,8 @@ pub fn run() {
             list_profile_avatars,
             save_profile_avatar,
             delete_profile_avatar,
+            app_update::start_app_update,
+            app_update::cancel_app_update,
             complete_exit,
             cancel_exit,
         ])

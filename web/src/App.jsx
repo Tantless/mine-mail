@@ -25,7 +25,9 @@ import { AccountEmptyWorkspace } from "./components/AccountEmptyWorkspace.jsx";
 import { PermanentDeleteDialog } from "./components/PermanentDeleteDialog.jsx";
 import { ArchiveFolderDialog } from "./components/ArchiveFolderDialog.jsx";
 import { Toast } from "./components/Toast.jsx";
+import { UpdateProgressNotice } from "./components/UpdateProgressNotice.jsx";
 import { normalizeAvatarEmail } from "./components/ProfileAvatar.jsx";
+import { useAppUpdate } from "./hooks/useAppUpdate.js";
 import { hasFlag } from "./utils/formatters.js";
 import { messageNavigationKey } from "./utils/messageNavigation.js";
 import { userFacingErrorMessage } from "./utils/userFacingError.js";
@@ -716,6 +718,7 @@ function upsertDraft(items, draft) {
 }
 
 export function App() {
+  const appUpdate = useAppUpdate();
   const [theme, setTheme] = useState(getInitialTheme);
   const [activeFolder, setActiveFolder] = useState("inbox");
   const [messages, setMessages] = useState([]);
@@ -7765,6 +7768,7 @@ export function App() {
                 handleDeleteProfileAvatar("account", email)
               }
               focusTarget={settingsFocusTarget}
+              appUpdateController={appUpdate}
             />
           </Suspense>
         ) : needsAccountWorkspace ? (
@@ -8005,6 +8009,18 @@ export function App() {
             : "如果服务器中找不到这封邮件，请取消并选择“仍要重试”。"}
         </p>
       </ConsequentialConfirmDialog>
+
+      {appUpdate.isDownloadActive &&
+      (!isSettingsOpen || !appUpdate.isDialogOpen) ? (
+        <UpdateProgressNotice
+          version={appUpdate.availableUpdate?.version}
+          progress={appUpdate.progress}
+          isCancelling={appUpdate.status === "cancelling"}
+          canCancel={appUpdate.isDownloadCancellable}
+          composeMinimized={Boolean(composer?.minimized)}
+          onCancel={() => void appUpdate.cancelDownload()}
+        />
+      ) : null}
 
       <Toast toast={toast} onClose={dismissToast} />
     </div>
