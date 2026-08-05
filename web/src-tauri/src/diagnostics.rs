@@ -1,15 +1,20 @@
 use std::{
     collections::HashMap,
-    fs, io,
+    fs,
+    future::Future,
+    io, panic,
     path::{Path, PathBuf},
-    sync::{Mutex, OnceLock},
+    sync::{
+        Mutex, OnceLock,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use log::{Level, LevelFilter};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use tauri::{AppHandle, Manager, Runtime, plugin::TauriPlugin};
+use tauri::{AppHandle, Emitter, Manager, Runtime, plugin::TauriPlugin};
 use tauri_plugin_log::{RotationStrategy, Target, TargetKind};
 use uuid::Uuid;
 
@@ -20,9 +25,11 @@ pub(crate) const LOG_TOTAL_MAX_BYTES: u64 = 20 * 1024 * 1024;
 pub(crate) const LOG_RETENTION: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
 const DIAGNOSTIC_TARGET: &str = "mine_mail::diagnostics";
+const DIAGNOSTIC_SCHEMA_VERSION: u8 = 2;
 const LOG_ARCHIVE_MAX_BYTES: u64 = LOG_TOTAL_MAX_BYTES - LOG_FILE_MAX_BYTES as u64;
 const FAILURE_EMIT_INTERVAL: Duration = Duration::from_secs(60);
 const FAILURE_KEY_LIMIT: usize = 128;
+const SLOW_COMMAND_THRESHOLD: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
@@ -86,6 +93,8 @@ pub(crate) struct Fields {
     #[serde(skip_serializing_if = "Option::is_none")]
     duration_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    incident_duration_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     account_count: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     success_count: Option<usize>,
@@ -109,6 +118,14 @@ pub(crate) struct Fields {
     cleanup_removed_files: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     cleanup_removed_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    moved_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    app_version: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    platform: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    architecture: Option<&'static str>,
 }
 
 impl Fields {
@@ -167,6 +184,13 @@ impl Fields {
         self
     }
 
+    pub(crate) fn runtime_metadata(mut self) -> Self {
+        self.app_version = Some(env!("CARGO_PKG_VERSION"));
+        self.platform = Some(std::env::consts::OS);
+        self.architecture = Some(std::env::consts::ARCH);
+        self
+    }
+
     pub(crate) fn accounts(mut self, value: usize) -> Self {
         self.account_count = Some(value);
         self
@@ -199,15 +223,26 @@ impl Fields {
         self
     }
 
+    pub(crate) fn changes(mut self, value: usize) -> Self {
+        self.changed_count = Some(value);
+        self
+    }
+
     pub(crate) fn draft_version(mut self, value: u64) -> Self {
         self.draft_version = Some(value);
+        self
+    }
+
+    pub(crate) fn moved_bytes(mut self, value: u64) -> Self {
+        self.moved_bytes = Some(value);
         self
     }
 
     fn failure_summary(mut self, attempts: u64, suppressed: u64, duration: Duration) -> Self {
         self.attempt_count = Some(attempts);
         self.suppressed_count = Some(suppressed);
-        self.duration(duration)
+        self.incident_duration_ms = Some(duration.as_millis().min(u128::from(u64::MAX)) as u64);
+        self
     }
 
     fn cleanup(mut self, report: CleanupReport) -> Self {
@@ -219,7 +254,10 @@ impl Fields {
 
 #[derive(Serialize)]
 struct DiagnosticEvent<'a> {
+    schema_version: u8,
     timestamp_utc_ms: u64,
+    sequence: u64,
+    uptime_ms: u64,
     session_id: &'a str,
     level: &'static str,
     event: &'static str,
@@ -246,6 +284,156 @@ pub(crate) fn error(event: &'static str, fields: Fields) {
     emit(Level::Error, event, fields);
 }
 
+pub(crate) fn command<T, E>(
+    operation: &'static str,
+    fields: Fields,
+    action: impl FnOnce() -> Result<T, E>,
+) -> Result<T, E> {
+    let fields = prepare_command_fields(operation, fields);
+    let started = Instant::now();
+    observe_command(operation, fields, started, false, action())
+}
+
+pub(crate) async fn command_async<T, E>(
+    operation: &'static str,
+    fields: Fields,
+    action: impl Future<Output = Result<T, E>>,
+) -> Result<T, E> {
+    let fields = prepare_command_fields(operation, fields);
+    let started = Instant::now();
+    observe_command(operation, fields, started, false, action.await)
+}
+
+pub(crate) fn command_lifecycle<T, E>(
+    operation: &'static str,
+    fields: Fields,
+    action: impl FnOnce() -> Result<T, E>,
+) -> Result<T, E> {
+    let fields = prepare_command_fields(operation, fields);
+    let started = Instant::now();
+    info("command_started", fields.clone());
+    observe_command(operation, fields, started, true, action())
+}
+
+pub(crate) async fn command_lifecycle_async<T, E>(
+    operation: &'static str,
+    fields: Fields,
+    action: impl Future<Output = Result<T, E>>,
+) -> Result<T, E> {
+    let fields = prepare_command_fields(operation, fields);
+    let started = Instant::now();
+    info("command_started", fields.clone());
+    observe_command(operation, fields, started, true, action.await)
+}
+
+fn observe_command<T, E>(
+    operation: &'static str,
+    fields: Fields,
+    started: Instant,
+    lifecycle: bool,
+    result: Result<T, E>,
+) -> Result<T, E> {
+    let elapsed = started.elapsed();
+    if result.is_err() {
+        limited_failure_with_fields(
+            "command_failed",
+            operation,
+            ErrorKind::Runtime,
+            fields.duration(elapsed),
+        );
+        return result;
+    }
+
+    limited_recovery_with_fields(
+        "command_failed",
+        "command_recovered",
+        operation,
+        fields.clone().duration(elapsed),
+    );
+    if lifecycle {
+        info(
+            "command_completed",
+            fields.clone().outcome("completed").duration(elapsed),
+        );
+    }
+    if elapsed >= SLOW_COMMAND_THRESHOLD {
+        warn(
+            "command_slow",
+            fields.outcome("completed").duration(elapsed),
+        );
+    }
+    result
+}
+
+fn prepare_command_fields(operation: &'static str, mut fields: Fields) -> Fields {
+    fields.operation = Some(operation);
+    if fields.operation_id.is_none() {
+        fields.operation_id = Some(Uuid::new_v4().to_string());
+    }
+    fields
+}
+
+pub(crate) fn emit_event<R, S>(app: &AppHandle<R>, event: &'static str, payload: S)
+where
+    R: Runtime,
+    S: Serialize + Clone,
+{
+    match app.emit(event, payload) {
+        Ok(()) => limited_recovery(
+            "frontend_event_emit_failed",
+            "frontend_event_emit_recovered",
+            event,
+            None,
+        ),
+        Err(_) => limited_failure(
+            "frontend_event_emit_failed",
+            event,
+            None,
+            ErrorKind::Serialization,
+        ),
+    }
+}
+
+pub(crate) fn emit_to_event<R, S>(
+    app: &AppHandle<R>,
+    target: &'static str,
+    event: &'static str,
+    payload: S,
+) where
+    R: Runtime,
+    S: Serialize + Clone,
+{
+    match app.emit_to(target, event, payload) {
+        Ok(()) => limited_recovery_with_fields(
+            "frontend_event_emit_failed",
+            "frontend_event_emit_recovered",
+            event,
+            Fields::default().mode(target),
+        ),
+        Err(_) => limited_failure_with_fields(
+            "frontend_event_emit_failed",
+            event,
+            ErrorKind::Serialization,
+            Fields::default().mode(target),
+        ),
+    }
+}
+
+pub(crate) fn install_panic_hook() {
+    static INSTALLED: OnceLock<()> = OnceLock::new();
+    INSTALLED.get_or_init(|| {
+        let _ = panic::take_hook();
+        panic::set_hook(Box::new(|_| {
+            error(
+                "runtime_panic",
+                Fields::default()
+                    .operation("panic_hook")
+                    .error(ErrorKind::Runtime),
+            );
+        }));
+    });
+}
+
 fn emit(level: Level, event: &'static str, fields: Fields) {
     let line = serialize_event(level, event, fields);
     log::log!(target: DIAGNOSTIC_TARGET, level, "{line}");
@@ -253,9 +441,15 @@ fn emit(level: Level, event: &'static str, fields: Fields) {
 
 fn serialize_event(level: Level, event: &'static str, fields: Fields) -> String {
     let record = DiagnosticEvent {
+        schema_version: DIAGNOSTIC_SCHEMA_VERSION,
         timestamp_utc_ms: SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
+            .as_millis()
+            .min(u128::from(u64::MAX)) as u64,
+        sequence: next_sequence(),
+        uptime_ms: session_started_at()
+            .elapsed()
             .as_millis()
             .min(u128::from(u64::MAX)) as u64,
         session_id: session_id(),
@@ -271,8 +465,8 @@ fn serialize_event(level: Level, event: &'static str, fields: Fields) -> String 
     };
     serde_json::to_string(&record).unwrap_or_else(|_| {
         format!(
-            "{{\"timestamp_utc_ms\":0,\"session_id\":\"{}\",\"level\":\"error\",\"event\":\"diagnostic_serialization_failed\"}}",
-            session_id()
+            "{{\"schema_version\":{DIAGNOSTIC_SCHEMA_VERSION},\"timestamp_utc_ms\":0,\"sequence\":{},\"uptime_ms\":0,\"session_id\":\"{}\",\"level\":\"error\",\"event\":\"diagnostic_serialization_failed\"}}",
+            next_sequence(), session_id()
         )
     })
 }
@@ -280,6 +474,16 @@ fn serialize_event(level: Level, event: &'static str, fields: Fields) -> String 
 fn session_id() -> &'static str {
     static SESSION_ID: OnceLock<String> = OnceLock::new();
     SESSION_ID.get_or_init(|| Uuid::new_v4().to_string())
+}
+
+fn session_started_at() -> &'static Instant {
+    static SESSION_STARTED_AT: OnceLock<Instant> = OnceLock::new();
+    SESSION_STARTED_AT.get_or_init(Instant::now)
+}
+
+fn next_sequence() -> u64 {
+    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+    SEQUENCE.fetch_add(1, Ordering::Relaxed).saturating_add(1)
 }
 
 fn private_ref(kind: &'static str, value: &str) -> String {
@@ -518,7 +722,18 @@ pub(crate) fn limited_failure(
     account_id: Option<&str>,
     error_kind: ErrorKind,
 ) {
-    let account_ref = account_id.map(|value| private_ref("account", value));
+    let mut fields = Fields::default();
+    fields.account_ref = account_id.map(|value| private_ref("account", value));
+    limited_failure_with_fields(event, operation, error_kind, fields);
+}
+
+pub(crate) fn limited_failure_with_fields(
+    event: &'static str,
+    operation: &'static str,
+    error_kind: ErrorKind,
+    mut fields: Fields,
+) {
+    let account_ref = fields.account_ref.clone();
     let key = FailureKey {
         event,
         operation,
@@ -527,14 +742,12 @@ pub(crate) fn limited_failure(
     };
     let summary = failure_limiter()
         .lock()
-        .ok()
-        .and_then(|mut limiter| limiter.failure(key, Instant::now()));
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .failure(key, Instant::now());
     if let Some(summary) = summary {
-        let mut fields = Fields::default()
-            .operation(operation)
-            .error(error_kind)
-            .failure_summary(summary.attempts, summary.suppressed, summary.duration);
-        fields.account_ref = account_ref;
+        fields.operation = Some(operation);
+        fields.error_kind = Some(error_kind);
+        fields = fields.failure_summary(summary.attempts, summary.suppressed, summary.duration);
         error(event, fields);
     }
 }
@@ -545,19 +758,27 @@ pub(crate) fn limited_recovery(
     operation: &'static str,
     account_id: Option<&str>,
 ) {
-    let account_ref = account_id.map(|value| private_ref("account", value));
+    let mut fields = Fields::default();
+    fields.account_ref = account_id.map(|value| private_ref("account", value));
+    limited_recovery_with_fields(failure_event, recovery_event, operation, fields);
+}
+
+pub(crate) fn limited_recovery_with_fields(
+    failure_event: &'static str,
+    recovery_event: &'static str,
+    operation: &'static str,
+    mut fields: Fields,
+) {
+    let account_ref = fields.account_ref.clone();
     let summaries = failure_limiter()
         .lock()
-        .ok()
-        .map(|mut limiter| {
-            limiter.recoveries(
-                failure_event,
-                operation,
-                account_ref.as_deref(),
-                Instant::now(),
-            )
-        })
-        .unwrap_or_default();
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .recoveries(
+            failure_event,
+            operation,
+            account_ref.as_deref(),
+            Instant::now(),
+        );
     if !summaries.is_empty() {
         let summary = summaries.into_iter().fold(
             FailureSummary {
@@ -571,11 +792,9 @@ pub(crate) fn limited_recovery(
                 duration: combined.duration.max(current.duration),
             },
         );
-        let mut fields = Fields::default()
-            .operation(operation)
-            .outcome("recovered")
-            .failure_summary(summary.attempts, summary.suppressed, summary.duration);
-        fields.account_ref = account_ref;
+        fields.operation = Some(operation);
+        fields.outcome = Some("recovered");
+        fields = fields.failure_summary(summary.attempts, summary.suppressed, summary.duration);
         info(recovery_event, fields);
     }
 }
@@ -606,15 +825,98 @@ mod tests {
                 .item("draft", "raw-draft-id")
                 .operation("send")
                 .outcome("sent")
+                .runtime_metadata()
+                .changes(2)
+                .moved_bytes(128)
                 .draft_version(7),
         );
         let parsed: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(parsed["schema_version"], DIAGNOSTIC_SCHEMA_VERSION);
         assert_eq!(parsed["event"], "send_completed");
         assert_eq!(parsed["draft_version"], 7);
+        assert_eq!(parsed["changed_count"], 2);
+        assert_eq!(parsed["moved_bytes"], 128);
+        assert_eq!(parsed["app_version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(parsed["platform"], std::env::consts::OS);
+        assert_eq!(parsed["architecture"], std::env::consts::ARCH);
+        assert!(parsed["sequence"].as_u64().is_some_and(|value| value > 0));
+        assert!(parsed["uptime_ms"].is_u64());
         assert!(!line.contains("person@example.com"));
         assert!(!line.contains("raw-draft-id"));
         assert!(!line.contains("password"));
         assert!(!line.contains("RFC822"));
+    }
+
+    #[test]
+    fn serialized_event_schema_has_an_explicit_privacy_safe_allowlist() {
+        let line = serialize_event(
+            Level::Warn,
+            "schema_contract",
+            Fields::default()
+                .operation_id(operation_id())
+                .account("private-account")
+                .item("message", "private-message")
+                .operation("schema_test")
+                .trigger("test")
+                .mode("offline")
+                .outcome("degraded")
+                .error(ErrorKind::Runtime)
+                .force(true)
+                .degraded(true)
+                .duration(Duration::from_millis(10))
+                .accounts(3)
+                .successes(2)
+                .failures(1)
+                .inbox_counts(4, 5, 6)
+                .conflicts(1)
+                .draft_version(9),
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&line).unwrap();
+        let allowed = [
+            "schema_version",
+            "timestamp_utc_ms",
+            "sequence",
+            "uptime_ms",
+            "session_id",
+            "level",
+            "event",
+            "operation_id",
+            "account_ref",
+            "item_ref",
+            "operation",
+            "trigger",
+            "mode",
+            "outcome",
+            "error_kind",
+            "force",
+            "degraded",
+            "duration_ms",
+            "incident_duration_ms",
+            "account_count",
+            "success_count",
+            "failure_count",
+            "fetched_count",
+            "changed_count",
+            "removed_count",
+            "conflict_count",
+            "attempt_count",
+            "suppressed_count",
+            "draft_version",
+            "cleanup_removed_files",
+            "cleanup_removed_bytes",
+            "moved_bytes",
+            "app_version",
+            "platform",
+            "architecture",
+        ];
+        for key in parsed.as_object().unwrap().keys() {
+            assert!(
+                allowed.contains(&key.as_str()),
+                "unexpected diagnostic field: {key}"
+            );
+        }
+        assert!(!line.contains("private-account"));
+        assert!(!line.contains("private-message"));
     }
 
     #[test]
@@ -629,6 +931,66 @@ mod tests {
 
         assert!(line.contains("\"error_kind\":\"imap\""));
         assert!(!line.contains(raw_secret));
+    }
+
+    #[test]
+    fn every_mail_error_variant_maps_to_a_bounded_category() {
+        use mine_mail::{ConnectionFailure, ConnectionFailureKind, ConnectionProtocol, MailError};
+
+        let cases = [
+            (MailError::Config("secret".to_owned()), ErrorKind::Config),
+            (
+                MailError::Validation("secret".to_owned()),
+                ErrorKind::Validation,
+            ),
+            (
+                MailError::Database(rusqlite::Error::InvalidQuery),
+                ErrorKind::Database,
+            ),
+            (
+                MailError::Io(std::io::Error::other("secret")),
+                ErrorKind::Io,
+            ),
+            (
+                MailError::Serialization(
+                    serde_json::from_str::<serde_json::Value>("{").unwrap_err(),
+                ),
+                ErrorKind::Serialization,
+            ),
+            (MailError::Imap("secret".to_owned()), ErrorKind::Imap),
+            (MailError::Smtp("secret".to_owned()), ErrorKind::Smtp),
+            (
+                MailError::Connection(ConnectionFailure::new(
+                    ConnectionProtocol::Imap,
+                    ConnectionFailureKind::Network,
+                )),
+                ErrorKind::Imap,
+            ),
+            (
+                MailError::Connection(ConnectionFailure::new(
+                    ConnectionProtocol::Smtp,
+                    ConnectionFailureKind::Authentication,
+                )),
+                ErrorKind::Smtp,
+            ),
+            (MailError::Mime("secret".to_owned()), ErrorKind::Mime),
+            (
+                MailError::Timeout {
+                    operation: "test_operation",
+                },
+                ErrorKind::Timeout,
+            ),
+            (
+                MailError::NotFound {
+                    entity: "message",
+                    id: "secret".to_owned(),
+                },
+                ErrorKind::NotFound,
+            ),
+        ];
+        for (error, expected) in cases {
+            assert_eq!(mail_error_kind(&error), expected);
+        }
     }
 
     #[test]
@@ -658,6 +1020,90 @@ mod tests {
             .unwrap();
         assert_eq!(recovery.attempts, 2);
         assert_eq!(recovery.suppressed, 1);
+    }
+
+    #[test]
+    fn limiter_reemits_after_interval_and_bounds_distinct_failures() {
+        let start = Instant::now();
+        let mut limiter = FailureLimiter::default();
+        let first_key = FailureKey {
+            event: "bounded_failure",
+            operation: "operation_0",
+            account_ref: None,
+            error_kind: ErrorKind::Runtime,
+        };
+        assert!(limiter.failure(first_key.clone(), start).is_some());
+        assert!(
+            limiter
+                .failure(first_key, start + FAILURE_EMIT_INTERVAL)
+                .is_some()
+        );
+
+        for index in 1..=FAILURE_KEY_LIMIT {
+            let operation = Box::leak(format!("operation_{index}").into_boxed_str());
+            let key = FailureKey {
+                event: "bounded_failure",
+                operation,
+                account_ref: None,
+                error_kind: ErrorKind::Runtime,
+            };
+            assert!(
+                limiter
+                    .failure(key, start + Duration::from_millis(index as u64))
+                    .is_some()
+            );
+        }
+        assert_eq!(limiter.entries.len(), FAILURE_KEY_LIMIT);
+        assert!(
+            !limiter
+                .entries
+                .keys()
+                .any(|key| key.operation == "operation_0")
+        );
+    }
+
+    fn command_name(block: &str) -> &str {
+        let function = block.find("fn ").expect("Tauri command has a function");
+        block[function + 3..]
+            .split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
+            .next()
+            .expect("Tauri command has a function name")
+    }
+
+    #[test]
+    fn fallible_tauri_command_diagnostic_coverage_exceeds_ninety_five_percent() {
+        let sources = [include_str!("lib.rs"), include_str!("mailbox_api.rs")];
+        let blocks = sources
+            .iter()
+            .flat_map(|source| source.split("#[tauri::command]").skip(1))
+            .collect::<Vec<_>>();
+        let mut instrumented = 0usize;
+        for block in &blocks {
+            let signature = block
+                .split_once('{')
+                .map(|(signature, _)| signature)
+                .expect("Tauri command has a body");
+            let name = command_name(block);
+            let has_diagnostics = block.contains("diagnostics::command");
+            if signature.contains("CommandResult<") {
+                assert!(
+                    has_diagnostics,
+                    "fallible Tauri command is not observed: {name}"
+                );
+                assert!(
+                    block.contains(&format!("\"{name}\"")),
+                    "Tauri command uses a mismatched diagnostic operation: {name}"
+                );
+            }
+            instrumented += usize::from(has_diagnostics);
+        }
+
+        assert_eq!(blocks.len(), 60, "update the command coverage contract");
+        assert_eq!(instrumented, 58, "update the command coverage contract");
+        assert!(
+            instrumented * 100 > blocks.len() * 95,
+            "diagnostic command coverage must remain above 95%"
+        );
     }
 
     #[test]

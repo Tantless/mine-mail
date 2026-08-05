@@ -17,6 +17,8 @@ use windows_sys::Win32::Storage::FileSystem::{
     GetDriveTypeW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
 };
 
+use crate::diagnostics::{self, ErrorKind as DiagnosticErrorKind, Fields as DiagnosticFields};
+
 const STORAGE_SCHEMA_VERSION: u8 = 1;
 const STORAGE_LOCATOR_FILE: &str = "storage-location.json";
 const STORAGE_MIGRATION_FILE: &str = "storage-migration.json";
@@ -169,11 +171,48 @@ impl StorageRuntime {
             };
         }
 
-        let executable_dir = app.path().executable_dir().ok();
+        let executable_dir = match app.path().executable_dir() {
+            Ok(directory) => {
+                diagnostics::limited_recovery(
+                    "storage_executable_directory_failed",
+                    "storage_executable_directory_recovered",
+                    "storage_runtime_open",
+                    None,
+                );
+                Some(directory)
+            }
+            Err(_) => {
+                diagnostics::limited_failure(
+                    "storage_executable_directory_failed",
+                    "storage_runtime_open",
+                    None,
+                    DiagnosticErrorKind::Io,
+                );
+                None
+            }
+        };
         let install_data_root = executable_dir
             .as_deref()
             .map(|directory| directory.join(INSTALL_DATA_DIRECTORY_NAME));
         let migration_notice = process_pending_migration(&bootstrap_dir);
+        if let Some(notice) = migration_notice.as_ref() {
+            let fields = DiagnosticFields::default()
+                .operation("storage_migration")
+                .outcome(match notice.status {
+                    MigrationResultStatus::Completed => "completed",
+                    MigrationResultStatus::Failed => "failed",
+                })
+                .moved_bytes(notice.moved_bytes);
+            match notice.status {
+                MigrationResultStatus::Completed => {
+                    diagnostics::info("storage_migration_completed", fields)
+                }
+                MigrationResultStatus::Failed => diagnostics::error(
+                    "storage_migration_failed",
+                    fields.error(DiagnosticErrorKind::Io),
+                ),
+            }
+        }
 
         let resolved = resolve_data_root(
             &bootstrap_dir,
@@ -223,7 +262,23 @@ impl StorageRuntime {
                 .map_err(|_| "无法读取当前数据目录的空间占用。".to_owned())?;
         }
         if self.data_root != self.bootstrap_dir {
-            sizes.logs = directory_size(&self.bootstrap_dir.join("logs")).unwrap_or(0);
+            match directory_size(&self.bootstrap_dir.join("logs")) {
+                Ok(bytes) => {
+                    sizes.logs = bytes;
+                    diagnostics::limited_recovery(
+                        "storage_log_measurement_failed",
+                        "storage_log_measurement_recovered",
+                        "measure_storage_logs",
+                        None,
+                    );
+                }
+                Err(_) => diagnostics::limited_failure(
+                    "storage_log_measurement_failed",
+                    "measure_storage_logs",
+                    None,
+                    DiagnosticErrorKind::Io,
+                ),
+            }
         }
 
         let categories = vec![
@@ -293,7 +348,30 @@ impl StorageRuntime {
         };
         write_json_atomically(&self.bootstrap_dir.join(STORAGE_MIGRATION_FILE), &request)
             .map_err(|_| "无法保存迁移任务，请确认系统数据目录可写。".to_owned())?;
-        let _ = fs::remove_file(self.bootstrap_dir.join(STORAGE_MIGRATION_RESULT_FILE));
+        let previous_result_path = self.bootstrap_dir.join(STORAGE_MIGRATION_RESULT_FILE);
+        match fs::remove_file(previous_result_path) {
+            Ok(()) => diagnostics::limited_recovery(
+                "storage_migration_result_cleanup_failed",
+                "storage_migration_result_cleanup_recovered",
+                "prepare_storage_migration",
+                None,
+            ),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(_) => diagnostics::limited_failure(
+                "storage_migration_result_cleanup_failed",
+                "prepare_storage_migration",
+                None,
+                DiagnosticErrorKind::Io,
+            ),
+        }
+
+        diagnostics::info(
+            "storage_migration_prepared",
+            DiagnosticFields::default()
+                .operation("storage_migration")
+                .outcome("restart_required")
+                .moved_bytes(total_bytes),
+        );
 
         Ok(PreparedStorageMigrationDto {
             target_path: target.to_string_lossy().into_owned(),
@@ -303,7 +381,13 @@ impl StorageRuntime {
 
     pub(crate) fn cancel_pending_migration(&self) -> Result<(), String> {
         match fs::remove_file(self.bootstrap_dir.join(STORAGE_MIGRATION_FILE)) {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                diagnostics::info(
+                    "storage_migration_cancelled",
+                    DiagnosticFields::default().operation("storage_migration"),
+                );
+                Ok(())
+            }
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
             Err(_) => Err("无法撤销待执行的数据迁移任务。".to_owned()),
         }
@@ -506,9 +590,45 @@ fn validate_and_prepare_migration_target(
 
 fn process_pending_migration(bootstrap_dir: &Path) -> Option<StorageMigrationNoticeDto> {
     let result_path = bootstrap_dir.join(STORAGE_MIGRATION_RESULT_FILE);
-    let previous_result = read_json::<StoredMigrationResult>(&result_path).ok();
+    let previous_result = if result_path.exists() {
+        match read_json::<StoredMigrationResult>(&result_path) {
+            Ok(result) => {
+                diagnostics::limited_recovery(
+                    "storage_migration_result_read_failed",
+                    "storage_migration_result_read_recovered",
+                    "process_storage_migration",
+                    None,
+                );
+                Some(result)
+            }
+            Err(_) => {
+                diagnostics::limited_failure(
+                    "storage_migration_result_read_failed",
+                    "process_storage_migration",
+                    None,
+                    DiagnosticErrorKind::Io,
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
     if previous_result.is_some() {
-        let _ = fs::remove_file(&result_path);
+        match fs::remove_file(&result_path) {
+            Ok(()) => diagnostics::limited_recovery(
+                "storage_migration_result_cleanup_failed",
+                "storage_migration_result_cleanup_recovered",
+                "process_storage_migration",
+                None,
+            ),
+            Err(_) => diagnostics::limited_failure(
+                "storage_migration_result_cleanup_failed",
+                "process_storage_migration",
+                None,
+                DiagnosticErrorKind::Io,
+            ),
+        }
     }
 
     let request_path = bootstrap_dir.join(STORAGE_MIGRATION_FILE);
@@ -536,8 +656,35 @@ fn process_pending_migration(bootstrap_dir: &Path) -> Option<StorageMigrationNot
             message,
         },
     };
-    let _ = write_json_atomically(&result_path, &result);
-    let _ = fs::remove_file(request_path);
+    match write_json_atomically(&result_path, &result) {
+        Ok(()) => diagnostics::limited_recovery(
+            "storage_migration_result_write_failed",
+            "storage_migration_result_write_recovered",
+            "process_storage_migration",
+            None,
+        ),
+        Err(_) => diagnostics::limited_failure(
+            "storage_migration_result_write_failed",
+            "process_storage_migration",
+            None,
+            DiagnosticErrorKind::Io,
+        ),
+    }
+    match fs::remove_file(request_path) {
+        Ok(()) => diagnostics::limited_recovery(
+            "storage_migration_request_cleanup_failed",
+            "storage_migration_request_cleanup_recovered",
+            "process_storage_migration",
+            None,
+        ),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(_) => diagnostics::limited_failure(
+            "storage_migration_request_cleanup_failed",
+            "process_storage_migration",
+            None,
+            DiagnosticErrorKind::Io,
+        ),
+    }
     Some(result.into())
 }
 
@@ -588,7 +735,7 @@ fn execute_migration(
             managed_tree_size(&target).map_err(|_| "迁移后的数据大小无法确认。".to_owned())?;
         return Ok(MigrationExecution {
             moved_bytes,
-            cleanup_warning: cleanup_migrated_source(&source, bootstrap_dir).is_err(),
+            cleanup_warning: cleanup_migrated_source_observed(&source, bootstrap_dir),
         });
     }
     if current_root != source {
@@ -619,11 +766,47 @@ fn execute_migration(
     match copy_result {
         Ok(moved_bytes) => Ok(MigrationExecution {
             moved_bytes,
-            cleanup_warning: cleanup_migrated_source(&source, bootstrap_dir).is_err(),
+            cleanup_warning: cleanup_migrated_source_observed(&source, bootstrap_dir),
         }),
         Err(error) => {
-            let _ = remove_migration_target(&target);
+            match remove_migration_target(&target) {
+                Ok(()) => diagnostics::limited_recovery(
+                    "storage_migration_rollback_failed",
+                    "storage_migration_rollback_recovered",
+                    "rollback_storage_migration",
+                    None,
+                ),
+                Err(_) => diagnostics::limited_failure(
+                    "storage_migration_rollback_failed",
+                    "rollback_storage_migration",
+                    None,
+                    DiagnosticErrorKind::Io,
+                ),
+            }
             Err(error)
+        }
+    }
+}
+
+fn cleanup_migrated_source_observed(source: &Path, bootstrap_dir: &Path) -> bool {
+    match cleanup_migrated_source(source, bootstrap_dir) {
+        Ok(()) => {
+            diagnostics::limited_recovery(
+                "storage_migration_source_cleanup_failed",
+                "storage_migration_source_cleanup_recovered",
+                "cleanup_storage_migration_source",
+                None,
+            );
+            false
+        }
+        Err(_) => {
+            diagnostics::limited_failure(
+                "storage_migration_source_cleanup_failed",
+                "cleanup_storage_migration_source",
+                None,
+                DiagnosticErrorKind::Io,
+            );
+            true
         }
     }
 }
@@ -744,9 +927,46 @@ fn cleanup_migrated_source(source: &Path, bootstrap_dir: &Path) -> Result<(), St
     }
     if source != bootstrap_dir {
         let marker = source.join(DATA_ROOT_MARKER_FILE);
-        let _ = fs::remove_file(marker);
-        if fs::read_dir(source).is_ok_and(|mut entries| entries.next().is_none()) {
-            let _ = fs::remove_dir(source);
+        match fs::remove_file(marker) {
+            Ok(()) => diagnostics::limited_recovery(
+                "storage_migration_marker_cleanup_failed",
+                "storage_migration_marker_cleanup_recovered",
+                "cleanup_storage_migration_source",
+                None,
+            ),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(_) => diagnostics::limited_failure(
+                "storage_migration_marker_cleanup_failed",
+                "cleanup_storage_migration_source",
+                None,
+                DiagnosticErrorKind::Io,
+            ),
+        }
+        match fs::read_dir(source) {
+            Ok(mut entries) => {
+                if entries.next().is_none() {
+                    match fs::remove_dir(source) {
+                        Ok(()) => diagnostics::limited_recovery(
+                            "storage_migration_directory_cleanup_failed",
+                            "storage_migration_directory_cleanup_recovered",
+                            "cleanup_storage_migration_source",
+                            None,
+                        ),
+                        Err(_) => diagnostics::limited_failure(
+                            "storage_migration_directory_cleanup_failed",
+                            "cleanup_storage_migration_source",
+                            None,
+                            DiagnosticErrorKind::Io,
+                        ),
+                    }
+                }
+            }
+            Err(_) => diagnostics::limited_failure(
+                "storage_migration_directory_inspection_failed",
+                "cleanup_storage_migration_source",
+                None,
+                DiagnosticErrorKind::Io,
+            ),
         }
     }
     Ok(())
@@ -919,7 +1139,21 @@ fn probe_directory_write(path: &Path) -> io::Result<()> {
         file.write_all(b"mine-mail")?;
         file.sync_all()
     })();
-    let _ = fs::remove_file(probe);
+    match fs::remove_file(probe) {
+        Ok(()) => diagnostics::limited_recovery(
+            "storage_write_probe_cleanup_failed",
+            "storage_write_probe_cleanup_recovered",
+            "probe_storage_write",
+            None,
+        ),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(_) => diagnostics::limited_failure(
+            "storage_write_probe_cleanup_failed",
+            "probe_storage_write",
+            None,
+            DiagnosticErrorKind::Io,
+        ),
+    }
     result
 }
 
@@ -963,7 +1197,21 @@ fn write_json_atomically(path: &Path, value: &impl Serialize) -> io::Result<()> 
     drop(file);
     let result = replace_file(&temporary, path);
     if result.is_err() {
-        let _ = fs::remove_file(&temporary);
+        match fs::remove_file(&temporary) {
+            Ok(()) => diagnostics::limited_recovery(
+                "storage_atomic_write_cleanup_failed",
+                "storage_atomic_write_cleanup_recovered",
+                "write_storage_json",
+                None,
+            ),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(_) => diagnostics::limited_failure(
+                "storage_atomic_write_cleanup_failed",
+                "write_storage_json",
+                None,
+                DiagnosticErrorKind::Io,
+            ),
+        }
     }
     result
 }
