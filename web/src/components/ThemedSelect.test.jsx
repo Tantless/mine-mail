@@ -61,4 +61,32 @@ describe("ThemedSelect", () => {
     expect(document.activeElement).toBe(trigger);
     expect(onValueChange).not.toHaveBeenCalled();
   });
+
+  it("renders an optional font preview without changing the accessible option name", async () => {
+    const user = userEvent.setup();
+    render(
+      <ThemedSelect
+        label="字体"
+        value="sans"
+        options={[
+          {
+            value: "sans",
+            label: "清晰黑体",
+            previewFontFamily: "Noto Sans SC Variable, sans-serif",
+          },
+        ]}
+        onValueChange={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("combobox", { name: "字体" }));
+    expect(
+      screen.getByRole("combobox", { name: "字体" }).querySelector("span")?.style
+        .fontFamily,
+    ).toContain("Noto Sans SC Variable");
+    const option = screen.getByRole("option", { name: "清晰黑体" });
+    expect(
+      option.querySelector(".themed-select__option-label")?.style.fontFamily,
+    ).toContain("Noto Sans SC Variable");
+  });
 });

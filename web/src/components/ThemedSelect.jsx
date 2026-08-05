@@ -127,7 +127,15 @@ export function ThemedSelect({
         onClick={() => setOpen((current) => !current)}
         onKeyDown={handleTriggerKeyDown}
       >
-        <span>{selected?.label || "请选择"}</span>
+        <span
+          style={
+            selected?.previewFontFamily
+              ? { fontFamily: selected.previewFontFamily }
+              : undefined
+          }
+        >
+          {selected?.label || "请选择"}
+        </span>
         <CaretDown className="themed-select__caret" size={15} weight="bold" aria-hidden="true" />
       </button>
 
@@ -157,7 +165,16 @@ export function ThemedSelect({
                 onFocus={() => setActiveIndex(index)}
                 onClick={() => choose(option)}
               >
-                <span>{option.label}</span>
+                <span
+                  className="themed-select__option-label"
+                  style={
+                    option.previewFontFamily
+                      ? { fontFamily: option.previewFontFamily }
+                      : undefined
+                  }
+                >
+                  {option.label}
+                </span>
                 <Check
                   className="themed-select__check"
                   size={15}

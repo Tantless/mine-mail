@@ -592,7 +592,7 @@ describe("compose page and stationery policy", () => {
     );
   });
 
-  it("keeps compact compose listboxes visible inside the formatting row", () => {
+  it("keeps integrated compose listboxes visible inside the formatting row", () => {
     const toolbar = declarationsFor("\\.compose-format-toolbar");
     expect(toolbar).toMatch(/overflow:\s*visible/);
     expect(toolbar).not.toMatch(/overflow-x:\s*auto/);
@@ -600,8 +600,9 @@ describe("compose page and stationery policy", () => {
     const trigger = declarationsFor(
       "\\.compose-format-select \\.themed-select__trigger",
     );
-    expect(trigger).toMatch(/height:\s*30px/);
-    expect(trigger).toMatch(/font-size:\s*11px/);
+    expect(trigger).toMatch(/height:\s*34px/);
+    expect(trigger).toMatch(/font-size:\s*12px/);
+    expect(trigger).toMatch(/background:\s*transparent/);
 
     const menu = declarationsFor(
       "\\.compose-format-select \\.themed-select__menu",
@@ -609,13 +610,28 @@ describe("compose page and stationery policy", () => {
     expect(menu).toMatch(/right:\s*auto/);
     expect(menu).toMatch(/left:\s*0/);
     expect(menu).toMatch(/width:\s*104px/);
+
+    const fontMenu = declarationsFor(
+      "\\.compose-format-select--font \\.themed-select__menu",
+    );
+    expect(fontMenu).toMatch(/width:\s*190px/);
   });
 
   it("renders semantic italic text and a zero-width stored-format caret probe", () => {
+    const editor = declarationsFor(
+      "\\.compose-rich-editor > \\.ProseMirror",
+    );
+    expect(editor).toMatch(/font-synthesis:\s*weight style/);
+
     const italic = declarationsFor(
       "\\.compose-rich-editor \\.ProseMirror em,\\s*\\.compose-rich-editor \\.ProseMirror i",
     );
     expect(italic).toMatch(/font-style:\s*italic/);
+
+    const strike = declarationsFor(
+      "\\.compose-rich-editor \\.ProseMirror s",
+    );
+    expect(strike).toMatch(/text-decoration:\s*line-through/);
 
     const caretProbe = declarationsFor(
       "\\.compose-rich-editor \\.compose-format-caret-probe",

@@ -71,7 +71,9 @@ weight; it must not create a separate page layout or component family.
 
 ### Typography
 
-- UI and mail chrome: `Inter Variable`, then platform sans-serif fallbacks.
+- UI and mail chrome: `Inter Variable` for Latin, bundled `Noto Sans SC Variable`
+  for Han, then platform sans-serif fallbacks. Let the desktop webview use its
+  native text rasterization instead of forcing grayscale antialiasing.
 - `Mine Mail` brand wordmark only: `Nunito Variable`.
 - Empty-reader quotation only: bundled `Ma Shan Zheng`, then Chinese calligraphic
   fallbacks.
@@ -82,6 +84,9 @@ weight; it must not create a separate page layout or component family.
   - body and primary row content: 13–15 px;
   - metadata, eyebrow, helper, and status text: 9–12 px.
 - Body copy must remain comfortably readable. Do not use tiny text as decoration.
+  Frequently scanned compact metadata starts at 11 px, and subdued list-preview
+  copy starts at 12 px; smaller text is reserved for genuinely secondary labels
+  that remain legible at the minimum desktop viewport.
 
 ### Icons and avatars
 
@@ -566,15 +571,25 @@ family. Preserve the relative hierarchy when tuning optical values.
 - One compact formatting row sits directly between the subject and editor. It
   exposes font, size, emphasis, lists, alignment, links, and clear-format actions
   using the existing themed controls and icon system; it must not read as a
-  second app toolbar. Formatting preserves the active range and caret position;
+  second app toolbar. Font and size triggers stay transparent at rest, gaining a
+  restrained glass-tinted hover/focus surface rather than a persistent filled
+  box. The font menu is wide enough to preview every option in its actual face.
+  Its bundled open-source choices are `Noto Sans SC`, `Noto Serif SC`,
+  `LXGW WenKai`, `ZCOOL XiaoWei`, `ZCOOL KuaiLe`, and `Ma Shan Zheng`, alongside
+  the supported system, Fangsong, and monospace choices. Single-weight display
+  faces may synthesize bold or italic inside the editor while retaining semantic
+  emphasis markup. Authored HTML records a fixed compatible fallback stack
+  because recipients may not have the same local font. Formatting preserves the
+  active range and caret position;
   the font and size controls follow the format inherited at a collapsed caret,
   and show a neutral mixed value for a selection containing more than one value.
   Applying a font size at a collapsed caret updates the visible caret scale and
   the next typed character without relayout of the complete editor. Plain-editor
   focus is communicated by its caret and must not add a full-height accent stripe.
-  Emphasis uses real semantic bold, italic, and underline markup. At the start of
-  a paragraph, `1.` followed by Space starts a numbered list; Enter continues the
-  sequence, and Enter on the next empty item returns to an ordinary paragraph.
+  Emphasis uses real semantic bold, italic, underline, and strikethrough markup.
+  At the start of a paragraph, `1.` followed by Space starts a numbered list;
+  Enter continues the sequence, and Enter on the next empty item returns to an
+  ordinary paragraph.
   An empty authored editor shows only its writing surface and caret; it has no
   instructional body placeholder.
 - The footer starts with one compact icon-only **信纸** toggle. Its neutral state

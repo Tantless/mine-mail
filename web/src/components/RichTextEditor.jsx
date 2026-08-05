@@ -8,6 +8,7 @@ import {
   TextAlignRight,
   TextB,
   TextItalic,
+  TextStrikethrough,
   TextUnderline,
   X,
 } from "@phosphor-icons/react";
@@ -49,27 +50,144 @@ const allowedTags = new Set([
   "P",
   "SPAN",
   "STRONG",
+  "S",
   "U",
   "UL",
 ]);
 const alignments = new Set(["left", "center", "right"]);
+const uiFontPreview =
+  "Inter Variable, Noto Sans SC Variable, Microsoft YaHei UI, PingFang SC, sans-serif";
+const notoSansFontFamily =
+  "Noto Sans SC Variable,Noto Sans SC,Source Han Sans SC,Microsoft YaHei,sans-serif";
+const notoSerifFontFamily =
+  "Noto Serif SC Variable,Noto Serif SC,Source Han Serif SC,Songti SC,SimSun,serif";
+const wenKaiFontFamily = "LXGW WenKai,KaiTi,STKaiti,cursive";
+const xiaoWeiFontFamily =
+  "ZCOOL XiaoWei,Noto Serif SC Variable,Songti SC,SimSun,serif";
+const kuaiLeFontFamily =
+  "ZCOOL KuaiLe,Noto Sans SC Variable,Microsoft YaHei,sans-serif";
+const maShanFontFamily = "Ma Shan Zheng,Zhi Mang Xing,STXingkai,cursive";
+const fangSongFontFamily =
+  "FangSong,STFangsong,Noto Serif SC Variable,serif";
+const monospaceFontFamily =
+  "Cascadia Mono,Consolas,Liberation Mono,monospace";
 const fontOptions = [
-  { value: "system", label: "系统字体" },
-  { value: "Microsoft YaHei", label: "微软雅黑" },
-  { value: "SimSun", label: "宋体" },
-  { value: "KaiTi", label: "楷体" },
-  { value: "Consolas", label: "等宽字体" },
+  {
+    value: "system",
+    label: "默认字体",
+    family: null,
+    previewFontFamily: uiFontPreview,
+  },
+  {
+    value: "microsoft-yahei",
+    label: "微软雅黑",
+    family: "Microsoft YaHei",
+    previewFontFamily: "Microsoft YaHei, Noto Sans SC Variable, sans-serif",
+  },
+  {
+    value: "simsun",
+    label: "宋体",
+    family: "SimSun",
+    previewFontFamily: "SimSun, Noto Serif SC Variable, serif",
+  },
+  {
+    value: "kaiti",
+    label: "楷体",
+    family: "KaiTi",
+    previewFontFamily: "KaiTi, LXGW WenKai, cursive",
+  },
+  {
+    value: "fangsong",
+    label: "仿宋",
+    family: fangSongFontFamily,
+    previewFontFamily: fangSongFontFamily,
+  },
+  {
+    value: "noto-sans-sc",
+    label: "Noto 黑体",
+    family: notoSansFontFamily,
+    previewFontFamily: notoSansFontFamily,
+  },
+  {
+    value: "noto-serif-sc",
+    label: "Noto 宋体",
+    family: notoSerifFontFamily,
+    previewFontFamily: notoSerifFontFamily,
+  },
+  {
+    value: "lxgw-wenkai",
+    label: "霞鹜文楷",
+    family: wenKaiFontFamily,
+    previewFontFamily: wenKaiFontFamily,
+  },
+  {
+    value: "zcool-xiaowei",
+    label: "站酷小薇体",
+    family: xiaoWeiFontFamily,
+    previewFontFamily: xiaoWeiFontFamily,
+  },
+  {
+    value: "zcool-kuaile",
+    label: "站酷快乐体",
+    family: kuaiLeFontFamily,
+    previewFontFamily: kuaiLeFontFamily,
+  },
+  {
+    value: "ma-shan-zheng",
+    label: "马善政毛笔体",
+    family: maShanFontFamily,
+    previewFontFamily: maShanFontFamily,
+  },
+  {
+    value: "monospace",
+    label: "等宽字体",
+    family: monospaceFontFamily,
+    previewFontFamily: monospaceFontFamily,
+  },
 ];
-const fontFamilies = new Map([
-  ["arial", "Arial"],
-  ["sans-serif", "Arial"],
-  ["microsoft yahei", "Microsoft YaHei"],
-  ["simsun", "SimSun"],
-  ["kaiti", "KaiTi"],
-  ["consolas", "Consolas"],
-  ["serif", "serif"],
-  ["monospace", "monospace"],
-]);
+const fontOptionsById = new Map(fontOptions.map((option) => [option.value, option]));
+
+function normalizedFontFamilyKey(value) {
+  return String(value || "")
+    .trim()
+    .replace(/["']/g, "")
+    .replace(/\s*,\s*/g, ",")
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+}
+
+const fontAliases = new Map(
+  fontOptions
+    .filter((option) => option.family)
+    .map((option) => [normalizedFontFamilyKey(option.family), option]),
+);
+
+function registerFontAlias(alias, id, family = null) {
+  const option = fontOptionsById.get(id);
+  fontAliases.set(normalizedFontFamilyKey(alias), {
+    ...option,
+    family: family || option?.family || alias,
+  });
+}
+
+registerFontAlias("Arial", "system", "Arial");
+registerFontAlias("sans-serif", "system", "Arial");
+registerFontAlias("Noto Sans SC Variable", "noto-sans-sc", notoSansFontFamily);
+registerFontAlias("Noto Sans SC", "noto-sans-sc", notoSansFontFamily);
+registerFontAlias("Noto Serif SC Variable", "noto-serif-sc", notoSerifFontFamily);
+registerFontAlias("Noto Serif SC", "noto-serif-sc", notoSerifFontFamily);
+registerFontAlias("LXGW WenKai", "lxgw-wenkai", wenKaiFontFamily);
+registerFontAlias("ZCOOL XiaoWei", "zcool-xiaowei", xiaoWeiFontFamily);
+registerFontAlias("ZCOOL KuaiLe", "zcool-kuaile", kuaiLeFontFamily);
+registerFontAlias("Ma Shan Zheng", "ma-shan-zheng", maShanFontFamily);
+registerFontAlias("Microsoft YaHei", "microsoft-yahei");
+registerFontAlias("SimSun", "simsun");
+registerFontAlias("serif", "simsun", "serif");
+registerFontAlias("FangSong", "fangsong", fangSongFontFamily);
+registerFontAlias("STFangsong", "fangsong", fangSongFontFamily);
+registerFontAlias("KaiTi", "kaiti");
+registerFontAlias("Consolas", "monospace", monospaceFontFamily);
+registerFontAlias("monospace", "monospace", monospaceFontFamily);
 const sizeOptions = [12, 14, 16, 18, 22].map((size) => ({
   value: String(size),
   label: String(size),
@@ -486,7 +604,6 @@ export function createComposeEditorExtensions({
       codeBlock: false,
       heading: false,
       horizontalRule: false,
-      strike: false,
       bulletList: false,
       orderedList: false,
       link: {
@@ -532,11 +649,11 @@ function safeHref(value) {
 }
 
 function safeFontFamily(value) {
-  const normalized = String(value || "")
-    .trim()
-    .replace(/^["']|["']$/g, "")
-    .toLowerCase();
-  return fontFamilies.get(normalized) || null;
+  return fontAliases.get(normalizedFontFamilyKey(value))?.family || null;
+}
+
+function fontOptionId(value) {
+  return fontAliases.get(normalizedFontFamilyKey(value))?.value || "system";
 }
 
 function safeFontSize(value) {
@@ -782,13 +899,13 @@ export function getComposeToolbarState(editor) {
   const normalizedFontSize = rawFontSize ? safeFontSize(rawFontSize) : null;
 
   return {
-    font:
-      normalizedFont === "Arial" || !normalizedFont ? "system" : normalizedFont,
+    font: normalizedFont ? fontOptionId(normalizedFont) : "system",
     fontSize: normalizedFontSize || String(composeBaseFontSize),
     mixedFont: rawFont === null,
     mixedFontSize: rawFontSize === null,
     bold: editor.isActive("bold"),
     italic: editor.isActive("italic"),
+    strike: editor.isActive("strike"),
     underline: editor.isActive("underline"),
     bulletList: editor.isActive("bulletList"),
     orderedList: editor.isActive("orderedList"),
@@ -1060,8 +1177,12 @@ function RichTextEditorCore({
 
   const applyFont = (nextFont) => {
     if (nextFont === "mixed") return;
+    const option = fontOptionsById.get(nextFont);
+    if (!option) return;
     runEditorCommand((chain) =>
-      chain.setFontFamily(nextFont === "system" ? "Arial" : nextFont),
+      option.family
+        ? chain.setFontFamily(option.family)
+        : chain.unsetFontFamily(),
     );
   };
 
@@ -1124,6 +1245,14 @@ function RichTextEditorCore({
           disabled={disabled}
         >
           <TextUnderline size={17} />
+        </ToolbarButton>
+        <ToolbarButton
+          label="删除线"
+          active={state.strike}
+          onActivate={() => runEditorCommand((chain) => chain.toggleStrike())}
+          disabled={disabled}
+        >
+          <TextStrikethrough size={17} />
         </ToolbarButton>
         <span className="compose-format-divider" aria-hidden="true" />
         <ToolbarButton
