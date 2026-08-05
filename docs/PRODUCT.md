@@ -434,7 +434,7 @@ must be updated here when an intentional product change lands.
   draft. A stale delete never removes a newer canonical version.
 - Adding or removing a managed attachment is an editor write and follows the same
   `local_version`, conflict-copy, and stale-delete rules.
-- Font, size, emphasis, list, alignment, link, and clear-format edits are part of
+- Font, size, emphasis (including strikethrough), list, alignment, link, and clear-format edits are part of
   the same exact draft version as the plain authored body. Rust sanitizes the
   owned HTML fragment again at the desktop boundary; the plain body remains the
   interoperability fallback. A formatting command applies to the active range
@@ -445,7 +445,12 @@ must be updated here when an intentional product change lands.
   inherited format at that position; a mixed selection reports a mixed font or
   size rather than a stale toolbar value. A collapsed-caret font-size change
   updates both the caret presentation and the stored format used by the next
-  input. Italic is persisted as semantic emphasis in the restricted HTML.
+  input. Italic and strikethrough are persisted as semantic markup in the
+  restricted HTML.
+- The font picker previews each choice using that face. Bundled open-source
+  compose fonts render locally without network access; outgoing authored HTML
+  carries only the approved font name and compatible fallback stack, so another
+  mail client can degrade safely when the preferred font is unavailable.
 - At the start of a paragraph, typing `1.` followed by Space creates a real
   ordered list. Enter creates the next numbered item, and Enter again on an empty
   item exits to an ordinary paragraph. The plain-text fallback emits explicit

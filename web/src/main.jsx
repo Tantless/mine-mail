@@ -1,6 +1,8 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
 import "@fontsource-variable/inter";
+import "@fontsource-variable/noto-sans-sc";
+import "@fontsource-variable/noto-serif-sc";
 import "@fontsource-variable/nunito";
 import { App } from "./App.jsx";
 import { NewMailNotification } from "./components/NewMailNotification.jsx";

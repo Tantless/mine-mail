@@ -1294,6 +1294,7 @@ pub(crate) fn sanitize_compose_html(source: Option<&str>) -> Option<String> {
             "li",
             "ol",
             "p",
+            "s",
             "span",
             "strong",
             "u",
@@ -1358,6 +1359,10 @@ pub(crate) fn sanitize_compose_html(source: Option<&str>) -> Option<String> {
                         | "sans-serif"
                         | "serif"
                         | "monospace"
+                        | "noto sans sc variable,noto sans sc,source han sans sc,microsoft yahei,sans-serif"
+                        | "noto serif sc variable,noto serif sc,source han serif sc,songti sc,simsun,serif"
+                        | "lxgw wenkai,kaiti,stkaiti,cursive"
+                        | "cascadia mono,consolas,liberation mono,monospace"
                 )
             {
                 return None;
@@ -2813,7 +2818,7 @@ JVBERi0xLjcK
         request.body_text = "安全的纯文本版本".to_owned();
         request.format = ComposeFormat {
             body_html: Some(
-                r#"<p align="center"><strong>格式正文</strong><script>alert(1)</script><a href="javascript:alert(2)">危险链接</a><font face="KaiTi" size="4">楷体</font></p>"#
+                r#"<p align="center"><strong>格式正文</strong><s>旧内容</s><script>alert(1)</script><a href="javascript:alert(2)">危险链接</a><font face="Noto Serif SC Variable,Noto Serif SC,Source Han Serif SC,Songti SC,SimSun,serif" size="4">宋体</font></p>"#
                     .to_owned(),
             ),
             stationery: StationeryTheme::None,
@@ -2831,8 +2836,11 @@ JVBERi0xLjcK
             Some("安全的纯文本版本")
         );
         assert!(html.contains("<strong>格式正文</strong>"));
+        assert!(html.contains("<s>旧内容</s>"));
         assert!(html.contains("align=\"center\""));
-        assert!(html.contains("face=\"KaiTi\""));
+        assert!(html.contains(
+            r#"face="Noto Serif SC Variable,Noto Serif SC,Source Han Serif SC,Songti SC,SimSun,serif""#
+        ));
         assert!(!html.contains("script"));
         assert!(!html.contains("javascript:"));
     }
@@ -2964,6 +2972,19 @@ JVBERi0xLjcK
         assert!(!cleaned.contains("onclick"));
         assert!(cleaned.contains("href=\"https://example.com\""));
         assert!(!cleaned.contains("data:text/html"));
+    }
+
+    #[test]
+    fn compose_html_sanitizer_keeps_strike_and_only_known_font_stacks() {
+        let cleaned = sanitize_compose_html(Some(
+            r#"<p><s>旧内容</s><font face="LXGW WenKai,KaiTi,STKaiti,cursive">文楷</font><font face="Comic Sans MS">未知字体</font></p>"#,
+        ))
+        .expect("visible compose HTML");
+
+        assert!(cleaned.contains("<s>旧内容</s>"));
+        assert!(cleaned.contains(r#"face="LXGW WenKai,KaiTi,STKaiti,cursive""#));
+        assert!(!cleaned.contains(r#"face="Comic Sans MS""#));
+        assert!(cleaned.contains("未知字体"));
     }
 
     #[test]

@@ -7,6 +7,24 @@
     format("woff2");
 }
 
+@font-face {
+  font-family: "LXGW WenKai";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 500;
+  src: url("@fontsource/lxgw-wenkai/files/lxgw-wenkai-latin-500-normal.woff2")
+    format("woff2");
+}
+
+@font-face {
+  font-family: "LXGW WenKai";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 700;
+  src: url("@fontsource/lxgw-wenkai/files/lxgw-wenkai-latin-700-normal.woff2")
+    format("woff2");
+}
+
 .sr-only {
   position: absolute !important;
   width: 1px !important;
@@ -21,8 +39,12 @@
 
 :root {
   color-scheme: light;
-  font-family: "Inter Variable", Inter, system-ui, -apple-system, BlinkMacSystemFont,
+  --font-ui: "Inter Variable", Inter, "Noto Sans SC Variable", "Microsoft YaHei UI",
+    "PingFang SC", system-ui, -apple-system, BlinkMacSystemFont,
     "Segoe UI Variable", "Segoe UI", sans-serif;
+  --type-compact-meta: 11px;
+  --type-compact-helper: 12px;
+  font-family: var(--font-ui);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   --sidebar-width: clamp(260px, 20.5vw, 340px);
@@ -549,7 +571,6 @@ body {
   overflow: hidden;
   background: #19232b;
   color: var(--color-text);
-  -webkit-font-smoothing: antialiased;
 }
 
 button,
@@ -1686,7 +1707,8 @@ html[data-surface="new-mail-notification"] #root {
 .account-card__copy small {
   overflow: hidden;
   color: var(--sidebar-muted);
-  font-size: 10px;
+  font-size: var(--type-compact-meta);
+  font-weight: 500;
   white-space: nowrap;
   text-overflow: ellipsis;
 }
@@ -2379,7 +2401,8 @@ html[data-surface="new-mail-notification"] #root {
 .mail-row__meta time {
   flex: 0 0 auto;
   color: var(--color-text-muted);
-  font-size: 10px;
+  font-size: var(--type-compact-meta);
+  font-weight: 500;
   font-variant-numeric: tabular-nums;
 }
 
@@ -2402,7 +2425,8 @@ html[data-surface="new-mail-notification"] #root {
 .mail-row__preview {
   margin-top: 2px;
   color: var(--color-text-muted);
-  font-size: 11px;
+  font-size: var(--type-compact-helper);
+  font-weight: 450;
 }
 
 .mail-row[data-unread="true"] .mail-row__sender,
@@ -4417,7 +4441,7 @@ html[data-surface="new-mail-notification"] #root {
   flex: 0 0 58px;
   min-width: 0;
   align-items: center;
-  gap: 4px;
+  gap: 3px;
   margin: 0 22px;
   padding: 8px 0;
   border: 0;
@@ -4433,14 +4457,28 @@ html[data-surface="new-mail-notification"] #root {
 }
 
 .compose-format-select .themed-select__trigger {
-  height: 30px;
-  min-height: 30px;
+  height: 34px;
+  min-height: 34px;
   padding: 0 26px 0 9px;
-  border-color: color-mix(in srgb, var(--color-border) 70%, transparent);
-  border-radius: 7px;
-  background: var(--color-control);
+  border-color: transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-text-muted);
   box-shadow: none;
-  font-size: 11px;
+  font-size: 12px;
+  font-weight: 590;
+}
+
+.compose-format-select .themed-select__trigger:hover:not(:disabled),
+.compose-format-select[data-open="true"] .themed-select__trigger {
+  border-color: color-mix(in srgb, var(--color-primary) 20%, transparent);
+  background: color-mix(in srgb, var(--compose-control-hover) 72%, transparent);
+  color: var(--color-text);
+}
+
+.compose-format-select .themed-select__trigger:focus-visible,
+.compose-format-select[data-open="true"] .themed-select__trigger {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-primary) 10%, transparent);
 }
 
 .compose-format-select .themed-select__caret {
@@ -4467,17 +4505,28 @@ html[data-surface="new-mail-notification"] #root {
   border-radius: 9px;
 }
 
+.compose-format-select--font .themed-select__menu {
+  width: 190px;
+  min-width: 190px;
+}
+
 .compose-format-select--size .themed-select__menu {
   width: 60px;
   min-width: 60px;
 }
 
 .compose-format-select .themed-select__option {
-  min-height: 30px;
+  min-height: 34px;
   grid-template-columns: minmax(0, 1fr) 14px;
   gap: 5px;
   padding: 0 6px 0 7px;
   border-radius: 6px;
+  font-size: 12px;
+}
+
+.compose-format-select--font .themed-select__option-label {
+  font-size: 13px;
+  font-weight: 500;
 }
 
 .compose-format-button.icon-button {
@@ -4506,7 +4555,7 @@ html[data-surface="new-mail-notification"] #root {
   width: 1px;
   height: 22px;
   flex: 0 0 auto;
-  margin: 0 4px;
+  margin: 0 3px;
   background: color-mix(in srgb, var(--compose-divider) 82%, transparent);
 }
 
@@ -4797,6 +4846,10 @@ html[data-surface="new-mail-notification"] #root {
 .compose-rich-editor .ProseMirror em,
 .compose-rich-editor .ProseMirror i {
   font-style: italic;
+}
+
+.compose-rich-editor .ProseMirror s {
+  text-decoration: line-through;
 }
 
 .compose-rich-editor .compose-format-caret-probe {
@@ -5890,6 +5943,13 @@ html[data-surface="new-mail-notification"] #root {
     color var(--motion-fast);
 }
 
+.themed-select__option-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .themed-select__option:hover:not(:disabled),
 .themed-select__option[data-active="true"] {
   border-color: color-mix(in srgb, var(--color-primary) 16%, transparent);
@@ -6830,7 +6890,8 @@ html[data-surface="new-mail-notification"] #root {
 .settings-account-card__copy small,
 .settings-account-empty small {
   color: var(--color-text-muted);
-  font-size: 10px;
+  font-size: var(--type-compact-meta);
+  font-weight: 500;
 }
 
 .settings-account-card__avatar-picker {

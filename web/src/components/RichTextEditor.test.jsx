@@ -272,6 +272,17 @@ it("keeps only the editor formatting allowlist and converts safe text styles", (
   ).toContain('style="font-family: SimSun; font-size: 16px;"');
 });
 
+it("keeps semantic strike and canonicalizes bundled font fallback stacks", () => {
+  const cleaned = normalizeComposeHtml(
+    '<p><s>旧内容</s><span style="font-family: Noto Serif SC Variable">宋体正文</span></p>',
+  );
+
+  expect(cleaned).toContain("<s>旧内容</s>");
+  expect(cleaned).toContain(
+    'face="Noto Serif SC Variable,Noto Serif SC,Source Han Serif SC,Songti SC,SimSun,serif"',
+  );
+});
+
 it("keeps only the fixed semantic first-line indent", () => {
   const cleaned = normalizeComposeHtml(
     '<p data-first-line-indent="tab" style="text-indent: 4em; color: red">缩进</p><p data-first-line-indent="bad" style="text-indent: 9em">普通</p>',
@@ -350,6 +361,37 @@ it("changes only the selected text size without relaying out the paper", async (
   expect(firstLine.innerHTML).not.toContain("font-size");
   expect(shell.style.getPropertyValue("--compose-editor-font-size")).toBe("");
   expect(Number(shell.dataset.paperCellSize)).toBe(28);
+});
+
+it("previews and applies a bundled font with its safe fallback stack", async () => {
+  const onChange = vi.fn();
+  const onEditorReady = vi.fn();
+  const user = userEvent.setup();
+  render(
+    <RichTextEditor
+      bodyText="字体正文"
+      format={emptyFormat}
+      stationery="none"
+      onChange={onChange}
+      onEditorReady={onEditorReady}
+    />,
+  );
+  const editor = onEditorReady.mock.calls.at(-1)[0];
+  act(() => editor.commands.setTextSelection({ from: 1, to: 3 }));
+
+  await user.click(screen.getByRole("combobox", { name: "字体" }));
+  const option = screen.getByRole("option", { name: "Noto 宋体" });
+  expect(option.querySelector(".themed-select__option-label")?.style.fontFamily).toContain(
+    "Noto Serif SC Variable",
+  );
+  await user.click(option);
+
+  await waitFor(() =>
+    expect(editor.getHTML()).toContain("Noto Serif SC Variable"),
+  );
+  expect(onChange.mock.calls.at(-1)?.[0].format.body_html).toContain(
+    'face="Noto Serif SC Variable,Noto Serif SC,Source Han Serif SC,Songti SC,SimSun,serif"',
+  );
 });
 
 it("groups Latin input by three cells while keeping Han and spaces independent", () => {
@@ -778,6 +820,36 @@ it("applies real italic markup and keeps italic active at the following caret", 
   editor.commands.setTextSelection(3);
   expect(getComposeToolbarState(editor).italic).toBe(true);
   editor.destroy();
+});
+
+it("toggles semantic strike from the visible toolbar without losing selection", async () => {
+  const onChange = vi.fn();
+  const onEditorReady = vi.fn();
+  const user = userEvent.setup();
+  render(
+    <RichTextEditor
+      bodyText="旧内容正文"
+      format={emptyFormat}
+      stationery="none"
+      onChange={onChange}
+      onEditorReady={onEditorReady}
+    />,
+  );
+  const editor = onEditorReady.mock.calls.at(-1)[0];
+  const strikeButton = screen.getByRole("button", { name: "删除线" });
+  act(() => editor.commands.setTextSelection({ from: 1, to: 4 }));
+
+  await user.click(strikeButton);
+
+  await waitFor(() =>
+    expect(strikeButton.getAttribute("aria-pressed")).toBe("true"),
+  );
+  expect(editor.state.selection.from).toBe(1);
+  expect(editor.state.selection.to).toBe(4);
+  expect(editor.getHTML()).toContain("<s>旧内容</s>");
+  expect(onChange.mock.calls.at(-1)?.[0].format.body_html).toContain(
+    "<s>旧内容</s>",
+  );
 });
 
 it("toggles semantic italic from the visible toolbar without losing selection", async () => {
