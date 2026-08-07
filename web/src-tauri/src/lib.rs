@@ -46,8 +46,8 @@ use mailbox_api::{
     fetch_mailbox_message, get_mailbox_capabilities, list_archive_folder_candidates,
     list_mailbox_page, list_starred_mailbox_page, load_older_mailbox_page,
     load_older_starred_mailbox_page, move_message_to_inbox, move_message_to_trash, prepare_forward,
-    prepare_permanent_delete, save_message_attachment, set_message_seen,
-    set_message_starred_by_id, sync_mailbox, validate_account_id,
+    prepare_permanent_delete, save_message_attachment, set_message_seen, set_message_starred_by_id,
+    sync_mailbox, validate_account_id,
 };
 use storage::{PreparedStorageMigrationDto, StorageRuntime, StorageStatusDto};
 
@@ -84,7 +84,9 @@ fn validate_draft_attachment_id(attachment_id: &str) -> CommandResult<()> {
         return Err("The attachment identifier is invalid.".to_owned());
     }
     Ok(())
-}const EXTERNAL_LINK_OPEN_FAILED_EVENT: &str = "mail:external-link-open-failed";
+}
+
+const EXTERNAL_LINK_OPEN_FAILED_EVENT: &str = "mail:external-link-open-failed";
 
 type CommandResult<T> = Result<T, String>;
 
@@ -1232,9 +1234,9 @@ fn validate_external_url(value: &str) -> CommandResult<Url> {
     let url = Url::parse(value.trim()).map_err(|_| "The link is invalid.".to_owned())?;
     match url.scheme() {
         "http" | "https" => {
-            let host = url.host_str().ok_or_else(|| {
-                "The link is not safe to open.".to_owned()
-            })?;
+            let host = url
+                .host_str()
+                .ok_or_else(|| "The link is not safe to open.".to_owned())?;
             if !url.username().is_empty() || url.password().is_some() {
                 return Err("The link is not safe to open.".to_owned());
             }
@@ -1258,23 +1260,35 @@ fn validate_external_url(value: &str) -> CommandResult<Url> {
 /// or a unique-local IPv6 address. Public hostnames are never rejected here.
 fn is_loopback_or_private_host(host: &str) -> bool {
     let host = host.trim_start_matches('[').trim_end_matches(']');
-    if host.eq_ignore_ascii_case("localhost") {
+    let lower_host = host.to_ascii_lowercase();
+    if lower_host == "localhost"
+        || lower_host.ends_with(".localhost")
+        || lower_host.ends_with(".local")
+    {
         return true;
     }
     match host.parse::<std::net::IpAddr>() {
-        Ok(std::net::IpAddr::V4(v4)) => {
-            let octets = v4.octets();
-            let link_local = octets[0] == 169 && octets[1] == 254;
-            v4.is_loopback() || v4.is_private() || v4.is_unspecified() || link_local
-        }
+        Ok(std::net::IpAddr::V4(v4)) => is_loopback_or_private_ipv4(v4),
         Ok(std::net::IpAddr::V6(v6)) => {
+            if v6.is_loopback() || v6.is_unspecified() {
+                return true;
+            }
+            if let Some(v4) = v6.to_ipv4() {
+                return is_loopback_or_private_ipv4(v4);
+            }
             let segments = v6.segments();
             let link_local = segments[0] & 0xffc0 == 0xfe80;
             let unique_local = segments[0] & 0xfe00 == 0xfc00;
-            v6.is_loopback() || v6.is_unspecified() || link_local || unique_local
+            link_local || unique_local
         }
         Err(_) => false,
     }
+}
+
+fn is_loopback_or_private_ipv4(value: std::net::Ipv4Addr) -> bool {
+    let octets = value.octets();
+    let link_local = octets[0] == 169 && octets[1] == 254;
+    value.is_loopback() || value.is_private() || value.is_unspecified() || link_local
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -1456,6 +1470,7 @@ async fn add_draft_attachments(
         "add_draft_attachments",
         DiagnosticFields::default(),
         async {
+            validate_draft_id(&draft_id)?;
             let backend = backend.local()?;
             // Validate the opaque draft identity before opening a platform picker.
             backend.draft_dto(&draft_id).map_err(safe_mail_error)?;
@@ -2884,7 +2899,7 @@ mod tests {
         assert_no_private_mail_coordinates, classify_webview_navigation,
         delivery_unknown_decision_name, is_background_launch, requested_autostart_change,
         sanitize_compose_request, startup_actions, validate_delivery_unknown_request,
-        validate_external_url, validate_outbox_id,
+        validate_draft_attachment_id, validate_draft_id, validate_external_url, validate_outbox_id,
     };
 
     fn rich_message() -> InboxMessage {
@@ -3104,6 +3119,14 @@ mod tests {
         assert!(validate_outbox_id("").is_err());
         assert!(validate_outbox_id("bad\noutbox").is_err());
         assert!(validate_outbox_id(&"x".repeat(129)).is_err());
+        assert!(validate_draft_id("draft-opaque-id").is_ok());
+        assert!(validate_draft_id("").is_err());
+        assert!(validate_draft_id("bad\ndraft").is_err());
+        assert!(validate_draft_id(&"x".repeat(129)).is_err());
+        assert!(validate_draft_attachment_id("attachment-opaque-id").is_ok());
+        assert!(validate_draft_attachment_id("").is_err());
+        assert!(validate_draft_attachment_id("bad\nattachment").is_err());
+        assert!(validate_draft_attachment_id(&"x".repeat(129)).is_err());
 
         assert!(
             validate_delivery_unknown_request(DeliveryUnknownDecision::ConfirmDelivered, false)
@@ -3675,9 +3698,13 @@ mod tests {
         assert!(validate_external_url("https://user:pass@example.com/").is_err());
         assert!(validate_external_url("http://127.0.0.1:8080/admin").is_err());
         assert!(validate_external_url("http://localhost/").is_err());
+        assert!(validate_external_url("http://mail.localhost/").is_err());
+        assert!(validate_external_url("http://router.local/").is_err());
         assert!(validate_external_url("https://192.168.1.1/").is_err());
         assert!(validate_external_url("http://10.0.0.2/").is_err());
         assert!(validate_external_url("http://[::1]/").is_err());
+        assert!(validate_external_url("http://[::ffff:127.0.0.1]/").is_err());
+        assert!(validate_external_url("http://[::ffff:192.168.1.1]/").is_err());
     }
 
     #[test]

@@ -1693,13 +1693,15 @@ impl AccountRuntime {
 
         match entry.delete_credential() {
             Ok(()) | Err(keyring::Error::NoEntry) => {
-                // Also drop the pre-kind-separation entry name so an upgrade
-                // does not leave a stale credential behind.
-                let _ = Entry::new(
-                    KEYRING_SERVICE,
-                    &legacy_identity_keyring_username(&metadata),
-                )
-                .and_then(|entry| entry.delete_credential());
+                // Only legacy account metadata owns an ambiguous predecessor.
+                // A new authentication-qualified account may share the same
+                // identity with a legacy account using another authentication
+                // kind, so deleting the bare identity entry would remove the
+                // other account's credential.
+                if let Some(legacy_username) = legacy_keyring_username_for_account(&metadata) {
+                    let _ = Entry::new(KEYRING_SERVICE, &legacy_username)
+                        .and_then(|entry| entry.delete_credential());
+                }
             }
             Err(_) => {
                 log_account_operation_failure(
@@ -2167,34 +2169,7 @@ fn load_network_backend(
     let credential = match entry.get_password() {
         Ok(credential) => Zeroizing::new(credential),
         Err(keyring::Error::NoEntry) => {
-            if metadata.account_id != LEGACY_KEYRING_USERNAME {
-                // Versions before authentication-kind separation stored the
-                // credential under the bare identity name. Fall back to that
-                // entry and migrate it to the kind-qualified name so existing
-                // accounts keep working after upgrade.
-                let legacy_username = legacy_identity_keyring_username(metadata);
-                let legacy = Entry::new(KEYRING_SERVICE, &legacy_username)
-                    .map_err(|_| "The OS credential store is unavailable.".to_owned())?;
-                match legacy.get_password() {
-                    Ok(legacy_credential) => {
-                        let legacy_credential = Zeroizing::new(legacy_credential);
-                        entry
-                            .set_password(legacy_credential.as_str())
-                            .map_err(|_| {
-                                "The OS credential store could not migrate this account; local mail remains available."
-                                    .to_owned()
-                            })?;
-                        legacy_credential
-                    }
-                    Err(keyring::Error::NoEntry) => return Ok((None, false)),
-                    Err(_) => {
-                        return Err(
-                            "The OS credential store is unavailable; local mail remains available."
-                                .to_owned(),
-                        );
-                    }
-                }
-            } else {
+            if metadata.account_id == LEGACY_KEYRING_USERNAME {
                 let legacy = legacy_keyring_entry()?;
                 let legacy_credential = match legacy.get_password() {
                     Ok(credential) => Zeroizing::new(credential),
@@ -2215,6 +2190,40 @@ fn load_network_backend(
                 // linger in the OS credential store.
                 let _ = legacy.delete_credential();
                 legacy_credential
+            } else if uses_legacy_identity_account_id(metadata) {
+                // Versions before authentication-kind separation stored the
+                // credential under the bare identity name. Fall back to that
+                // entry and migrate it to the kind-qualified name so existing
+                // accounts keep working after upgrade.
+                let legacy_username = legacy_identity_keyring_username(metadata);
+                let legacy = Entry::new(KEYRING_SERVICE, &legacy_username)
+                    .map_err(|_| "The OS credential store is unavailable.".to_owned())?;
+                match legacy.get_password() {
+                    Ok(legacy_credential) => {
+                        let legacy_credential = Zeroizing::new(legacy_credential);
+                        entry
+                            .set_password(legacy_credential.as_str())
+                            .map_err(|_| {
+                                "The OS credential store could not migrate this account; local mail remains available."
+                                    .to_owned()
+                            })?;
+                        // Once the credential is safely written under the
+                        // authentication-qualified name, remove the ambiguous
+                        // predecessor so another authentication kind cannot
+                        // mistake the token bundle for a password (or vice versa).
+                        let _ = legacy.delete_credential();
+                        legacy_credential
+                    }
+                    Err(keyring::Error::NoEntry) => return Ok((None, false)),
+                    Err(_) => {
+                        return Err(
+                            "The OS credential store is unavailable; local mail remains available."
+                                .to_owned(),
+                        );
+                    }
+                }
+            } else {
+                return Ok((None, false));
             }
         }
         Err(_) => {
@@ -2338,21 +2347,34 @@ fn legacy_identity_keyring_username(metadata: &AccountMetadata) -> String {
     )
 }
 
+fn uses_legacy_identity_account_id(metadata: &AccountMetadata) -> bool {
+    metadata.account_id == legacy_identity_keyring_username(metadata)
+}
+
+fn legacy_keyring_username_for_account(metadata: &AccountMetadata) -> Option<String> {
+    if metadata.account_id == LEGACY_KEYRING_USERNAME {
+        Some(LEGACY_KEYRING_USERNAME.to_owned())
+    } else if uses_legacy_identity_account_id(metadata) {
+        Some(legacy_identity_keyring_username(metadata))
+    } else {
+        None
+    }
+}
+
 fn account_database_path(app_data: &Path, metadata: &AccountMetadata) -> PathBuf {
-    // Prefer the persisted account id so accounts created before
-    // authentication-kind separation keep their existing cache files; newly
-    // created accounts carry the kind suffix in the id and therefore get their
-    // own database file.
-    let key = metadata
-        .account_id
-        .strip_prefix(KEYRING_USERNAME_PREFIX)
-        .map(str::to_owned)
-        .unwrap_or_else(|| {
-            generated_account_id(metadata)
-                .strip_prefix(KEYRING_USERNAME_PREFIX)
-                .unwrap_or_default()
-                .to_owned()
-        });
+    // Versions through v1.1.1 derived the cache filename only from the
+    // identity hash, including the original `primary` account. Preserve that
+    // exact filename for legacy metadata. New authentication-qualified
+    // accounts use a distinct suffix. Never place the persisted account id
+    // itself into a path because local metadata may be malformed or tampered.
+    let identity_hash = &account_identity_hash(metadata)[..24];
+    let key = if metadata.account_id == LEGACY_KEYRING_USERNAME
+        || uses_legacy_identity_account_id(metadata)
+    {
+        identity_hash.to_owned()
+    } else {
+        format!("{identity_hash}-{}", authentication_suffix(metadata))
+    };
     app_data.join(format!("mine-mail-{key}.sqlite3"))
 }
 
@@ -2955,14 +2977,14 @@ fn reqwest_failure_diagnostic(error: &reqwest::Error) -> (&'static str, Diagnost
 }
 
 async fn google_http_client(
-    target_url: &'static str,
+    _target_url: &'static str,
 ) -> Result<(reqwest::Client, &'static str), reqwest::Error> {
     let builder = reqwest::Client::builder().timeout(OAUTH_HTTP_TIMEOUT);
 
     #[cfg(target_os = "linux")]
     let (builder, proxy_mode) = if linux_https_proxy_environment_configured() {
         (builder, "environment_proxy")
-    } else if let Some(proxy_uri) = linux_system_proxy_uri(target_url).await {
+    } else if let Some(proxy_uri) = linux_system_proxy_uri(_target_url).await {
         (
             builder.proxy(reqwest::Proxy::https(proxy_uri)?),
             "system_proxy",
@@ -3094,12 +3116,13 @@ mod tests {
     use super::{
         AccountAuthentication, AccountMetadata, AccountProvider, AccountRuntime, AccountStore,
         BackendState, ConfigureAccountRequest, GoogleAuthorization, GoogleOAuthError,
-        GoogleTokenRevocation, MAX_ACCOUNTS, OAuthTokenBundle, StoredAccounts,
-        account_database_path, account_presets, connection_report_result,
+        GoogleTokenRevocation, LEGACY_KEYRING_USERNAME, MAX_ACCOUNTS, OAuthTokenBundle,
+        StoredAccounts, account_database_path, account_presets, connection_report_result,
         describe_google_token_error, google_client_id, google_refresh_failure,
-        google_revocation_response, keyring_username, normalize_account_remark, open_local_backend,
+        google_revocation_response, keyring_username, legacy_identity_keyring_username,
+        legacy_keyring_username_for_account, normalize_account_remark, open_local_backend,
         remove_managed_attachment_data_if_requested, remove_sqlite_cache_files,
-        sqlite_sidecar_path,
+        sqlite_sidecar_path, uses_legacy_identity_account_id,
     };
     #[cfg(target_os = "linux")]
     use super::{normalize_linux_proxy_uri, select_linux_system_proxy};
@@ -3478,11 +3501,8 @@ mod tests {
         stored.accounts[0].remark = Some("工作邮箱".to_owned());
         stored
             .upsert_and_activate(
-                AccountMetadata::preset(
-                    AccountProvider::Gmail,
-                    "user0@gmail.com".to_owned(),
-                )
-                .unwrap(),
+                AccountMetadata::preset(AccountProvider::Gmail, "user0@gmail.com".to_owned())
+                    .unwrap(),
             )
             .unwrap();
         assert_eq!(stored.accounts[0].account_id, first_id);
@@ -3502,9 +3522,7 @@ mod tests {
             )
             .unwrap();
         stored
-            .upsert_and_activate(
-                AccountMetadata::google("user0@gmail.com".to_owned()).unwrap(),
-            )
+            .upsert_and_activate(AccountMetadata::google("user0@gmail.com".to_owned()).unwrap())
             .unwrap();
         assert_eq!(stored.accounts.len(), 2);
         assert_ne!(stored.accounts[0].account_id, stored.accounts[1].account_id);
@@ -3533,10 +3551,59 @@ mod tests {
         assert_eq!(keyring_username(&first), keyring_username(&same));
         assert_ne!(keyring_username(&first), keyring_username(&second));
 
+        let password_gmail =
+            AccountMetadata::preset(AccountProvider::Gmail, "same@gmail.com".to_owned())
+                .expect("password Gmail metadata");
+        let oauth = AccountMetadata::google("same@gmail.com".to_owned()).expect("OAuth metadata");
+        assert_eq!(
+            legacy_identity_keyring_username(&password_gmail),
+            legacy_identity_keyring_username(&oauth)
+        );
+        assert_ne!(keyring_username(&password_gmail), keyring_username(&oauth));
+
+        let mut primary = password_gmail.clone();
+        primary.account_id = LEGACY_KEYRING_USERNAME.to_owned();
+        assert_eq!(
+            legacy_keyring_username_for_account(&primary).as_deref(),
+            Some(LEGACY_KEYRING_USERNAME)
+        );
+        assert_eq!(legacy_keyring_username_for_account(&password_gmail), None);
+
         let path = account_database_path(std::path::Path::new("data"), &first);
         let filename = path.file_name().unwrap().to_str().unwrap();
         assert!(filename.starts_with("mine-mail-"));
         assert!(!filename.contains("first"));
+
+        let mut legacy_identity = first.clone();
+        legacy_identity.account_id = legacy_identity_keyring_username(&legacy_identity);
+        assert!(uses_legacy_identity_account_id(&legacy_identity));
+        assert_eq!(
+            legacy_keyring_username_for_account(&legacy_identity).as_deref(),
+            Some(legacy_identity.account_id.as_str())
+        );
+        let legacy_path = account_database_path(std::path::Path::new("data"), &legacy_identity);
+        assert_ne!(legacy_path, path);
+        assert!(
+            !legacy_path
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .contains("-pwd")
+        );
+
+        let mut legacy_primary = first.clone();
+        legacy_primary.account_id = "primary".to_owned();
+        assert_eq!(
+            account_database_path(std::path::Path::new("data"), &legacy_primary),
+            legacy_path
+        );
+
+        let mut malformed = first.clone();
+        malformed.account_id = "account-..\\outside".to_owned();
+        let malformed_path = account_database_path(std::path::Path::new("data"), &malformed);
+        assert_eq!(malformed_path.parent(), Some(std::path::Path::new("data")));
+        assert!(!malformed_path.to_string_lossy().contains("outside"));
     }
 
     #[test]

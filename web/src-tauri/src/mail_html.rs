@@ -1760,7 +1760,8 @@ fn sanitize_html_segment(
 #[cfg(test)]
 mod tests {
     use super::{
-        MailBodySegmentConfidence, MailBodySegmentKind, MailBodySegmentMetadata, MailHtmlStructure,
+        MAX_INLINE_IMAGE_DATA_URL_BYTES, MailBodySegmentConfidence, MailBodySegmentKind,
+        MailBodySegmentMetadata, MailHtmlStructure, css_has_remote_url, is_safe_image_data_url,
         sanitize_mail_html, segment_mail_body, segment_mail_body_with_metadata,
         segment_mail_body_with_metadata_chain,
     };
@@ -1808,6 +1809,28 @@ mod tests {
         assert!(!native.contains("width="));
         assert!(!native.contains("onclick"));
         assert!(!native.contains("image/svg+xml"));
+    }
+
+    #[test]
+    fn remote_css_and_inline_data_image_guards_cover_bounded_variants() {
+        for css in [
+            "background:url(  'https://tracker.example/pixel')",
+            "background:url(\t//tracker.example/pixel)",
+            "@import \"https://tracker.example/theme.css\"",
+            "@import url(https://tracker.example/theme.css)",
+        ] {
+            assert!(css_has_remote_url(css), "remote CSS was missed: {css}");
+        }
+        assert!(!css_has_remote_url(
+            "background:url(data:image/png;base64,aqid)"
+        ));
+        assert!(is_safe_image_data_url("data:image/png;base64,AQID"));
+
+        let oversized = format!(
+            "data:image/png;base64,{}",
+            "A".repeat(MAX_INLINE_IMAGE_DATA_URL_BYTES + 1)
+        );
+        assert!(!is_safe_image_data_url(&oversized));
     }
 
     #[test]

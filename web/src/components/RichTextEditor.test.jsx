@@ -419,9 +419,18 @@ it("keeps the link editor open with a hint when nothing is selected", async () =
   });
   expect(screen.getByRole("textbox", { name: "链接地址" })).toBeTruthy();
   expect(editor.querySelector("a")).toBeNull();
+
+  await user.click(screen.getByRole("button", { name: "关闭链接输入" }));
+  expect(screen.queryByRole("alert")).toBeNull();
+  await user.click(screen.getByRole("button", { name: "添加链接" }));
+  expect(screen.getByRole("textbox", { name: "链接地址" }).value).toBe(
+    "https://example.com",
+  );
+  expect(screen.queryByRole("alert")).toBeNull();
 });
 
-it("changes only the selected text size without relaying out the paper", async () => {  const onEditorReady = vi.fn();
+it("changes only the selected text size without relaying out the paper", async () => {
+  const onEditorReady = vi.fn();
   const user = userEvent.setup();
   render(
     <RichTextEditor

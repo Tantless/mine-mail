@@ -694,7 +694,10 @@ family. Preserve the relative hierarchy when tuning optical values.
   for consequential actions. Do not turn routine settings into confirmations.
 - Lower-right toasts are reserved for failures and bounded information that
   requires attention. Routine successful actions use their resulting UI state or
-  nearby inline status and never produce a success toast.
+  nearby inline status and do not produce a success toast. A user-initiated,
+  consequential action whose completion is otherwise not apparent may use one
+  compact success toast, such as discarding a draft, retrying an Outbox message,
+  or removing an account.
 - A missing Archive role is configured only after explicit folder navigation or
   a message Archive action. Mine Mail opens a compact, theme-owned selection
   dialog containing eligible existing server-folder display labels; it does not

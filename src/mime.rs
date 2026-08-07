@@ -57,11 +57,6 @@ const ATTACHMENT_TOKEN_BYTES: usize = 36;
 const MAX_INCOMING_RAW_BYTES: usize = 50 * 1024 * 1024;
 /// Cached subject length bound; subjects beyond this are truncated on ingest.
 const MAX_CACHED_SUBJECT_BYTES: usize = 4 * 1024;
-/// Cached plain-text body length bound to keep hostile messages from bloating
-/// the SQLite store or preview/quote processing.
-const MAX_CACHED_BODY_TEXT_BYTES: usize = 4 * 1024 * 1024;
-/// Cached HTML body length bound (matches the quoted-HTML budget).
-const MAX_CACHED_BODY_HTML_BYTES: usize = 12 * 1024 * 1024;
 /// Maximum number of `References`/`In-Reply-To` ids kept per incoming message.
 const MAX_MESSAGE_ID_REFERENCES: usize = 128;
 /// Maximum byte length kept for a single message-id token.
@@ -1998,11 +1993,10 @@ fn is_windows_reserved_filename(value: &str) -> bool {
     matches!(
         stem.as_str(),
         "CON" | "PRN" | "AUX" | "NUL" | "CLOCK$" | "CONIN$" | "CONOUT$"
-    )
-        || stem
-            .strip_prefix("COM")
-            .or_else(|| stem.strip_prefix("LPT"))
-            .is_some_and(|number| number.len() == 1 && matches!(number.as_bytes()[0], b'1'..=b'9'))
+    ) || stem
+        .strip_prefix("COM")
+        .or_else(|| stem.strip_prefix("LPT"))
+        .is_some_and(|number| number.len() == 1 && matches!(number.as_bytes()[0], b'1'..=b'9'))
 }
 
 fn declared_mime_type(part: &mail_parser::MessagePart<'_>) -> Option<String> {
@@ -2454,12 +2448,20 @@ fn extract_renderable_html(message: &mail_parser::Message<'_>) -> Option<String>
         total_inline_bytes += contents.len();
         let data_url = format!("data:{media_type};base64,{}", BASE64.encode(contents));
         for needle in [format!("cid:{content_id}"), format!("cid:<{content_id}>")] {
-            let (next, count) = replace_ascii_case_insensitive(&html, &needle, &data_url);
+            let remaining_replacements = MAX_INLINE_IMAGE_REPLACEMENTS - replacements;
+            let output_budget = html.len().max(MAX_RENDERABLE_HTML_BYTES);
+            let (next, count) = replace_ascii_case_insensitive_bounded(
+                &html,
+                &needle,
+                &data_url,
+                remaining_replacements,
+                output_budget,
+            );
             html = next;
             replacements += count;
-            // A single large image referenced from many places must not be
-            // allowed to blow the output past the render budget.
-            if html.len() > MAX_RENDERABLE_HTML_BYTES {
+            if replacements >= MAX_INLINE_IMAGE_REPLACEMENTS
+                || html.len() >= MAX_RENDERABLE_HTML_BYTES
+            {
                 break 'parts;
             }
         }
@@ -2488,21 +2490,49 @@ fn safe_inline_image_media_type(part: &mail_parser::MessagePart<'_>) -> Option<&
     }
 }
 
-fn replace_ascii_case_insensitive(input: &str, needle: &str, replacement: &str) -> (String, usize) {
-    if needle.is_empty() {
+fn find_ascii_case_insensitive(input: &str, needle: &str) -> Option<usize> {
+    let needle = needle.as_bytes();
+    (!needle.is_empty())
+        .then(|| {
+            input
+                .as_bytes()
+                .windows(needle.len())
+                .position(|window| window.eq_ignore_ascii_case(needle))
+        })
+        .flatten()
+}
+
+fn replace_ascii_case_insensitive_bounded(
+    input: &str,
+    needle: &str,
+    replacement: &str,
+    max_replacements: usize,
+    max_output_bytes: usize,
+) -> (String, usize) {
+    if needle.is_empty() || max_replacements == 0 {
         return (input.to_owned(), 0);
     }
-    let lower_input = input.to_ascii_lowercase();
-    let lower_needle = needle.to_ascii_lowercase();
     let mut output = String::with_capacity(input.len());
     let mut offset = 0;
     let mut count = 0usize;
 
-    while let Some(relative) = lower_input[offset..].find(&lower_needle) {
+    while count < max_replacements {
+        let Some(relative) = find_ascii_case_insensitive(&input[offset..], needle) else {
+            break;
+        };
         let start = offset + relative;
+        let after = start + needle.len();
+        let projected_size = output
+            .len()
+            .saturating_add(start - offset)
+            .saturating_add(replacement.len())
+            .saturating_add(input.len() - after);
+        if projected_size > max_output_bytes {
+            break;
+        }
         output.push_str(&input[offset..start]);
         output.push_str(replacement);
-        offset = start + needle.len();
+        offset = after;
         count += 1;
     }
     output.push_str(&input[offset..]);
@@ -2592,8 +2622,7 @@ pub(crate) fn parse_incoming_message(
         .map(|name| safe_attachment_filename(Some(name)))
         .collect();
 
-    let body_html = extract_renderable_html(&message)
-        .map(|html| truncate_utf8(&html, MAX_CACHED_BODY_HTML_BYTES).to_owned());
+    let body_html = extract_renderable_html(&message);
 
     Ok(InboxMessage {
         id: 0,
@@ -2619,9 +2648,7 @@ pub(crate) fn parse_incoming_message(
             .body_preview(180)
             .map(|preview| preview.into_owned())
             .unwrap_or_default(),
-        body_text: message
-            .body_text(0)
-            .map(|body| truncate_utf8(&body, MAX_CACHED_BODY_TEXT_BYTES).to_owned()),
+        body_text: message.body_text(0).map(|body| body.into_owned()),
         body_html,
         attachment_names,
         body_fetched: metadata.body_fetched,
@@ -2743,8 +2770,9 @@ mod tests {
         outbox_body_text, outbox_has_reply_headers, outbox_message_id, outbox_preview,
         outbox_sent_at, outbox_subject, parse_draft_message, parse_incoming_message,
         parse_incoming_summary_or_fallback, prepare_forward_source,
-        prepare_forward_source_without_attachments, render_message_html, restore_outbox_envelope,
-        safe_attachment_filename, sanitize_compose_html, stable_digest,
+        prepare_forward_source_without_attachments, render_message_html,
+        replace_ascii_case_insensitive_bounded, restore_outbox_envelope, safe_attachment_filename,
+        sanitize_compose_html, stable_digest,
     };
     use crate::{
         ComposeFormat, ComposeRequest, ForwardContext, ForwardQuotedRenderMode, MailAddress,
@@ -4040,6 +4068,58 @@ Subject: No Bcc header\r\n\r\nBody";
         assert!(html.contains("data:image/png;base64,AQID"));
         assert!(!html.to_ascii_lowercase().contains("cid:logo@example.com"));
         assert_eq!(render_message_html(&parsed).as_deref(), Some(html));
+    }
+
+    #[test]
+    fn inline_cid_replacement_applies_limits_before_allocating_growth() {
+        let input = (0..100)
+            .map(|_| r#"<img src="CID:logo@example.com">"#)
+            .collect::<String>();
+        let replacement = format!("data:image/png;base64,{}", "A".repeat(1_024));
+        let output_budget = input.len() + 2 * replacement.len();
+
+        let (output, count) = replace_ascii_case_insensitive_bounded(
+            &input,
+            "cid:logo@example.com",
+            &replacement,
+            64,
+            output_budget,
+        );
+
+        assert_eq!(count, 2);
+        assert!(output.len() <= output_budget);
+        assert_eq!(output.matches("data:image/png;base64,").count(), 2);
+        assert_eq!(
+            output
+                .to_ascii_lowercase()
+                .matches("cid:logo@example.com")
+                .count(),
+            98
+        );
+    }
+
+    #[test]
+    fn incoming_plain_body_is_preserved_within_the_message_limit() {
+        let body = "a".repeat(4 * 1024 * 1024 + 17);
+        let raw = format!(
+            "From: sender@example.com\r\nSubject: Large body\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n{body}"
+        );
+        let parsed = parse_incoming_message(
+            raw.as_bytes(),
+            IncomingMetadata {
+                account_id: "primary",
+                mailbox: "INBOX",
+                uid: 46,
+                flags: Vec::new(),
+                internal_date: None,
+                size_bytes: raw.len() as u32,
+                synced_at: "2026-07-16T00:00:00Z".to_owned(),
+                body_fetched: true,
+            },
+        )
+        .expect("parse large but accepted body");
+
+        assert_eq!(parsed.body_text.as_deref(), Some(body.as_str()));
     }
 
     #[test]

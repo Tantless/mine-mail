@@ -662,8 +662,9 @@ impl ImapConnection {
                 Err(error) => {
                     // Best-effort leave IDLE before propagating the error so
                     // the server does not keep a stale idle session until the
-                    // TCP connection is dropped.
-                    let _ = handle.done().await;
+                    // TCP connection is dropped. Bound this cleanup just like
+                    // the ordinary DONE path so an error cannot hang forever.
+                    let _ = timeout(COMMAND_TIMEOUT, handle.done()).await;
                     return Err(MailError::Imap(error.to_string()));
                 }
             }

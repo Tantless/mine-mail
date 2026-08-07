@@ -1203,11 +1203,11 @@ function RichTextEditorCore({
   const insertLink = () => {
     const href = safeHref(linkValue);
     if (!href) {
-      setLinkError("请输入有效的链接地址");
+      setLinkError("请检查输入：请输入有效的链接地址");
       return;
     }
     if (!editorIsUsable(editor) || editor.state.selection.empty) {
-      setLinkError("请先在正文中选中要添加链接的文字");
+      setLinkError("操作未完成：请先在正文中选中要添加链接的文字");
       return;
     }
     runEditorCommand((chain) => chain.setLink({ href }));
@@ -1328,7 +1328,10 @@ function RichTextEditorCore({
           <ToolbarButton
             label="添加链接"
             active={showLinkEditor}
-            onActivate={() => setShowLinkEditor((current) => !current)}
+            onActivate={() => {
+              setLinkError(null);
+              setShowLinkEditor((current) => !current);
+            }}
             disabled={disabled}
           >
             <LinkSimple size={17} />
@@ -1345,6 +1348,7 @@ function RichTextEditorCore({
                   event.currentTarget
                     .closest(".compose-link-control")
                     ?.querySelector(".compose-format-button") || null;
+                setLinkError(null);
                 setShowLinkEditor(false);
                 trigger?.focus();
               }}
@@ -1382,7 +1386,10 @@ function RichTextEditorCore({
               </button>
               <IconButton
                 label="关闭链接输入"
-                onClick={() => setShowLinkEditor(false)}
+                onClick={() => {
+                  setLinkError(null);
+                  setShowLinkEditor(false);
+                }}
               >
                 <X size={14} />
               </IconButton>

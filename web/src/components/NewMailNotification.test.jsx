@@ -287,4 +287,50 @@ describe("Mine Mail new mail notification surface", () => {
     expect(await screen.findByText("仍待处理")).toBeTruthy();
     expect(notificationBridge.dismissNewMailNotification).toHaveBeenCalledWith(24);
   });
+
+  it("limits retries per notification and resets the budget for a newer one", async () => {
+    let pending = {
+      notificationId: 30,
+      sender: "待处理发件人",
+      subject: "第一封待关闭邮件",
+      count: 1,
+      webSound: null,
+    };
+    notificationBridge.dismissNewMailNotification.mockResolvedValue(false);
+    notificationBridge.getNewMailNotification.mockImplementation(async () => pending);
+    const user = userEvent.setup();
+    render(<NewMailNotification />);
+
+    expect(await screen.findByText("第一封待关闭邮件")).toBeTruthy();
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await user.click(
+        screen.getByRole("button", { name: "关闭新邮件通知" }),
+      );
+      expect(await screen.findByText("第一封待关闭邮件")).toBeTruthy();
+    }
+    await user.click(
+      screen.getByRole("button", { name: "关闭新邮件通知" }),
+    );
+    await waitFor(() =>
+      expect(screen.queryByText("第一封待关闭邮件")).toBeNull(),
+    );
+
+    pending = {
+      notificationId: 31,
+      sender: "另一位发件人",
+      subject: "第二封待关闭邮件",
+      count: 1,
+      webSound: null,
+    };
+    await act(async () => {
+      notificationBridge.handler({ payload: pending });
+    });
+    expect(await screen.findByText("第二封待关闭邮件")).toBeTruthy();
+    await user.click(
+      screen.getByRole("button", { name: "关闭新邮件通知" }),
+    );
+
+    expect(await screen.findByText("第二封待关闭邮件")).toBeTruthy();
+    expect(notificationBridge.dismissNewMailNotification).toHaveBeenCalledTimes(5);
+  });
 });

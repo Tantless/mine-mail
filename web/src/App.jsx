@@ -6695,8 +6695,23 @@ export function App() {
     }
   };
 
+  const restoreComposerAfterFailedAccountConnection = useCallback(
+    (sessionId) => {
+      if (!sessionId) return;
+      commitComposer((current) =>
+        current?.sessionId === sessionId && current.minimized
+          ? { ...current, minimized: false, startMinimized: false }
+          : current,
+      );
+    },
+    [commitComposer],
+  );
+
   const handleConfigureAccount = async (request) => {
     const previousAccountId = activeAccountIdRef.current;
+    const expandedComposerSessionId = composerRef.current?.minimized
+      ? null
+      : (composerRef.current?.sessionId ?? null);
     if (!(await prepareComposerForAccountSwitch())) {
       return;
     }
@@ -6762,13 +6777,7 @@ export function App() {
       setAccountError(message);
       setAccountErrorProvider(request.provider);
       setAccountSubmitStatus("error");
-      // Restore the composer that was minimized before the attempt so the
-      // user's unsaved content stays visible instead of being hidden.
-      commitComposer((current) =>
-        current?.minimized
-          ? { ...current, minimized: false, startMinimized: false }
-          : current,
-      );
+      restoreComposerAfterFailedAccountConnection(expandedComposerSessionId);
     }
   };
 
@@ -6814,6 +6823,9 @@ export function App() {
 
   const handleConnectGoogle = async () => {
     const previousAccountId = activeAccountIdRef.current;
+    const expandedComposerSessionId = composerRef.current?.minimized
+      ? null
+      : (composerRef.current?.sessionId ?? null);
     if (!(await prepareComposerForAccountSwitch())) {
       return;
     }
@@ -6829,12 +6841,7 @@ export function App() {
       setAccountError(message);
       setAccountErrorProvider("gmail");
       setAccountSubmitStatus("error");
-      // Restore the composer that was minimized before the attempt.
-      commitComposer((current) =>
-        current?.minimized
-          ? { ...current, minimized: false, startMinimized: false }
-          : current,
-      );
+      restoreComposerAfterFailedAccountConnection(expandedComposerSessionId);
     }
   };
 

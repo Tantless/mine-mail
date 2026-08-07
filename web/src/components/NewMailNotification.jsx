@@ -104,6 +104,16 @@ export function NewMailNotification() {
   // Bounded retries for the dismiss command so a persistently failing backend
   // cannot trigger an endless restore-and-retry loop every few seconds.
   const dismissRetryCountRef = useRef(0);
+  const dismissRetryNotificationIdRef = useRef(null);
+
+  const resetDismissRetriesFor = useCallback((item) => {
+    const sequence = notificationSequence(item?.notificationId);
+    if (sequence === null || sequence === dismissRetryNotificationIdRef.current) {
+      return;
+    }
+    dismissRetryNotificationIdRef.current = sequence;
+    dismissRetryCountRef.current = 0;
+  }, []);
 
   const clearDismissTimer = useCallback(() => {
     if (dismissTimerRef.current !== null) {
@@ -134,11 +144,19 @@ export function NewMailNotification() {
     const newestSequence = notificationSequence(newest.notificationId);
     if (
       newestSequence !== null &&
+      lastPresentedIdRef.current !== null &&
+      newestSequence < lastPresentedIdRef.current
+    ) {
+      return;
+    }
+    if (
+      newestSequence !== null &&
       (lastPresentedIdRef.current === null ||
         newestSequence > lastPresentedIdRef.current)
     ) {
       lastPresentedIdRef.current = newestSequence;
     }
+    resetDismissRetriesFor(newest);
     notificationRef.current = newest;
     setNotification(newest);
     clearDismissTimer();
@@ -146,7 +164,7 @@ export function NewMailNotification() {
       () => void dismissActionRef.current?.(newest),
       visibleDurationMs,
     );
-  }, [clearDismissTimer]);
+  }, [clearDismissTimer, resetDismissRetriesFor]);
 
   const dismiss = useCallback(
     async (item) => {
@@ -160,6 +178,7 @@ export function NewMailNotification() {
         );
         if (dismissed === true) {
           dismissRetryCountRef.current = 0;
+          dismissRetryNotificationIdRef.current = null;
         } else {
           const pending = await mailApi.getNewMailNotification().catch(() => null);
           if (pending && canRetry) {
@@ -209,12 +228,13 @@ export function NewMailNotification() {
         return;
       }
       lastPresentedIdRef.current = sequence;
+      resetDismissRetriesFor(item);
       notificationRef.current = item;
       setNotification(item);
       playWebSound(item.webSound);
       scheduleDismiss(item);
     },
-    [scheduleDismiss],
+    [resetDismissRetriesFor, scheduleDismiss],
   );
 
   useEffect(() => {

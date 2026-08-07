@@ -38,7 +38,11 @@ require the user's approval and an update to the corresponding canonical documen
 - Keep account data, caches, notification baselines, queued mutations, and
   synchronization state scoped by stable account ID.
 - Never expose authorization secrets, passwords, OAuth tokens, complete RFC822
-  messages, or unrestricted database/file/network access to React.
+  messages, or unrestricted database/file/network access to React. The exact
+  active or user-selected product-data directory is the sole complete-path
+  exception, limited to the About and confirmed storage-migration flow required
+  by `docs/PRODUCT.md`; mail, attachment, diagnostic, and managed-cache paths
+  remain Rust-only.
 - Never write mailbox addresses, subjects, message bodies, raw HTML/RFC822,
   credentials, tokens, or complete local paths to logs. Keep errors useful but
   privacy-safe.

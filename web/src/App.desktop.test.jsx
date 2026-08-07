@@ -2369,6 +2369,54 @@ describe("Mine Mail desktop state bridge", () => {
     expect(screen.queryByText("Google 登录等待超时，请重试。")).toBeNull();
   });
 
+  it("restores only a composer expanded by a failed account connection", async () => {
+    desktop.mailApi.connectGoogleAccount.mockRejectedValue(
+      new Error("Google 登录等待超时，请重试。"),
+    );
+    const user = userEvent.setup();
+    render(<App />);
+
+    await screen.findByRole("button", { name: "当前账户 me@163.com" });
+    await user.click(screen.getByRole("button", { name: /写信/ }));
+    await user.type(screen.getByLabelText("主题"), "登录失败仍需编辑");
+    await user.click(screen.getByRole("button", { name: /添加邮箱账户/ }));
+    await user.click(await screen.findByRole("button", { name: /Gmail/ }));
+    await user.click(screen.getByRole("button", { name: "使用 Google 登录" }));
+
+    expect(
+      await screen.findByText("Google 登录等待超时，请重试。"),
+    ).toBeTruthy();
+    expect(screen.getByLabelText("主题").value).toBe("登录失败仍需编辑");
+  });
+
+  it("keeps an already minimized composer minimized after account connection fails", async () => {
+    desktop.mailApi.connectGoogleAccount.mockRejectedValue(
+      new Error("Google 登录等待超时，请重试。"),
+    );
+    const user = userEvent.setup();
+    render(<App />);
+
+    await screen.findByRole("button", { name: "当前账户 me@163.com" });
+    await user.click(screen.getByRole("button", { name: /写信/ }));
+    await user.type(screen.getByLabelText("主题"), "原本已经最小化");
+    minimizeComposer();
+    await screen.findByRole("button", {
+      name: "还原写信窗口：原本已经最小化",
+    });
+
+    await user.click(screen.getByRole("button", { name: /添加邮箱账户/ }));
+    await user.click(await screen.findByRole("button", { name: /Gmail/ }));
+    await user.click(screen.getByRole("button", { name: "使用 Google 登录" }));
+
+    expect(
+      await screen.findByText("Google 登录等待超时，请重试。"),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "还原写信窗口：原本已经最小化" }),
+    ).toBeTruthy();
+    expect(screen.queryByLabelText("主题")).toBeNull();
+  });
+
   it("stabilizes the current compose session before connecting a password account", async () => {
     desktop.mailApi.configureAccount.mockResolvedValue({
       configured: true,

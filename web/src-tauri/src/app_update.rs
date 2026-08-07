@@ -9,27 +9,27 @@ use tauri::{
     async_runtime::{JoinHandle, Mutex},
     ipc::Channel,
 };
-use tauri_plugin_updater::UpdaterExt;
+use tauri_plugin_updater::{Error as UpdaterError, UpdaterExt};
 
 const MAX_UPDATE_IDENTIFIER_BYTES: usize = 64;
-const MAX_UPDATE_FAILURE_MESSAGE_BYTES: usize = 256;
 
-/// Maps an updater error to a privacy-safe message. Raw plugin errors can
-/// embed download URLs, drive letters, or local installer paths; anything
-/// containing such separators is replaced with a generic message so the UI
-/// never shows filesystem or network details.
-fn safe_update_error_message(error: impl std::fmt::Display) -> String {
-    const GENERIC: &str = "更新下载或安装失败，请稍后重试。";
-    let text = error.to_string();
-    let looks_safe = text.len() <= MAX_UPDATE_FAILURE_MESSAGE_BYTES
-        && !text.contains(':')
-        && !text.contains('/')
-        && !text.contains('\\');
-    if looks_safe {
-        text
+fn safe_update_metadata_error(_error: UpdaterError) -> String {
+    "获取更新信息失败，请检查网络后重试。".to_owned()
+}
+
+fn safe_update_download_error(error: UpdaterError) -> String {
+    if matches!(
+        error,
+        UpdaterError::Minisign(_) | UpdaterError::Base64(_) | UpdaterError::SignatureUtf8(_)
+    ) {
+        "更新签名验证失败，当前版本和本地邮件未受影响，请稍后重试。".to_owned()
     } else {
-        GENERIC.to_owned()
+        "更新包下载失败，请检查网络后重试。".to_owned()
     }
+}
+
+fn safe_update_install_error(_error: UpdaterError) -> String {
+    "更新安装失败，当前版本和本地邮件未受影响，请稍后重试。".to_owned()
 }
 
 #[derive(Clone, Default)]
@@ -97,11 +97,11 @@ async fn download_and_install(
     let updater = app
         .updater_builder()
         .build()
-        .map_err(safe_update_error_message)?;
+        .map_err(safe_update_metadata_error)?;
     let update = updater
         .check()
         .await
-        .map_err(safe_update_error_message)?
+        .map_err(safe_update_metadata_error)?
         .ok_or_else(|| "已找不到用户确认安装的 Mine Mail 更新。".to_owned())?;
 
     if update.version != expected_version {
@@ -127,13 +127,11 @@ async fn download_and_install(
             },
         )
         .await
-        .map_err(safe_update_error_message)?;
+        .map_err(safe_update_download_error)?;
 
     installing.store(true, Ordering::Release);
     let _ = on_progress.send(AppUpdateEvent::Installing);
-    update
-        .install(bytes)
-        .map_err(safe_update_error_message)
+    update.install(bytes).map_err(safe_update_install_error)
 }
 
 #[tauri::command]
@@ -237,18 +235,26 @@ mod tests {
     }
 
     #[test]
-    fn update_failure_messages_never_leak_paths_or_urls() {
+    fn update_failure_messages_are_bounded_chinese_stage_descriptions() {
         assert_eq!(
-            safe_update_error_message("http://cdn.example.com/mine-mail-1.1.1.zip"),
-            "更新下载或安装失败，请稍后重试。"
+            safe_update_metadata_error(UpdaterError::ReleaseNotFound),
+            "获取更新信息失败，请检查网络后重试。"
         );
         assert_eq!(
-            safe_update_error_message("C:\\Users\\tester\\AppData\\Local\\Temp\\update.exe"),
-            "更新下载或安装失败，请稍后重试。"
+            safe_update_download_error(UpdaterError::Network(
+                "http://cdn.example.com/private/update.exe".to_owned(),
+            )),
+            "更新包下载失败，请检查网络后重试。"
         );
         assert_eq!(
-            safe_update_error_message("signature verification failed"),
-            "signature verification failed"
+            safe_update_download_error(UpdaterError::SignatureUtf8(
+                "C:\\Users\\tester\\secret.sig".to_owned(),
+            )),
+            "更新签名验证失败，当前版本和本地邮件未受影响，请稍后重试。"
+        );
+        assert_eq!(
+            safe_update_install_error(UpdaterError::PackageInstallFailed),
+            "更新安装失败，当前版本和本地邮件未受影响，请稍后重试。"
         );
     }
 }
