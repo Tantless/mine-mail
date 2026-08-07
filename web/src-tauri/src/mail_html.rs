@@ -25,6 +25,10 @@ const MAX_TEXT_DOMINANT_ELEMENTS: usize = 60;
 const MAX_TEXT_DOMINANT_DEPTH: usize = 16;
 const MAX_TEXT_DOMINANT_CHARS: usize = 1_600;
 const MIN_STYLED_TEXT_DOMINANT_CHARS: usize = 80;
+/// Maximum base64 payload accepted for an inline `data:` image URL. Bound
+/// keeps a hostile message from injecting a multi-megabyte data URL into the
+/// rendered document or WebView memory.
+const MAX_INLINE_IMAGE_DATA_URL_BYTES: usize = 6 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum MailHtmlStructure {
@@ -305,16 +309,7 @@ pub(crate) fn sanitize_mail_html(source: &str) -> SanitizedMailHtml {
 
     let fragment = builder.clean(source).to_string();
     let lower_fragment = fragment.to_ascii_lowercase();
-    let has_remote_css_image = [
-        "url(http://",
-        "url(https://",
-        "url('http://",
-        "url('https://",
-        "url(\"http://",
-        "url(\"https://",
-    ]
-    .iter()
-    .any(|needle| lower_fragment.contains(needle));
+    let has_remote_css_image = css_has_remote_url(&lower_fragment);
     // Mine Mail stationery is a bounded, sanitizer-validated presentation
     // contract. Native rendering intentionally drops sender style and custom
     // attributes, which would turn short/plain stationery messages back into
@@ -829,7 +824,7 @@ fn is_data_url(value: &str) -> bool {
 
 fn is_safe_image_data_url(value: &str) -> bool {
     let value = value.trim_start();
-    [
+    let media_type_ok = [
         "data:image/gif;",
         "data:image/jpeg;",
         "data:image/png;",
@@ -840,7 +835,60 @@ fn is_safe_image_data_url(value: &str) -> bool {
         value
             .get(..prefix.len())
             .is_some_and(|value_prefix| value_prefix.eq_ignore_ascii_case(prefix))
+    });
+    if !media_type_ok {
+        return false;
+    }
+    // The media-type check above only guards the MIME prefix; also bound the
+    // base64 payload so an oversized inline image cannot bloat the rendered
+    // document or the WebView.
+    let lower = value.to_ascii_lowercase();
+    let marker = ";base64,";
+    let Some(relative) = lower.find(marker) else {
+        return false;
+    };
+    let payload_start = relative + marker.len();
+    value.get(payload_start..).is_some_and(|payload| {
+        !payload.is_empty() && payload.len() <= MAX_INLINE_IMAGE_DATA_URL_BYTES
     })
+}
+
+/// Scans a lower-cased HTML fragment for remote URLs referenced from CSS:
+/// `url(...)` calls with optional whitespace/quotes, `@import "..."` rules,
+/// and protocol-relative `//host` targets. The sanitizer keeps `style` and
+/// `<style>` content verbatim, so this scan is the only place that decides
+/// whether the message loads remote resources through CSS.
+fn css_has_remote_url(lower_fragment: &str) -> bool {
+    let bytes = lower_fragment.as_bytes();
+    let mut index = 0usize;
+    while index < bytes.len() {
+        let (keyword_len, mut cursor) = if bytes[index..].starts_with(b"url(") {
+            (4usize, index + 4)
+        } else if bytes[index..].starts_with(b"@import") {
+            (7usize, index + 7)
+        } else {
+            index += 1;
+            continue;
+        };
+        while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+            cursor += 1;
+        }
+        if cursor < bytes.len() && matches!(bytes[cursor], b'\'' | b'"') {
+            cursor += 1;
+            while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+                cursor += 1;
+            }
+        }
+        if cursor + 2 <= bytes.len()
+            && (bytes[cursor..].starts_with(b"http://")
+                || bytes[cursor..].starts_with(b"https://")
+                || bytes[cursor..].starts_with(b"//"))
+        {
+            return true;
+        }
+        index += keyword_len;
+    }
+    false
 }
 
 fn split_plain_reply(

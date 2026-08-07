@@ -158,6 +158,9 @@ impl AccountMetadata {
     fn google(email: String) -> Result<Self, String> {
         let mut metadata = Self::preset(AccountProvider::Gmail, email)?;
         metadata.authentication = AccountAuthentication::GoogleOAuth;
+        // The authentication kind is part of the account identity, so the id
+        // must be regenerated after the switch.
+        metadata.account_id = generated_account_id(&metadata);
         Ok(metadata)
     }
 
@@ -237,7 +240,10 @@ impl AccountMetadata {
     }
 
     fn same_identity(&self, other: &Self) -> bool {
-        account_identity_hash(self) == account_identity_hash(other)
+        // A password account and a Google OAuth account for the same mailbox
+        // are different credentials and must never overwrite each other.
+        self.authentication == other.authentication
+            && account_identity_hash(self) == account_identity_hash(other)
     }
 }
 
@@ -330,7 +336,9 @@ pub(crate) struct ConfigureAccountRequest {
 
 impl ConfigureAccountRequest {
     fn take_password(&mut self) -> Result<Zeroizing<String>, String> {
-        let password = Zeroizing::new(std::mem::take(&mut self.secret));
+        // Trim surrounding whitespace before validation and storage so an
+        // accidentally pasted space does not silently break authentication.
+        let password = Zeroizing::new(std::mem::take(&mut self.secret).trim().to_owned());
         if password.trim().is_empty() {
             return Err("An authorization password or app password is required.".to_owned());
         }
@@ -1684,7 +1692,15 @@ impl AccountRuntime {
         }
 
         match entry.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => {}
+            Ok(()) | Err(keyring::Error::NoEntry) => {
+                // Also drop the pre-kind-separation entry name so an upgrade
+                // does not leave a stale credential behind.
+                let _ = Entry::new(
+                    KEYRING_SERVICE,
+                    &legacy_identity_keyring_username(&metadata),
+                )
+                .and_then(|entry| entry.delete_credential());
+            }
             Err(_) => {
                 log_account_operation_failure(
                     "account_removal_failed",
@@ -2152,24 +2168,54 @@ fn load_network_backend(
         Ok(credential) => Zeroizing::new(credential),
         Err(keyring::Error::NoEntry) => {
             if metadata.account_id != LEGACY_KEYRING_USERNAME {
-                return Ok((None, false));
-            }
-            let legacy = legacy_keyring_entry()?;
-            let legacy_credential = match legacy.get_password() {
-                Ok(credential) => Zeroizing::new(credential),
-                Err(keyring::Error::NoEntry) => return Ok((None, false)),
-                Err(_) => {
-                    return Err(
-                        "The OS credential store is unavailable; local mail remains available."
-                            .to_owned(),
-                    );
+                // Versions before authentication-kind separation stored the
+                // credential under the bare identity name. Fall back to that
+                // entry and migrate it to the kind-qualified name so existing
+                // accounts keep working after upgrade.
+                let legacy_username = legacy_identity_keyring_username(metadata);
+                let legacy = Entry::new(KEYRING_SERVICE, &legacy_username)
+                    .map_err(|_| "The OS credential store is unavailable.".to_owned())?;
+                match legacy.get_password() {
+                    Ok(legacy_credential) => {
+                        let legacy_credential = Zeroizing::new(legacy_credential);
+                        entry
+                            .set_password(legacy_credential.as_str())
+                            .map_err(|_| {
+                                "The OS credential store could not migrate this account; local mail remains available."
+                                    .to_owned()
+                            })?;
+                        legacy_credential
+                    }
+                    Err(keyring::Error::NoEntry) => return Ok((None, false)),
+                    Err(_) => {
+                        return Err(
+                            "The OS credential store is unavailable; local mail remains available."
+                                .to_owned(),
+                        );
+                    }
                 }
-            };
-            entry.set_password(legacy_credential.as_str()).map_err(|_| {
-                "The OS credential store could not migrate this account; local mail remains available."
-                    .to_owned()
-            })?;
-            legacy_credential
+            } else {
+                let legacy = legacy_keyring_entry()?;
+                let legacy_credential = match legacy.get_password() {
+                    Ok(credential) => Zeroizing::new(credential),
+                    Err(keyring::Error::NoEntry) => return Ok((None, false)),
+                    Err(_) => {
+                        return Err(
+                            "The OS credential store is unavailable; local mail remains available."
+                                .to_owned(),
+                        );
+                    }
+                };
+                entry.set_password(legacy_credential.as_str()).map_err(|_| {
+                    "The OS credential store could not migrate this account; local mail remains available."
+                        .to_owned()
+                })?;
+                // The pre-account metadata store keeps a single shared
+                // "primary" entry; after migration it is stale and must not
+                // linger in the OS credential store.
+                let _ = legacy.delete_credential();
+                legacy_credential
+            }
         }
         Err(_) => {
             return Err(
@@ -2263,7 +2309,29 @@ fn legacy_keyring_entry() -> Result<Entry, String> {
         .map_err(|_| "The OS credential store is unavailable.".to_owned())
 }
 
+fn authentication_suffix(metadata: &AccountMetadata) -> &'static str {
+    match metadata.authentication {
+        AccountAuthentication::Password => "pwd",
+        AccountAuthentication::GoogleOAuth => "oauth",
+    }
+}
+
 fn keyring_username(metadata: &AccountMetadata) -> String {
+    // The stored value differs by authentication kind: a plain password versus
+    // an OAuth token JSON bundle. Including the kind in the entry name keeps a
+    // Password account and a Google OAuth account for the same identity from
+    // overwriting each other's credentials.
+    format!(
+        "{KEYRING_USERNAME_PREFIX}{}-{}",
+        &account_identity_hash(metadata)[..24],
+        authentication_suffix(metadata),
+    )
+}
+
+/// Entry name used before authentication-kind separation. Existing accounts
+/// keep their credential under this name until the next successful read
+/// migrates it to the kind-qualified name.
+fn legacy_identity_keyring_username(metadata: &AccountMetadata) -> String {
     format!(
         "{KEYRING_USERNAME_PREFIX}{}",
         &account_identity_hash(metadata)[..24]
@@ -2271,8 +2339,21 @@ fn keyring_username(metadata: &AccountMetadata) -> String {
 }
 
 fn account_database_path(app_data: &Path, metadata: &AccountMetadata) -> PathBuf {
-    let hash = account_identity_hash(metadata);
-    app_data.join(format!("mine-mail-{}.sqlite3", &hash[..24]))
+    // Prefer the persisted account id so accounts created before
+    // authentication-kind separation keep their existing cache files; newly
+    // created accounts carry the kind suffix in the id and therefore get their
+    // own database file.
+    let key = metadata
+        .account_id
+        .strip_prefix(KEYRING_USERNAME_PREFIX)
+        .map(str::to_owned)
+        .unwrap_or_else(|| {
+            generated_account_id(metadata)
+                .strip_prefix(KEYRING_USERNAME_PREFIX)
+                .unwrap_or_default()
+                .to_owned()
+        });
+    app_data.join(format!("mine-mail-{key}.sqlite3"))
 }
 
 fn sqlite_sidecar_path(database_path: &Path, suffix: &str) -> PathBuf {
@@ -2303,7 +2384,11 @@ fn remove_sqlite_cache_files(database_path: &Path) -> Result<(), String> {
 }
 
 fn generated_account_id(metadata: &AccountMetadata) -> String {
-    format!("account-{}", &account_identity_hash(metadata)[..24])
+    format!(
+        "{KEYRING_USERNAME_PREFIX}{}-{}",
+        &account_identity_hash(metadata)[..24],
+        authentication_suffix(metadata),
+    )
 }
 
 fn account_identity_hash(metadata: &AccountMetadata) -> String {
@@ -3392,11 +3477,37 @@ mod tests {
         let first_id = stored.accounts[0].account_id.clone();
         stored.accounts[0].remark = Some("工作邮箱".to_owned());
         stored
-            .upsert_and_activate(AccountMetadata::google("user0@gmail.com".to_owned()).unwrap())
+            .upsert_and_activate(
+                AccountMetadata::preset(
+                    AccountProvider::Gmail,
+                    "user0@gmail.com".to_owned(),
+                )
+                .unwrap(),
+            )
             .unwrap();
         assert_eq!(stored.accounts[0].account_id, first_id);
         assert_eq!(stored.accounts[0].remark.as_deref(), Some("工作邮箱"));
         assert_eq!(stored.accounts.len(), MAX_ACCOUNTS);
+    }
+
+    #[test]
+    fn google_oauth_and_password_identity_are_distinct_accounts() {
+        // Same mailbox and server, different authentication kind: credentials
+        // are stored separately and must never overwrite each other.
+        let mut stored = StoredAccounts::default();
+        stored
+            .upsert_and_activate(
+                AccountMetadata::preset(AccountProvider::Gmail, "user0@gmail.com".to_owned())
+                    .unwrap(),
+            )
+            .unwrap();
+        stored
+            .upsert_and_activate(
+                AccountMetadata::google("user0@gmail.com".to_owned()).unwrap(),
+            )
+            .unwrap();
+        assert_eq!(stored.accounts.len(), 2);
+        assert_ne!(stored.accounts[0].account_id, stored.accounts[1].account_id);
     }
 
     #[test]

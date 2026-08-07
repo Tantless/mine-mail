@@ -46,8 +46,8 @@ use mailbox_api::{
     fetch_mailbox_message, get_mailbox_capabilities, list_archive_folder_candidates,
     list_mailbox_page, list_starred_mailbox_page, load_older_mailbox_page,
     load_older_starred_mailbox_page, move_message_to_inbox, move_message_to_trash, prepare_forward,
-    prepare_permanent_delete, save_message_attachment, set_message_seen, set_message_starred_by_id,
-    sync_mailbox,
+    prepare_permanent_delete, save_message_attachment, set_message_seen,
+    set_message_starred_by_id, sync_mailbox, validate_account_id,
 };
 use storage::{PreparedStorageMigrationDto, StorageRuntime, StorageStatusDto};
 
@@ -61,7 +61,30 @@ const BODY_CACHE_TOTAL_BYTES: u64 = 512 * 1024 * 1024;
 const SENT_SYNC_LIMIT: usize = 250;
 const CONTACT_MESSAGE_LIST_LIMIT: usize = 250;
 const MAX_OUTBOX_ID_BYTES: usize = 128;
-const EXTERNAL_LINK_OPEN_FAILED_EVENT: &str = "mail:external-link-open-failed";
+
+/// Bounded draft identifier validation applied at the Tauri boundary so the
+/// core layer never receives an oversized or control-character-laden id.
+fn validate_draft_id(draft_id: &str) -> CommandResult<()> {
+    if draft_id.is_empty()
+        || draft_id.len() > MAX_OUTBOX_ID_BYTES
+        || draft_id.chars().any(char::is_control)
+    {
+        return Err("The draft identifier is invalid.".to_owned());
+    }
+    Ok(())
+}
+
+/// Bounded managed-attachment identifier validation applied at the Tauri
+/// boundary, mirroring the mailbox attachment-id check.
+fn validate_draft_attachment_id(attachment_id: &str) -> CommandResult<()> {
+    if attachment_id.is_empty()
+        || attachment_id.len() > MAX_OUTBOX_ID_BYTES
+        || attachment_id.chars().any(char::is_control)
+    {
+        return Err("The attachment identifier is invalid.".to_owned());
+    }
+    Ok(())
+}const EXTERNAL_LINK_OPEN_FAILED_EVENT: &str = "mail:external-link-open-failed";
 
 type CommandResult<T> = Result<T, String>;
 
@@ -1209,8 +1232,16 @@ fn validate_external_url(value: &str) -> CommandResult<Url> {
     let url = Url::parse(value.trim()).map_err(|_| "The link is invalid.".to_owned())?;
     match url.scheme() {
         "http" | "https" => {
-            if url.host_str().is_none() || !url.username().is_empty() || url.password().is_some() {
+            let host = url.host_str().ok_or_else(|| {
+                "The link is not safe to open.".to_owned()
+            })?;
+            if !url.username().is_empty() || url.password().is_some() {
                 return Err("The link is not safe to open.".to_owned());
+            }
+            // Mail content must not steer the user to loopback or private
+            // network services (routers, admin panels, local daemons).
+            if is_loopback_or_private_host(host) {
+                return Err("The link points to a local or private address.".to_owned());
             }
         }
         "mailto" => {
@@ -1221,6 +1252,29 @@ fn validate_external_url(value: &str) -> CommandResult<Url> {
         _ => return Err("This link type is not supported.".to_owned()),
     }
     Ok(url)
+}
+
+/// Returns true when `host` is `localhost`, a loopback/private/link-local IP,
+/// or a unique-local IPv6 address. Public hostnames are never rejected here.
+fn is_loopback_or_private_host(host: &str) -> bool {
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    match host.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(v4)) => {
+            let octets = v4.octets();
+            let link_local = octets[0] == 169 && octets[1] == 254;
+            v4.is_loopback() || v4.is_private() || v4.is_unspecified() || link_local
+        }
+        Ok(std::net::IpAddr::V6(v6)) => {
+            let segments = v6.segments();
+            let link_local = segments[0] & 0xffc0 == 0xfe80;
+            let unique_local = segments[0] & 0xfe00 == 0xfc00;
+            v6.is_loopback() || v6.is_unspecified() || link_local || unique_local
+        }
+        Err(_) => false,
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -1298,6 +1352,9 @@ fn save_draft(
     expected_local_version: Option<u64>,
 ) -> CommandResult<DraftSaveOutcomeDto> {
     diagnostics::command("save_draft", DiagnosticFields::default(), || {
+        if let Some(draft_id) = draft_id.as_deref() {
+            validate_draft_id(draft_id)?;
+        }
         let request = sanitize_compose_request(request);
         let account_id = backend.active_account_id();
         let backend = match backend.local() {
@@ -1445,6 +1502,8 @@ fn remove_draft_attachment(
         "remove_draft_attachment",
         DiagnosticFields::default(),
         || {
+            validate_draft_id(&draft_id)?;
+            validate_draft_attachment_id(&attachment_id)?;
             let backend = backend.local()?;
             let outcome = backend
                 .remove_draft_attachment(&draft_id, &attachment_id, expected_local_version)
@@ -1469,6 +1528,7 @@ fn delete_draft(
     expected_local_version: u64,
 ) -> CommandResult<DraftDeleteOutcomeDto> {
     diagnostics::command("delete_draft", DiagnosticFields::default(), || {
+        validate_draft_id(&draft_id)?;
         let operation_id = diagnostics::operation_id();
         let account_id = backend.active_account_id();
         let mut fields = DiagnosticFields::default()
@@ -1849,6 +1909,7 @@ fn fetch_outbox_message(
     backend: State<'_, BackendState>,
     outbox_id: String,
 ) -> CommandResult<OutboxMessageDto> {
+    validate_outbox_id(&outbox_id)?;
     diagnostics::command("fetch_outbox_message", DiagnosticFields::default(), || {
         let backend = backend.local()?;
         backend
@@ -1881,7 +1942,13 @@ fn prepare_storage_migration(
     diagnostics::command_lifecycle(
         "prepare_storage_migration",
         DiagnosticFields::default(),
-        || storage.prepare_migration(&target_path),
+        || {
+            let _gate = storage
+                .migration_gate
+                .lock()
+                .map_err(|_| "数据迁移操作发生冲突，请重试。".to_owned())?;
+            storage.prepare_migration(&target_path)
+        },
     )
 }
 
@@ -1890,7 +1957,13 @@ fn cancel_storage_migration(storage: State<'_, StorageRuntime>) -> CommandResult
     diagnostics::command_lifecycle(
         "cancel_storage_migration",
         DiagnosticFields::default(),
-        || storage.cancel_pending_migration(),
+        || {
+            let _gate = storage
+                .migration_gate
+                .lock()
+                .map_err(|_| "数据迁移操作发生冲突，请重试。".to_owned())?;
+            storage.cancel_pending_migration()
+        },
     )
 }
 
@@ -2280,6 +2353,7 @@ async fn switch_account(
     account_id: String,
 ) -> CommandResult<AccountStatusDto> {
     diagnostics::command_lifecycle_async("switch_account", DiagnosticFields::default(), async {
+        validate_account_id(&account_id)?;
         let _account_mutation_guard = desktop_runtime.acquire_account_mutation_gate().await;
         let status = account.switch_account(&backend, &account_id)?;
         diagnostics::emit_event(&app, "mail:account-updated", status.clone());
@@ -2298,6 +2372,7 @@ async fn set_account_remark(
     remark: String,
 ) -> CommandResult<AccountStatusDto> {
     diagnostics::command_lifecycle_async("set_account_remark", DiagnosticFields::default(), async {
+        validate_account_id(&account_id)?;
         let _account_mutation_guard = desktop_runtime.acquire_account_mutation_gate().await;
         let status = account.set_remark(&backend, &account_id, &remark)?;
         diagnostics::emit_event(&app, "mail:account-updated", status.clone());
@@ -2318,6 +2393,7 @@ async fn remove_account(
     diagnostics::command_lifecycle_async("remove_account", DiagnosticFields::default(), async {
         let started = Instant::now();
         let operation_id = diagnostics::operation_id();
+        validate_account_id(&request.account_id)?;
         let account_id = request.account_id.clone();
         diagnostics::info(
             "account_removal_started",
@@ -3597,6 +3673,11 @@ mod tests {
         assert!(validate_external_url("javascript:alert(1)").is_err());
         assert!(validate_external_url("file:///C:/Windows/system.ini").is_err());
         assert!(validate_external_url("https://user:pass@example.com/").is_err());
+        assert!(validate_external_url("http://127.0.0.1:8080/admin").is_err());
+        assert!(validate_external_url("http://localhost/").is_err());
+        assert!(validate_external_url("https://192.168.1.1/").is_err());
+        assert!(validate_external_url("http://10.0.0.2/").is_err());
+        assert!(validate_external_url("http://[::1]/").is_err());
     }
 
     #[test]

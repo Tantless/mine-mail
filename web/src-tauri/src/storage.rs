@@ -3,6 +3,7 @@ use std::{
     env, fs,
     io::{self, Write},
     path::{Component, Path, PathBuf},
+    sync::{Arc, Mutex},
 };
 
 #[cfg(target_os = "windows")]
@@ -92,6 +93,9 @@ pub(crate) struct StorageMigrationNoticeDto {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct StorageStatusDto {
+    // The user-visible data directory label. The raw path still crosses the
+    // UI boundary by explicit product decision so the settings page can show
+    // where mail is stored; the directory picker does not use it as a preset.
     data_path: String,
     location_kind: StorageLocationKind,
     available: bool,
@@ -111,7 +115,6 @@ pub(crate) enum StorageLocationKind {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PreparedStorageMigrationDto {
-    target_path: String,
     total_bytes: u64,
 }
 
@@ -122,6 +125,9 @@ pub(crate) struct StorageRuntime {
     install_data_root: Option<PathBuf>,
     location_kind: StorageLocationKind,
     migration_notice: Option<StorageMigrationNoticeDto>,
+    /// Serializes prepare/cancel migration commands so concurrent calls cannot
+    /// interleave writes to the migration task file.
+    pub(crate) migration_gate: Arc<Mutex<()>>,
 }
 
 pub(crate) struct StorageInitialization {
@@ -143,6 +149,7 @@ impl StorageRuntime {
                         install_data_root: None,
                         location_kind: StorageLocationKind::LocalAppData,
                         migration_notice: None,
+                        migration_gate: Arc::new(Mutex::new(())),
                     },
                     runtime_data_root: degraded,
                     startup_error: Some(
@@ -162,6 +169,7 @@ impl StorageRuntime {
                     install_data_root: None,
                     location_kind: StorageLocationKind::LocalAppData,
                     migration_notice: None,
+                    migration_gate: Arc::new(Mutex::new(())),
                 },
                 runtime_data_root: degraded,
                 startup_error: Some(
@@ -248,6 +256,7 @@ impl StorageRuntime {
                 install_data_root,
                 location_kind,
                 migration_notice,
+                migration_gate: Arc::new(Mutex::new(())),
             },
             runtime_data_root,
             startup_error,
@@ -373,10 +382,7 @@ impl StorageRuntime {
                 .moved_bytes(total_bytes),
         );
 
-        Ok(PreparedStorageMigrationDto {
-            target_path: target.to_string_lossy().into_owned(),
-            total_bytes,
-        })
+        Ok(PreparedStorageMigrationDto { total_bytes })
     }
 
     pub(crate) fn cancel_pending_migration(&self) -> Result<(), String> {
@@ -1473,6 +1479,7 @@ mod tests {
             install_data_root: None,
             location_kind: StorageLocationKind::LocalAppData,
             migration_notice: None,
+            migration_gate: Arc::new(Mutex::new(())),
         };
 
         runtime

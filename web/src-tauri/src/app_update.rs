@@ -12,6 +12,25 @@ use tauri::{
 use tauri_plugin_updater::UpdaterExt;
 
 const MAX_UPDATE_IDENTIFIER_BYTES: usize = 64;
+const MAX_UPDATE_FAILURE_MESSAGE_BYTES: usize = 256;
+
+/// Maps an updater error to a privacy-safe message. Raw plugin errors can
+/// embed download URLs, drive letters, or local installer paths; anything
+/// containing such separators is replaced with a generic message so the UI
+/// never shows filesystem or network details.
+fn safe_update_error_message(error: impl std::fmt::Display) -> String {
+    const GENERIC: &str = "更新下载或安装失败，请稍后重试。";
+    let text = error.to_string();
+    let looks_safe = text.len() <= MAX_UPDATE_FAILURE_MESSAGE_BYTES
+        && !text.contains(':')
+        && !text.contains('/')
+        && !text.contains('\\');
+    if looks_safe {
+        text
+    } else {
+        GENERIC.to_owned()
+    }
+}
 
 #[derive(Clone, Default)]
 pub(crate) struct AppUpdateRuntime {
@@ -78,11 +97,11 @@ async fn download_and_install(
     let updater = app
         .updater_builder()
         .build()
-        .map_err(|error| error.to_string())?;
+        .map_err(safe_update_error_message)?;
     let update = updater
         .check()
         .await
-        .map_err(|error| error.to_string())?
+        .map_err(safe_update_error_message)?
         .ok_or_else(|| "已找不到用户确认安装的 Mine Mail 更新。".to_owned())?;
 
     if update.version != expected_version {
@@ -108,11 +127,13 @@ async fn download_and_install(
             },
         )
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(safe_update_error_message)?;
 
     installing.store(true, Ordering::Release);
     let _ = on_progress.send(AppUpdateEvent::Installing);
-    update.install(bytes).map_err(|error| error.to_string())
+    update
+        .install(bytes)
+        .map_err(safe_update_error_message)
 }
 
 #[tauri::command]
@@ -213,5 +234,21 @@ mod tests {
         assert_eq!(started["data"]["contentLength"], 4096);
         assert_eq!(progress["event"], "Progress");
         assert_eq!(progress["data"]["chunkLength"], 512);
+    }
+
+    #[test]
+    fn update_failure_messages_never_leak_paths_or_urls() {
+        assert_eq!(
+            safe_update_error_message("http://cdn.example.com/mine-mail-1.1.1.zip"),
+            "更新下载或安装失败，请稍后重试。"
+        );
+        assert_eq!(
+            safe_update_error_message("C:\\Users\\tester\\AppData\\Local\\Temp\\update.exe"),
+            "更新下载或安装失败，请稍后重试。"
+        );
+        assert_eq!(
+            safe_update_error_message("signature verification failed"),
+            "signature verification failed"
+        );
     }
 }

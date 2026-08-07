@@ -246,7 +246,7 @@ struct MailboxCapabilitiesUpdatedEvent {
     account_id: String,
 }
 
-fn validate_account_id(account_id: &str) -> CommandResult<()> {
+pub(crate) fn validate_account_id(account_id: &str) -> CommandResult<()> {
     if account_id.is_empty()
         || account_id.chars().count() > MAX_ACCOUNT_ID_CHARS
         || account_id.chars().any(char::is_control)
