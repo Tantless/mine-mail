@@ -657,8 +657,16 @@ impl ImapConnection {
             .map_err(|error| MailError::Imap(error.to_string()))?;
         let response = {
             let (wait, _interrupt) = handle.wait_with_timeout(duration);
-            wait.await
-                .map_err(|error| MailError::Imap(error.to_string()))?
+            match wait.await {
+                Ok(response) => response,
+                Err(error) => {
+                    // Best-effort leave IDLE before propagating the error so
+                    // the server does not keep a stale idle session until the
+                    // TCP connection is dropped.
+                    let _ = handle.done().await;
+                    return Err(MailError::Imap(error.to_string()));
+                }
+            }
         };
         let session = timeout(COMMAND_TIMEOUT, handle.done())
             .await

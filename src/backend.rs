@@ -1329,9 +1329,8 @@ impl MailBackend {
         self.validate_sync_limit(initial_limit)?;
         let observed_generation = self.inbox_sync_generation()?;
 
-        let _ = self
-            .flush_pending_message_mutations(&self.config.account_id)
-            .await;
+        self.flush_pending_message_mutations(&self.config.account_id)
+            .await?;
         let _guard = self.inbox_imap_gate.lock().await;
         if let Some(report) = self.inbox_sync_completed_after(observed_generation)? {
             return Ok(report);
@@ -1364,9 +1363,8 @@ impl MailBackend {
     {
         self.validate_sync_limit(initial_limit)?;
 
-        let _ = self
-            .flush_pending_message_mutations(&self.config.account_id)
-            .await;
+        self.flush_pending_message_mutations(&self.config.account_id)
+            .await?;
         let _guard = self.sent_imap_gate.lock().await;
         let mut connection = ImapConnection::connect(&self.config).await?;
         let mailbox = connection.discover_sent_mailbox().await?;
@@ -1419,7 +1417,7 @@ impl MailBackend {
                 report.pulled.saturating_add(report.pushed)
             }
             MailboxRole::Archive | MailboxRole::Trash => {
-                let _ = self.flush_pending_message_mutations(account_id).await;
+                self.flush_pending_message_mutations(account_id).await?;
                 let capability = self.repository.mailbox_capability(account_id, role)?;
                 if capability.as_ref().is_none_or(|capability| {
                     capability.status != MailboxCapabilityStatus::Available
@@ -1656,13 +1654,12 @@ impl MailBackend {
         // A read action is committed locally before the network round trip.
         // Push those durable intents before accepting a remote flag snapshot,
         // otherwise a stale server `FLAGS` response could make the message
-        // appear unread again while the write is still pending.
-        let _ = self
-            .flush_pending_seen_updates(connection, mailbox, snapshot.uid_validity)
-            .await;
-        let _ = self
-            .flush_pending_flagged_updates(connection, mailbox, snapshot.uid_validity)
-            .await;
+        // appear unread again while the write is still pending. A flush
+        // failure must surface so the pending intent is not silently dropped.
+        self.flush_pending_seen_updates(connection, mailbox, snapshot.uid_validity)
+            .await?;
+        self.flush_pending_flagged_updates(connection, mailbox, snapshot.uid_validity)
+            .await?;
 
         let previous_highest_uid = if uid_validity_reset {
             None
@@ -1858,12 +1855,10 @@ impl MailBackend {
         let previous_highest_uid = previous_state
             .highest_uid
             .expect("full sync fallback handles a missing highest UID");
-        let _ = self
-            .flush_pending_seen_updates(&mut connection, INBOX, hint.uid_validity)
-            .await;
-        let _ = self
-            .flush_pending_flagged_updates(&mut connection, INBOX, hint.uid_validity)
-            .await;
+        self.flush_pending_seen_updates(&mut connection, INBOX, hint.uid_validity)
+            .await?;
+        self.flush_pending_flagged_updates(&mut connection, INBOX, hint.uid_validity)
+            .await?;
         let requested = connection.search_uids_after(previous_highest_uid).await?;
         let preview_backfill = self.repository.mailbox_preview_backfill_candidates(
             &self.config.account_id,
@@ -4880,6 +4875,22 @@ impl MailBackend {
                 self.repository.touch_message_body_access(message.id)?;
             }
             return self.repair_cached_inline_images(message);
+        }
+
+        // Reject oversized messages before downloading the full body: the
+        // cached summary already carries the server-reported RFC822.SIZE from
+        // the sync phase, so the 50 MiB limit is checked without a network
+        // round trip. (Servers that omit RFC822.SIZE fall back to the post
+        // download check in `fetch_full_message`.)
+        if !force
+            && let Ok(message) =
+                self.repository
+                    .get_message_by_uid(&self.config.account_id, mailbox, uid)
+            && message.size_bytes > MAX_CACHED_MESSAGE_BYTES
+        {
+            return Err(MailError::Validation(format!(
+                "message UID {uid} exceeds the 50 MiB local cache limit"
+            )));
         }
 
         let session = body_imap

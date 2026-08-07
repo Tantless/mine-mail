@@ -51,6 +51,21 @@ const MAX_FORWARD_DATE_BYTES: usize = 128;
 const FORWARD_IDENTITY_TRUNCATION_MARKER: &str = "…";
 const ATTACHMENT_TOKEN_MAGIC: &[u8; 4] = b"MMA1";
 const ATTACHMENT_TOKEN_BYTES: usize = 36;
+/// Incoming messages larger than this are rejected before parsing. The IMAP
+/// fetch path already enforces the same bound, but this protects every other
+/// caller of [`parse_incoming_message`] (recovery, tests, future entry points).
+const MAX_INCOMING_RAW_BYTES: usize = 50 * 1024 * 1024;
+/// Cached subject length bound; subjects beyond this are truncated on ingest.
+const MAX_CACHED_SUBJECT_BYTES: usize = 4 * 1024;
+/// Cached plain-text body length bound to keep hostile messages from bloating
+/// the SQLite store or preview/quote processing.
+const MAX_CACHED_BODY_TEXT_BYTES: usize = 4 * 1024 * 1024;
+/// Cached HTML body length bound (matches the quoted-HTML budget).
+const MAX_CACHED_BODY_HTML_BYTES: usize = 12 * 1024 * 1024;
+/// Maximum number of `References`/`In-Reply-To` ids kept per incoming message.
+const MAX_MESSAGE_ID_REFERENCES: usize = 128;
+/// Maximum byte length kept for a single message-id token.
+const MAX_MESSAGE_ID_BYTES: usize = 512;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum MimeSourceCompleteness {
@@ -1132,7 +1147,9 @@ fn rich_html_body(
             .quoted_html
             .as_deref()
             .filter(|html| !html.trim().is_empty())
-            .map(str::to_owned)
+            // The quoted fragment is untrusted incoming mail content; it must
+            // be sanitized before it can leave this client inside the reply.
+            .and_then(sanitize_quoted_html)
             .unwrap_or_else(|| html_text(&context.quoted_text))
     } else {
         html_text(&context.quoted_text)
@@ -1160,7 +1177,9 @@ fn forward_html_body(request: &ComposeRequest, context: &ForwardContext) -> Resu
         .quoted_html
         .as_deref()
         .filter(|html| !html.trim().is_empty())
-        .map(str::to_owned)
+        // Same untrusted-content rule as replies: sanitize before the quote is
+        // embedded into the forwarded message.
+        .and_then(sanitize_quoted_html)
         .unwrap_or_else(|| html_text(&context.quoted_text));
     Ok(format!(
         "<div class=\"mine-mail-authored\">{}</div><br><div class=\"mine-mail-forward\"><div>---------- Forwarded message ----------</div>{identity}<br><blockquote type=\"cite\">{quoted}</blockquote></div>",
@@ -1380,6 +1399,95 @@ pub(crate) fn sanitize_compose_html(source: Option<&str>) -> Option<String> {
         });
     let cleaned = builder.clean(source).to_string();
     html_fragment_has_visible_text(&cleaned).then_some(cleaned)
+}
+
+/// Sanitizes quoted mail HTML before it is embedded into an outgoing reply or
+/// forward message.
+///
+/// The quote originates from an untrusted incoming message, so it must never
+/// carry scripts, event handlers, remote resources, or arbitrary styles when it
+/// leaves this client. Inline `data:` images with safe media types survive so
+/// quoted pictures still render without a network round trip.
+pub(crate) fn sanitize_quoted_html(source: &str) -> Option<String> {
+    let source = source.trim();
+    if source.is_empty() {
+        return None;
+    }
+    let mut builder = HtmlSanitizer::default();
+    builder
+        .tags(HashSet::from([
+            "a",
+            "b",
+            "blockquote",
+            "br",
+            "div",
+            "em",
+            "font",
+            "i",
+            "img",
+            "li",
+            "ol",
+            "p",
+            "s",
+            "span",
+            "strong",
+            "table",
+            "tbody",
+            "td",
+            "th",
+            "thead",
+            "tr",
+            "u",
+            "ul",
+        ]))
+        .tag_attributes(HashMap::from([
+            ("a", HashSet::from(["href"])),
+            ("font", HashSet::from(["face", "size"])),
+            ("img", HashSet::from(["src", "alt"])),
+            ("td", HashSet::from(["colspan", "rowspan"])),
+            ("th", HashSet::from(["colspan", "rowspan"])),
+        ]))
+        .clean_content_tags(HashSet::from(["script", "style"]))
+        .url_schemes(HashSet::from(["http", "https", "mailto", "data"]))
+        .url_relative(UrlRelative::Deny)
+        .link_rel(Some("noopener noreferrer"))
+        .strip_comments(true)
+        .attribute_filter(|element, attribute, value| {
+            if (element, attribute) == ("img", "src") {
+                return is_safe_inline_image_data_url(value).then(|| Cow::Borrowed(value));
+            }
+            // `data:` is only permitted for inline images; links must never
+            // carry an arbitrary data payload.
+            if (element, attribute) == ("a", "href") && value.starts_with("data:") {
+                return None;
+            }
+            Some(Cow::Borrowed(value))
+        });
+    let cleaned = builder.clean(source).to_string();
+    html_fragment_has_visible_text(&cleaned).then_some(cleaned)
+}
+
+/// Accepts only inline `data:` image URLs with a safe raster media type. No
+/// remote `http(s)` images, SVG, or oversized payloads survive this check.
+fn is_safe_inline_image_data_url(value: &str) -> bool {
+    let Some(rest) = value.strip_prefix("data:image/") else {
+        return false;
+    };
+    let (media_type, payload) = match rest.split_once(';') {
+        Some((media_type, payload)) => (media_type, payload),
+        None => return false,
+    };
+    let Some(payload) = payload.strip_prefix("base64,") else {
+        return false;
+    };
+    let media_type_ok = matches!(
+        media_type.to_ascii_lowercase().as_str(),
+        "png" | "jpeg" | "jpg" | "gif" | "webp"
+    );
+    // Rough byte bound: base64 is 4/3 of the decoded size; a 4 MiB image
+    // decodes to about 5.6 MiB of base64 text.
+    let size_ok = payload.len() <= 6 * 1024 * 1024;
+    media_type_ok && size_ok
 }
 
 fn html_fragment_has_visible_text(source: &str) -> bool {
@@ -1887,7 +1995,10 @@ fn is_windows_reserved_filename(value: &str) -> bool {
         .unwrap_or_default()
         .trim_end_matches([' ', '.'])
         .to_ascii_uppercase();
-    matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CLOCK$")
+    matches!(
+        stem.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CLOCK$" | "CONIN$" | "CONOUT$"
+    )
         || stem
             .strip_prefix("COM")
             .or_else(|| stem.strip_prefix("LPT"))
@@ -2301,6 +2412,14 @@ fn sanitize_forward_html(source: &str) -> Option<String> {
 
 const MAX_INLINE_IMAGE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_TOTAL_INLINE_IMAGE_BYTES: usize = 12 * 1024 * 1024;
+/// Caps how many `cid:` references may be replaced per rendered message.
+/// Without this bound a malicious message can reference one inline image
+/// hundreds of times and amplify the base64 data URL output into gigabytes.
+const MAX_INLINE_IMAGE_REPLACEMENTS: usize = 64;
+/// Caps the rendered HTML output size produced by inline-image substitution.
+/// Keeps the memory/CPU cost of a single hostile message bounded even when
+/// several large images are referenced repeatedly.
+const MAX_RENDERABLE_HTML_BYTES: usize = 16 * 1024 * 1024;
 
 /// Returns only a real text/html MIME leaf. `mail-parser::body_html` also
 /// synthesizes HTML for text/plain-only messages, which is useful for generic
@@ -2311,8 +2430,9 @@ fn extract_renderable_html(message: &mail_parser::Message<'_>) -> Option<String>
         _ => return None,
     };
     let mut total_inline_bytes = 0usize;
+    let mut replacements = 0usize;
 
-    for part in &message.parts {
+    'parts: for part in &message.parts {
         let Some(content_id) = part.content_id().map(normalize_content_id) else {
             continue;
         };
@@ -2326,11 +2446,23 @@ fn extract_renderable_html(message: &mail_parser::Message<'_>) -> Option<String>
         {
             continue;
         }
+        if replacements >= MAX_INLINE_IMAGE_REPLACEMENTS || html.len() >= MAX_RENDERABLE_HTML_BYTES
+        {
+            break;
+        }
 
         total_inline_bytes += contents.len();
         let data_url = format!("data:{media_type};base64,{}", BASE64.encode(contents));
-        html = replace_ascii_case_insensitive(&html, &format!("cid:{content_id}"), &data_url);
-        html = replace_ascii_case_insensitive(&html, &format!("cid:<{content_id}>"), &data_url);
+        for needle in [format!("cid:{content_id}"), format!("cid:<{content_id}>")] {
+            let (next, count) = replace_ascii_case_insensitive(&html, &needle, &data_url);
+            html = next;
+            replacements += count;
+            // A single large image referenced from many places must not be
+            // allowed to blow the output past the render budget.
+            if html.len() > MAX_RENDERABLE_HTML_BYTES {
+                break 'parts;
+            }
+        }
     }
 
     Some(html)
@@ -2356,23 +2488,25 @@ fn safe_inline_image_media_type(part: &mail_parser::MessagePart<'_>) -> Option<&
     }
 }
 
-fn replace_ascii_case_insensitive(input: &str, needle: &str, replacement: &str) -> String {
+fn replace_ascii_case_insensitive(input: &str, needle: &str, replacement: &str) -> (String, usize) {
     if needle.is_empty() {
-        return input.to_owned();
+        return (input.to_owned(), 0);
     }
     let lower_input = input.to_ascii_lowercase();
     let lower_needle = needle.to_ascii_lowercase();
     let mut output = String::with_capacity(input.len());
     let mut offset = 0;
+    let mut count = 0usize;
 
     while let Some(relative) = lower_input[offset..].find(&lower_needle) {
         let start = offset + relative;
         output.push_str(&input[offset..start]);
         output.push_str(replacement);
         offset = start + needle.len();
+        count += 1;
     }
     output.push_str(&input[offset..]);
-    output
+    (output, count)
 }
 
 pub(crate) fn render_message_html(message: &InboxMessage) -> Option<String> {
@@ -2435,6 +2569,12 @@ pub(crate) fn parse_incoming_message(
     raw: &[u8],
     metadata: IncomingMetadata<'_>,
 ) -> Result<InboxMessage> {
+    if raw.len() > MAX_INCOMING_RAW_BYTES {
+        return Err(MailError::Mime(format!(
+            "incoming message exceeds the {} MiB parse limit",
+            MAX_INCOMING_RAW_BYTES / (1024 * 1024),
+        )));
+    }
     let message = MessageParser::default()
         .parse(raw)
         .ok_or_else(|| MailError::Mime("message could not be parsed".to_owned()))?;
@@ -2452,7 +2592,8 @@ pub(crate) fn parse_incoming_message(
         .map(|name| safe_attachment_filename(Some(name)))
         .collect();
 
-    let body_html = extract_renderable_html(&message);
+    let body_html = extract_renderable_html(&message)
+        .map(|html| truncate_utf8(&html, MAX_CACHED_BODY_HTML_BYTES).to_owned());
 
     Ok(InboxMessage {
         id: 0,
@@ -2462,7 +2603,10 @@ pub(crate) fn parse_incoming_message(
         message_id: message.message_id().map(str::to_owned),
         in_reply_to: message_ids(message.in_reply_to()),
         references: message_ids(message.references()),
-        subject: message.subject().unwrap_or_default().to_owned(),
+        subject: message
+            .subject()
+            .map(|subject| truncate_utf8(subject, MAX_CACHED_SUBJECT_BYTES).to_owned())
+            .unwrap_or_default(),
         sender,
         to,
         cc,
@@ -2475,7 +2619,9 @@ pub(crate) fn parse_incoming_message(
             .body_preview(180)
             .map(|preview| preview.into_owned())
             .unwrap_or_default(),
-        body_text: message.body_text(0).map(|body| body.into_owned()),
+        body_text: message
+            .body_text(0)
+            .map(|body| truncate_utf8(&body, MAX_CACHED_BODY_TEXT_BYTES).to_owned()),
         body_html,
         attachment_names,
         body_fetched: metadata.body_fetched,
@@ -2541,11 +2687,14 @@ fn message_ids(value: &HeaderValue<'_>) -> Vec<String> {
         .flatten()
         .flat_map(|value| value.split_ascii_whitespace())
         .map(|value| {
-            value
-                .trim_matches(|character| matches!(character, '<' | '>'))
-                .to_owned()
+            truncate_utf8(
+                value.trim_matches(|character| matches!(character, '<' | '>')),
+                MAX_MESSAGE_ID_BYTES,
+            )
+            .to_owned()
         })
         .filter(|value| !value.is_empty())
+        .take(MAX_MESSAGE_ID_REFERENCES)
         .collect()
 }
 

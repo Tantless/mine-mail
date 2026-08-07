@@ -1117,7 +1117,8 @@ impl Repository {
     /// Clears cached messages and all cursors after an IMAP UIDVALIDITY change.
     pub(crate) fn reset_mailbox(&self, account_id: &str, mailbox: &str) -> Result<usize> {
         let mut connection = self.connection()?;
-        let transaction = connection.transaction()?;
+        let transaction =
+            connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         for table in ["pending_seen_updates", "pending_flagged_updates"] {
             transaction.execute(
                 &format!(
@@ -1171,7 +1172,8 @@ impl Repository {
         remote_uids: &HashSet<u32>,
     ) -> Result<usize> {
         let mut connection = self.connection()?;
-        let transaction = connection.transaction()?;
+        let transaction =
+            connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let cached = {
             let mut statement = transaction
                 .prepare("SELECT uid FROM messages WHERE account_id = ?1 AND mailbox = ?2")?;
@@ -1181,6 +1183,27 @@ impl Repository {
         };
         let mut removed = 0;
         for uid in cached.into_iter().filter(|uid| !remote_uids.contains(uid)) {
+            // A queued or in-flight move is owned by the mutation flusher, which
+            // reconciles the action against the real server state. Deleting the
+            // local row or marking the action here would race that flusher and
+            // misreport a move the server already completed as failed.
+            let protected = {
+                let mut statement = transaction.prepare(
+                    "SELECT EXISTS(
+                         SELECT 1
+                         FROM pending_message_actions
+                         WHERE account_id = ?1
+                           AND source_mailbox = ?2
+                           AND source_uid = ?3
+                           AND status IN ('pending', 'in_flight')
+                     )",
+                )?;
+                let mut rows = statement.query(params![account_id, mailbox, uid])?;
+                rows.next()?.is_some_and(|row| row.get::<_, bool>(0).unwrap_or(false))
+            };
+            if protected {
+                continue;
+            }
             for table in ["pending_seen_updates", "pending_flagged_updates"] {
                 transaction.execute(
                     &format!(
@@ -1230,7 +1253,7 @@ impl Repository {
                        WHERE p.account_id = m.account_id
                          AND p.source_mailbox = m.mailbox
                          AND p.source_uid = m.uid
-                         AND p.status = 'confirmed'
+                         AND p.status IN ('pending', 'in_flight', 'confirmed')
                    )",
                 params![account_id, mailbox, uid],
             )?;
@@ -4844,7 +4867,7 @@ impl Repository {
         validate_outbox_draft_link(item)?;
         let mut connection = self.connection()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        transaction.execute(
+        let inserted = transaction.execute(
             "INSERT INTO outbox (
                  id, account_id, draft_id, draft_revision, draft_local_version,
                  recipients_json, status, attempts,
@@ -4870,6 +4893,12 @@ impl Repository {
                     .transpose()?,
             ],
         )?;
+        if inserted != 1 {
+            return Err(MailError::Validation(format!(
+                "outbox item '{}' already exists",
+                item.id
+            )));
+        }
         bind_outbox_item_attachment_rows(&transaction, item)?;
         transaction.commit()?;
         Ok(())
