@@ -1046,7 +1046,6 @@ export function App() {
 
   const showToast = useCallback(
     (message, tone = "success", persistent = false) => {
-      if (tone === "success") return;
       toastSequenceRef.current += 1;
       setToast({
         message,
@@ -5053,10 +5052,12 @@ export function App() {
       await mailApi.setMessageSeen(messageId, false);
     } catch {
       mergeRemoteMessage(message, withSeenFlag, accountId);
+      showToast("标记未读失败，已恢复为已读状态", "error");
     }
   }, [
     mergeRemoteMessage,
     selectedMessage,
+    showToast,
   ]);
 
   const handlePreparePermanentDelete = useCallback(async () => {
@@ -6761,6 +6762,13 @@ export function App() {
       setAccountError(message);
       setAccountErrorProvider(request.provider);
       setAccountSubmitStatus("error");
+      // Restore the composer that was minimized before the attempt so the
+      // user's unsaved content stays visible instead of being hidden.
+      commitComposer((current) =>
+        current?.minimized
+          ? { ...current, minimized: false, startMinimized: false }
+          : current,
+      );
     }
   };
 
@@ -6821,6 +6829,12 @@ export function App() {
       setAccountError(message);
       setAccountErrorProvider("gmail");
       setAccountSubmitStatus("error");
+      // Restore the composer that was minimized before the attempt.
+      commitComposer((current) =>
+        current?.minimized
+          ? { ...current, minimized: false, startMinimized: false }
+          : current,
+      );
     }
   };
 

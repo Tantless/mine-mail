@@ -6,6 +6,7 @@ import { ProfileAvatar } from "./ProfileAvatar.jsx";
 const visibleDurationMs = 8000;
 const notificationCountLimit = 99;
 const validThemes = new Set(["daylight", "night", "dusk", "forest"]);
+const MAX_DISMISS_RETRIES = 3;
 
 function notificationSequence(value) {
   if (typeof value === "bigint") return value >= 0n ? value : null;
@@ -100,6 +101,9 @@ export function NewMailNotification() {
   const dismissActionRef = useRef(null);
   const dismissTimerRef = useRef(null);
   const lastPresentedIdRef = useRef(null);
+  // Bounded retries for the dismiss command so a persistently failing backend
+  // cannot trigger an endless restore-and-retry loop every few seconds.
+  const dismissRetryCountRef = useRef(0);
 
   const clearDismissTimer = useCallback(() => {
     if (dismissTimerRef.current !== null) {
@@ -149,20 +153,32 @@ export function NewMailNotification() {
       if (!item) return;
       clearDismissTimer();
       hideNotification(item);
+      const canRetry = dismissRetryCountRef.current < MAX_DISMISS_RETRIES;
       try {
         const dismissed = await mailApi.dismissNewMailNotification(
           item.notificationId,
         );
-        if (dismissed !== true) {
+        if (dismissed === true) {
+          dismissRetryCountRef.current = 0;
+        } else {
           const pending = await mailApi.getNewMailNotification().catch(() => null);
-          if (pending) restoreNewestNotification(pending);
+          if (pending && canRetry) {
+            dismissRetryCountRef.current += 1;
+            restoreNewestNotification(pending);
+          }
         }
       } catch {
         try {
           const pending = await mailApi.getNewMailNotification();
-          if (pending) restoreNewestNotification(pending);
+          if (pending && canRetry) {
+            dismissRetryCountRef.current += 1;
+            restoreNewestNotification(pending);
+          }
         } catch {
-          restoreNewestNotification(item);
+          if (canRetry) {
+            dismissRetryCountRef.current += 1;
+            restoreNewestNotification(item);
+          }
         }
       }
     },

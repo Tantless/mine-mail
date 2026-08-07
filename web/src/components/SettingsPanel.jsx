@@ -565,7 +565,7 @@ export function SettingsPanel({
     setStorageState("choosing");
     setStorageMessage(null);
     try {
-      const selected = await storageClient.chooseDirectory(storageStatus.dataPath);
+      const selected = await storageClient.chooseDirectory();
       setStorageState("idle");
       if (selected) setPendingStorageDirectory(selected);
     } catch (error) {

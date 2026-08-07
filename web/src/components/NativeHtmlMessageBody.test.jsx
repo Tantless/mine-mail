@@ -37,6 +37,27 @@ describe("native HTML message body", () => {
     expect(inline.getAttribute("src")).toBe("data:image/png;base64,AQID");
   });
 
+  it("strips navigation, form, and script-capable elements as defense in depth", () => {
+    const html = prepareNativeHtml(
+      '<p onclick="window.__TAURI_INTERNALS__">hi</p>' +
+        '<meta http-equiv="refresh" content="0;url=https://evil.example">' +
+        '<iframe src="https://evil.example"></iframe>' +
+        '<form action="https://evil.example"><input name="pwd"></form>' +
+        '<a href="https://ok.example" onmouseover="alert(1)">ok</a>',
+      false,
+    );
+    const template = document.createElement("template");
+    template.innerHTML = html;
+
+    expect(template.content.querySelector("[onclick]")).toBeNull();
+    expect(template.content.querySelector("meta[http-equiv]")).toBeNull();
+    expect(template.content.querySelector("iframe")).toBeNull();
+    expect(template.content.querySelector("form")).toBeNull();
+    expect(template.content.querySelector("input")).toBeNull();
+    expect(template.content.querySelector("[onmouseover]")).toBeNull();
+    expect(template.content.querySelector('a[href="https://ok.example"]')).toBeTruthy();
+  });
+
   it("loads remote images automatically by default", () => {
     const { container } = render(
       <NativeHtmlMessageBody

@@ -636,13 +636,21 @@ export function createComposeEditorExtensions({
 }
 
 function safeHref(value) {
-  const href = value?.trim();
+  let href = value?.trim();
   if (!href) return null;
+  // A bare hostname such as "example.com" has no scheme and would resolve
+  // against the app's own origin, producing a broken local link. Default it
+  // to https, but keep protocol-relative "//host" inputs as-is.
+  if (!href.startsWith("//") && !/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(href)) {
+    href = `https://${href}`;
+  }
   try {
     const parsed = new URL(href, window.location.origin);
-    return ["http:", "https:", "mailto:"].includes(parsed.protocol)
-      ? href
-      : null;
+    if (!["http:", "https:", "mailto:"].includes(parsed.protocol)) return null;
+    // Return the absolutized URL: a protocol-relative `//host/path` input
+    // resolves against the current origin and must not be persisted verbatim,
+    // otherwise the recipient's mail client resolves it against its own host.
+    return parsed.href;
   } catch {
     return null;
   }
@@ -981,6 +989,7 @@ function RichTextEditorCore({
   );
   const [showLinkEditor, setShowLinkEditor] = useState(false);
   const [linkValue, setLinkValue] = useState("");
+  const [linkError, setLinkError] = useState(null);
   const editorShellRef = useRef(null);
 
   const incomingHtml = useMemo(
@@ -1193,9 +1202,17 @@ function RichTextEditorCore({
 
   const insertLink = () => {
     const href = safeHref(linkValue);
-    if (!href) return;
+    if (!href) {
+      setLinkError("请输入有效的链接地址");
+      return;
+    }
+    if (!editorIsUsable(editor) || editor.state.selection.empty) {
+      setLinkError("请先在正文中选中要添加链接的文字");
+      return;
+    }
     runEditorCommand((chain) => chain.setLink({ href }));
     setLinkValue("");
+    setLinkError(null);
     setShowLinkEditor(false);
   };
 
@@ -1336,7 +1353,10 @@ function RichTextEditorCore({
                 ref={linkInputRef}
                 aria-label="链接地址"
                 value={linkValue}
-                onChange={(event) => setLinkValue(event.target.value)}
+                onChange={(event) => {
+                  setLinkValue(event.target.value);
+                  setLinkError(null);
+                }}
                 onKeyDown={(event) => {
                   if (event.key === "Enter") {
                     event.preventDefault();
@@ -1345,6 +1365,14 @@ function RichTextEditorCore({
                 }}
                 placeholder="https://"
               />
+              {linkError ? (
+                <span
+                  className="compose-link-popover__error"
+                  role="alert"
+                >
+                  {linkError}
+                </span>
+              ) : null}
               <button
                 type="button"
                 onClick={insertLink}

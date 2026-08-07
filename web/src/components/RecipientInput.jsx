@@ -27,7 +27,19 @@ function contactLabel(contact) {
 }
 
 export function isCompleteRecipientEmail(value) {
-  return emailPattern.test(value.trim());
+  const email = value.trim();
+  if (!emailPattern.test(email)) return false;
+  // Reject empty dot-separated segments: "a..b@c.d", ".a@c.d", "a.@c.d".
+  const [local, domain] = email.split("@");
+  if (local.length === 0 || domain.length === 0) return false;
+  return !(
+    local.startsWith(".") ||
+    local.endsWith(".") ||
+    local.includes("..") ||
+    domain.startsWith(".") ||
+    domain.endsWith(".") ||
+    domain.includes("..")
+  );
 }
 
 function matchRank(contact, query) {

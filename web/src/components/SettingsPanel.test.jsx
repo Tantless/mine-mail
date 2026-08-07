@@ -970,6 +970,7 @@ describe("SettingsPanel account flow", () => {
     await user.click(screen.getByRole("button", { name: "关于 Mine Mail" }));
 
     expect(await screen.findByText("E:\\Mine Mail Data")).toBeTruthy();
+    expect(await screen.findByText("自定义位置")).toBeTruthy();
     const unavailablePath = screen.getByText(
       "当前数据目录不可用。请重新连接对应磁盘，然后重启 Mine Mail。",
     );

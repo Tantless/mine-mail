@@ -16,6 +16,27 @@ export function prepareNativeHtml(html, allowRemoteImages) {
     });
   }
 
+  // Defense in depth: the Rust sanitizer already strips these, but if it ever
+  // regresses, the main document must not receive navigation, form, or
+  // script-capable elements through dangerouslySetInnerHTML.
+  template.content
+    .querySelectorAll(
+      "iframe, object, embed, form, input, button, select, textarea, link[rel~='stylesheet']",
+    )
+    .forEach((element) => element.remove());
+  template.content.querySelectorAll("meta").forEach((meta) => {
+    if ((meta.getAttribute("http-equiv") || "").toLowerCase() === "refresh") {
+      meta.remove();
+    }
+  });
+  template.content.querySelectorAll("*").forEach((element) => {
+    for (const attribute of [...element.attributes]) {
+      if (/^on/i.test(attribute.name)) {
+        element.removeAttribute(attribute.name);
+      }
+    }
+  });
+
   return template.innerHTML;
 }
 

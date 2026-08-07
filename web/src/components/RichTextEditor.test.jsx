@@ -331,8 +331,97 @@ it("formats the active selection without the deprecated browser command API", as
   );
 });
 
-it("changes only the selected text size without relaying out the paper", async () => {
+it("absolutizes protocol-relative links when inserting a link", async () => {
+  const onChange = vi.fn();
   const onEditorReady = vi.fn();
+  const user = userEvent.setup();
+  render(
+    <RichTextEditor
+      bodyText="正文"
+      format={emptyFormat}
+      stationery="none"
+      onChange={onChange}
+      onEditorReady={onEditorReady}
+    />,
+  );
+  const editor = screen.getByRole("textbox", { name: "邮件正文" });
+  const engine = onEditorReady.mock.calls.at(-1)[0];
+  engine.commands.setTextSelection({ from: 1, to: 3 });
+
+  await user.click(screen.getByRole("button", { name: "添加链接" }));
+  await user.type(
+    screen.getByRole("textbox", { name: "链接地址" }),
+    "//example.com/page",
+  );
+  await user.click(screen.getByRole("button", { name: "添加" }));
+
+  await waitFor(() => {
+    const anchor = editor.querySelector("a");
+    expect(anchor?.getAttribute("href")).toBe("http://example.com/page");
+  });
+});
+
+it("defaults a bare hostname to https when inserting a link", async () => {
+  const onChange = vi.fn();
+  const onEditorReady = vi.fn();
+  const user = userEvent.setup();
+  render(
+    <RichTextEditor
+      bodyText="正文"
+      format={emptyFormat}
+      stationery="none"
+      onChange={onChange}
+      onEditorReady={onEditorReady}
+    />,
+  );
+  const editor = screen.getByRole("textbox", { name: "邮件正文" });
+  const engine = onEditorReady.mock.calls.at(-1)[0];
+  engine.commands.setTextSelection({ from: 1, to: 3 });
+
+  await user.click(screen.getByRole("button", { name: "添加链接" }));
+  await user.type(
+    screen.getByRole("textbox", { name: "链接地址" }),
+    "www.example.com",
+  );
+  await user.click(screen.getByRole("button", { name: "添加" }));
+
+  await waitFor(() => {
+    const anchor = editor.querySelector("a");
+    expect(anchor?.getAttribute("href")).toBe("https://www.example.com/");
+  });
+});
+
+it("keeps the link editor open with a hint when nothing is selected", async () => {
+  const onEditorReady = vi.fn();
+  const user = userEvent.setup();
+  render(
+    <RichTextEditor
+      bodyText="正文"
+      format={emptyFormat}
+      stationery="none"
+      onChange={vi.fn()}
+      onEditorReady={onEditorReady}
+    />,
+  );
+  const editor = screen.getByRole("textbox", { name: "邮件正文" });
+
+  await user.click(screen.getByRole("button", { name: "添加链接" }));
+  await user.type(
+    screen.getByRole("textbox", { name: "链接地址" }),
+    "https://example.com",
+  );
+  await user.click(screen.getByRole("button", { name: "添加" }));
+
+  await waitFor(() => {
+    expect(screen.getByRole("alert").textContent).toContain(
+      "选中要添加链接的文字",
+    );
+  });
+  expect(screen.getByRole("textbox", { name: "链接地址" })).toBeTruthy();
+  expect(editor.querySelector("a")).toBeNull();
+});
+
+it("changes only the selected text size without relaying out the paper", async () => {  const onEditorReady = vi.fn();
   const user = userEvent.setup();
   render(
     <RichTextEditor
