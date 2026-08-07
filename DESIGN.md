@@ -1,754 +1,303 @@
 # Mine Mail Design System
 
 This is the canonical visual and interaction specification for the Mine Mail
-desktop application. It was consolidated from the coherent UI already implemented
-in the app; historical mockups, QA screenshots, and generated reference images are
-not design authority.
+desktop application. This edition records the approved design already present in
+the application. Screenshots and old implementation plans may illustrate it, but
+they are not independent design authorities.
 
-## Authority and anti-drift rules
+## Authority
 
-- Read this file before any user-visible UI change.
-- After this baseline, `DESIGN.md` is normative and the shared tokens/components
-  are its implementation. If they differ, either fix the accidental drift or get
-  approval for a design change and update both in the same change.
-- Do not promote a screenshot, generated mock, dated QA note, or one-off page to a
-  source of truth. Temporary comparisons belong outside the repository.
-- Extend semantic tokens and shared primitives before adding page-specific visual
-  rules. A local exception must have a functional reason, not merely a slightly
-  different desired appearance.
-- Visual changes must be checked in all four themes, at every affected desktop
-  reflow, with keyboard focus and reduced motion.
+- Read this file before changing visible UI, interaction, theme, copy hierarchy,
+  assets, or layout.
+- The approved baseline is implemented through `web/src/styles.css` and shared
+  components under `web/src/components/`. Future intentional changes must update
+  the implementation, relevant tests, and this document together.
+- Prefer semantic tokens and shared primitives. A local exception needs a
+  functional reason, not a slightly different appearance.
+- Check visible changes in all four themes, affected desktop reflows, keyboard
+  navigation, and reduced-motion mode.
+- Keep temporary screenshots, comparison boards, and implementation plans out of
+  the repository. Durable conclusions belong here; behavior belongs in
+  `docs/PRODUCT.md`.
 
-The implementation anchors are `web/src/styles.css` and the shared React
-components in `web/src/components/`. They are references for implementation, not
-permission to preserve dead or duplicated CSS.
+## Visual identity
 
-## Visual character
+Mine Mail is quiet, atmospheric, compact, and content-first.
 
-Mine Mail is quiet, atmospheric, and content-first:
+- One painterly landscape wallpaper spans the native window. The sidebar remains
+  part of that scene; mail, contacts, settings, and compose use layered frosted
+  material above it.
+- Glass communicates depth without turning every item into a floating card.
+  Hierarchy comes from spacing, typography, surface density, and one restrained
+  theme accent.
+- Avoid decorative gradients, glow, heavy shadows, oversized marketing type,
+  mobile-web patterns, and generic dashboard chrome.
 
-- One painterly landscape wallpaper spans the complete native window.
-- The sidebar sits directly in that scene; mail, settings, and compose surfaces
-  use layered, wallpaper-aware frosted material.
-- Glass communicates depth without sacrificing mail readability. It is not a
-  collection of floating translucent cards.
-- Hierarchy comes from spacing, type, surface density, and a restrained theme
-  accent—not decorative gradients, glow, excessive shadows, or animation.
-- Product UI remains compact and desktop-native. Avoid generic dashboard chrome,
-  oversized marketing headings, and mobile-web patterns.
+### Brand and themes
 
-## Brand, assets, type, and icons
+- The fox holding an envelope at
+  `web/src/assets/brand/mine-mail-fox.png` is the only Mine Mail brand mark. Use
+  it for the application, tray, sidebar, onboarding, About, and Mine Mail-owned
+  installer surfaces. New-mail notifications use the sender avatar.
+- The sidebar owns the only shell-level Mine Mail lockup. At compact width it
+  keeps the centered fox and hides the wordmark rather than wrapping it.
+- The shipped themes are exactly Daylight, Night, Dusk, and Forest, backed by the
+  four `web/src/assets/wallpaper-*.png` files. They share layout and component
+  anatomy; only wallpaper, semantic color, material opacity, contrast, and
+  optical weight vary.
+- Product icons use Phosphor Icons. Do not substitute emoji, text glyphs,
+  hand-drawn CSS, or one-off SVG icons.
+- Avatars resolve locally: user override, built-in known-domain mark, then
+  deterministic initials. Preserve brand proportions and never query a remote
+  avatar service.
 
-### Brand
+### Type
 
-- The only Mine Mail mascot and brand mark is the fox holding an envelope:
-  `web/src/assets/brand/mine-mail-fox.png`.
-- Use the fox for the application/package icon, tray, onboarding, About, sidebar,
-  and Mine Mail-owned installer surfaces. The sidebar is the only shell/header
-  brand; About may show a content-level brand mark.
-- The visible sidebar brand lockup scales its fox, `Mine Mail` wordmark, gap, and
-  vertical rhythm against the sidebar's available inline size. The wordmark
-  remains on one line at every non-compact width; the 78 px compact sidebar hides
-  the wordmark and centers the scaled fox instead of wrapping or clipping text.
-- New-mail notifications use the sender avatar, not the Mine Mail mark.
-- Do not introduce alternate mascots, redraw the fox, mix logo variants, or use
-  discussion images as runtime assets.
+- UI and mail chrome use Inter Variable for Latin, Noto Sans SC Variable for
+  Han, and platform sans-serif fallbacks.
+- The Mine Mail wordmark uses Nunito Variable. The empty-reader quotation uses
+  Ma Shan Zheng with Chinese calligraphic fallbacks.
+- Sender-designed isolated mail may retain sanitized document typography.
+- Page headings are about 24–31 px, section headings 19–23 px, primary content
+  13–15 px, and secondary metadata 9–12 px. Frequently scanned metadata starts
+  at 11 px and subdued previews at 12 px.
 
-### Wallpaper and themes
+## Desktop shell
 
-The shipped themes are exactly:
+The primary acceptance viewport is 1440 × 900. The native minimum is
+1050 × 680; narrower CSS layouts are defensive desktop reflows, not a separate
+mobile or hosted Web product.
 
-| Theme | Runtime asset | Character |
-| --- | --- | --- |
-| Daylight | `web/src/assets/wallpaper-daylight.png` | cool, pale, airy |
-| Night | `web/src/assets/wallpaper-night.png` | dark blue-gray |
-| Dusk | `web/src/assets/wallpaper-dusk.png` | warm wine and coral |
-| Forest | `web/src/assets/wallpaper-forest.png` | deep natural green |
-
-Themes share geometry and component anatomy. A theme may override the wallpaper,
-semantic colors, contrast, material opacity, wallpaper echo, and optical shadow
-weight; it must not create a separate page layout or component family.
-
-### Typography
-
-- UI and mail chrome: `Inter Variable` for Latin, bundled `Noto Sans SC Variable`
-  for Han, then platform sans-serif fallbacks. Let the desktop webview use its
-  native text rasterization instead of forcing grayscale antialiasing.
-- `Mine Mail` brand wordmark only: `Nunito Variable`.
-- Empty-reader quotation only: bundled `Ma Shan Zheng`, then Chinese calligraphic
-  fallbacks.
-- Sender-designed isolated mail may retain its sanitized document typography.
-- Use four practical UI ranges rather than one-off sizes:
-  - display/page heading: 24–31 px;
-  - section/list heading: 19–23 px;
-  - body and primary row content: 13–15 px;
-  - metadata, eyebrow, helper, and status text: 9–12 px.
-- Body copy must remain comfortably readable. Do not use tiny text as decoration.
-  Frequently scanned compact metadata starts at 11 px, and subdued list-preview
-  copy starts at 12 px; smaller text is reserved for genuinely secondary labels
-  that remain legible at the minimum desktop viewport.
-
-### Icons and avatars
-
-- Product icons come from Phosphor Icons. Reuse the closest existing weight and
-  size; do not use emoji, handmade SVG, CSS drawings, or text glyphs as icons.
-- Reuse `IconButton`, `TooltipTarget`, `ProfileAvatar`, and
-  `EditableProfileAvatar` instead of recreating their states.
-- Avatar resolution is local-first: exact local override, known-domain brand map,
-  then deterministic initials. Never query a remote avatar service.
-- Known-domain brands use current, unmodified local vector marks when available.
-  The reader sender tile is the reference for internal clear space. Compact
-  sidebar and mail-list tiles keep the same mark-to-tile ratio; only the tile
-  size changes. Preserve source proportions without cropping. Text-based legacy
-  marks use a surface-relative size instead of inheriting surrounding UI type.
-
-## Desktop shell and geometry
-
-The window is one composition, not three independent applications.
-
-The primary desktop acceptance viewport is 1440 × 900. The native window minimum
-is 1050 × 680; smaller CSS reflows are defensive compact-window behavior, not the
-primary product target.
-
-| Token/region | Canonical geometry |
+| Region | Approved geometry |
 | --- | --- |
 | Sidebar | `clamp(260px, 20.5vw, 340px)` |
 | Mail/contact list | `clamp(390px, 29vw, 486px)` |
 | Reader | flexible, minimum 480 px |
 | Panel gap | `clamp(8px, 0.75vw, 13px)` |
 | Outer edge | `clamp(12px, 1vw, 18px)` |
-| Native top safe area | 38 px titlebar plus 14 px content offset |
+| Native top area | 38 px titlebar plus 14 px content offset |
 | Panel / control / row radius | 12 / 9 / 9 px |
 
-- Keep the existing app-owned Tauri titlebar: the native window stays
-  undecorated, while Mine Mail renders controls that follow the host platform's
-  standard position and affordances and call the Tauri window API. Do not enable
-  system decorations or add a separate titlebar fill, divider, title, or logo.
-- The sidebar owns the only shell-level Mine Mail brand and stays visually
-  connected to the wallpaper.
-- Mail uses the established three-column grid. Contacts reuse the same shell.
-- Settings keeps the primary sidebar and replaces columns two and three with one
-  embedded workspace: a 218 px category rail and flexible detail pane. It is not
-  a modal settings window.
+- Keep the undecorated Tauri window and app-owned platform-aware titlebar
+  controls. Do not add a filled title strip, divider, duplicate title, or second
+  logo.
+- Mail and contacts use the established sidebar + list + reader composition.
+- Settings keeps the sidebar and replaces the list/reader area with an embedded
+  category rail and detail pane. It is not a modal settings window.
+- Above 1250 px the full three-column shell is visible. At or below 1250 px the
+  sidebar compacts to 78 px. At or below 940 px it becomes a wallpaper-backed
+  drawer. At or below 720 px list/detail and settings use a single-pane or
+  stacked defensive layout.
+- The wide list column may retract. Retraction closes any open detail first,
+  hides the current sidebar selection, and lets the quiet empty-reader scene use
+  the remaining space. Reopening a destination restores its selection and list.
 
-Desktop reflow is deliberate:
+## Material and shared components
 
-- Above 1250 px: full three-column shell.
-- At or below 1250 px: compact 78 px sidebar, 350–420 px list, reader minimum
-  420 px.
-- At or below 940 px: the sidebar becomes a wallpaper-backed drawer and the
-  content uses list + reader columns.
-- At or below 720 px: list and reader become a single-pane flow; settings becomes
-  a stacked rail/detail layout.
+All app-owned color and material decisions flow through custom properties in
+`:root` and the four theme blocks.
 
-These are compact-window states for a desktop app, not a separate mobile or Web
-product.
+- Foundation tokens cover text, borders, controls, panels, accent, success,
+  warning, danger, focus, geometry, and motion.
+- Workspace tokens cover sidebar, list, reader, settings, compose, overlays,
+  tooltips, scrollbars, and wallpaper echo.
+- Do not reference undeclared tokens or add page-local palettes where a semantic
+  role fits. Hard-coded color is limited to external brands, platform-standard
+  controls, and sender-owned mail content.
+- The list is a denser glass surface; the reader is slightly more atmospheric;
+  settings uses a denser shell with a distinct rail; compose uses a floating
+  writing surface; menus, tooltips, confirmations, and notifications use compact
+  high-legibility material.
+- Reuse `IconButton`, `TooltipTarget`, `ProfileAvatar`,
+  `EditableProfileAvatar`, `ThemedSelect`, and the shared confirmation
+  primitives.
 
-## Theme and material system
+### Controls and feedback
 
-All app-owned color and material decisions flow through declared custom
-properties in `:root` and the four `[data-theme]` blocks.
+- Standard targets are at least 40 × 40 px. A compact 34 px target is reserved
+  for spacious composite controls such as compose chrome; titlebar controls use
+  their platform-equivalent geometry.
+- Hover changes surface or edge; pressed movement is at most 1 px. Keyboard
+  focus uses the shared high-contrast ring. Disabled controls remain
+  recognizable and distinct from ordinary off states.
+- Primary actions use the theme accent, secondary actions use neutral material,
+  and destructive actions use semantic danger.
+- Use `ThemedSelect`, Mine Mail dialogs, and inline validation. Never expose
+  native select styling, browser validation bubbles, `alert`, `confirm`, or
+  `prompt` in product UI.
+- Product-owned failure copy is concise Simplified Chinese, identifies the
+  source, preserves safe state, and gives the next action. Raw backend text,
+  internal codes, and stack details do not appear.
+- Routine success is expressed by the resulting state or nearby status. Toasts
+  are reserved for failures and consequential results that would otherwise be
+  invisible.
 
-### Token groups
+### Lists, overlays, and scrolling
 
-- Foundation: `--color-panel`, `--color-control`, `--color-text*`,
-  `--color-border`, `--color-divider`, `--color-primary*`, semantic success and
-  danger.
-- Shell: wallpaper, sidebar text/scrims, native-titlebar colors, overlay.
-- Material: list, reader, settings shell/rail/detail, compose shell/content,
-  control surface, borders, highlight, blur, saturation, brightness, and wallpaper
-  echo.
-- State: hover, selection, focus ring, switches, quote cards, scrollbars.
-- Semantic warning and favorite roles must have declared shared tokens before
-  reuse; do not scatter raw amber/yellow values through components.
-- Geometry and motion: the shared width, gap, radius, and duration tokens.
+- Mail, contacts, account switching, and settings navigation share row density,
+  truncation, hover, focus, and a moving selection surface. Selected state uses
+  both surface and edge; unread state remains semantic rather than becoming a
+  second card system.
+- Cached content stays mounted during background work. Loading and queued
+  mutations do not replace usable rows or move the current selection.
+- App chrome and navigation are not text-selectable. Text fields and opened
+  message content remain selectable.
+- Use the shared portal tooltip for icon-only or unfamiliar actions. Dense
+  frosted popups are shared by theme selection, account menus, recipient
+  suggestions, and selects.
+- Each workspace owns one obvious vertical scroll surface. Avoid nested reader
+  scrollbars, horizontal panel drift, and top rubber-banding. Content may have a
+  bounded end inset when the last row needs breathing room.
+- The desktop WebView suppresses the browser context menu. The explicit Vite
+  demo may retain normal browser behavior.
 
-Do not reference an undeclared token. Do not add a page-local palette when an
-existing semantic role fits. Hard-coded colors are limited to external brand
-marks, platform-standard controls, and sender-owned mail content.
+## Workspaces
 
-### Surface hierarchy
+### Mail list and reader
 
-1. Wallpaper is continuous and most visible beneath the sidebar.
-2. The mail/contact list is the quieter, denser glass surface.
-3. The reader is more atmospheric and slightly more transparent, with stronger
-   blur; actual mail text still gets a readable document surface.
-4. Settings uses a denser shared shell, a distinct glass category rail, and a
-   quiet detail layer while preserving the wallpaper.
-5. Compose uses a floating glass shell with inset glass fields and editor.
-6. Menus, tooltips, confirmations, and notifications use compact, denser
-   theme-owned surfaces so text remains immediately legible.
-
-The current baseline uses 24 px list blur, 30 px reader/compose blur, 1 px
-theme-aware edges, a restrained inner highlight, and one shared panel shadow
-family. Preserve the relative hierarchy when tuning optical values.
-
-## Shared component language
-
-### Controls
-
-- Standard interactive targets are at least 40 × 40 px. Compact controls may be
-  34 px only inside an already spacious composite control such as compose chrome
-  or a settings row. Platform-shaped controls inside the 38 px app titlebar follow
-  that titlebar's native-equivalent geometry instead.
-- Hover changes surface and/or border; pressed state may move by at most 1 px.
-- Keyboard focus uses the shared high-contrast focus ring and must not depend on
-  hover.
-- Disabled controls remain recognizable, non-interactive, and visibly distinct
-  from an ordinary off state.
-- Formal product UI has no click-looking placeholder controls. An unavailable
-  capability is explanatory copy or an accurately disabled state with a reason;
-  it is never a normal button whose only result is “not implemented.”
-- Primary actions use the active theme accent. Secondary actions use a neutral
-  glass/control surface. Destructive actions use the semantic danger color.
-
-### Inputs and selection controls
-
-- Text inputs use an inset rounded shell; the visible shell and the actual hit
-  area are one focus surface.
-- App-owned chrome, navigation, list rows, settings copy, dialogs, and other
-  interface labels are not text-selectable. Text entry surfaces and the opened
-  message's reader content remain selectable; reader controls and the decorative
-  empty-reader scene do not.
-- Use `ThemedSelect` for visible choices. Do not expose an operating-system select
-  popup or browser validation bubble.
-- Menus/listboxes own hover, active, selected, disabled, keyboard, and focus
-  states. Opening one must not create a different visual system.
-- Use Mine Mail-owned dialogs and inline validation instead of `alert`, `confirm`,
-  or `prompt`. Show one relevant error close to the failed action.
-- Error copy is concise Simplified Chinese and starts with the distinction the
-  user needs: **请检查输入 / 操作未完成** for a correctable action, the relevant
-  account or connection condition for an external dependency, or
-  **Mine Mail 内部处理失败** for an unexpected application failure. Never place
-  raw backend English, stack text, or internal codes in an error surface.
-- State what remains safe and the next action when they matter. Do not imply that
-  an internal failure was caused by the user's input, and do not use a generic
-  “something went wrong” message when a bounded recovery step is known.
-
-### Lists and rows
-
-- Mail and contact lists share topbar, search, heading, tabs, row density,
-  selection edge, hover, metadata hierarchy, and truncation behavior.
-- The primary folder navigation, connected-account switcher, mail list, and
-  settings category rail each use one shared selection surface. Changing
-  folders, accounts, messages, or settings categories moves that surface from
-  the previous row to the next within `--motion-normal`; the rows themselves
-  never move, and reduced-motion mode collapses the transition. Unselected
-  connected-account rows remain transparent against the sidebar, while hover
-  retains a quiet surface response.
-- A selected row changes both surface and edge; unread state is semantic, not a
-  second competing card style.
-- Background refreshes preserve the visible rows and selection. Loading must not
-  flash usable local content away.
-- Pending Archive, Trash, read/unread, or delete mutations keep the row layout
-  stable. Those background mutation queues never appear as sidebar badges.
-  Archive and Trash may use compact reader feedback when the user must act;
-  read/unread remains visually implicit after the local row state updates.
-- The sidebar keeps a numeric badge only for unread Inbox mail. An active Outbox
-  uses one small rotating Phosphor status mark at the trailing edge while it
-  contains mail not yet confirmed sent; reduced-motion mode keeps the mark
-  static. Sent uses an account-scoped, non-numeric dot when new sent mail is
-  added while that destination is not open, and opening Sent clears the dot.
-- Folder lists retain true-empty, search, filter, synchronization, offline,
-  retry, and confirmed-end distinctions in their state model without rendering
-  large explanatory cards. An empty list stays visually quiet.
-
-### Menus, tooltips, and scrolling
-
-- The desktop runtime suppresses the embedded WebView's browser-provided context
-  menu. Right-click may show only Mine Mail-owned contextual actions; while a
-  surface has none, it shows no menu. The explicit Vite demo keeps normal browser
-  context-menu behavior.
-- Use the shared portal tooltip for icon-only or unfamiliar actions. It appears
-  after a short pointer delay, immediately for keyboard focus, stays inside the
-  viewport, and never intercepts input.
-- Theme pickers, account menus, recipient suggestions, and selects use the same
-  dense frosted popup family.
-- Each workspace owns one obvious vertical scroll surface. Do not create nested
-  reader scrollbars or horizontal panel drift.
-- Vertical scroll surfaces stop immediately at their first item instead of
-  rubber-banding above it. When the last item needs breathing room, provide a
-  bounded content-end inset rather than symmetric native overscroll; the sidebar
-  folder region keeps its visual gap below Compose outside the scrolling content
-  and reserves scrollable buffer only after the final folder.
-- Preserve the layer order: wallpaper, app shell, contextual drawer/banner,
-  compose, consequential confirmation, native titlebar controls, background
-  update progress, toast, then tooltip/listbox. Do not solve a local overlap
-  with an arbitrary new z-index.
-
-### Background update progress
-
-- After the user explicitly starts an application update, dismissing its dialog
-  or leaving Settings minimizes progress instead of cancelling the download.
-- The minimized state is one quiet bottom-right frosted strip: the target
-  version, a slim progress bar, and one icon-only stop action. Its material stays
-  close to the active theme and does not compete with mail, compose, or toast
-  content.
-- The expanded update dialog uses that same stop icon as the only cancellation
-  action. Its close control, Escape, backdrop, Settings navigation, and other
-  surrounding interactions only move the download into the minimized state.
-- Once package installation starts, cancellation is unavailable; progress stays
-  visible until the updater relaunches the application or reports a bounded
-  failure.
-
-## Workspace contracts
-
-### Mail and reader
-
-- The message list paints cached summaries immediately. Selecting a message keeps
-  list position stable while the reader body shows its quiet loading state until
-  the complete content and final render mode are ready. List preview text and an
-  intermediate plain fallback never appear as the opened body.
-- When the active folder has no cached rows and its initial local read or first
-  server import is still running, the shared status band below the tabs shows a
-  compact spinner with precise loading or synchronization copy. It disappears
-  when that initial work settles. Existing cached rows remain mounted and keep
-  routine background synchronization visually silent; only an explicit refresh
-  drives the heading refresh control.
-- Each account and folder remembers its own message-list scroll position.
-  Opening a folder without a remembered position starts at the top; switching
-  back restores that account-and-folder position.
-- Connected-account switching restores the target account's remembered primary
-  destination, middle-list message selection, and reader-detail visibility. A
-  target without a navigation snapshot uses the wide retracted-list empty scene:
-  no primary folder selection is visible and the quotation experience fills the
-  space beside the sidebar. When account workspaces change, any open detail uses
-  the existing fast exit first; the middle surface then reuses the established
-  collapse, reveal, or midpoint context-switch transition. A changed primary
-  destination moves the shared sidebar selection surface normally, and a
-  remembered open detail enters only after the target middle surface is present.
-  Reduced motion and defensive compact layouts retain their atomic behavior.
-- In the wide mail workspace, opening a message brings only the reader content
-  into the existing third column with a restrained 260 ms window-style geometry
-  and material transition: it grows from a slightly smaller, quieter,
-  center-anchored state without spring, overshoot, or movement from the selected
-  row. This entrance applies equally when opening from aggregate Starred or Sent.
-  The third-column geometry does not move. Back reverses the same transition and
-  returns to the empty-reader scene; it never retracts the reader column itself.
-  Changing from one open message to another replaces the reader content
-  immediately and does not replay an entrance or content-swap animation.
-- The wide workspace may retract its middle mail or contact-list column. Mail
-  list topbars provide an explicit retract action, and activating the
-  already-current primary list destination in the sidebar, including Contacts,
-  performs the same action. If mail or contact detail is open, the visible
-  reader content must finish a fast `--motion-fast` exit before the list begins
-  retracting; a retracted list therefore never leaves details open. The list
-  surface then contracts toward its center and disappears over one restrained
-  260 ms transition while the quiet empty-reader scene fills all space beside
-  the sidebar. At retraction start, the shared sidebar selection surface eases
-  out with one short fade and slight scale reduction; no folder remains visually
-  selected while the list is retracted. Activating any primary list destination
-  while retracted restores its selection surface and reveals that destination
-  with the reverse transition.
-- Activating a different primary list workspace while the middle list is visible
-  uses one coordinated transition. This includes transitions between mail
-  folders and Contacts, so Starred, Contacts, and Sent use the same sequence in
-  both directions. Any open mail reader content exits first with
-  `--motion-fast`; the middle surface then uses one 260 ms scene transition to
-  contract evenly from all four edges, replace its mail or contact list only at
-  the midpoint, and expand as the target workspace. It must read as one compact
-  workspace changing context, not as a horizontal page slide or two lists
-  crossing through each other. Contacts participates in both this
-  cross-destination scene transition and current-destination retraction without
-  adding a mail-specific retract control to its topbar.
-- Retraction and list-workspace transitions keep at most one pending navigation
-  intent: newer input replaces older pending input after the in-flight phase
-  reaches a safe visual boundary. Retraction itself preserves the current
-  folder's search/filter state and scroll position. `prefers-reduced-motion`
-  collapses each coordinated sequence to one atomic final state with no scale,
-  fade, or staged delay.
-- These list-retraction and list-workspace transitions belong only to wide
-  layouts where the sidebar, middle list, and reader are concurrently visible.
-  Defensive drawer, two-pane, and single-pane reflows retain their existing
-  navigation model rather than imitating a collapsible desktop column.
-- Inbox, Starred, Sent, Archive, and Trash append 50-message keyset pages
-  automatically when the list approaches its bottom. Starred merges its
-  independently paged Inbox, Sent, and Archive `\Flagged` sources. There is no
-  manual load-more button or persistent end card. While the next page is
-  loading, the list end expands into a bounded 64 px buffer with one centered
-  `CircleNotch` and
-  **正在加载更多邮件…**; the user may continue scrolling into that space without
-  replacing cached rows. Appended rows replace the buffer and it then contracts;
-  completion and failure add no persistent bottom line. Appending or receiving
-  mail preserves selection and scroll position. One bottom approach starts at
-  most one request; completing that request while the end remains visible does
-  not restart the indicator, and scrolling away rearms pagination. Explicit
-  synchronization uses the shared status band below the tabs.
-- Every explicit folder refresh deepens the list material into one full-width,
-  square-edged status band directly below the tabs. The compact band reaches
-  through the panel's inline edge seam and is only one tonal step deeper than the
-  surrounding list material, deriving from the list and row-hover surfaces. Its
-  compact three-column grid mirrors a mail row: a regular-weight status icon is
-  centered on the avatar column, the regular-weight secondary copy starts on the
-  sender/content line, and the trailing action column stays empty. It has no
-  inset margin, border, radius, or shadow: it is part of the list surface, not
-  another card layered above it. It reports progress, then success with the
-  bounded number of synchronized messages or a retryable failure. The completed
-  row disappears after two seconds and never duplicates routine success in a
-  lower-right toast. The heading refresh icon spins only for that explicit
-  request; event-driven list reconciliation never restarts its busy state after
-  the request completes.
-- Mail search uses the established search shell and identifies its bounded local
-  scope as **搜索已同步邮件**. Search and folder tabs must not imply access to
-  uncached server history.
-- The Starred workspace presents its aggregate directly without **全部 / 未读**
-  tabs. Its status row retains only the current visible-message count.
-- Unstarring a message inside Starred updates the visible star control
-  immediately but keeps that row in the list for the rest of the visible
-  Starred visit, so the user can restore an accidental change. Unstarring or
-  starring again never reorders existing rows during that visit; newly arriving
-  rows may append without moving them. Explicit refresh removes rows that are no
-  longer starred. Leaving and re-entering the workspace, switching accounts,
-  opening another workspace, or retracting and revealing the list also starts a
-  fresh Starred view from current state; background reconciliation alone must
-  neither remove nor reorder the retained row mid-visit.
-- Archive and Trash paint cached summaries before synchronization. Their sidebar
-  entries stay visually neutral and never expose discovery, capability, or
-  pending-queue status. Opening an available Archive shows cached mail
-  immediately. A missing role is created automatically only after an explicit
-  Archive/Trash navigation or message action; initial sidebar presentation never
-  creates server state. If background discovery is still pending, that explicit
-  action settles the role itself and continues instead of asking the user to try
-  again. Folder navigation selects the quiet workspace immediately while the
-  role is being ensured. An unavailable role leaves the list visually quiet.
-- The reader has one outer scrollbar. Native text/semantic HTML uses Mine Mail
-  typography; complex sender HTML remains sanitized and isolated. See
-  `docs/MAIL_RENDERING.md`.
-- The reader header keeps the sender summary compact and exposes one text-only
-  disclosure, without a button surface, for the authoritative **发件人 / 收件人 /
-  抄送 / 密送** groups. The disclosure is vertically centered beside a simple,
-  transparent details overlay, and its caret points right toward that overlay.
-  The disclosure and overlay sit below the sender's real address. Opening the
-  overlay never participates in reader layout or moves the divider and message
-  body below it. Empty optional groups stay absent. A local remark may lead the
-  visible identity, but the real mailbox address remains present and readable.
-- Outbox recipient details use only the persisted recipient groups. A legacy
-  Outbox item without those groups says **旧版邮件收件人分组不可用** and never
-  invents To/Cc/Bcc from a flat delivery-recipient list.
-- Opening recipient details moves focus into the details region. Escape collapses
-  it and returns focus to the disclosure control; long names and addresses wrap
-  within the reader without horizontal drift.
-- Reply history is a sequence of sibling collapsible cards, never recursively
-  nested panels.
-- Reader actions are role-specific. Inbox uses Archive and Delete; Sent uses
-  Delete; Archive uses **移到收件箱** and Delete; Trash uses **移到收件箱** and a
-  clearly destructive permanent-delete action. Delete in Inbox, Sent, and
-  Archive moves to Trash. Archive is shown only where the account supports it,
-  and Draft/Outbox never expose remote read-state actions.
-- An Outbox item with an unknown delivery result never uses the ordinary retry
-  action. Its reader offers exactly two consequential, confirmed decisions:
-  **确认已投递** only after the user has checked the provider's Sent mailbox, or
-  **仍要重试** with explicit copy that the recipient may receive a duplicate.
-  Pending and failed decisions keep the authoritative Outbox item visible; a
-  stale attempt refreshes the item and requires a new review.
-- A successfully sent or externally confirmed item leaves the active Outbox
-  list immediately. If its reader is open there, the reader closes instead of
-  showing a completed queue item. The same immutable item may appear quietly in
-  Sent as a local fallback until the provider's exact Sent copy is synchronized.
-- Archive, move-to-Inbox, Trash, read/unread, and delete actions show local
-  completion immediately and keep a reasonable adjacent message selected.
-  Archive, move-to-Inbox, Trash, and delete may expose actionable pending or
-  failure feedback without blanking the reader. Marking unread updates the list
-  immediately and never adds a reader-body banner or reuses the pending
-  mark-read state as toolbar feedback.
-- A forward action enters a bounded preparation state and cannot open a composer
-  from preview text. Failure leaves the current reader intact, adds no failure
-  card to the body, and returns the forward control to a retryable state.
-  Original attachments are never silently omitted.
-- Received attachments form a compact grid or list below the body using the
-  shared control surface. Each card shows a type-appropriate Phosphor icon,
-  safe name, attachment size, and its own save action; unknown types use a
-  generic file icon. A decoded cached part shows its exact size. Metadata shown
-  before remote bytes are decoded labels the transfer-size projection with
-  **约** rather than presenting it as exact.
-- An attachment card exposes saving, canceled, completed, and retryable-error
-  states without changing other cards or the current reader. It never labels
-  every attachment as PDF, substitutes whole-message size, or displays a
-  disabled “not implemented” download shell.
-- The bottom action row spans the reading width: primary text-and-icon reply on
-  the left, secondary icon-only forward on the right.
+- Paint cached summaries immediately. Selecting a message keeps list position
+  stable while the reader shows a quiet body-loading state; never substitute the
+  list preview for the opened body.
+- Initial loading and explicit refresh use the compact status band below the
+  tabs. Routine background synchronization stays visually quiet.
+- Search identifies its local scope as **搜索已同步邮件**. Folder filters and
+  result counts must not imply uncached server search.
+- Inbox, Starred, Sent, Archive, and Trash append history automatically near the
+  list end. While a page is loading, show one bounded end buffer with a spinner
+  and **正在加载更多邮件…**. Do not add a manual load-more control or persistent
+  end card.
+- Starred has no **全部 / 未读** tabs. Unstarring a row keeps it in the current
+  visit so the action can be undone; leaving or explicitly refreshing rebuilds
+  the list from current star state.
+- The reader uses one outer scrollbar. Native text and semantic HTML participate
+  in that surface; complex sender HTML remains sanitized and isolated according
+  to `docs/MAIL_RENDERING.md`.
+- The compact header always keeps the real address available. Recipient details
+  open in an overlay without moving the message body and expose only available
+  From, To, Cc, and Bcc groups.
+- Reader actions follow the current mailbox: Inbox can archive or move to Trash;
+  Sent can move to Trash; Archive can move to Inbox or Trash; Trash can move to
+  Inbox or permanently delete. Permanent deletion is visually destructive and
+  always confirmed.
+- Attachments appear below the body as compact shared-surface rows/cards with a
+  type icon, safe name, exact or clearly approximate size, and independent save
+  state. Unknown types use a generic file icon.
+- Reply is the primary bottom action and Forward is secondary. Forward prepares
+  the complete safe source before opening compose and never silently omits an
+  attachment.
 
 ### Empty reader
 
-- With no selected mail, the reader becomes transparent and shows the bundled
-  “future letter” quotation experience directly on the wallpaper.
-- The 42-entry library plays in random order without immediate repetition.
-  Quotations form one glyph at a time in the bundled brush typeface; attribution
-  uses the same ink and a single continuous rule.
-- Long lines reduce the shared type size rather than crop. The scene adds no
-  canvas, glow, gradient text, or extra background layer.
+- With no open message, the reader is transparent and shows the bundled rotating
+  quotation scene directly on the wallpaper.
+- Quotes render with the brush typeface, visible attribution, and character-level
+  entrance. Long text scales rather than crops. Do not add a canvas, glow,
+  gradient text, or extra background card.
 - Opening mail unmounts the scene, a hidden window pauses it, and reduced-motion
-  users receive a static completed composition.
+  mode shows a complete static composition.
 
 ### Contacts
 
-- Contacts preserve the three-column shell: global navigation, contact list, and
-  detail/relationship history.
-- Correspondence history is one quiet continuous list with subtle row dividers,
-  not a stack of individually framed cards. Incoming mail uses the regular
-  Phosphor `Tray` mark and outgoing mail uses `PaperPlaneTilt`; both marks sit
-  directly on the row without an icon tile. Incoming uses the theme's accessible
-  blue direction token and outgoing uses its accessible green direction token;
-  each theme owns the exact tones so both remain legible on its relationship
-  surface. Pair them with only the semantic **收件箱 / 已发送** label; do not
-  repeat the direction as **对方发来 / 我发出** copy.
-  Hover and keyboard focus belong to the complete row rather than the icon.
-- The unselected detail pane uses the current quiet, theme-owned “选择一个联系人”
-  placeholder rather than inventing a new illustration or card system.
-- Long contact directories keep the same continuous fixed-density list while
-  windowing offscreen rows. Search, filtering, selection, keyboard semantics,
-  and the shared moving selection surface continue to represent the complete
-  result set; data size must not turn workspace entry or exit into a full-DOM
-  mount or teardown.
-- Contact detail has a persistent back action. In the wide workspace, the first
-  selected contact enters the existing third column with the same centered
-  260 ms window transition as mail, and Back reverses it before restoring the
-  quiet unselected detail pane. Changing from one open contact to another
-  replaces the detail immediately without replaying the entrance, while the
-  contact list's shared selection surface moves between rows with the same
-  timing and easing as the mail list. Leaving
-  Contacts first completes a fast `--motion-fast` detail exit before the middle
-  workspace changes context. Opening a correspondence message reuses the mail
-  reader and provides a separate return to contact history; leaving Contacts
-  from that nested reader closes only the visible mail window and clears the
-  underlying contact in the same transition boundary, so contact detail never
-  flashes back between scenes.
+- Contacts reuse the sidebar + list + detail shell. Search and **全部 / 收藏**
+  stay in the list surface; detail keeps the real address visible beneath any
+  local remark.
+- Correspondence is one continuous list with subtle dividers, not a stack of
+  cards. Incoming and outgoing use distinct accessible theme tokens and the
+  labels **收件箱 / 已发送**.
+- Large contact sets retain the same fixed-density experience while windowing
+  offscreen rows.
+- Contact detail has a persistent back action. Opening correspondence reuses the
+  mail reader and provides a clear return to contact history.
 
 ### Settings
 
-- Settings is embedded across columns two and three. Keep the primary sidebar
-  visible; never reintroduce the legacy centered modal, full-screen scrim, global
-  Save/Cancel footer, or always-expanded account form.
-- Preferences save immediately and expose only local saving/error feedback.
-- Account avatar editing starts from the avatar. Secondary account actions use a
-  compact icon/menu. Adding an account is a provider-first drill-in inside the
-  detail pane.
-- Adding an account remains available while a compose session exists. Starting
-  the connection first stabilizes and minimizes the source account's composer;
-  successful login then uses the standard account-switch presentation, without
-  a close-composer warning toast.
-- Account remark editing starts from that account's local action menu. Opening it
-  reveals “备注”, the compact input, and the text “保存” action inside the row's
-  reserved remark slot; the resting account row shows no persistent remark
-  control. The row must not change height, width, border geometry, or list spacing.
-  Focus moves directly to the input, while cancellation, validation, and progress
-  remain tied to that row. Do not use a dialog or full-workspace scrim for this
-  routine edit.
-- The formal provider-first list contains 163, QQ, Gmail, and custom IMAP/SMTP.
-  Outlook is absent until its supported Microsoft authentication flow is a
-  complete product capability; do not show a disabled or “coming soon” card.
-- The 163 and QQ address inputs use one inset composite field: the editable
-  account name stays on the leading side and the selected provider's fixed
-  `@163.com` or `@qq.com` suffix stays on the trailing side. The suffix is not
-  editable and shares the field's hover, keyboard-focus, validation, and theme
-  treatment rather than becoming a separate control.
-- The 163 and QQ authorization-secret inputs pair the inset field with one
-  40 px accent, icon-only tutorial action. Its pointer-hover tooltip and
-  accessible name identify the matching provider. It opens the offline tutorial
-  as a settings drill-in, keeps the connection form mounted so entered values
-  survive the round trip, returns focus to the trigger without opening its
-  tooltip, and stays absent from Gmail and custom IMAP/SMTP setup. Tutorial entry
-  focuses the guide region rather than its tooltip-bearing back button. Tutorial
-  screenshots ship with the app and remain inside the existing settings scroll
-  surface.
-- The Gmail OAuth action row places a quiet, borderless preview-access note in
-  small muted text beside the primary sign-in button, wrapping below it only when
-  space is constrained. It includes the `tantless@163.com` allowlisting contact.
-- Persistent backend health is not decorative chrome. Show only explicit action
-  progress and failures that require user attention.
-- About keeps the compact version card first, then presents local storage as one
-  quiet subsection rather than a dashboard. Show the active path in a single
-  labeled row whose value is a horizontal capsule ending in an icon-only
-  **更改位置** action, then show the total size and one segmented
-  usage-composition bar without a persistent legend. Hovering a non-empty segment
-  reveals its category name and exact size through the shared tooltip; the bar's
-  accessible label exposes the same information without requiring a pointer.
-  Category colors describe composition only; they never imply a quota or
-  capacity limit.
-- Selecting a directory uses the platform folder picker. The consequential
-  restart migration uses the standard Mine Mail confirmation surface, exposes
-  the chosen path with truncation and a full hover title, and disables dismissal
-  only while the migration task is being scheduled.
+- Settings is embedded beside the persistent sidebar. The category rail and
+  detail pane share one glass shell; preferences save immediately and there is
+  no global Save/Cancel footer.
+- Account rows keep a stable height. Avatar editing starts from the avatar;
+  remarks and secondary actions live in the row menu. Adding an account drills
+  from provider choice into the form.
+- The provider list contains 163, QQ, Gmail, and custom IMAP/SMTP. Outlook is
+  absent until Modern Auth is supported. Legacy Outlook accounts remain visible
+  as cache-only records.
+- 163 and QQ use one composite address field with a fixed provider suffix and an
+  adjacent icon-only offline tutorial action for obtaining an authorization
+  code. Gmail shows the current preview-access note beside its OAuth action.
+- Persistent backend health is not decoration. Show progress for the action the
+  user started and failures that require attention.
+- About shows the version first, then the exact active product-data directory,
+  total use, one segmented composition bar, and the icon-only **更改位置**
+  action. Storage migration uses the shared consequential confirmation surface
+  and the platform folder picker.
 
 ### Compose
 
-- Compose is a floating, draggable, edge-resizable solid writing page over the
-  app scrim. The expanded page uses one continuous, opaque surface with quiet
-  divider rows; address fields and formatting stay integrated with the page,
-  while the editor retains the established inset 12 px rounded writing surface
-  instead of being flattened into the page or wrapped in nested frames. Its top
-  edge is an invisible drag strip without visible minimize/close chrome. Clicking
-  the app scrim outside the page minimizes it.
-- It restores the last valid normal geometry and remains within the visible app
-  bounds. The default geometry is a centered, broad correspondence page rather
-  than a narrow utility dialog.
-- Address, Cc/Bcc, subject, recipient tokens/suggestions, editor, and footer share
-  the page's divider and focus language. Collapsing Cc/Bcc never clears values.
-- One compact formatting row sits directly between the subject and editor. It
-  exposes font, size, emphasis, lists, alignment, links, and clear-format actions
-  using the existing themed controls and icon system; it must not read as a
-  second app toolbar. Font and size triggers stay transparent at rest, gaining a
-  restrained glass-tinted hover/focus surface rather than a persistent filled
-  box. The font menu is wide enough to preview every option in its actual face.
-  Its bundled open-source choices are `Noto Sans SC`, `Noto Serif SC`,
-  `LXGW WenKai`, `ZCOOL XiaoWei`, `ZCOOL KuaiLe`, and `Ma Shan Zheng`, alongside
-  the supported system, Fangsong, and monospace choices. Single-weight display
-  faces may synthesize bold or italic inside the editor while retaining semantic
-  emphasis markup. Authored HTML records a fixed compatible fallback stack
-  because recipients may not have the same local font. Formatting preserves the
-  active range and caret position;
-  the font and size controls follow the format inherited at a collapsed caret,
-  and show a neutral mixed value for a selection containing more than one value.
-  Applying a font size at a collapsed caret updates the visible caret scale and
-  the next typed character without relayout of the complete editor. Plain-editor
-  focus is communicated by its caret and must not add a full-height accent stripe.
-  Emphasis uses real semantic bold, italic, underline, and strikethrough markup.
-  At the start of a paragraph, `1.` followed by Space starts a numbered list;
-  Enter continues the sequence, and Enter on the next empty item returns to an
-  ordinary paragraph.
-  An empty authored editor shows only its writing surface and caret; it has no
-  instructional body placeholder.
-- The footer starts with one compact icon-only **信纸** toggle. Its neutral state
-  means no paper; enabling it reveals two 34 px pill-shaped, icon-only segmented
-  controls for **横线纸 / 方格纸** and **仅编辑 / 随信发送**. Each segmented
-  control has one animated accent thumb, a clear selected state, portal tooltips,
-  and an accessible text name. The pencil means the paper remains an editing aid;
-  the paper plane means it is sent with the message. The adjacent save-status
-  slot has a fixed width so status-copy changes never move these controls.
-  **无**, **横线纸**, and **方格纸** use restrained, theme-aware paper lines
-  while preserving editor focus and text contrast.
-  Every stationery mode reuses the same rounded editor frame, spacing, and focus
-  treatment; switching paper never changes the editor geometry or adds an inner
-  rectangular focus frame.
-  Paper rules belong to the editor's scrolling content, so text and rules move as
-  one surface. The paper area leaves a quiet inset from the rounded editor edge
-  and extends a few pixels beyond the shared writing origin; plain, lined, and
-  grid modes therefore keep the same first-character position. Lined paper starts
-  its first visible rule after the first writing row. Grid paper has a complete
-  outer frame and a document-scoped cell rhythm calibrated to the editor base
-  size and available width. Each Han character occupies and centers in one cell;
-  consecutive Latin letters or numbers group in runs of at most three per cell,
-  while spaces and special characters each occupy one cell. Inline size
-  formatting does not rescale the whole sheet.
-  At the beginning of an ordinary paragraph, Tab applies one semantic first-line
-  indent without moving focus out of the editor; Shift+Tab removes it. New
-  paragraphs inherit the current paragraph's indent. Plain and lined paper use a
-  2 em stop, equal to approximately two base-size Han characters; grid paper maps
-  the same semantic indent to exactly two cells. Grid character-cell decorations
-  reset inherited text indentation so long indented paragraphs remain aligned
-  when they wrap.
-- Ordinary managed attachments appear in a compact compose attachment row/list
-  with safe name, type, exact size, add/remove progress, stale/conflict feedback,
-  and keyboard-operable removal. Adding and removing use the same save-state
-  language as the exact draft version; there is no disabled placeholder button.
-- A reply or forward context is an immutable, separately surfaced region outside
-  the authored editor. It preserves clear original identity and body hierarchy,
-  may collapse for space, and cannot be edited or accidentally selected as the
-  user's new text.
-- Forwarded ordinary attachments are visible and removable before send. A
-  composer opens only after the complete forward source has been prepared
-  safely.
-- Minimized compose is a 340 × 44 px summary bar at bottom center. The
-  full-window scrim and blur disappear; the bar retains its own compact glass.
-  With neither subject nor recipient it reads **新草稿**; adding a recipient
-  makes it **新草稿(联系人)**, adding only a subject makes it **主题**, and
-  providing both makes it **主题(联系人)**. **联系人** is the first listed
-  recipient's local display name, falling back to the real email address.
-  Clicking the summary restores the composer; activating the primary **写信**
-  action while this bar is present restores the same composer instead of
-  starting another session. The only visible close control is at the far right
-  of this minimized bar.
-- The expanded footer save action is **保存并最小化**. It saves authored content
-  locally before entering the standard minimized bar; an untouched empty session
-  enters the same bar without creating an empty draft. A local save failure keeps
-  the expanded composer visible and actionable.
-- The expanded **发送** action is the one exact-recipient confirmation for the
-  visible To, Cc, and Bcc fields. It first stabilizes the current local draft
-  version, then closes the composer as soon as the background send begins. It
-  never opens a second confirmation dialog or waits in the composer for SMTP;
-  Outbox and Sent sidebar state communicate the continuing result.
-- Minimizing and restoring use one restrained 260 ms window-style geometry and
-  material transition; the compact bar highlights as one complete surface on
-  hover or keyboard focus. Reduced-motion mode collapses the transition.
-- Each connected account owns at most one live compose surface. Switching
-  accounts saves and hides the source account's session without showing a
-  warning card. The target account opens its own independent compose flow.
-  Returning to an account with a retained session shows that session as the
-  standard minimized compose bar.
+- Compose is a floating, draggable, edge-resizable writing page over the app
+  scrim. The expanded form is one continuous opaque surface with integrated
+  address/format rows and one inset rounded editor. Its top edge is the invisible
+  drag strip; clicking the scrim minimizes it.
+- Restore the last valid normal geometry and keep the page inside the visible app
+  bounds. The default is a broad centered correspondence page.
+- To, Cc, Bcc, subject, recipient tokens, suggestions, editor, attachment state,
+  and footer share the same divider and focus language. Collapsing Cc/Bcc does
+  not clear values.
+- The compact format row supports the current fonts, size, emphasis, lists,
+  alignment, links, and clear formatting. Controls reflect the active range or
+  caret; an empty editor has no instructional body placeholder.
+- The footer's icon-only stationery control exposes no paper, lined paper, and
+  grid paper plus edit-only or send-with-message behavior. Every mode preserves
+  editor geometry and writing origin. Paper rules scroll with authored content.
+- Managed attachments show safe metadata, progress, conflict state, and
+  keyboard-operable removal. Reply/forward source remains immutable and separate
+  from the authored editor.
+- Minimized compose is the established compact bottom-center summary bar. Its
+  summary derives from subject and first recipient; the only visible close
+  control sits at the far right. **写信** restores an existing minimized session
+  instead of creating another.
+- **保存并最小化** stabilizes authored content locally before minimizing.
+  **发送** binds the visible recipients and exact draft version, closes compose
+  once background sending begins, and relies on Outbox/Sent state rather than a
+  second confirmation dialog.
+- Each account owns at most one live compose surface. Switching accounts saves
+  and hides the source session and restores it as minimized when returning.
 
-### Notifications and confirmations
+### Notifications, confirmations, and updates
 
-- The Windows installer uses the platform folder picker. Selecting a drive root
-  resolves to a `MineMail` child directory before installation so application
-  files are never scattered across the root. A failed install remains on the
-  branded error surface, states that installation stopped without switching
-  locations, and offers secondary **重新选择位置** plus primary
-  **使用默认位置** actions; neither action starts another install implicitly.
-- The lower-right desktop new-mail card is always readable over the desktop,
-  theme-aware, compact, and more opaque than decorative glass.
-- Its native surface is 388 × 148 px, always on top, non-resizable, transparent
-  outside the card, and absent from the taskbar. The sender avatar is 54 px.
-- It uses the sender's local-first avatar and clearly identifies the receiving
-  account. Body preview text is never shown.
-- Confirmation dialogs are compact, theme-owned, keyboard-operable, and reserved
-  for consequential actions. Do not turn routine settings into confirmations.
-- Lower-right toasts are reserved for failures and bounded information that
-  requires attention. Routine successful actions use their resulting UI state or
-  nearby inline status and do not produce a success toast. A user-initiated,
-  consequential action whose completion is otherwise not apparent may use one
-  compact success toast, such as discarding a draft, retrying an Outbox message,
-  or removing an account.
-- A missing Archive role is configured only after explicit folder navigation or
-  a message Archive action. Mine Mail opens a compact, theme-owned selection
-  dialog containing eligible existing server-folder display labels; it does not
-  auto-create Archive. The dialog uses the themed select control, starts on the
-  safe cancel action, supports Escape before work begins, blocks dismissal while
-  saving, and restores focus. Cancellation keeps the current workspace and
-  message unchanged; confirmation continues the triggering action only after the
-  selected folder is verified. An empty candidate list explains that the user
-  must first create a normal folder in the provider UI.
-- Creating a missing Trash mailbox follows explicit folder navigation or a
-  message action automatically, without a confirmation dialog. Initial sidebar
-  presentation never creates server state. A triggering message action continues
-  only after the server role is verified; creation progress blocks duplicate
-  submission without dismissing cached content, and failure leaves the message
-  unchanged with recoverable feedback.
-- Permanent deletion from Trash requires a confirmation every time. The dialog
-  names the irreversible consequence, uses the semantic danger action, starts on
-  a safe non-destructive focus target, traps focus, supports Escape before work
-  begins, and restores focus after cancellation or completion.
-- Native open/save pickers select attachment sources and destinations. Mine Mail
-  shows bounded file metadata and completion feedback, not a complete local path
-  in ordinary mail UI.
+- The native new-mail surface is a compact, always-readable lower-right card. It
+  uses the local-first sender avatar, subject, and receiving-account identity,
+  never body preview text.
+- Confirmation dialogs are compact, theme-owned, keyboard-operable, and limited
+  to consequential actions such as account removal, storage migration, uncertain
+  delivery decisions, and permanent deletion.
+- A user-started update continues when its dialog is dismissed or Settings is
+  left. The minimized bottom-right strip shows version, progress, and one
+  icon-only stop action. Cancellation is unavailable once installation begins.
+- Native file pickers select attachment sources/destinations and storage
+  directories. Ordinary mail UI shows bounded metadata, not complete local
+  paths.
 
 ## Motion, accessibility, and copy
 
-- Normal hover/focus/state transitions use `--motion-fast` (120 ms) or
-  `--motion-normal` (180 ms). Only a meaningful surface/scene entrance may use a
-  restrained 220–280 ms transition.
-- Respect `prefers-reduced-motion`; content and state must remain complete when
-  animations collapse to effectively zero duration.
-- Preserve semantic reading order, accessible names, visible focus, keyboard
-  operation, and theme contrast. A screenshot can identify risks but cannot prove
-  accessibility.
-- Chinese product copy is concise, literal, and action-led. Helper text explains a
-  consequence or next step; it does not narrate the interface.
-- Keep exact user-facing labels defined by product behavior in
-  `docs/PRODUCT.md`; do not fork wording in CSS, screenshots, or QA notes.
+- Normal state transitions use `--motion-fast` (120 ms) or `--motion-normal`
+  (180 ms). Only meaningful window/workspace entrances use a restrained
+  220–280 ms transition. Avoid spring, overshoot, and decorative motion.
+- `prefers-reduced-motion` collapses transitions while preserving complete final
+  state.
+- Preserve semantic order, accessible names, visible focus, keyboard operation,
+  readable contrast, and truncation that never hides required identity.
+- Chinese product copy is concise, literal, and action-led. Helper text explains
+  a consequence or next step rather than narrating the interface.
 
-## UI change acceptance checklist
+## Acceptance checklist
 
 Before handing off a visible change:
 
-1. Reuse or extend a shared component/token; remove superseded CSS instead of
-   leaving a second visual implementation.
+1. Reuse or extend shared tokens/components and remove superseded rules.
 2. Check Daylight, Night, Dusk, and Forest.
-3. Check the affected states above 1250 px, at 1250/940 px reflows, and at the
-   720 px single-pane boundary when relevant.
-4. Check default, hover, pressed, focus-visible, disabled, loading, empty, error,
-   and long-content states that the component supports.
-5. Check keyboard navigation, one-scrollbar behavior, reduced motion, text
-   truncation, and readable contrast.
-6. Run the relevant React tests and production build.
-7. Keep any screenshots or comparison images in the OS temporary directory; put
-   only the durable conclusion in this file or a test.
+3. Check the affected wide and defensive desktop reflows.
+4. Check relevant hover, pressed, focus, disabled, loading, empty, error, and
+   long-content states.
+5. Check keyboard navigation, reduced motion, scrolling, truncation, and
+   contrast.
+6. Run relevant React tests and the production build.
+7. Keep temporary visual evidence outside the repository.
