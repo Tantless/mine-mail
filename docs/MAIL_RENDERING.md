@@ -90,6 +90,10 @@ frontend code. An intentional threshold change must:
 - Native text/HTML participates directly in that scroll surface.
 - An isolated iframe reports content height to the outer reader and must not
   create a competing vertical scrollbar.
+- Because an isolated iframe's viewport height follows its content, sender CSS
+  orientation media queries use a stable portrait branch. Content height must
+  not feed back into sender layout and alternate the document between portrait
+  and landscape rules.
 - When isolated sender content is wider than the reader, scale the complete
   sanitized document proportionally to fit. Do not change the application's
   column layout or selectively rewrite the sender's internal structure.
