@@ -157,6 +157,28 @@ export function fitEmailDocumentToWidth(document, availableWidth) {
   };
 }
 
+function stabilizeEmailViewportMediaQueries(fragment) {
+  return String(fragment || "").replace(
+    /(<style\b[^>]*>)([\s\S]*?)(<\/style>)/gi,
+    (_, open, css, close) => {
+      const stableCss = css
+        // The iframe height follows its content, so CSS orientation based on
+        // that height can alternate between two layouts forever. A mail reader
+        // is a vertical reading surface; keep sender orientation queries on a
+        // stable portrait branch while preserving their width conditions.
+        .replace(
+          /(@media\s+[^{}]*?)\(\s*orientation\s*:\s*landscape\s*\)/gi,
+          (_, query) => `${query}(min-width: 100000px)`,
+        )
+        .replace(
+          /(@media\s+[^{}]*?)\(\s*orientation\s*:\s*portrait\s*\)/gi,
+          (_, query) => `${query}(min-width: 0px)`,
+        );
+      return `${open}${stableCss}${close}`;
+    },
+  );
+}
+
 export function buildEmailDocument(fragment, allowRemoteImages = false) {
   const imageSources = allowRemoteImages
     ? "data: blob: http: https:"
@@ -230,7 +252,7 @@ export function buildEmailDocument(fragment, allowRemoteImages = false) {
       }
     </style>
   </head>
-  <body data-mine-mail-document>${fragment}
+  <body data-mine-mail-document>${stabilizeEmailViewportMediaQueries(fragment)}
     <style>html, body { overflow: hidden !important; scrollbar-width: none !important; }</style>
   </body>
 </html>`;

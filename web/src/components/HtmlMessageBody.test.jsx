@@ -30,6 +30,28 @@ describe("HTML message body", () => {
     expect(document).toContain("overflow: visible");
   });
 
+  it("keeps content-sized iframe media queries on a stable portrait branch", () => {
+    const document = buildEmailDocument(`
+      <style>
+        @media screen and (max-width: 767px) and (orientation: landscape) {
+          .card { width: 360px; }
+        }
+        @media screen and (orientation: portrait) {
+          .card { width: 568px; }
+        }
+      </style>
+      <p>(orientation: landscape)</p>
+    `);
+
+    expect(document).toContain(
+      "and (min-width: 100000px)",
+    );
+    expect(document).toContain("and (min-width: 0px)");
+    expect(document).not.toContain("and (orientation: landscape)");
+    expect(document).not.toContain("and (orientation: portrait)");
+    expect(document).toContain("<p>(orientation: landscape)</p>");
+  });
+
   it("repairs the line rhythm of legacy Mine Mail stationery", () => {
     const document = buildEmailDocument(
       '<div data-mine-mail-stationery="lined"><p>第一行</p><p>第二行</p></div>',
