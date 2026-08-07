@@ -7650,6 +7650,7 @@ fn query_regular_page_candidates(
                OR lower(m.to_json) LIKE :search_pattern ESCAPE '\\'
                OR lower(m.cc_json) LIKE :search_pattern ESCAPE '\\'
                OR lower(m.preview) LIKE :search_pattern ESCAPE '\\'
+               OR lower(COALESCE(m.body_text, '')) LIKE :search_pattern ESCAPE '\\'
            )
            AND (
                :cursor_sort IS NULL
@@ -7746,6 +7747,7 @@ fn query_pending_page_candidates(
                OR lower(m.to_json) LIKE :search_pattern ESCAPE '\\'
                OR lower(m.cc_json) LIKE :search_pattern ESCAPE '\\'
                OR lower(m.preview) LIKE :search_pattern ESCAPE '\\'
+               OR lower(COALESCE(m.body_text, '')) LIKE :search_pattern ESCAPE '\\'
            )
            AND (
                :cursor_sort IS NULL
@@ -12335,7 +12337,7 @@ mod tests {
     }
 
     #[test]
-    fn local_search_uses_all_summary_identity_fields_but_never_body_text() {
+    fn local_search_includes_cached_plain_text_bodies() {
         let (_directory, repository, account) = setup();
         initialize_mailbox(
             &repository,
@@ -12399,19 +12401,17 @@ mod tests {
             assert_eq!(page.items.len(), 1, "query {query}");
             assert_eq!(page.items[0].message.uid, 1, "query {query}");
         }
-        assert!(
-            repository
-                .list_mailbox_page(
-                    &account.account_id,
-                    MailboxRole::Inbox,
-                    None,
-                    50,
-                    Some("BodyOnlySecret"),
-                )
-                .expect("body excluded")
-                .items
-                .is_empty()
-        );
+        let body_page = repository
+            .list_mailbox_page(
+                &account.account_id,
+                MailboxRole::Inbox,
+                None,
+                50,
+                Some("BodyOnlySecret"),
+            )
+            .expect("body-inclusive local search");
+        assert_eq!(body_page.items.len(), 1);
+        assert_eq!(body_page.items[0].message.uid, 1);
     }
 
     #[test]

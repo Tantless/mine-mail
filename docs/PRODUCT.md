@@ -155,9 +155,9 @@ product decision changes.
   view confirms it. An empty, partial, or contradictory snapshot leaves cached
   mail readable and retries later.
 - Search is local-only. It covers every synchronized summary in the active
-  account and folder and matches subject, From, To, Cc, and preview. It excludes
-  Bcc, inconsistent full-body cache, and remote IMAP search. The interface labels
-  the scope **搜索已同步邮件**.
+  account and folder and matches subject, From, To, Cc, preview, and any complete
+  plain-text body currently in the bounded local body cache. It excludes Bcc and
+  remote IMAP search. The interface labels the scope **搜索已同步邮件**.
 - Body mode selection, sanitization, isolated HTML, remote content, reply history,
   and attachment parsing follow `MAIL_RENDERING.md`.
 - Remote-image policy is **自动加载 / 每次询问 / 始终阻止** and defaults to
@@ -351,6 +351,37 @@ product decision changes.
 - A failed migration reopens the original location and never presents a partial
   copy as active. If a configured disk is unavailable at startup, Mine Mail does
   not silently create an empty account store elsewhere.
+
+## Local MCP access
+
+- **开启 MCP** is a persisted parent setting. Turning it on requires one compact
+  confirmation; an already enabled persisted setting restarts the service with
+  the app without prompting again. Mine Mail must remain open or in the tray.
+- The server uses Streamable HTTP at `127.0.0.1:46321/mcp`, never listens on a
+  LAN/public interface, and has no connection token. Loopback Host/Origin checks,
+  bounded requests, and bounded concurrency reduce exposure to local web pages
+  and accidental overload.
+- **获取信息** and **发送邮件** are persisted child permissions and cannot be
+  changed while the parent is off. Their values are retained while off; initial
+  defaults are information on and sending off. Every tool checks its permission
+  when called.
+- Information permission covers safe account listing, bounded synchronization,
+  metadata and cached-body search, batched body hydration, selected message
+  reading, received-attachment download, read/star state, Archive, Inbox, and
+  Trash moves. It never exposes credentials, raw RFC822, or permanent deletion.
+- Sending permission covers listing, creating, versioned editing/deleting of
+  drafts, managed attachment add/remove, reply/forward draft creation, and exact
+  draft-version sending. It never exposes automatic retry for an unknown SMTP
+  delivery outcome.
+- Tools address one stable account ID explicitly and do not inherit the active UI
+  account. Cross-account search expands to explicit account IDs internally.
+- Received attachment destinations and outgoing attachment sources are absolute
+  local paths supplied by the agent. Rust owns transfer/import and never forwards
+  those paths into React or diagnostics; subsequent file access depends on the
+  agent client's own permissions.
+- Supported clients are Codex, ChatGPT Desktop, Claude Code, OpenClaw, and Hermes.
+  Their idempotent setup and discovery-only verification contract lives in
+  `MCP.md`.
 
 ## Application updates
 

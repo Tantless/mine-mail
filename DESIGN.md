@@ -225,6 +225,11 @@ All app-owned color and material decisions flow through custom properties in
   code. Gmail shows the current preview-access note beside its OAuth action.
 - Persistent backend health is not decoration. Show progress for the action the
   user started and failures that require attention.
+- **开启 MCP** is a parent preference with a compact question action. **获取信息**
+  and **发送邮件** are visibly nested beneath it and disabled while the parent is
+  off. The inline note says Mine Mail must remain in the foreground or tray.
+  Enabling the parent uses one compact shared confirmation dialog; the question
+  action opens a theme-owned tool explanation dialog rather than a tooltip.
 - About shows the version first, then the exact active product-data directory,
   total use, one segmented composition bar, and the icon-only **更改位置**
   action. Storage migration uses the shared consequential confirmation surface
@@ -267,8 +272,8 @@ All app-owned color and material decisions flow through custom properties in
   uses the local-first sender avatar, subject, and receiving-account identity,
   never body preview text.
 - Confirmation dialogs are compact, theme-owned, keyboard-operable, and limited
-  to consequential actions such as account removal, storage migration, uncertain
-  delivery decisions, and permanent deletion.
+  to consequential actions such as enabling MCP, account removal, storage
+  migration, uncertain delivery decisions, and permanent deletion.
 - A user-started update continues when its dialog is dismissed or Settings is
   left. The minimized bottom-right strip shows version, progress, and one
   icon-only stop action. Cancellation is unavailable once installation begins.

@@ -8,6 +8,7 @@ Tauri 2、React 19、Rust 与 SQLite 构建。
 - 启动时优先读取本地缓存，再由 Rust 在后台同步邮箱。
 - 支持 163 邮箱、QQ 邮箱、Gmail OAuth 2.0 和自定义 IMAP/SMTP 账户，最多连接 3 个账户。
 - 提供邮件搜索、草稿与发件队列、纯文本/安全 HTML 阅读、桌面通知和四套主题。
+- 可按“获取信息 / 发送邮件”两组权限，把本机邮箱能力接入支持 MCP 的 AI 助理。
 - 凭据保存在操作系统凭据存储中；邮件内容按不可信输入处理并在 Rust 中清理。
 
 Mine Mail v1.0.0 是首个正式版本，面向 Windows 11 x64、macOS 14 及以上版本的
@@ -151,6 +152,7 @@ npm run tauri:build
 开发协作先阅读 [`AGENTS.md`](AGENTS.md)。修改界面前阅读
 [`DESIGN.md`](DESIGN.md)；修改产品行为或邮件渲染前分别阅读
 [`docs/PRODUCT.md`](docs/PRODUCT.md) 和
-[`docs/MAIL_RENDERING.md`](docs/MAIL_RENDERING.md)。普通界面和核心开发不需要
+[`docs/MAIL_RENDERING.md`](docs/MAIL_RENDERING.md)。接入 Codex、ChatGPT Desktop、
+Claude Code、OpenClaw 或 Hermes 时阅读 [`docs/MCP.md`](docs/MCP.md)。普通界面和核心开发不需要
 任何真实凭据；Gmail OAuth 联调使用的私有配置必须放在被 Git 忽略的
 `web/src-tauri/google-oauth-client.json`，严禁提交。

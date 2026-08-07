@@ -67,6 +67,10 @@ const defaultSettings = {
   notificationSoundEnabled: true,
   notificationSound: "mail",
   remoteImageMode: "automatic",
+  mcpEnabled: false,
+  mcpInformationEnabled: true,
+  mcpSendEnabled: false,
+  mcpEndpoint: "http://127.0.0.1:46321/mcp",
 };
 const supportedAvatarTypes = new Set(["image/png", "image/jpeg", "image/webp"]);
 const maxAvatarBytes = 2 * 1024 * 1024;
@@ -6690,6 +6694,14 @@ export function App() {
       }, 1600);
     } catch (error) {
       if (settingsSaveRequestRef.current !== requestId) return;
+      try {
+        const restored = await mailApi.getDesktopSettings();
+        if (settingsSaveRequestRef.current !== requestId) return;
+        setSettings(restored);
+      } catch {
+        // Keep the attempted values visible when even the persisted snapshot
+        // cannot be reloaded; the error state still makes the failure clear.
+      }
       setSettingsSaveStatus("error");
       showToast(describeError(error, "桌面设置保存失败"), "error");
     }

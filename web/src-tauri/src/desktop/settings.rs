@@ -5,6 +5,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
 pub(super) const DEFAULT_POLL_INTERVAL_MINUTES: u8 = 5;
+pub(crate) const MCP_ENDPOINT: &str = "http://127.0.0.1:46321/mcp";
 const MAX_PROFILE_AVATAR_BYTES: usize = 2 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
@@ -132,6 +133,9 @@ pub(super) struct StoredDesktopSettings {
     pub notification_sound_enabled: bool,
     pub notification_sound: NotificationSound,
     pub remote_image_mode: RemoteImageMode,
+    pub mcp_enabled: bool,
+    pub mcp_information_enabled: bool,
+    pub mcp_send_enabled: bool,
     pub notification_baseline_initialized: bool,
     pub notification_baseline_uid: u32,
 }
@@ -151,6 +155,9 @@ impl Default for StoredDesktopSettings {
             notification_sound_enabled: true,
             notification_sound: NotificationSound::Mail,
             remote_image_mode: RemoteImageMode::Automatic,
+            mcp_enabled: false,
+            mcp_information_enabled: true,
+            mcp_send_enabled: false,
             notification_baseline_initialized: false,
             notification_baseline_uid: 0,
         }
@@ -165,6 +172,9 @@ pub(crate) struct DesktopSettingsUpdate {
     pub notification_sound_enabled: Option<bool>,
     pub notification_sound: Option<NotificationSound>,
     pub remote_image_mode: Option<RemoteImageMode>,
+    pub mcp_enabled: Option<bool>,
+    pub mcp_information_enabled: Option<bool>,
+    pub mcp_send_enabled: Option<bool>,
     pub autostart_enabled: Option<bool>,
 }
 
@@ -176,6 +186,10 @@ pub(crate) struct DesktopSettingsDto {
     pub notification_sound_enabled: bool,
     pub notification_sound: NotificationSound,
     pub remote_image_mode: RemoteImageMode,
+    pub mcp_enabled: bool,
+    pub mcp_information_enabled: bool,
+    pub mcp_send_enabled: bool,
+    pub mcp_endpoint: &'static str,
     pub autostart_enabled: bool,
     pub startup_error: Option<String>,
 }
@@ -211,6 +225,12 @@ impl DesktopSettingsStore {
                  notification_baseline_uid INTEGER NOT NULL DEFAULT 0,
                  remote_image_mode TEXT NOT NULL DEFAULT 'automatic'
                      CHECK (remote_image_mode IN ('automatic', 'ask', 'blocked')),
+                 mcp_enabled INTEGER NOT NULL DEFAULT 0
+                     CHECK (mcp_enabled IN (0, 1)),
+                 mcp_information_enabled INTEGER NOT NULL DEFAULT 1
+                     CHECK (mcp_information_enabled IN (0, 1)),
+                 mcp_send_enabled INTEGER NOT NULL DEFAULT 0
+                     CHECK (mcp_send_enabled IN (0, 1)),
                  updated_at TEXT NOT NULL
                      DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
              );
@@ -262,6 +282,39 @@ impl DesktopSettingsStore {
         }
         if !existing_columns
             .iter()
+            .any(|column| column == "mcp_enabled")
+        {
+            connection.execute(
+                "ALTER TABLE desktop_settings
+                 ADD COLUMN mcp_enabled INTEGER NOT NULL DEFAULT 0
+                     CHECK (mcp_enabled IN (0, 1))",
+                [],
+            )?;
+        }
+        if !existing_columns
+            .iter()
+            .any(|column| column == "mcp_information_enabled")
+        {
+            connection.execute(
+                "ALTER TABLE desktop_settings
+                 ADD COLUMN mcp_information_enabled INTEGER NOT NULL DEFAULT 1
+                     CHECK (mcp_information_enabled IN (0, 1))",
+                [],
+            )?;
+        }
+        if !existing_columns
+            .iter()
+            .any(|column| column == "mcp_send_enabled")
+        {
+            connection.execute(
+                "ALTER TABLE desktop_settings
+                 ADD COLUMN mcp_send_enabled INTEGER NOT NULL DEFAULT 0
+                     CHECK (mcp_send_enabled IN (0, 1))",
+                [],
+            )?;
+        }
+        if !existing_columns
+            .iter()
             .any(|column| column == "foreground_notifications_enabled")
         {
             connection.execute(
@@ -307,7 +360,8 @@ impl DesktopSettingsStore {
             "SELECT background_enabled, poll_interval_minutes,
                     notifications_enabled, notification_baseline_initialized,
                     notification_baseline_uid, remote_image_mode,
-                    notification_sound_enabled, notification_sound
+                    notification_sound_enabled, notification_sound,
+                    mcp_enabled, mcp_information_enabled, mcp_send_enabled
              FROM desktop_settings WHERE id = 1",
             [],
             |row| {
@@ -324,6 +378,9 @@ impl DesktopSettingsStore {
                     notification_sound: NotificationSound::from_storage_value(
                         &row.get::<_, String>(7)?,
                     ),
+                    mcp_enabled: row.get::<_, i64>(8)? != 0,
+                    mcp_information_enabled: row.get::<_, i64>(9)? != 0,
+                    mcp_send_enabled: row.get::<_, i64>(10)? != 0,
                 })
             },
         )
@@ -341,6 +398,9 @@ impl DesktopSettingsStore {
                  foreground_notifications_enabled = ?3,
                  notification_sound_enabled = ?7,
                  notification_sound = ?8,
+                 mcp_enabled = ?9,
+                 mcp_information_enabled = ?10,
+                 mcp_send_enabled = ?11,
                  updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
              WHERE id = 1",
             params![
@@ -352,6 +412,9 @@ impl DesktopSettingsStore {
                 settings.remote_image_mode.as_storage_value(),
                 settings.notification_sound_enabled,
                 settings.notification_sound.as_storage_value(),
+                settings.mcp_enabled,
+                settings.mcp_information_enabled,
+                settings.mcp_send_enabled,
             ],
         )?;
         Ok(())
@@ -614,6 +677,9 @@ mod tests {
         );
         assert_eq!(defaults.poll_interval_minutes, 5);
         assert_eq!(defaults.remote_image_mode, RemoteImageMode::Automatic);
+        assert!(!defaults.mcp_enabled);
+        assert!(defaults.mcp_information_enabled);
+        assert!(!defaults.mcp_send_enabled);
         assert!(!defaults.notification_baseline_initialized);
 
         let updated = StoredDesktopSettings {
@@ -623,6 +689,9 @@ mod tests {
             notification_sound_enabled: false,
             notification_sound: NotificationSound::Reminder,
             remote_image_mode: RemoteImageMode::Blocked,
+            mcp_enabled: true,
+            mcp_information_enabled: false,
+            mcp_send_enabled: true,
             notification_baseline_initialized: true,
             notification_baseline_uid: 42,
         };
@@ -659,6 +728,9 @@ mod tests {
         let migrated = store.load().expect("migrated notification settings");
         assert!(migrated.notification_sound_enabled);
         assert_eq!(migrated.notification_sound, NotificationSound::Mail);
+        assert!(!migrated.mcp_enabled);
+        assert!(migrated.mcp_information_enabled);
+        assert!(!migrated.mcp_send_enabled);
     }
 
     #[test]

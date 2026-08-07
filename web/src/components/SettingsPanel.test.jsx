@@ -18,6 +18,10 @@ const settings = {
   notificationSoundEnabled: true,
   notificationSound: "mail",
   remoteImageMode: "automatic",
+  mcpEnabled: false,
+  mcpInformationEnabled: true,
+  mcpSendEnabled: false,
+  mcpEndpoint: "http://127.0.0.1:46321/mcp",
 };
 
 const accountStatus = {
@@ -139,6 +143,44 @@ describe("SettingsPanel account flow", () => {
     fireEvent.keyDown(help, { key: "Escape" });
     expect(help.getAttribute("aria-expanded")).toBe("false");
     expect(tooltip.dataset.open).toBeUndefined();
+  });
+
+  it("requires one confirmation before enabling MCP and retains the default child permissions", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn();
+    render(<SettingsPanel {...panelProps({ onSave })} />);
+
+    await user.click(screen.getByRole("button", { name: "功能设定" }));
+    await user.click(screen.getByRole("checkbox", { name: /开启 MCP/ }));
+
+    const dialog = screen.getByRole("dialog", { name: "开启 MCP？" });
+    expect(within(dialog).getByText(/本机 Agent 可按所选权限/)).toBeTruthy();
+    expect(onSave).not.toHaveBeenCalled();
+
+    await user.click(within(dialog).getByRole("button", { name: "确认开启" }));
+    expect(onSave).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mcpEnabled: true,
+        mcpInformationEnabled: true,
+        mcpSendEnabled: false,
+      }),
+    );
+  });
+
+  it("opens a concise MCP tool guide from the question control", async () => {
+    const user = userEvent.setup();
+    render(<SettingsPanel {...panelProps()} />);
+
+    await user.click(screen.getByRole("button", { name: "功能设定" }));
+    await user.click(
+      screen.getByRole("button", { name: "了解 Mine Mail MCP 支持的工具" }),
+    );
+
+    const dialog = screen.getByRole("dialog", { name: "Mine Mail MCP" });
+    expect(within(dialog).getByText(/search_messages/)).toBeTruthy();
+    expect(within(dialog).getByText("检索邮件与已缓存正文")).toBeTruthy();
+    expect(within(dialog).getByText(/send_draft/)).toBeTruthy();
+    expect(within(dialog).getByText("发送确认过的草稿版本")).toBeTruthy();
   });
 
   it("labels an invalid credential and explains how to repair it", async () => {

@@ -35,8 +35,8 @@ use crate::{
 };
 
 pub(crate) use settings::{
-    DeleteProfileAvatarRequest, DesktopSettingsDto, DesktopSettingsUpdate, ProfileAvatarDto,
-    SaveProfileAvatarRequest,
+    DeleteProfileAvatarRequest, DesktopSettingsDto, DesktopSettingsUpdate, MCP_ENDPOINT,
+    ProfileAvatarDto, SaveProfileAvatarRequest,
 };
 use settings::{
     DesktopSettingsStore, NotificationBaseline, ProfileAvatarOwnerType, StoredDesktopSettings,
@@ -53,6 +53,13 @@ const EXIT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(35);
 const SETTINGS_DATABASE_NAME: &str = "desktop-runtime.sqlite3";
 const NEW_MAIL_NOTIFICATION_WINDOW: &str = "new-mail-notification";
 const NEW_MAIL_NOTIFICATION_MARGIN: i32 = 18;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct McpAccess {
+    pub enabled: bool,
+    pub information: bool,
+    pub send: bool,
+}
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -308,6 +315,10 @@ impl DesktopRuntime {
             notification_sound_enabled: settings.notification_sound_enabled,
             notification_sound: settings.notification_sound,
             remote_image_mode: settings.remote_image_mode,
+            mcp_enabled: settings.mcp_enabled,
+            mcp_information_enabled: settings.mcp_information_enabled,
+            mcp_send_enabled: settings.mcp_send_enabled,
+            mcp_endpoint: MCP_ENDPOINT,
             autostart_enabled,
             startup_error: self
                 .startup_error
@@ -339,6 +350,15 @@ impl DesktopRuntime {
         }
         if let Some(value) = update.remote_image_mode {
             settings.remote_image_mode = value;
+        }
+        if let Some(value) = update.mcp_enabled {
+            settings.mcp_enabled = value;
+        }
+        if let Some(value) = update.mcp_information_enabled {
+            settings.mcp_information_enabled = value;
+        }
+        if let Some(value) = update.mcp_send_enabled {
+            settings.mcp_send_enabled = value;
         }
 
         self.persist_settings(settings, "Desktop settings could not be saved.")?;
@@ -417,7 +437,19 @@ impl DesktopRuntime {
             notification_sound_enabled: Some(settings.notification_sound_enabled),
             notification_sound: Some(settings.notification_sound),
             remote_image_mode: Some(settings.remote_image_mode),
+            mcp_enabled: Some(settings.mcp_enabled),
+            mcp_information_enabled: Some(settings.mcp_information_enabled),
+            mcp_send_enabled: Some(settings.mcp_send_enabled),
             autostart_enabled: None,
+        })
+    }
+
+    pub(crate) fn mcp_access(&self) -> Result<McpAccess, String> {
+        let settings = self.settings()?;
+        Ok(McpAccess {
+            enabled: settings.mcp_enabled,
+            information: settings.mcp_information_enabled,
+            send: settings.mcp_send_enabled,
         })
     }
 

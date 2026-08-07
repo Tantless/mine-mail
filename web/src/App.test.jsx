@@ -920,6 +920,10 @@ describe("Mine Mail MVP", () => {
         notificationSoundEnabled: true,
         notificationSound: "reminder",
         remoteImageMode: "ask",
+        mcpEnabled: false,
+        mcpInformationEnabled: true,
+        mcpSendEnabled: false,
+        mcpEndpoint: "http://127.0.0.1:46321/mcp",
       }),
     );
   });

@@ -14,6 +14,8 @@ short and durable.
   or identity rules.
 - Read `docs/MAIL_RENDERING.md` before changing MIME parsing, HTML sanitization,
   body render modes, remote images, or reply-history parsing.
+- Read `docs/MCP.md` before changing or configuring Mine Mail's local MCP
+  service, permissions, tools, transport, or supported agent clients.
 - `README.md` is the human setup guide. `docs/RELEASE.md` is a mutable release
   checklist, not a product specification.
 - Do not create nested `AGENTS.md` files that repeat these rules. Add a scoped

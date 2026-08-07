@@ -165,6 +165,17 @@ function normalizeSettings(settings = {}) {
     remoteImageMode: ["automatic", "ask", "blocked"].includes(remoteImageMode)
       ? remoteImageMode
       : "automatic",
+    mcpEnabled: Boolean(settings.mcpEnabled ?? settings.mcp_enabled ?? false),
+    mcpInformationEnabled: Boolean(
+      settings.mcpInformationEnabled ?? settings.mcp_information_enabled ?? true,
+    ),
+    mcpSendEnabled: Boolean(
+      settings.mcpSendEnabled ?? settings.mcp_send_enabled ?? false,
+    ),
+    mcpEndpoint:
+      settings.mcpEndpoint ??
+      settings.mcp_endpoint ??
+      "http://127.0.0.1:46321/mcp",
     startupError:
       (settings.startupError ?? settings.startup_error)
         ? userFacingErrorMessage(
@@ -184,6 +195,9 @@ function settingsDto(settings) {
     notification_sound_enabled: normalized.notificationSoundEnabled,
     notification_sound: normalized.notificationSound,
     remote_image_mode: normalized.remoteImageMode,
+    mcp_enabled: normalized.mcpEnabled,
+    mcp_information_enabled: normalized.mcpInformationEnabled,
+    mcp_send_enabled: normalized.mcpSendEnabled,
   };
 }
 

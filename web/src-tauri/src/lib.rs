@@ -5,6 +5,7 @@ mod desktop;
 mod diagnostics;
 mod mail_html;
 mod mailbox_api;
+mod mcp;
 mod storage;
 
 use std::time::Instant;
@@ -2063,15 +2064,15 @@ fn delete_profile_avatar(
 }
 
 #[tauri::command]
-fn update_desktop_settings(
+async fn update_desktop_settings(
     app: AppHandle,
     runtime: State<'_, DesktopRuntime>,
     settings: DesktopSettingsUpdate,
 ) -> CommandResult<DesktopSettingsDto> {
-    diagnostics::command_lifecycle(
+    diagnostics::command_lifecycle_async(
         "update_desktop_settings",
         DiagnosticFields::default(),
-        || {
+        async {
             let previous_settings = runtime.user_settings_snapshot()?;
             let previous_autostart = app.autolaunch().is_enabled().map_err(|_| {
                 "The system startup setting could not be read; no settings were changed.".to_owned()
@@ -2102,9 +2103,21 @@ fn update_desktop_settings(
             } else {
                 previous_autostart
             };
+            if let Err(error) = mcp::apply_current_setting(app.clone()).await {
+                let local_rollback_failed = runtime.update_settings(previous_settings).is_err();
+                let system_rollback_failed =
+                    set_autostart_enabled(&app, previous_autostart).is_err();
+                let mcp_rollback_failed = mcp::apply_current_setting(app.clone()).await.is_err();
+                let mut message = error;
+                if local_rollback_failed || system_rollback_failed || mcp_rollback_failed {
+                    message.push_str(" 部分回滚状态无法确认。");
+                }
+                return Err(message);
+            }
             runtime.settings_dto(autostart_enabled)
         },
     )
+    .await
 }
 
 fn set_autostart_enabled(app: &AppHandle, enabled: bool) -> CommandResult<()> {
@@ -2636,9 +2649,18 @@ fn initialize_state(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Erro
     app.manage(account);
     app.manage(backend);
     app.manage(desktop);
+    app.manage(mcp::McpRuntime::default());
     app.manage(contacts);
     app.manage(storage.runtime);
     app.manage(app_update::AppUpdateRuntime::default());
+    let mcp_app = app.handle().clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = mcp::apply_current_setting(mcp_app.clone()).await {
+            mcp_app
+                .state::<DesktopRuntime>()
+                .record_startup_error(error);
+        }
+    });
     build_configured_windows(app, &app_data)?;
     let tray_available = match desktop::build_tray(app) {
         Ok(()) => {

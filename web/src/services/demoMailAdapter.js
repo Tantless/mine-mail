@@ -29,6 +29,10 @@ function createDemoState() {
       notificationSoundEnabled: true,
       notificationSound: "mail",
       remoteImageMode: "automatic",
+      mcpEnabled: false,
+      mcpInformationEnabled: true,
+      mcpSendEnabled: false,
+      mcpEndpoint: "http://127.0.0.1:46321/mcp",
     },
     accountStatus: {
       configured: true,

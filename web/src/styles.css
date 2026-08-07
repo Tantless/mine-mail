@@ -7731,6 +7731,90 @@ html[data-surface="new-mail-notification"] #root {
   margin-top: 2px;
 }
 
+.settings-mcp-group {
+  display: grid;
+}
+
+.settings-preference-row--child {
+  min-height: 68px;
+  padding-left: 38px;
+  background: color-mix(in srgb, var(--compose-control-surface) 34%, transparent);
+}
+
+.settings-preference-row--child > span:first-child {
+  position: relative;
+}
+
+.settings-preference-row--child > span:first-child::before {
+  position: absolute;
+  top: 1px;
+  left: -18px;
+  width: 2px;
+  height: calc(100% - 2px);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-primary) 28%, var(--compose-divider));
+  content: "";
+}
+
+.mcp-confirm-dialog {
+  width: min(440px, calc(100vw - 32px));
+}
+
+.mcp-help-dialog {
+  width: min(580px, calc(100vw - 32px));
+}
+
+.mcp-help-dialog__tools {
+  display: grid;
+  max-height: min(390px, 52vh);
+  gap: 0;
+  margin: 4px 0 0;
+  overflow-y: auto;
+  border: 1px solid color-mix(in srgb, var(--compose-divider) 78%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--compose-control-surface) 58%, transparent);
+}
+
+.mcp-help-dialog__tools > div {
+  display: grid;
+  grid-template-columns: 90px minmax(0, 1fr);
+  gap: 14px;
+  padding: 11px 13px;
+  border-bottom: 1px solid color-mix(in srgb, var(--compose-divider) 65%, transparent);
+}
+
+.mcp-help-dialog__tools > div:last-child {
+  border-bottom: 0;
+}
+
+.mcp-help-dialog__tools dt {
+  color: var(--color-text);
+  font-size: 11px;
+  font-weight: 680;
+}
+
+.mcp-help-dialog__tools dd {
+  display: grid;
+  min-width: 0;
+  margin: 0;
+  gap: 6px;
+  color: var(--color-text-muted);
+  font-size: 10px;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+
+.mcp-help-dialog__tools dd > span {
+  display: grid;
+  grid-template-columns: minmax(112px, auto) minmax(0, 1fr);
+  gap: 8px;
+}
+
+.mcp-help-dialog__tools code {
+  color: var(--color-text-secondary);
+  font: inherit;
+}
+
 .app-update-progress {
   position: fixed;
   right: 24px;
@@ -8723,6 +8807,16 @@ html[data-surface="new-mail-notification"] #root {
 }
 
 @media (max-width: 480px) {
+  .mcp-help-dialog__tools > div {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+
+  .mcp-help-dialog__tools dd > span {
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+
   .settings-account-remark-editor {
     right: 6px;
     left: 6px;

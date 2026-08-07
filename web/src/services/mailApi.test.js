@@ -518,6 +518,10 @@ describe("mailApi desktop IPC contract", () => {
       notificationSoundEnabled: true,
       notificationSound: "im",
       remoteImageMode: "ask",
+      mcpEnabled: false,
+      mcpInformationEnabled: true,
+      mcpSendEnabled: false,
+      mcpEndpoint: "http://127.0.0.1:46321/mcp",
       startupError: null,
     });
     await mailApi.updateDesktopSettings({
@@ -549,6 +553,9 @@ describe("mailApi desktop IPC contract", () => {
         notification_sound_enabled: false,
         notification_sound: "reminder",
         remote_image_mode: "blocked",
+        mcp_enabled: false,
+        mcp_information_enabled: true,
+        mcp_send_enabled: false,
       },
     });
     expect(ipc.invoke).toHaveBeenNthCalledWith(4, "configure_account", {

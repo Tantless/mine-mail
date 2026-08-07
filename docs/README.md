@@ -8,6 +8,7 @@ The repository keeps a small set of canonical documents:
 - [`PRODUCT.md`](PRODUCT.md) — durable user-visible behavior.
 - [`MAIL_RENDERING.md`](MAIL_RENDERING.md) — mail HTML, MIME, remote content, and
   reply-history safety boundary.
+- [`MCP.md`](MCP.md) — local MCP permissions, tools, and supported-agent setup.
 - [`RELEASE.md`](RELEASE.md) — mutable checklist for the next public release.
 - [`../README.md`](../README.md) — human project overview and development setup.
 

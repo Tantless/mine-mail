@@ -123,6 +123,58 @@ const productLinks = [
 
 const sourceRepositoryUrl = "https://github.com/Tantless/mine-mail";
 
+const mcpToolGroups = [
+  {
+    label: "账户与同步",
+    tools: [
+      ["list_accounts", "查看可用邮箱账户"],
+      ["sync_mail", "同步指定账户的邮件"],
+    ],
+  },
+  {
+    label: "检索与阅读",
+    tools: [
+      ["search_messages", "检索邮件与已缓存正文"],
+      ["index_message_bodies", "分批补全正文检索范围"],
+      ["get_message", "读取邮件正文与附件信息"],
+    ],
+  },
+  {
+    label: "附件下载",
+    tools: [["download_attachment", "把收件附件保存到本机"]],
+  },
+  {
+    label: "邮件整理",
+    tools: [
+      ["set_message_read", "切换已读状态"],
+      ["set_message_starred", "切换星标状态"],
+      ["archive_message", "归档邮件"],
+      ["move_message_to_inbox", "移回收件箱"],
+      ["move_message_to_trash", "移入废纸篓"],
+    ],
+  },
+  {
+    label: "草稿与附件",
+    tools: [
+      ["list_drafts", "查看草稿列表"],
+      ["get_draft", "读取一封草稿"],
+      ["create_draft", "新建草稿"],
+      ["update_draft", "编辑指定版本的草稿"],
+      ["delete_draft", "删除指定版本的草稿"],
+      ["add_draft_attachments", "从本机添加草稿附件"],
+      ["remove_draft_attachment", "移除草稿附件"],
+    ],
+  },
+  {
+    label: "回复与发送",
+    tools: [
+      ["create_reply_draft", "创建回复草稿"],
+      ["create_forward_draft", "创建转发草稿"],
+      ["send_draft", "发送确认过的草稿版本"],
+    ],
+  },
+];
+
 function normalizeProvider(preset) {
   const id = preset.id ?? preset.provider ?? preset.provider_id;
   const fallback = fallbackProviders.find((provider) => provider.id === id);
@@ -304,6 +356,8 @@ export function SettingsPanel({
   const [storageMessage, setStorageMessage] = useState(null);
   const [pendingStorageDirectory, setPendingStorageDirectory] = useState(null);
   const [isRemoteImageHelpOpen, setIsRemoteImageHelpOpen] = useState(false);
+  const [isMcpHelpOpen, setIsMcpHelpOpen] = useState(false);
+  const [isMcpEnablePending, setIsMcpEnablePending] = useState(false);
   const scrollRef = useRef(null);
   const settingsNavRef = useRef(null);
   const accountMenuRef = useRef(null);
@@ -315,6 +369,8 @@ export function SettingsPanel({
   const settingsCloseRef = useRef(null);
   const storageCancelRef = useRef(null);
   const updateCancelRef = useRef(null);
+  const mcpEnableCancelRef = useRef(null);
+  const mcpHelpCloseRef = useRef(null);
   const accountRemarkInputRef = useRef(null);
   const authorizationGuideButtonRef = useRef(null);
   const authorizationGuideReturnFocusRef = useRef(false);
@@ -646,6 +702,16 @@ export function SettingsPanel({
     initialFocusRef: updateCancelRef,
     returnFocusRef: updateDialogReturnFocusRef,
     onCancel: closeUpdateDialog,
+  });
+  const mcpEnableDialogFocus = useConfirmDialogFocus({
+    open: isMcpEnablePending,
+    initialFocusRef: mcpEnableCancelRef,
+    onCancel: () => setIsMcpEnablePending(false),
+  });
+  const mcpHelpDialogFocus = useConfirmDialogFocus({
+    open: isMcpHelpOpen,
+    initialFocusRef: mcpHelpCloseRef,
+    onCancel: () => setIsMcpHelpOpen(false),
   });
   const saveStateLabel =
     saveStatus === "saving"
@@ -1267,6 +1333,81 @@ export function SettingsPanel({
                     }
                   />
                 </label>
+
+                <div className="settings-mcp-group">
+                  <div className="settings-preference-row settings-preference-row--toggle">
+                    <span>
+                      <span className="settings-preference-row__title">
+                        <strong id="settings-mcp-enabled-label">开启 MCP</strong>
+                        <button
+                          type="button"
+                          className="settings-help__button"
+                          aria-label="了解 Mine Mail MCP 支持的工具"
+                          aria-haspopup="dialog"
+                          aria-expanded={isMcpHelpOpen}
+                          onClick={(event) => {
+                            event.preventDefault();
+                            setIsMcpHelpOpen(true);
+                          }}
+                        >
+                          <Question size={13} weight="bold" />
+                        </button>
+                      </span>
+                      <small>Mine Mail 在前台或托盘运行时可用。</small>
+                    </span>
+                    <input
+                      type="checkbox"
+                      aria-labelledby="settings-mcp-enabled-label"
+                      checked={Boolean(value.mcpEnabled)}
+                      onChange={(event) => {
+                        if (event.target.checked) {
+                          setIsMcpEnablePending(true);
+                        } else {
+                          updateSettings((current) => ({
+                            ...current,
+                            mcpEnabled: false,
+                          }));
+                        }
+                      }}
+                    />
+                  </div>
+
+                  <label className="settings-preference-row settings-preference-row--toggle settings-preference-row--child">
+                    <span>
+                      <strong>获取信息</strong>
+                      <small>允许读取、检索、同步、下载附件和整理邮件。</small>
+                    </span>
+                    <input
+                      type="checkbox"
+                      checked={Boolean(value.mcpInformationEnabled)}
+                      disabled={!value.mcpEnabled}
+                      onChange={(event) =>
+                        updateSettings((current) => ({
+                          ...current,
+                          mcpInformationEnabled: event.target.checked,
+                        }))
+                      }
+                    />
+                  </label>
+
+                  <label className="settings-preference-row settings-preference-row--toggle settings-preference-row--child">
+                    <span>
+                      <strong>发送邮件</strong>
+                      <small>允许管理草稿、添加附件、回复、转发和真正发送邮件。</small>
+                    </span>
+                    <input
+                      type="checkbox"
+                      checked={Boolean(value.mcpSendEnabled)}
+                      disabled={!value.mcpEnabled}
+                      onChange={(event) =>
+                        updateSettings((current) => ({
+                          ...current,
+                          mcpSendEnabled: event.target.checked,
+                        }))
+                      }
+                    />
+                  </label>
+                </div>
               </div>
             </section>
           ) : null}
@@ -1472,6 +1613,120 @@ export function SettingsPanel({
           ) : null}
         </div>
       </div>
+
+      {isMcpEnablePending ? (
+        <div
+          className="confirm-layer"
+          onPointerDown={mcpEnableDialogFocus.onBackdropPointerDown}
+        >
+          <section
+            ref={mcpEnableDialogFocus.dialogRef}
+            className="confirm-dialog mcp-confirm-dialog"
+            role="dialog"
+            tabIndex={-1}
+            aria-modal="true"
+            aria-labelledby="mcp-enable-title"
+            aria-describedby="mcp-enable-description"
+            onKeyDown={mcpEnableDialogFocus.onDialogKeyDown}
+          >
+            <header>
+              <span className="confirm-dialog__icon" aria-hidden="true">
+                <SlidersHorizontal size={22} weight="duotone" />
+              </span>
+              <IconButton
+                label="取消开启 MCP"
+                onClick={() => setIsMcpEnablePending(false)}
+              >
+                <X size={18} />
+              </IconButton>
+            </header>
+            <h2 id="mcp-enable-title">开启 MCP？</h2>
+            <p id="mcp-enable-description">
+              开启后，本机 Agent 可按所选权限读取或发送邮件。
+            </p>
+            <footer>
+              <button
+                ref={mcpEnableCancelRef}
+                type="button"
+                className="secondary-button"
+                onClick={() => setIsMcpEnablePending(false)}
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                className="send-button"
+                onClick={() => {
+                  setIsMcpEnablePending(false);
+                  updateSettings((current) => ({
+                    ...current,
+                    mcpEnabled: true,
+                  }));
+                }}
+              >
+                确认开启
+              </button>
+            </footer>
+          </section>
+        </div>
+      ) : null}
+
+      {isMcpHelpOpen ? (
+        <div
+          className="confirm-layer"
+          onPointerDown={mcpHelpDialogFocus.onBackdropPointerDown}
+        >
+          <section
+            ref={mcpHelpDialogFocus.dialogRef}
+            className="confirm-dialog mcp-help-dialog"
+            role="dialog"
+            tabIndex={-1}
+            aria-modal="true"
+            aria-labelledby="mcp-help-title"
+            aria-describedby="mcp-help-description"
+            onKeyDown={mcpHelpDialogFocus.onDialogKeyDown}
+          >
+            <header>
+              <span className="confirm-dialog__icon" aria-hidden="true">
+                <Question size={22} weight="duotone" />
+              </span>
+              <IconButton
+                label="关闭 MCP 工具说明"
+                onClick={() => setIsMcpHelpOpen(false)}
+              >
+                <X size={18} />
+              </IconButton>
+            </header>
+            <h2 id="mcp-help-title">Mine Mail MCP</h2>
+            <p id="mcp-help-description">供本机 AI 助理安全调用邮件能力。</p>
+            <dl className="mcp-help-dialog__tools vertical-scroll-surface">
+              {mcpToolGroups.map((group) => (
+                <div key={group.label}>
+                  <dt>{group.label}</dt>
+                  <dd>
+                    {group.tools.map(([name, description]) => (
+                      <span key={name}>
+                        <code>{name}</code>
+                        {description}
+                      </span>
+                    ))}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+            <footer>
+              <button
+                ref={mcpHelpCloseRef}
+                type="button"
+                className="send-button"
+                onClick={() => setIsMcpHelpOpen(false)}
+              >
+                知道了
+              </button>
+            </footer>
+          </section>
+        </div>
+      ) : null}
 
       {pendingStorageDirectory ? (
         <div
