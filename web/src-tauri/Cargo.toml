@@ -22,6 +22,7 @@ tauri-build = { version = "2", features = [] }
 ammonia = "4"
 axum = "0.8"
 base64 = "0.22"
+dotenvy = "0.15"
 ego-tree = "0.11"
 html5ever = "0.39"
 keyring = "4.1.4"

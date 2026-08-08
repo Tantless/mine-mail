@@ -10,6 +10,7 @@ import {
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vitest";
 import { useProseMirrorTestGeometry } from "../test/proseMirrorTestGeometry.js";
+import { mailApi } from "../services/mailApi.js";
 import { ComposePanel } from "./ComposePanel.jsx";
 
 useProseMirrorTestGeometry();
@@ -37,6 +38,7 @@ const baseDraft = {
 
 function renderCompose(overrides = {}) {
   const props = {
+    accountId: "demo-primary",
     value: baseValue,
     draft: baseDraft,
     draftId: baseDraft.id,
@@ -440,24 +442,46 @@ it("routes editor body updates through the dedicated high-frequency callback", a
   expect(onChange).not.toHaveBeenCalled();
 });
 
-it("opens the optimization prompt and applies one atomic mock rewrite with undo", async () => {
+it("reviews an optimization before applying it and can restore the overwritten body", async () => {
   const onChange = vi.fn();
   const user = userEvent.setup();
+  const runTurn = vi.spyOn(mailApi, "runAiTurn");
   renderCompose({ onChange });
 
+  expect(screen.getByRole("button", { name: "回退上次优化" }).disabled).toBe(true);
   await user.click(screen.getByRole("button", { name: "填写优化要求" }));
   const instruction = screen.getByRole("textbox", { name: "补充优化要求" });
   await user.type(instruction, "更正式，保留原有信息");
   await user.click(screen.getByRole("button", { name: "优化当前邮件" }));
 
+  const reviewButton = await screen.findByRole("button", { name: "查看优化结果" });
+  expect(onChange).not.toHaveBeenCalled();
+  expect(runTurn.mock.calls[0][0].draft_revision.length).toBeLessThanOrEqual(128);
+  expect(runTurn.mock.calls[0][0].draft_revision).not.toContain(baseValue.body_text);
+
+  await user.click(reviewButton);
+  const review = screen.getByRole("dialog", { name: "优化结果对比" });
+  expect(within(review).getByRole("textbox", { name: "编辑左侧原文" }).value)
+    .toBe(baseValue.body_text);
+  expect(within(review).getByRole("textbox", { name: "编辑右侧优化结果" }).value)
+    .toContain("期待您的回复");
+  expect(review.querySelectorAll('[data-changed="true"]').length).toBeGreaterThan(0);
+
+  await user.click(within(review).getByRole("button", { name: "选用右侧结果" }));
+  const confirmation = screen.getByRole("alertdialog", { name: "应用优化结果？" });
+  expect(within(confirmation).getByText("您确认选用右侧的结果吗？")).toBeTruthy();
+  await user.click(within(confirmation).getByRole("button", { name: "确认应用" }));
+
+  await waitFor(() => expect(onChange).toHaveBeenCalledTimes(1));
   const optimizeUpdate = onChange.mock.calls.at(-1)[0];
   const optimized = optimizeUpdate(baseValue);
   expect(optimized.subject).toBe("版本化附件");
-  expect(optimized.body_text).toContain("您好");
+  expect(optimized.body_text).toContain("这是新写的正文");
   expect(optimized.body_text).toContain("期待您的回复");
-  expect(screen.queryByRole("textbox", { name: "补充优化要求" })).toBeNull();
 
-  await user.click(screen.getByRole("button", { name: "撤销优化" }));
+  const undoButton = screen.getByRole("button", { name: "回退上次优化" });
+  expect(undoButton.disabled).toBe(false);
+  await user.click(undoButton);
   const undoUpdate = onChange.mock.calls.at(-1)[0];
   expect(undoUpdate(optimized)).toEqual(
     expect.objectContaining({
@@ -465,6 +489,129 @@ it("opens the optimization prompt and applies one atomic mock rewrite with undo"
       body_text: baseValue.body_text,
     }),
   );
+  expect(screen.getByRole("button", { name: "回退上次优化" }).disabled).toBe(true);
+});
+
+it("keeps compose interactive while optimization runs and only signals the finished result", async () => {
+  let finishTurn;
+  const pendingTurn = new Promise((resolve) => {
+    finishTurn = resolve;
+  });
+  vi.spyOn(mailApi, "runAiTurn").mockReturnValueOnce(pendingTurn);
+  const user = userEvent.setup();
+  renderCompose();
+
+  await user.click(screen.getByRole("button", { name: "优化当前邮件" }));
+  const optimizeButton = screen.getByRole("button", { name: "优化当前邮件" });
+  expect(optimizeButton.disabled).toBe(true);
+  expect(optimizeButton.getAttribute("aria-busy")).toBe("true");
+  expect(screen.getByRole("textbox", { name: "主题" }).disabled).toBe(false);
+  expect(screen.getByRole("button", { name: "填写优化要求" }).disabled).toBe(false);
+
+  await act(async () => {
+    finishTurn({
+      request_id: "ai-review-pending",
+      draft: {
+        ...baseValue,
+        body_text: `${baseValue.body_text}\n优化完成`,
+      },
+      changed_fields: ["body_text"],
+    });
+    await pendingTurn;
+  });
+
+  expect(await screen.findByRole("button", { name: "查看优化结果" })).toBeTruthy();
+  expect(screen.queryByRole("dialog", { name: "优化结果对比" })).toBeNull();
+});
+
+it("keeps the optimization prompt and pending result through compose minimization", async () => {
+  let finishTurn;
+  const pendingTurn = new Promise((resolve) => {
+    finishTurn = resolve;
+  });
+  vi.spyOn(mailApi, "runAiTurn").mockReturnValueOnce(pendingTurn);
+  const user = userEvent.setup();
+  renderCompose();
+
+  await user.click(screen.getByRole("button", { name: "填写优化要求" }));
+  await user.type(
+    screen.getByRole("textbox", { name: "补充优化要求" }),
+    "帮我修改格式变得工整",
+  );
+  await user.click(screen.getByRole("button", { name: "优化当前邮件" }));
+
+  const dialog = screen.getByRole("dialog", { name: "编辑草稿" });
+  fireEvent.pointerDown(dialog.closest(".compose-layer"), { button: 0 });
+  expect(
+    screen.getByRole("button", {
+      name: "还原写信窗口：版本化附件(friend@example.com)",
+    }),
+  ).toBeTruthy();
+
+  await act(async () => {
+    finishTurn({
+      request_id: "ai-review-minimized",
+      draft: {
+        ...baseValue,
+        body_text: `${baseValue.body_text}\n优化后的排版`,
+      },
+      changed_fields: ["body_text"],
+    });
+    await pendingTurn;
+  });
+
+  await user.click(
+    screen.getByRole("button", {
+      name: "还原写信窗口：版本化附件(friend@example.com)",
+    }),
+  );
+  await user.click(screen.getByRole("button", { name: "填写优化要求" }));
+  expect(
+    screen.getByRole("textbox", { name: "补充优化要求" }).value,
+  ).toBe("帮我修改格式变得工整");
+
+  await user.click(screen.getByRole("button", { name: "查看优化结果" }));
+  expect(
+    screen.getByRole("textbox", { name: "编辑右侧优化结果" }).value,
+  ).toContain("优化后的排版");
+});
+
+it("uses a bounded revision identifier when optimizing a long body", async () => {
+  const runTurn = vi.spyOn(mailApi, "runAiTurn");
+  const user = userEvent.setup();
+  const longBody = "这是一段较长的邮件正文。".repeat(180);
+  renderCompose({
+    value: { ...baseValue, body_text: longBody },
+  });
+
+  await user.click(screen.getByRole("button", { name: "优化当前邮件" }));
+  await screen.findByRole("button", { name: "查看优化结果" });
+
+  const request = runTurn.mock.calls[0][0];
+  expect(request.draft.compose.body_text).toBe(longBody);
+  expect(request.draft_revision.length).toBeLessThanOrEqual(128);
+  expect(request.draft_revision).not.toContain(longBody.slice(0, 20));
+});
+
+it("minimizes and explicitly discards a completed optimization result", async () => {
+  const user = userEvent.setup();
+  renderCompose();
+
+  await user.click(screen.getByRole("button", { name: "优化当前邮件" }));
+  await user.click(await screen.findByRole("button", { name: "查看优化结果" }));
+  await user.click(screen.getByRole("button", { name: "暂时隐藏优化结果" }));
+  expect(screen.queryByRole("dialog", { name: "优化结果对比" })).toBeNull();
+
+  await user.click(screen.getByRole("button", { name: "查看优化结果" }));
+  await user.click(screen.getByRole("button", { name: "关闭优化结果" }));
+  const confirmation = screen.getByRole("alertdialog", { name: "关闭优化结果？" });
+  expect(
+    within(confirmation).getByText(
+      "确认关闭此次优化结果吗？关闭后将无法再次查看或应用。",
+    ),
+  ).toBeTruthy();
+  await user.click(within(confirmation).getByRole("button", { name: "确认关闭" }));
+  expect(screen.getByRole("button", { name: "优化当前邮件" })).toBeTruthy();
 });
 
 it("switches between the application session list and a conversation", async () => {
@@ -481,35 +628,50 @@ it("switches between the application session list and a conversation", async () 
     .toBeNull();
   expect(within(assistant).queryByText("1 个草稿")).toBeNull();
 
-  await user.click(
-    within(assistant).getByRole("button", { name: /确认项目交付时间/ }),
+  const input = within(assistant).getByRole("textbox", {
+    name: "向 AI 助理发送消息",
+  });
+  await waitFor(() => expect(input.disabled).toBe(false));
+  await user.type(input, "讨论项目交付时间{Enter}");
+  await waitFor(() =>
+    expect(
+      within(assistant).getByText(
+        "这是离线界面演示；桌面版会按需读取当前草稿后回答。",
+      ),
+    ).toBeTruthy(),
   );
-  expect(within(assistant).getByText("帮我把这封项目交付确认邮件写得更清楚一些。"))
-    .toBeTruthy();
   expect(
     within(assistant).getByRole("button", { name: /版本化附件.*#[0-9A-F]{8}/ }),
   ).toBeTruthy();
 
   await user.click(within(assistant).getByRole("button", { name: "返回会话列表" }));
-  expect(within(assistant).getByText("客户感谢信")).toBeTruthy();
+  expect(within(assistant).getByText("讨论项目交付时间")).toBeTruthy();
+  await user.click(
+    within(assistant).getByRole("button", { name: /讨论项目交付时间/ }),
+  );
+  expect(within(assistant).getAllByText("讨论项目交付时间").length).toBeGreaterThan(0);
 });
 
-it("creates a mock session from the fixed composer and honors the selected mode", async () => {
+it("creates an AI session from the fixed composer and honors the selected mode", async () => {
   const onChange = vi.fn();
   const user = userEvent.setup();
   renderCompose({ onChange });
 
   await user.click(screen.getByRole("button", { name: "打开 AI 助理" }));
   const assistant = screen.getByRole("complementary", { name: "AI 助理" });
-  await user.click(within(assistant).getByRole("combobox", { name: "选择 Agent 模式" }));
+  const modeSelect = within(assistant).getByRole("combobox", {
+    name: "选择 Agent 模式",
+  });
+  await waitFor(() => expect(modeSelect.disabled).toBe(false));
+  await user.click(modeSelect);
   await user.click(within(assistant).getByRole("option", { name: "邮件生成" }));
   const input = within(assistant).getByRole("textbox", { name: "向 AI 助理发送消息" });
   await user.type(input, "写一封确认下周交付时间的邮件{Enter}");
 
-  expect(within(assistant).getAllByText("写一封确认下周交付时间的邮件").length)
-    .toBeGreaterThan(0);
-  expect(within(assistant).getByText("已生成并填入当前草稿。你可以继续提出修改要求。"))
-    .toBeTruthy();
+  await waitFor(() =>
+    expect(within(assistant).getByText("已更新当前草稿。")).toBeTruthy(),
+  );
+  await waitFor(() => expect(onChange).toHaveBeenCalled());
   const generateUpdate = onChange.mock.calls.at(-1)[0];
   expect(generateUpdate(baseValue).body_text).toContain("下周交付时间");
 });

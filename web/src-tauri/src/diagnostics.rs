@@ -25,7 +25,7 @@ pub(crate) const LOG_TOTAL_MAX_BYTES: u64 = 20 * 1024 * 1024;
 pub(crate) const LOG_RETENTION: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
 const DIAGNOSTIC_TARGET: &str = "mine_mail::diagnostics";
-const DIAGNOSTIC_SCHEMA_VERSION: u8 = 2;
+const DIAGNOSTIC_SCHEMA_VERSION: u8 = 3;
 const LOG_ARCHIVE_MAX_BYTES: u64 = LOG_TOTAL_MAX_BYTES - LOG_FILE_MAX_BYTES as u64;
 const FAILURE_EMIT_INTERVAL: Duration = Duration::from_secs(60);
 const FAILURE_KEY_LIMIT: usize = 128;
@@ -83,6 +83,14 @@ pub(crate) struct Fields {
     #[serde(skip_serializing_if = "Option::is_none")]
     mode: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    provider: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model_ref: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    finish_reason: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     outcome: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error_kind: Option<ErrorKind>,
@@ -105,6 +113,8 @@ pub(crate) struct Fields {
     #[serde(skip_serializing_if = "Option::is_none")]
     changed_count: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    changed_fields: Option<Vec<&'static str>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     removed_count: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     conflict_count: Option<usize>,
@@ -121,6 +131,14 @@ pub(crate) struct Fields {
     #[serde(skip_serializing_if = "Option::is_none")]
     moved_bytes: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    input_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    output_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    input_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    output_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     app_version: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     platform: Option<&'static str>,
@@ -131,6 +149,11 @@ pub(crate) struct Fields {
 impl Fields {
     pub(crate) fn operation_id(mut self, value: OperationId) -> Self {
         self.operation_id = Some(value.0);
+        self
+    }
+
+    pub(crate) fn operation_id_value(mut self, value: &str) -> Self {
+        self.operation_id = Some(value.to_owned());
         self
     }
 
@@ -156,6 +179,26 @@ impl Fields {
 
     pub(crate) fn mode(mut self, value: &'static str) -> Self {
         self.mode = Some(value);
+        self
+    }
+
+    pub(crate) fn provider(mut self, value: &'static str) -> Self {
+        self.provider = Some(value);
+        self
+    }
+
+    pub(crate) fn model(mut self, value: &str) -> Self {
+        self.model_ref = Some(private_ref("ai_model", value));
+        self
+    }
+
+    pub(crate) fn tool(mut self, value: &'static str) -> Self {
+        self.tool = Some(value);
+        self
+    }
+
+    pub(crate) fn finish_reason(mut self, value: &'static str) -> Self {
+        self.finish_reason = Some(value);
         self
     }
 
@@ -228,6 +271,11 @@ impl Fields {
         self
     }
 
+    pub(crate) fn change_set(mut self, value: Vec<&'static str>) -> Self {
+        self.changed_fields = Some(value);
+        self
+    }
+
     pub(crate) fn draft_version(mut self, value: u64) -> Self {
         self.draft_version = Some(value);
         self
@@ -235,6 +283,18 @@ impl Fields {
 
     pub(crate) fn moved_bytes(mut self, value: u64) -> Self {
         self.moved_bytes = Some(value);
+        self
+    }
+
+    pub(crate) fn payload_bytes(mut self, input: u64, output: u64) -> Self {
+        self.input_bytes = Some(input);
+        self.output_bytes = Some(output);
+        self
+    }
+
+    pub(crate) fn tokens(mut self, input: u64, output: u64) -> Self {
+        self.input_tokens = Some(input);
+        self.output_tokens = Some(output);
         self
     }
 
@@ -267,6 +327,12 @@ struct DiagnosticEvent<'a> {
 
 #[derive(Clone, Debug)]
 pub(crate) struct OperationId(String);
+
+impl OperationId {
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+}
 
 pub(crate) fn operation_id() -> OperationId {
     OperationId(Uuid::new_v4().to_string())
@@ -1098,8 +1164,8 @@ mod tests {
             instrumented += usize::from(has_diagnostics);
         }
 
-        assert_eq!(blocks.len(), 60, "update the command coverage contract");
-        assert_eq!(instrumented, 58, "update the command coverage contract");
+        assert_eq!(blocks.len(), 69, "update the command coverage contract");
+        assert_eq!(instrumented, 67, "update the command coverage contract");
         assert!(
             instrumented * 100 > blocks.len() * 95,
             "diagnostic command coverage must remain above 95%"

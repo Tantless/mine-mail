@@ -1,0 +1,578 @@
+import { Component, useEffect, useMemo, useRef, useState } from "react";
+import {
+  CaretDown,
+  CheckCircle,
+  MagnifyingGlass,
+  Question,
+  SpinnerGap,
+  X,
+} from "@phosphor-icons/react";
+import { mailApi } from "../services/mailApi.js";
+import { userFacingErrorMessage } from "../utils/userFacingError.js";
+import { useConfirmDialogFocus } from "./ConfirmDialogPrimitives.jsx";
+import { IconButton } from "./IconButton.jsx";
+import { ThemedSelect } from "./ThemedSelect.jsx";
+
+const fallbackTranslationLanguages = Object.freeze([
+  { value: "zh-Hans", label: "中文（简体）" },
+  { value: "zh-Hant", label: "中文（繁體）" },
+  { value: "en", label: "English" },
+  { value: "ja", label: "日本語" },
+  { value: "ko", label: "한국어" },
+  { value: "ru", label: "Русский" },
+  { value: "es", label: "Español" },
+  { value: "fr", label: "Français" },
+  { value: "de", label: "Deutsch" },
+  { value: "pt", label: "Português" },
+  { value: "it", label: "Italiano" },
+  { value: "ar", label: "العربية" },
+]);
+
+const initialConfiguration = Object.freeze({
+  providerId: "deepseek",
+  baseUrl: "https://api.deepseek.com",
+  modelName: "",
+  apiKey: "",
+  useEnvironmentKey: true,
+  hasStoredApiKey: false,
+  hasEnvironmentApiKey: false,
+  environmentVariable: "DEEPSEEK_API_KEY",
+  presets: [],
+  translationLanguage: "zh-Hans",
+  translationLanguages: fallbackTranslationLanguages,
+});
+
+function normalizeConfiguration(config) {
+  const value = config && typeof config === "object" ? config : {};
+  return {
+    ...initialConfiguration,
+    ...value,
+    apiKey: "",
+    presets: Array.isArray(value.presets) ? value.presets : [],
+    translationLanguages: Array.isArray(value.translationLanguages)
+      && value.translationLanguages.length
+      ? value.translationLanguages
+      : fallbackTranslationLanguages,
+  };
+}
+
+function configurationRequest(form) {
+  return {
+    providerId: form.providerId,
+    baseUrl: form.baseUrl.trim(),
+    modelName: form.modelName.trim(),
+    useEnvironmentKey: form.useEnvironmentKey,
+    translationLanguage: form.translationLanguage,
+    apiKey: form.useEnvironmentKey ? "" : form.apiKey,
+  };
+}
+
+function statusMessage(error, fallback) {
+  return userFacingErrorMessage(error, fallback);
+}
+
+function AgentSettingsContent({ client }) {
+  const [expanded, setExpanded] = useState(true);
+  const [loadState, setLoadState] = useState("loading");
+  const [form, setForm] = useState(initialConfiguration);
+  const [modelMenuOpen, setModelMenuOpen] = useState(false);
+  const [actionState, setActionState] = useState("idle");
+  const [feedback, setFeedback] = useState(null);
+  const [helpOpen, setHelpOpen] = useState(false);
+  const helpCloseRef = useRef(null);
+  const modelMenuRef = useRef(null);
+  const helpFocus = useConfirmDialogFocus({
+    open: helpOpen,
+    initialFocusRef: helpCloseRef,
+    onCancel: () => setHelpOpen(false),
+  });
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoadState("loading");
+    Promise.resolve()
+      .then(() => {
+        if (typeof client?.getAiConfig !== "function") {
+          throw new Error("AI configuration client is unavailable");
+        }
+        return client.getAiConfig();
+      })
+      .then((config) => {
+        if (cancelled) return;
+        setForm(normalizeConfiguration(config));
+        setLoadState("ready");
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setFeedback({
+          tone: "danger",
+          text: statusMessage(error, "AI 配置读取失败，请重试。"),
+        });
+        setLoadState("error");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [client]);
+
+  useEffect(() => {
+    if (!modelMenuOpen) return undefined;
+    const closeOnOutsidePointer = (event) => {
+      if (!modelMenuRef.current?.contains(event.target)) {
+        setModelMenuOpen(false);
+      }
+    };
+    document.addEventListener("pointerdown", closeOnOutsidePointer);
+    return () => document.removeEventListener("pointerdown", closeOnOutsidePointer);
+  }, [modelMenuOpen]);
+
+  const selectedPreset = useMemo(
+    () => form.presets.find((preset) => preset.id === form.providerId),
+    [form.presets, form.providerId],
+  );
+  const models = selectedPreset?.models || [];
+  const busy = ["saving", "models", "testing"].includes(actionState);
+
+  const resetModelResults = () => {
+    setModelMenuOpen(false);
+  };
+
+  const updateField = (field, value, { resetModels = false } = {}) => {
+    setForm((current) => ({ ...current, [field]: value }));
+    setFeedback(null);
+    if (resetModels) resetModelResults();
+  };
+
+  const chooseProvider = (preset) => {
+    setForm((current) => ({
+      ...current,
+      providerId: preset.id,
+      baseUrl: preset.baseUrl,
+      modelName: preset.models?.[0] || "",
+      apiKey: "",
+      environmentVariable: preset.environmentVariable,
+      hasStoredApiKey: false,
+      hasEnvironmentApiKey: false,
+    }));
+    setFeedback(null);
+    resetModelResults();
+  };
+
+  const retrieveModels = async () => {
+    setActionState("models");
+    setFeedback(null);
+    setModelMenuOpen(false);
+    try {
+      const availableModels = await client.listAiModels(configurationRequest(form));
+      setForm((current) => ({
+        ...current,
+        modelName: current.modelName || availableModels[0] || "",
+        presets: current.presets.map((preset) =>
+          preset.id === current.providerId
+            ? { ...preset, models: availableModels }
+            : preset,
+        ),
+      }));
+      setModelMenuOpen(true);
+      setFeedback({
+        tone: "success",
+        text: `已检索到 ${availableModels.length} 个可用模型。`,
+      });
+    } catch (error) {
+      setModelMenuOpen(false);
+      setFeedback({
+        tone: "danger",
+        text: statusMessage(error, "可用模型检索失败，请检查配置。"),
+      });
+    } finally {
+      setActionState("idle");
+    }
+  };
+
+  const testConnection = async () => {
+    setActionState("testing");
+    setFeedback(null);
+    try {
+      const result = await client.testAiConnection(configurationRequest(form));
+      setFeedback({
+        tone: "success",
+        text: `连接成功 · ${result.latencyMs} ms`,
+      });
+    } catch (error) {
+      setFeedback({
+        tone: "danger",
+        text: statusMessage(error, "连接测试失败，请检查配置。"),
+      });
+    } finally {
+      setActionState("idle");
+    }
+  };
+
+  const saveConfiguration = async () => {
+    setActionState("saving");
+    setFeedback(null);
+    try {
+      const saved = await client.saveAiConfig(configurationRequest(form));
+      setForm(normalizeConfiguration(saved));
+      setFeedback({ tone: "success", text: "模型配置已保存。" });
+    } catch (error) {
+      setFeedback({
+        tone: "danger",
+        text: statusMessage(error, "模型配置保存失败，请检查后重试。"),
+      });
+    } finally {
+      setActionState("idle");
+    }
+  };
+
+  return (
+    <section className="settings-page agent-settings" aria-labelledby="settings-agent-title">
+      <header className="settings-page__heading">
+        <span>
+          <p className="eyebrow">AGENT</p>
+          <h3 id="settings-agent-title">Agent 配置</h3>
+          <p>配置写信助理与邮件翻译使用的模型服务。API Key 由系统凭据库保管。</p>
+        </span>
+      </header>
+
+      <section className="agent-config-card">
+        <button
+          type="button"
+          className="agent-config-card__heading"
+          aria-expanded={expanded}
+          aria-controls="agent-model-configuration"
+          onClick={() => setExpanded((current) => !current)}
+        >
+          <span>
+            <strong>模型配置</strong>
+            <small>{selectedPreset?.label || "选择模型供应商"}</small>
+          </span>
+          <CaretDown size={17} aria-hidden="true" />
+        </button>
+
+        {expanded ? (
+          <div id="agent-model-configuration" className="agent-config-card__content">
+            {loadState === "loading" ? (
+              <p className="agent-config-loading" role="status">
+                <SpinnerGap size={16} className="spin" />
+                正在读取模型配置…
+              </p>
+            ) : (
+              <>
+                <fieldset className="agent-provider-presets" disabled={busy}>
+                  <legend>预设供应商</legend>
+                  <div>
+                    {form.presets.map((preset) => (
+                      <button
+                        key={preset.id}
+                        type="button"
+                        data-selected={preset.id === form.providerId}
+                        onClick={() => chooseProvider(preset)}
+                      >
+                        {preset.label}
+                      </button>
+                    ))}
+                  </div>
+                </fieldset>
+
+                <div className="agent-config-fields">
+                  <label className="settings-field">
+                    <span>BASE_URL</span>
+                    <span className="settings-input-shell settings-input-shell--text">
+                      <input
+                        value={form.baseUrl}
+                        disabled={busy}
+                        autoCapitalize="none"
+                        autoCorrect="off"
+                        spellCheck="false"
+                        placeholder="https://api.example.com/v1"
+                        onChange={(event) =>
+                          updateField("baseUrl", event.target.value, {
+                            resetModels: true,
+                          })
+                        }
+                      />
+                    </span>
+                  </label>
+
+                  <label className="settings-field">
+                    <span>API_KEY</span>
+                    <span className="settings-input-shell settings-input-shell--text">
+                      <input
+                        type="password"
+                        value={form.apiKey}
+                        disabled={busy || form.useEnvironmentKey}
+                        autoCapitalize="none"
+                        autoComplete="off"
+                        spellCheck="false"
+                        placeholder={
+                          form.useEnvironmentKey
+                            ? `使用 ${form.environmentVariable}`
+                            : form.hasStoredApiKey
+                              ? "已安全保存；留空则保持不变"
+                              : "输入供应商 API Key"
+                        }
+                        onChange={(event) => {
+                          updateField("apiKey", event.target.value, {
+                            resetModels: true,
+                          });
+                        }}
+                      />
+                    </span>
+                  </label>
+
+                  <div className="agent-environment-option">
+                    <input
+                      id="agent-use-environment-key"
+                      type="checkbox"
+                      checked={form.useEnvironmentKey}
+                      disabled={busy}
+                      onChange={(event) => {
+                        setForm((current) => ({
+                          ...current,
+                          useEnvironmentKey: event.target.checked,
+                          apiKey: event.target.checked ? "" : current.apiKey,
+                        }));
+                        setFeedback(null);
+                        resetModelResults();
+                      }}
+                    />
+                    <label htmlFor="agent-use-environment-key">从系统环境变量获取</label>
+                    <button
+                      type="button"
+                      className="settings-help__button"
+                      aria-label="查看各供应商 API Key 环境变量名称"
+                      aria-haspopup="dialog"
+                      aria-expanded={helpOpen}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        setHelpOpen(true);
+                      }}
+                    >
+                      <Question size={13} weight="bold" />
+                    </button>
+                    {form.useEnvironmentKey ? (
+                      <small data-available={form.hasEnvironmentApiKey || undefined}>
+                        {form.hasEnvironmentApiKey ? "获取成功" : "保存后需重启应用以读取"}
+                      </small>
+                    ) : null}
+                  </div>
+
+                  <div className="settings-field">
+                    <label htmlFor="agent-model-name">MODEL_NAME</label>
+                    <span className="agent-model-control" ref={modelMenuRef}>
+                      <span className="settings-input-shell settings-input-shell--text">
+                        <input
+                          id="agent-model-name"
+                          role="combobox"
+                          aria-autocomplete="list"
+                          aria-expanded={modelMenuOpen}
+                          aria-controls={models.length ? "agent-model-options" : undefined}
+                          value={form.modelName}
+                          disabled={busy}
+                          autoCapitalize="none"
+                          autoCorrect="off"
+                          spellCheck="false"
+                          placeholder="输入或检索模型名称"
+                          onChange={(event) =>
+                            updateField("modelName", event.target.value)
+                          }
+                        />
+                      </span>
+                      <IconButton
+                        className="agent-model-control__toggle"
+                        label="展开可用模型"
+                        disabled={busy || models.length === 0}
+                        onClick={() => setModelMenuOpen((current) => !current)}
+                      >
+                        <CaretDown size={15} />
+                      </IconButton>
+                      <button
+                        type="button"
+                        className="agent-model-control__search"
+                        disabled={busy || !form.baseUrl.trim()}
+                        onClick={() => void retrieveModels()}
+                      >
+                        {actionState === "models" ? (
+                          <SpinnerGap size={15} className="spin" />
+                        ) : (
+                          <MagnifyingGlass size={15} />
+                        )}
+                        检索可用模型
+                      </button>
+                      {modelMenuOpen && models.length ? (
+                        <div
+                          id="agent-model-options"
+                          className="agent-model-options vertical-scroll-surface"
+                          role="listbox"
+                          aria-label="可用模型"
+                        >
+                          {models.map((model) => (
+                            <button
+                              key={model}
+                              type="button"
+                              role="option"
+                              aria-selected={model === form.modelName}
+                              onClick={() => {
+                                updateField("modelName", model);
+                                setModelMenuOpen(false);
+                              }}
+                            >
+                              <span>{model}</span>
+                              {model === form.modelName ? <CheckCircle size={15} weight="fill" /> : null}
+                            </button>
+                          ))}
+                        </div>
+                      ) : null}
+                    </span>
+                    <small>可直接选择预设模型；检索成功后会更新并保存当前供应商的列表。</small>
+                  </div>
+
+                  <div className="settings-field agent-translation-language">
+                    <label htmlFor="agent-translation-language">AI 翻译语言</label>
+                    <ThemedSelect
+                      id="agent-translation-language"
+                      label="AI 翻译语言"
+                      value={form.translationLanguage}
+                      options={form.translationLanguages}
+                      disabled={busy}
+                      onValueChange={(value) =>
+                        updateField("translationLanguage", value)
+                      }
+                    />
+                    <small>选择阅读邮件时 AI 默认翻译成的语言。</small>
+                  </div>
+                </div>
+
+                <div className="agent-config-actions">
+                  <span
+                    className="agent-config-feedback"
+                    data-tone={feedback?.tone}
+                    role={feedback?.tone === "danger" ? "alert" : "status"}
+                    aria-live="polite"
+                  >
+                    {feedback?.text || " "}
+                  </span>
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    disabled={busy || !form.modelName.trim()}
+                    onClick={() => void testConnection()}
+                  >
+                    {actionState === "testing" ? <SpinnerGap size={15} className="spin" /> : null}
+                    测试连接
+                  </button>
+                  <button
+                    type="button"
+                    className="send-button"
+                    disabled={busy || loadState !== "ready"}
+                    onClick={() => void saveConfiguration()}
+                  >
+                    {actionState === "saving" ? <SpinnerGap size={15} className="spin" /> : null}
+                    保存配置
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        ) : null}
+      </section>
+
+      {helpOpen ? (
+        <div className="confirm-layer" onPointerDown={helpFocus.onBackdropPointerDown}>
+          <section
+            ref={helpFocus.dialogRef}
+            className="confirm-dialog agent-environment-dialog"
+            role="dialog"
+            tabIndex={-1}
+            aria-modal="true"
+            aria-labelledby="agent-environment-title"
+            aria-describedby="agent-environment-description"
+            onKeyDown={helpFocus.onDialogKeyDown}
+          >
+            <header>
+              <span className="confirm-dialog__icon" aria-hidden="true">
+                <Question size={22} weight="duotone" />
+              </span>
+              <IconButton label="关闭环境变量说明" onClick={() => setHelpOpen(false)}>
+                <X size={18} />
+              </IconButton>
+            </header>
+            <h2 id="agent-environment-title">API Key 环境变量</h2>
+            <p id="agent-environment-description">
+              在系统中设置对应变量后重启 Mine Mail。启用此选项时，输入框中的密钥不会被使用。
+            </p>
+            <dl className="agent-environment-list vertical-scroll-surface">
+              {form.presets.map((preset) => (
+                <div key={preset.id}>
+                  <dt>{preset.label}</dt>
+                  <dd><code>{preset.environmentVariable}</code></dd>
+                </div>
+              ))}
+            </dl>
+            <footer>
+              <button
+                ref={helpCloseRef}
+                type="button"
+                className="send-button"
+                onClick={() => setHelpOpen(false)}
+              >
+                知道了
+              </button>
+            </footer>
+          </section>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+class AgentSettingsErrorBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { failed: false };
+  }
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  render() {
+    if (!this.state.failed) return this.props.children;
+    return (
+      <section
+        className="settings-page agent-settings"
+        aria-labelledby="settings-agent-error-title"
+      >
+        <header className="settings-page__heading">
+          <span>
+            <p className="eyebrow">AGENT</p>
+            <h3 id="settings-agent-error-title">Agent 配置</h3>
+            <p>配置写信助理与邮件翻译使用的模型服务。</p>
+          </span>
+        </header>
+        <section className="agent-config-card agent-config-failure" role="alert">
+          <span>
+            <strong>Agent 配置暂时无法显示</strong>
+            <small>请重新加载配置，其他设置仍可继续使用。</small>
+          </span>
+          <button
+            type="button"
+            className="secondary-button"
+            onClick={() => this.setState({ failed: false })}
+          >
+            重新加载
+          </button>
+        </section>
+      </section>
+    );
+  }
+}
+
+export function AgentSettings({ client = mailApi }) {
+  return (
+    <AgentSettingsErrorBoundary>
+      <AgentSettingsContent client={client} />
+    </AgentSettingsErrorBoundary>
+  );
+}

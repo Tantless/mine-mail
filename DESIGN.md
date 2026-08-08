@@ -176,6 +176,12 @@ All app-owned color and material decisions flow through custom properties in
 - The reader uses one outer scrollbar. Native text and semantic HTML participate
   in that surface; complex sender HTML remains sanitized and isolated according
   to `docs/MAIL_RENDERING.md`.
+- Incoming Inbox, Starred, Archive, and Trash mail exposes one compact **AI 翻译**
+  action in the reader toolbar after the body is ready. While translating, that
+  action alone shows progress. Success replaces it with a low-profile
+  **原文 / 译文** capsule; the selected half uses the restrained primary tint and
+  switching never reflows the toolbar. Sent, Draft, and Outbox content has no
+  translation action.
 - The compact header always keeps the real address available. Recipient details
   open in an overlay without moving the message body and expose only available
   From, To, Cc, and Bcc groups.
@@ -240,6 +246,25 @@ All app-owned color and material decisions flow through custom properties in
   The inline note says Mine Mail must remain in the foreground or tray.
   Enabling the parent uses one compact shared confirmation dialog; the question
   action opens a theme-owned tool explanation dialog rather than a tooltip.
+- **Agent 配置** is its own category between feature preferences and About. Its
+  **模型配置** card is a compact accordion, expanded by default, and keeps
+  provider presets above the editable connection fields. Selecting a preset
+  fills `BASE_URL` without hiding or locking the field.
+- `API_KEY` is a masked field with an adjacent **从系统环境变量获取** option.
+  Enabling the option disables the field; its question action opens one
+  theme-owned dialog listing every preset's exact environment-variable name.
+  `MODEL_NAME` remains editable. Every named preset exposes a short, current
+  default model list immediately, ordered from faster/lighter choices toward
+  flagship choices; custom providers may begin empty. **检索可用模型** replaces
+  and persists that provider's choices after a successful request. Choices
+  appear in a bounded themed popover rather than a native select.
+- Model setup uses local **测试连接** and **保存配置** actions inside the
+  accordion. Testing reports measured latency on success. These actions belong
+  to the consequential provider-setup flow and do not introduce a global
+  Settings footer.
+- **AI 翻译语言** sits with the model fields and uses `ThemedSelect`. It defaults
+  to Simplified Chinese and presents every language in its own written form,
+  such as **中文（简体）**、**中文（繁體）**、**English** and **日本語**.
 - About shows the version first, then the exact active product-data directory,
   total use, one segmented composition bar, and the icon-only **更改位置**
   action. Storage migration uses the shared consequential confirmation surface
@@ -270,9 +295,19 @@ All app-owned color and material decisions flow through custom properties in
   boundary and surface appear only during hover or press feedback.
 - The footer keeps AI editing and conversational work separate. The compact
   optimization split control runs from its primary magic-wand action; its second
-  segment opens a small upward prompt surface for optional instructions. A
-  successful optimization exposes one nearby undo action. The adjacent AI
-  assistant control opens or collapses the conversational panel.
+  segment opens a small upward prompt surface for optional instructions. While
+  the request runs only the wand becomes a spinner; compose remains editable.
+  Completion adds a small danger-colored notice dot to the wand without changing
+  the draft. Reopening it shows a large, theme-owned two-pane comparison: the
+  submitted snapshot on the left and AI result on the right. Pure-text removals
+  use a restrained danger tint and additions use a success tint; formatting-only
+  changes are not marked. Both panes remain editable, and text entered during
+  review carries no difference tint. Each pane has one check action, followed by
+  a compact confirmation naming the selected side. The comparison can be
+  minimized without losing it or permanently closed after confirmation. Applying
+  a side backs up the then-live body before replacement and enables the adjacent
+  icon-only undo action; the undo stays visible but disabled without a backup.
+  The adjacent AI assistant control opens or collapses the conversational panel.
 - On wide desktop viewports the AI assistant attaches to and extends the compose
   surface on the right. Defensive narrower layouts overlay it within the compose
   bounds. The panel has two full states: an application-level session list, and

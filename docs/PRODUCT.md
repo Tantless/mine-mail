@@ -165,6 +165,13 @@ product decision changes.
   Nearby help explains the open-time, IP/device, and tracking-pixel privacy risk.
 - Links use safe schemes and open through the desktop-owned path; sender content
   cannot navigate or script the application.
+- Incoming mail opened from Inbox, Starred, Archive, Trash, or contact history
+  may be translated through the configured AI Provider. Translation is an
+  explicit per-message action and does not alter the cached message, server
+  content, search index, reply source, or forwarding source. A completed result
+  remains a reader-only in-memory alternative that can be switched between
+  **原文** and **译文** while that message stays open. Sent, Draft, and Outbox
+  content does not expose this action.
 
 ## Folders, stars, and message actions
 
@@ -264,19 +271,84 @@ product decision changes.
   current edit. A failed save prevents the switch.
 - Reply/forward context is immutable and separate from the authored editor.
   Forwarded ordinary attachments are visible and removable before sending.
-- Compose exposes a dedicated optimization action for the existing subject and
-  authored body. Optional user instructions refine that operation. It never
-  changes sender, recipients, attachments, or quoted source, and one atomic
-  result can be undone while it remains the latest AI edit.
+- Compose exposes a dedicated optimization action for the authored body.
+  Optional user instructions may request wording or supported rich-text
+  formatting. Optimization cannot read or change the subject, sender,
+  recipients, attachments, stationery, or quoted source. The request captures
+  the body and instructions at click time and runs without locking compose.
+  Completion does not modify the live draft: the user reopens the result and
+  reviews an editable, pure-text difference between the submitted snapshot and
+  AI result. Formatting differences are preserved but not highlighted. Applying
+  either side requires an explicit side-named confirmation. Mine Mail backs up
+  the then-live body immediately before replacement and exposes one icon-only
+  rollback until it is used or replaced by a later optimization application.
+  The instruction text, an in-flight request, its completed comparison, and the
+  rollback backup remain attached to the live compose session through minimize
+  and restore.
+  Minimizing the comparison preserves it; permanently closing it requires
+  confirmation and discards that result.
 - Conversational AI sessions belong to the Mine Mail application rather than one
-  draft. A session may associate with every editable draft it actually reads or
-  changes. The association uses the stable draft ID, appears as a subject plus
-  short display-ID pill, and is removed after that draft is sent or deleted;
-  session history remains. Selecting a pill returns to that editable draft.
+  draft and persist in a Rust-owned SQLite store. A session may associate with
+  every saved, editable draft it actually reads or changes. The association uses
+  the stable draft ID, appears as a subject plus short display-ID pill, and is
+  removed after that draft is sent or deleted; session history remains.
 - The assistant provides **自动**、**邮件生成** and read-only **聊天** modes.
-  Optimization remains a separate high-frequency action. The current milestone
-  is an in-memory front-end preview with deterministic mock responses: it makes
-  no external AI request and does not yet persist sessions or draft associations.
+  Optimization remains a separate high-frequency action. Rust selects a hard
+  tool allowlist for every mode; prompts alone never grant a capability.
+- The built-in assistant calls its configured AI Provider directly from Rust.
+  It does not route through the local MCP service. A manually entered API Key
+  exists in React only as transient form input until the narrow Tauri command
+  consumes it; Rust never returns a key to React, and the browser demo remains
+  offline and deterministic.
+- Agent configuration supports custom OpenAI-compatible services plus presets
+  for DeepSeek, Kimi, OpenAI, Anthropic, Qwen, Xiaomi MiMo, MiniMax, ModelScope,
+  Doubao Seed, GLM, and OpenRouter. Anthropic uses its native Messages and Models
+  APIs; the other presets use their documented OpenAI-compatible interfaces.
+- The same configured Provider powers reader translation. **AI 翻译语言** is a
+  persisted reading preference, defaults to Simplified Chinese, and offers
+  common languages under their native display names.
+- Rust persists only provider ID, base URL, model name, and the environment-key
+  preference as active configuration in the AI SQLite store. Each preset also
+  provides a small built-in model list that is immediately selectable; a
+  successful model-discovery request replaces the stored list for that provider
+  across restarts without changing other providers. Manually supplied keys are
+  kept per provider in the OS credential store. Environment-key mode ignores any
+  form value and reads the preset's documented variable after application startup.
+- Provider base URLs must use HTTPS, except loopback-only HTTP for local
+  development, and cannot contain embedded credentials, query parameters, or
+  fragments. Model discovery and connection tests run in Rust with bounded
+  responses and privacy-safe logs. A connection test performs one minimal model
+  request and reports Rust-observed latency; it does not imply that every model
+  capability is available.
+- Except for the user's instruction and visible Session history, draft data is
+  not placed in the initial model context. The model must use bounded tools to
+  read the current subject, body, sender, recipients, immutable reply/forward
+  text, contacts, or attachment metadata. Text attachments may be read by opaque
+  ID within a size and type allowlist. PDF, Office, archive, executable, and
+  other binary formats are not parsed. Image tools are registered only for a
+  Provider/model with implemented multimodal support.
+- **邮件生成** may replace recipients, subject, body, and supported body
+  formatting. **聊天** has no write tools. **自动** combines those read and write
+  tools according to the user's request. No built-in AI mode can switch the
+  draft account, mutate immutable quoted context, manipulate attachments, send
+  mail, or operate Outbox.
+- Tool writes apply only to a Rust in-memory working copy. For conversational
+  generation and automatic modes, React applies the returned complete patch only
+  if the live compose fingerprint still matches the local request baseline;
+  otherwise it rejects the patch so a slow response cannot overwrite newer
+  edits. Independent optimization instead retains its click-time snapshot for
+  comparison and never writes until the user selects and confirms one side; the
+  live body is backed up immediately before that intentional replacement. The
+  short opaque request revision sent to Rust is correlation metadata, not the
+  serialized draft body. The user always reviews the result and clicks **发送**
+  explicitly.
+- The first Provider implementation is non-streaming but uses one typed Tauri
+  Channel lifecycle for start, tool progress, result, completion, and failure.
+  Future streaming for **邮件生成**、**聊天** and **自动** extends that protocol
+  with text deltas; standalone optimization may remain non-streaming.
+- The canonical built-in tool protocol and per-mode permission matrix live in
+  [`toolCalling/TOOLS.md`](toolCalling/TOOLS.md) and
+  [`toolCalling/AGENT_MODULES.md`](toolCalling/AGENT_MODULES.md).
 
 ## Sending and Outbox
 

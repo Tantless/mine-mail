@@ -696,6 +696,7 @@ function createComposer(
     locked: false,
     startMinimized: false,
     minimized: false,
+    optimizationCache: {},
     attachmentOperations: { add: null, remove: {} },
     forwardWarnings: [...forwardWarnings],
   };
@@ -7646,6 +7647,7 @@ export function App() {
           : selectedIndex >= 0 && selectedIndex < visibleMessages.length - 1
       }
       remoteImageMode={settings.remoteImageMode}
+      onTranslateMessage={(parts) => mailApi.translateMailContent(parts)}
       onOpenExternalLink={(url) => void handleOpenExternalLink(url)}
       resolveReferencedMessage={resolveReferencedMessage}
       onOpenReferencedMessage={handleOpenReferencedMessage}
@@ -7938,6 +7940,7 @@ export function App() {
       {composer ? (
         <ComposePanel
           key={composer.sessionId}
+          accountId={activeAccountId}
           value={composer.value}
           draft={composer.persistedDraft}
           draftId={composer.draftId}
@@ -7946,6 +7949,7 @@ export function App() {
           readOnly={composer.readOnlyUnsupported}
           initiallyMinimized={composer.startMinimized}
           restoreRequest={composeRestoreRequest}
+          optimizationCache={composer.optimizationCache}
           onMinimizedChange={handleComposeMinimizedChange}
           networkAvailable={networkActionsAvailable}
           onClose={() => void handleCloseComposer()}

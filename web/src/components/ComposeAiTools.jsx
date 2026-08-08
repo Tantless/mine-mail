@@ -1,17 +1,28 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   ArrowCounterClockwise,
   ArrowLeft,
   CaretDown,
   CaretUp,
+  CheckCircle,
   Gear,
   MagicWand,
   PaperPlaneRight,
   SidebarSimple,
   Sparkle,
+  SpinnerGap,
+  Trash,
 } from "@phosphor-icons/react";
 import { IconButton } from "./IconButton.jsx";
 import { ThemedSelect } from "./ThemedSelect.jsx";
+import { ConsequentialConfirmDialog } from "./ConsequentialConfirmDialog.jsx";
+import {
+  buildOptimizationAnnotations,
+  ComposeOptimizationReviewDialog,
+  optimizationAnnotationText,
+} from "./ComposeOptimizationReviewDialog.jsx";
+import { mailApi } from "../services/mailApi.js";
 
 const agentModeOptions = [
   { value: "auto", label: "自动" },
@@ -39,167 +50,157 @@ export function shortDraftDisplayId(value) {
   return `#${(hash >>> 0).toString(16).toUpperCase().padStart(8, "0")}`;
 }
 
-function normalizeBody(body) {
-  return String(body || "")
-    .replace(/\r\n/g, "\n")
-    .replace(/[ \t]+\n/g, "\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-}
-
-function mockOptimizeDraft(value, instruction) {
-  const prompt = instruction.trim();
-  const concise = /简洁|精简|缩短|简短/.test(prompt);
-  let body = normalizeBody(value.body_text);
-
-  if (concise) {
-    body = body
-      .split("\n")
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .join("\n\n");
-  } else if (body) {
-    if (!/^(您好|你好|尊敬的)/.test(body)) body = `您好，\n\n${body}`;
-    if (!/(谢谢|感谢|祝好|此致)[！。!]?$/u.test(body)) {
-      body = `${body}\n\n感谢您的时间，期待您的回复。`;
-    }
-  }
-
-  return {
-    subject: String(value.subject || "").replace(/\s+/g, " ").trim(),
-    body_text: body,
-    format: {
-      stationery: "none",
-      send_stationery: false,
-      ...(value.format || {}),
-      body_html: null,
-    },
-  };
-}
-
 function editableDraftFingerprint(value) {
   return JSON.stringify({
+    to: value?.to || [],
+    cc: value?.cc || [],
+    bcc: value?.bcc || [],
     subject: value?.subject || "",
     body_text: value?.body_text || "",
     body_html: value?.format?.body_html || null,
+    stationery: value?.format?.stationery || "none",
+    send_stationery: Boolean(value?.format?.send_stationery),
   });
 }
 
-function mockGeneratedDraft(request, current) {
-  const brief = request.trim().replace(/\s+/g, " ");
-  const shortBrief = brief.length > 30 ? `${brief.slice(0, 30)}…` : brief;
+export function createAiDraftRevision() {
+  if (typeof globalThis.crypto?.randomUUID === "function") {
+    return globalThis.crypto.randomUUID();
+  }
+  return `ai-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+}
+
+function copyFormat(format) {
+  return { ...(format || {}) };
+}
+
+function applyAiDraft(current, generated) {
   return {
     ...current,
-    subject:
-      String(current.subject || "").trim() ||
-      `关于${shortBrief || "相关事项"}的确认`,
-    body_text: [
-      "您好，",
-      "",
-      `想就${brief || "相关事项"}与您确认一下。烦请您在方便时告知具体安排，如有需要我补充的信息，也请随时告诉我。`,
-      "",
-      "感谢您的时间，期待您的回复。",
-    ].join("\n"),
+    to: generated.to,
+    cc: generated.cc,
+    bcc: generated.bcc,
+    subject: generated.subject,
+    body_text: generated.body_text,
     format: {
-      stationery: "none",
-      send_stationery: false,
       ...(current.format || {}),
-      body_html: null,
+      ...(generated.format || {}),
     },
   };
 }
 
-function createInitialSessions(currentDraft) {
-  return [
-    {
-      id: "session-delivery-follow-up",
-      title: "确认项目交付时间",
-      summary: "整理一封更清晰、语气更自然的项目跟进邮件",
-      lastActive: "刚刚",
-      drafts: currentDraft ? [currentDraft] : [],
-      messages: [
-        {
-          id: "message-delivery-user",
-          role: "user",
-          content: "帮我把这封项目交付确认邮件写得更清楚一些。",
-        },
-        {
-          id: "message-delivery-agent",
-          role: "assistant",
-          content: "已读取当前草稿，并整理了主题和正文。你可以继续告诉我希望调整的语气。",
-        },
-      ],
+function recordPatchOutcome(result, aiDraft, outcome) {
+  if (!result?.request_id || !aiDraft?.account_id) return;
+  void mailApi
+    .recordAiPatchOutcome({
+      requestId: result.request_id,
+      accountId: aiDraft.account_id,
+      draftId: aiDraft.draft_id,
+      outcome,
+      changedFields: result.changed_fields || [],
+    })
+    .catch(() => undefined);
+}
+
+function useOptimizationCacheState(cacheRef, key, initialValue) {
+  const [value, setValue] = useState(() => {
+    if (Object.prototype.hasOwnProperty.call(cacheRef.current, key)) {
+      return cacheRef.current[key];
+    }
+    const resolved =
+      typeof initialValue === "function" ? initialValue() : initialValue;
+    cacheRef.current[key] = resolved;
+    return resolved;
+  });
+  const setCachedValue = useCallback(
+    (nextValue) => {
+      const resolved =
+        typeof nextValue === "function"
+          ? nextValue(cacheRef.current[key])
+          : nextValue;
+      cacheRef.current[key] = resolved;
+      setValue(resolved);
     },
-    {
-      id: "session-meeting-reply",
-      title: "回复下周会议邀请",
-      summary: "确认参会时间，并询问会议议程",
-      lastActive: "2 小时前",
-      drafts: [],
-      messages: [
-        {
-          id: "message-meeting-user",
-          role: "user",
-          content: "我会参加下周的会议，帮我想一下还需要确认什么。",
-        },
-        {
-          id: "message-meeting-agent",
-          role: "assistant",
-          content: "可以确认具体时间、会议形式、参会人员和需要提前准备的材料。",
-        },
-      ],
-    },
-    {
-      id: "session-customer-thanks",
-      title: "客户感谢信",
-      summary: "讨论感谢信的内容和正式程度",
-      lastActive: "昨天",
-      drafts: [],
-      messages: [
-        {
-          id: "message-thanks-user",
-          role: "user",
-          content: "感谢客户这次的配合，语气不要太客套。",
-        },
-        {
-          id: "message-thanks-agent",
-          role: "assistant",
-          content: "可以直接说明对方在哪些环节提供了帮助，再用一句简短的后续期待收尾。",
-        },
-      ],
-    },
-  ];
-}
-
-function sessionTitleFromInput(value) {
-  const normalized = value.trim().replace(/\s+/g, " ");
-  if (normalized.length <= 18) return normalized;
-  return `${normalized.slice(0, 18)}…`;
-}
-
-function shouldAutoWrite(value) {
-  return /写|生成|回复|填入|改写|起草|优化|润色/.test(value);
-}
-
-function agentReplyFor(mode, didWrite) {
-  if (didWrite) return "已生成并填入当前草稿。你可以继续提出修改要求。";
-  if (mode === "chat") {
-    return "我会保持只读。当前草稿的主题和正文已经可以作为后续讨论的上下文。";
-  }
-  return "我已经结合当前草稿理解了你的要求，可以继续补充对象、语气或篇幅。";
-}
-
-export function ComposeOptimizeControl({ disabled, onApply, value }) {
-  const rootRef = useRef(null);
-  const previousDraftRef = useRef(null);
-  const appliedDraftFingerprintRef = useRef(null);
-  const awaitingAppliedValueRef = useRef(false);
-  const [promptOpen, setPromptOpen] = useState(false);
-  const [instruction, setInstruction] = useState("");
-  const [status, setStatus] = useState("idle");
-  const hasContent = Boolean(
-    String(value.subject || "").trim() || String(value.body_text || "").trim(),
+    [cacheRef, key],
   );
+  return [value, setCachedValue];
+}
+
+export function ComposeOptimizeControl({
+  aiDraft,
+  cacheRef: providedCacheRef,
+  disabled,
+  onApply,
+  value,
+}) {
+  const rootRef = useRef(null);
+  const optimizeButtonRef = useRef(null);
+  const latestValueRef = useRef(value);
+  const localCacheRef = useRef({});
+  const cacheRef = providedCacheRef || localCacheRef;
+  const [promptOpen, setPromptOpen] = useOptimizationCacheState(
+    cacheRef,
+    "promptOpen",
+    false,
+  );
+  const [instruction, setInstruction] = useOptimizationCacheState(
+    cacheRef,
+    "instruction",
+    "",
+  );
+  const [status, setStatus] = useOptimizationCacheState(
+    cacheRef,
+    "status",
+    "idle",
+  );
+  const [errorMessage, setErrorMessage] = useOptimizationCacheState(
+    cacheRef,
+    "errorMessage",
+    "",
+  );
+  const [reviewResult, setReviewResult] = useOptimizationCacheState(
+    cacheRef,
+    "reviewResult",
+    null,
+  );
+  const [reviewOpen, setReviewOpen] = useOptimizationCacheState(
+    cacheRef,
+    "reviewOpen",
+    false,
+  );
+  const [leftAnnotations, setLeftAnnotations] = useOptimizationCacheState(
+    cacheRef,
+    "leftAnnotations",
+    [],
+  );
+  const [rightAnnotations, setRightAnnotations] = useOptimizationCacheState(
+    cacheRef,
+    "rightAnnotations",
+    [],
+  );
+  const [leftEdited, setLeftEdited] = useOptimizationCacheState(
+    cacheRef,
+    "leftEdited",
+    false,
+  );
+  const [rightEdited, setRightEdited] = useOptimizationCacheState(
+    cacheRef,
+    "rightEdited",
+    false,
+  );
+  const [confirmation, setConfirmation] = useOptimizationCacheState(
+    cacheRef,
+    "confirmation",
+    null,
+  );
+  const [undoBackup, setUndoBackup] = useOptimizationCacheState(
+    cacheRef,
+    "undoBackup",
+    null,
+  );
+  const hasContent = Boolean(String(value.body_text || "").trim());
+
+  latestValueRef.current = value;
 
   useEffect(() => {
     if (!promptOpen) return undefined;
@@ -210,57 +211,118 @@ export function ComposeOptimizeControl({ disabled, onApply, value }) {
     return () => document.removeEventListener("pointerdown", closeOnOutsidePointer);
   }, [promptOpen]);
 
-  useEffect(() => {
-    if (status !== "applied" || !appliedDraftFingerprintRef.current) return;
-    const currentFingerprint = editableDraftFingerprint(value);
-    if (awaitingAppliedValueRef.current) {
-      if (currentFingerprint === appliedDraftFingerprintRef.current) {
-        awaitingAppliedValueRef.current = false;
-      }
+  const optimize = async () => {
+    if (reviewResult) {
+      setReviewOpen(true);
       return;
     }
-    if (currentFingerprint !== appliedDraftFingerprintRef.current) {
-      previousDraftRef.current = null;
-      appliedDraftFingerprintRef.current = null;
+    if (disabled || !hasContent || status === "running" || !aiDraft) return;
+    const submitted = {
+      body_text: value.body_text || "",
+      format: copyFormat(value.format),
+    };
+    setErrorMessage("");
+    setStatus("running");
+    try {
+      const result = await mailApi.runAiTurn({
+        mode: "optimize",
+        instruction: instruction.trim() || "优化当前邮件正文",
+        session_id: null,
+        draft_revision: createAiDraftRevision(),
+        draft: { ...aiDraft, compose: value },
+      });
+      const optimized = {
+        body_text: result.draft?.body_text ?? submitted.body_text,
+        format: copyFormat(result.draft?.format || submitted.format),
+      };
+      const annotations = buildOptimizationAnnotations(
+        submitted.body_text,
+        optimized.body_text,
+      );
+      setReviewResult({ result, submitted, optimized });
+      setLeftAnnotations(annotations.left);
+      setRightAnnotations(annotations.right);
+      setLeftEdited(false);
+      setRightEdited(false);
+      setStatus("ready");
+    } catch (error) {
+      setErrorMessage(error?.message || "邮件优化没有完成，请重试");
       setStatus("idle");
     }
-  }, [status, value]);
-
-  const optimize = () => {
-    if (disabled || !hasContent) return;
-    previousDraftRef.current = {
-      subject: value.subject,
-      body_text: value.body_text,
-      format: value.format,
-    };
-    const optimized = mockOptimizeDraft(value, instruction);
-    appliedDraftFingerprintRef.current = editableDraftFingerprint(optimized);
-    awaitingAppliedValueRef.current = true;
-    onApply((current) => ({ ...current, ...optimized }));
-    setPromptOpen(false);
-    setStatus("applied");
   };
 
   const undo = () => {
-    const previous = previousDraftRef.current;
-    if (!previous) return;
-    onApply((current) => ({ ...current, ...previous }));
-    previousDraftRef.current = null;
-    appliedDraftFingerprintRef.current = null;
-    awaitingAppliedValueRef.current = false;
-    setStatus("undone");
+    if (!undoBackup) return;
+    onApply((current) => ({
+      ...current,
+      body_text: undoBackup.body_text,
+      format: copyFormat(undoBackup.format),
+    }));
+    setUndoBackup(null);
+  };
+
+  const clearReview = (outcome) => {
+    if (reviewResult) recordPatchOutcome(reviewResult.result, aiDraft, outcome);
+    setReviewResult(null);
+    setReviewOpen(false);
+    setLeftAnnotations([]);
+    setRightAnnotations([]);
+    setLeftEdited(false);
+    setRightEdited(false);
+    setConfirmation(null);
+    setStatus("idle");
+  };
+
+  const applyReview = (side) => {
+    if (!reviewResult) return;
+    const useLeft = side === "left";
+    const selectedText = optimizationAnnotationText(
+      useLeft ? leftAnnotations : rightAnnotations,
+    );
+    const selectedFormat = copyFormat(
+      useLeft ? reviewResult.submitted.format : reviewResult.optimized.format,
+    );
+    const wasEdited = useLeft ? leftEdited : rightEdited;
+    const live = latestValueRef.current;
+    setUndoBackup({
+      body_text: live.body_text || "",
+      format: copyFormat(live.format),
+    });
+    onApply((current) => ({
+      ...current,
+      body_text: selectedText,
+      format: {
+        ...(current.format || {}),
+        ...selectedFormat,
+        ...(wasEdited ? { body_html: null } : {}),
+      },
+    }));
+    clearReview("applied");
   };
 
   return (
     <div ref={rootRef} className="compose-optimize-control">
-      <div className="compose-optimize-split" data-prompt-open={promptOpen}>
+      <div
+        className="compose-optimize-split"
+        data-prompt-open={promptOpen}
+        data-result-ready={Boolean(reviewResult) || undefined}
+      >
         <IconButton
+          ref={optimizeButtonRef}
           className="compose-optimize-split__action"
-          label="优化当前邮件"
-          disabled={disabled || !hasContent}
-          onClick={optimize}
+          label={reviewResult ? "查看优化结果" : "优化当前邮件"}
+          disabled={
+            status === "running" ||
+            (!reviewResult && (disabled || !hasContent || !aiDraft))
+          }
+          aria-busy={status === "running"}
+          onClick={() => void optimize()}
         >
-          <MagicWand size={17} weight="fill" />
+          {status === "running" ? (
+            <SpinnerGap className="compose-optimize-spinner" size={17} weight="bold" />
+          ) : (
+            <MagicWand size={17} weight="fill" />
+          )}
         </IconButton>
         <IconButton
           className="compose-optimize-split__prompt"
@@ -300,7 +362,7 @@ export function ComposeOptimizeControl({ disabled, onApply, value }) {
               }
               if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
                 event.preventDefault();
-                optimize();
+                void optimize();
               }
             }}
           />
@@ -308,12 +370,67 @@ export function ComposeOptimizeControl({ disabled, onApply, value }) {
         </div>
       ) : null}
 
-      {status === "applied" ? (
-        <button className="compose-optimize-undo" type="button" onClick={undo}>
-          <ArrowCounterClockwise size={14} weight="bold" />
-          撤销优化
-        </button>
+      <IconButton
+        className="compose-optimize-undo"
+        label="回退上次优化"
+        disabled={disabled || !undoBackup}
+        onClick={undo}
+      >
+        <ArrowCounterClockwise size={16} weight="bold" />
+      </IconButton>
+      {errorMessage ? (
+        <small className="compose-ai-inline-error" role="status">
+          {errorMessage}
+        </small>
       ) : null}
+
+      {createPortal(
+        <>
+          <ComposeOptimizationReviewDialog
+            open={reviewOpen && Boolean(reviewResult) && !confirmation}
+            leftAnnotations={leftAnnotations}
+            rightAnnotations={rightAnnotations}
+            returnFocusRef={optimizeButtonRef}
+            onChangeLeft={(annotations) => {
+              setLeftAnnotations(annotations);
+              setLeftEdited(true);
+            }}
+            onChangeRight={(annotations) => {
+              setRightAnnotations(annotations);
+              setRightEdited(true);
+            }}
+            onChoose={(side) => setConfirmation({ type: "apply", side })}
+            onMinimize={() => setReviewOpen(false)}
+            onClose={() => setConfirmation({ type: "close" })}
+          />
+
+          <ConsequentialConfirmDialog
+            open={confirmation?.type === "apply"}
+            title="应用优化结果？"
+            description={`您确认选用${confirmation?.side === "left" ? "左侧" : "右侧"}的结果吗？`}
+            icon={<CheckCircle size={23} weight="duotone" />}
+            confirmLabel="确认应用"
+            closeLabel="取消应用优化结果"
+            returnFocusRef={optimizeButtonRef}
+            onCancel={() => setConfirmation(null)}
+            onConfirm={() => applyReview(confirmation.side)}
+          />
+
+          <ConsequentialConfirmDialog
+            open={confirmation?.type === "close"}
+            title="关闭优化结果？"
+            description="确认关闭此次优化结果吗？关闭后将无法再次查看或应用。"
+            icon={<Trash size={23} weight="duotone" />}
+            tone="danger"
+            confirmLabel="确认关闭"
+            closeLabel="取消关闭优化结果"
+            returnFocusRef={optimizeButtonRef}
+            onCancel={() => setConfirmation(null)}
+            onConfirm={() => clearReview("rejected")}
+          />
+        </>,
+        document.body,
+      )}
     </div>
   );
 }
@@ -389,6 +506,7 @@ function Conversation({ session }) {
 }
 
 export function ComposeAiAssistant({
+  aiDraft,
   currentDraft,
   disabled,
   onApplyDraft,
@@ -398,10 +516,17 @@ export function ComposeAiAssistant({
   value,
 }) {
   const inputRef = useRef(null);
-  const [sessions, setSessions] = useState(() => createInitialSessions(currentDraft));
+  const latestValueRef = useRef(value);
+  const [sessions, setSessions] = useState([]);
   const [activeSessionId, setActiveSessionId] = useState(null);
   const [mode, setMode] = useState("auto");
   const [input, setInput] = useState("");
+  const [isLoadingSessions, setIsLoadingSessions] = useState(true);
+  const [isLoadingActiveSession, setIsLoadingActiveSession] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [activityLabel, setActivityLabel] = useState("");
+  const [errorMessage, setErrorMessage] = useState("");
+  latestValueRef.current = value;
   const availableModeOptions = useMemo(
     () =>
       agentModeOptions.map((option) => ({
@@ -414,6 +539,27 @@ export function ComposeAiAssistant({
     () => sessions.find((session) => session.id === activeSessionId) || null,
     [activeSessionId, sessions],
   );
+
+  useEffect(() => {
+    let cancelled = false;
+    setIsLoadingSessions(true);
+    mailApi
+      .listAiSessions()
+      .then((items) => {
+        if (!cancelled) setSessions(items);
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setErrorMessage(error?.message || "AI 会话读取没有完成");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoadingSessions(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (!currentDraft) return;
@@ -431,58 +577,80 @@ export function ComposeAiAssistant({
     if (readOnly && mode !== "chat") setMode("chat");
   }, [mode, readOnly]);
 
-  const addDraftBinding = (drafts) => {
-    if (!currentDraft || drafts.some((draft) => draft.id === currentDraft.id)) return drafts;
-    return [...drafts, currentDraft];
+  const openSession = async (sessionId) => {
+    setActiveSessionId(sessionId);
+    setErrorMessage("");
+    const existing = sessions.find(
+      (session) => session.id === sessionId && session.loaded,
+    );
+    if (existing) return;
+    setIsLoadingActiveSession(true);
+    try {
+      const detail = await mailApi.getAiSession(sessionId);
+      setSessions((current) =>
+        current.map((session) => (session.id === detail.id ? detail : session)),
+      );
+    } catch (error) {
+      setErrorMessage(error?.message || "AI 会话读取没有完成");
+    } finally {
+      setIsLoadingActiveSession(false);
+    }
   };
 
-  const submit = () => {
+  const submit = async () => {
     const request = input.trim();
-    if (!request || disabled) return;
-    const didWrite =
-      !readOnly &&
-      (mode === "generate" || (mode === "auto" && shouldAutoWrite(request)));
-    if (didWrite) onApplyDraft((current) => mockGeneratedDraft(request, current));
-
-    const userMessage = {
-      id: `user-${Date.now()}`,
-      role: "user",
-      content: request,
-    };
-    const assistantMessage = {
-      id: `assistant-${Date.now()}`,
-      role: "assistant",
-      content: agentReplyFor(mode, didWrite),
-    };
-
-    if (!activeSession) {
-      const id = `session-${Date.now()}`;
-      const session = {
-        id,
-        title: sessionTitleFromInput(request),
-        summary: request,
-        lastActive: "刚刚",
-        drafts: addDraftBinding([]),
-        messages: [userMessage, assistantMessage],
-      };
-      setSessions((current) => [session, ...current]);
-      setActiveSessionId(id);
-    } else {
-      setSessions((current) =>
-        current.map((session) =>
-          session.id === activeSession.id
-            ? {
-                ...session,
-                summary: request,
-                lastActive: "刚刚",
-                drafts: addDraftBinding(session.drafts),
-                messages: [...session.messages, userMessage, assistantMessage],
-              }
-            : session,
-        ),
+    if (
+      !request ||
+      disabled ||
+      isSubmitting ||
+      isLoadingSessions ||
+      isLoadingActiveSession ||
+      !aiDraft
+    ) return;
+    const baseFingerprint = editableDraftFingerprint(value);
+    setIsSubmitting(true);
+    setActivityLabel("正在连接 AI…");
+    setErrorMessage("");
+    try {
+      const result = await mailApi.runAiTurn(
+        {
+          mode,
+          instruction: request,
+          session_id: activeSession?.id || null,
+          draft_revision: createAiDraftRevision(),
+          draft: { ...aiDraft, compose: value },
+        },
+        (event) => {
+          if (event?.type === "tool_started") {
+            setActivityLabel("正在读取或更新草稿…");
+          } else if (event?.type === "content_delta") {
+            setActivityLabel("正在整理回答…");
+          }
+        },
       );
+      if (result.draft) {
+        if (editableDraftFingerprint(latestValueRef.current) !== baseFingerprint) {
+          recordPatchOutcome(result, aiDraft, "rejected");
+          setErrorMessage("草稿在 AI 处理过程中发生了变化，生成结果未应用");
+        } else {
+          onApplyDraft((current) => applyAiDraft(current, result.draft));
+          recordPatchOutcome(result, aiDraft, "applied");
+        }
+      }
+      if (result.session) {
+        setSessions((current) => [
+          result.session,
+          ...current.filter((session) => session.id !== result.session.id),
+        ]);
+        setActiveSessionId(result.session.id);
+      }
+      setInput("");
+    } catch (error) {
+      setErrorMessage(error?.message || "AI 请求没有完成，请重试");
+    } finally {
+      setIsSubmitting(false);
+      setActivityLabel("");
     }
-    setInput("");
   };
 
   return (
@@ -516,8 +684,23 @@ export function ComposeAiAssistant({
           <Conversation session={activeSession} />
         </>
       ) : (
-        <SessionList sessions={sessions} onOpenSession={setActiveSessionId} />
+        <SessionList sessions={sessions} onOpenSession={(id) => void openSession(id)} />
       )}
+
+      {isLoadingSessions && !activeSession ? (
+        <p className="compose-ai-status" role="status">正在读取会话…</p>
+      ) : null}
+      {isLoadingActiveSession ? (
+        <p className="compose-ai-status" role="status">正在读取会话内容…</p>
+      ) : null}
+      {activityLabel ? (
+        <p className="compose-ai-status" role="status">{activityLabel}</p>
+      ) : null}
+      {errorMessage ? (
+        <p className="compose-ai-status compose-ai-status--error" role="status">
+          {errorMessage}
+        </p>
+      ) : null}
 
       <div className="compose-ai-composer">
         <textarea
@@ -525,13 +708,19 @@ export function ComposeAiAssistant({
           aria-label="向 AI 助理发送消息"
           rows={3}
           value={input}
-          disabled={disabled}
+          disabled={
+            disabled ||
+            isSubmitting ||
+            isLoadingSessions ||
+            isLoadingActiveSession ||
+            !aiDraft
+          }
           placeholder={agentModePlaceholders[mode]}
           onChange={(event) => setInput(event.target.value)}
           onKeyDown={(event) => {
             if (event.key === "Enter" && !event.shiftKey) {
               event.preventDefault();
-              submit();
+              void submit();
             }
           }}
         />
@@ -541,15 +730,29 @@ export function ComposeAiAssistant({
             label="选择 Agent 模式"
             value={mode}
             options={availableModeOptions}
-            disabled={disabled}
+            disabled={
+              disabled ||
+              isSubmitting ||
+              isLoadingSessions ||
+              isLoadingActiveSession ||
+              !aiDraft
+            }
             className="compose-ai-mode-select"
             onValueChange={setMode}
           />
           <IconButton
             className="compose-ai-send"
             label="发送给 AI 助理"
-            disabled={disabled || !input.trim()}
-            onClick={submit}
+            disabled={
+              disabled ||
+              isSubmitting ||
+              isLoadingSessions ||
+              isLoadingActiveSession ||
+              !input.trim() ||
+              !aiDraft
+            }
+            aria-busy={isSubmitting}
+            onClick={() => void submit()}
           >
             <PaperPlaneRight size={17} weight="fill" />
           </IconButton>

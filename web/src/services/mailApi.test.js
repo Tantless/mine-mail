@@ -6,7 +6,12 @@ const ipc = vi.hoisted(() => ({
 }));
 const OPAQUE_MESSAGE_ID = "9f1a7b32-4b55-4d6d-8db7-0e7bf1a32c41";
 
-vi.mock("@tauri-apps/api/core", () => ({ invoke: ipc.invoke }));
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: ipc.invoke,
+  Channel: class MockChannel {
+    onmessage = null;
+  },
+}));
 vi.mock("@tauri-apps/api/event", () => ({ listen: ipc.listen }));
 
 describe("mailApi desktop IPC contract", () => {
@@ -53,6 +58,145 @@ describe("mailApi desktop IPC contract", () => {
       draftId: "draft-7",
       expectedLocalVersion: 8,
       confirmedRecipients: ["friend@example.com"],
+    });
+  });
+
+  it("keeps AI provider access behind one typed desktop command", async () => {
+    ipc.invoke.mockResolvedValue({
+      session: null,
+      assistant_message: "已完成",
+      draft_revision: "revision-1",
+      draft: null,
+      changed_fields: [],
+    });
+    const { mailApi } = await import("./mailApi.js");
+    const request = {
+      mode: "chat",
+      instruction: "概括当前草稿",
+      session_id: null,
+      draft_revision: "revision-1",
+      draft: {
+        account_id: "account-1",
+        draft_id: null,
+        local_version: null,
+        compose: {
+          to: [],
+          cc: [],
+          bcc: [],
+          subject: "",
+          body_text: "",
+          format: {},
+          reply_context: null,
+        },
+        attachments: [],
+        forward_context: null,
+      },
+    };
+
+    await mailApi.runAiTurn(request, vi.fn());
+
+    expect(ipc.invoke).toHaveBeenCalledWith("run_ai_turn", {
+      request,
+      onEvent: expect.objectContaining({ onmessage: expect.any(Function) }),
+    });
+  });
+
+  it("maps Agent configuration through narrow desktop commands", async () => {
+    ipc.invoke
+      .mockResolvedValueOnce({
+        providerId: "deepseek",
+        baseUrl: "https://api.deepseek.com",
+        modelName: "deepseek-v4-pro",
+        useEnvironmentKey: false,
+        hasStoredApiKey: true,
+        hasEnvironmentApiKey: false,
+        environmentVariable: "DEEPSEEK_API_KEY",
+        translationLanguage: "zh-Hans",
+        translationLanguages: [
+          { id: "zh-Hans", label: "中文（简体）" },
+          { id: "en", label: "English" },
+        ],
+        presets: [{
+          id: "deepseek",
+          label: "DeepSeek",
+          base_url: "https://api.deepseek.com",
+          environment_variable: "DEEPSEEK_API_KEY",
+          models: ["deepseek-v4-flash", "deepseek-v4-pro"],
+        }],
+      })
+      .mockResolvedValueOnce({ models: ["deepseek-v4-pro"] })
+      .mockResolvedValueOnce({ latencyMs: 73 })
+      .mockResolvedValueOnce({
+        providerId: "deepseek",
+        baseUrl: "https://api.deepseek.com",
+        modelName: "deepseek-v4-pro",
+        useEnvironmentKey: false,
+        hasStoredApiKey: true,
+        hasEnvironmentApiKey: false,
+        environmentVariable: "DEEPSEEK_API_KEY",
+        translationLanguage: "en",
+        translationLanguages: [],
+        presets: [],
+      });
+    const { mailApi } = await import("./mailApi.js");
+    const configuration = {
+      providerId: "deepseek",
+      baseUrl: "https://api.deepseek.com",
+      modelName: "deepseek-v4-pro",
+      useEnvironmentKey: false,
+      apiKey: "test-secret",
+      translationLanguage: "en",
+    };
+    const { translationLanguage: _translationLanguage, ...connectionConfiguration } =
+      configuration;
+
+    const loaded = await mailApi.getAiConfig();
+    expect(loaded.hasStoredApiKey).toBe(true);
+    expect(loaded.presets[0].models).toEqual([
+      "deepseek-v4-flash",
+      "deepseek-v4-pro",
+    ]);
+    expect(loaded.translationLanguages).toEqual([
+      { value: "zh-Hans", label: "中文（简体）" },
+      { value: "en", label: "English" },
+    ]);
+    expect(await mailApi.listAiModels(configuration)).toEqual([
+      "deepseek-v4-pro",
+    ]);
+    expect(await mailApi.testAiConnection(configuration)).toEqual({
+      latencyMs: 73,
+    });
+    const saved = await mailApi.saveAiConfig(configuration);
+    expect(saved).not.toHaveProperty("apiKey");
+
+    expect(ipc.invoke).toHaveBeenNthCalledWith(1, "get_ai_config", undefined);
+    expect(ipc.invoke).toHaveBeenNthCalledWith(2, "list_ai_models", {
+      request: connectionConfiguration,
+    });
+    expect(ipc.invoke).toHaveBeenNthCalledWith(3, "test_ai_connection", {
+      request: connectionConfiguration,
+    });
+    expect(ipc.invoke).toHaveBeenNthCalledWith(4, "save_ai_config", {
+      request: configuration,
+    });
+  });
+
+  it("sends only bounded render parts through the AI translation command", async () => {
+    ipc.invoke.mockResolvedValue({
+      language: "zh-Hans",
+      parts: [{ id: "body-html", content: "<p>你好</p>" }],
+    });
+    const { mailApi } = await import("./mailApi.js");
+    const parts = [
+      { id: "body-html", format: "html", content: "<p>Hello</p>" },
+    ];
+
+    await expect(mailApi.translateMailContent(parts)).resolves.toEqual({
+      language: "zh-Hans",
+      parts: [{ id: "body-html", content: "<p>你好</p>" }],
+    });
+    expect(ipc.invoke).toHaveBeenCalledWith("translate_mail_content", {
+      request: { parts },
     });
   });
 

@@ -13,6 +13,7 @@ import {
   NotePencil,
   Plus,
   Question,
+  Robot,
   SlidersHorizontal,
   StopCircle,
   Trash,
@@ -21,12 +22,14 @@ import {
 } from "@phosphor-icons/react";
 import { appStorageApi } from "../services/appStorage.js";
 import { appUpdateApi } from "../services/appUpdate.js";
+import { mailApi } from "../services/mailApi.js";
 import {
   displayAppVersion,
   useAppUpdate,
 } from "../hooks/useAppUpdate.js";
 import { AccountRemovalDialog } from "./AccountRemovalDialog.jsx";
 import { AccountSetupForm } from "./AccountSetup.jsx";
+import { AgentSettings } from "./AgentSettings.jsx";
 import { AuthorizationGuide } from "./AuthorizationGuide.jsx";
 import { BrandLogo } from "./BrandLogo.jsx";
 import {
@@ -75,6 +78,11 @@ const menuItems = [
     id: "features",
     label: "功能设定",
     icon: SlidersHorizontal,
+  },
+  {
+    id: "agent",
+    label: "Agent 配置",
+    icon: Robot,
   },
   {
     id: "version",
@@ -314,6 +322,7 @@ export function SettingsPanel({
   updateClient = appUpdateApi,
   appUpdateController = null,
   storageClient = appStorageApi,
+  agentClient = mailApi,
 }) {
   const ownedAppUpdateController = useAppUpdate(updateClient, {
     enabled: !appUpdateController,
@@ -1461,6 +1470,10 @@ export function SettingsPanel({
                 </div>
               </div>
             </section>
+          ) : null}
+
+          {activeSection === "agent" ? (
+            <AgentSettings client={agentClient} />
           ) : null}
 
           {activeSection === "version" ? (

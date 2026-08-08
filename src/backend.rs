@@ -58,10 +58,10 @@ use crate::{
     },
     models::{
         AttachmentDisposition, AttachmentMeta, AttachmentSaveErrorKind, AttachmentSaveResult,
-        AttachmentSaveStatus, DraftAttachmentMutationKind, DraftAttachmentMutationOutcome,
-        DraftDto, DraftSyncReport, ForwardContext, ForwardPreparationError,
-        ForwardPreparationErrorKind, ForwardPreparationOutcome, ForwardQuotedRenderMode,
-        ForwardWarning, MailboxCapability, MailboxCapabilityStatus,
+        AttachmentSaveStatus, DraftAttachmentMeta, DraftAttachmentMutationKind,
+        DraftAttachmentMutationOutcome, DraftDto, DraftSyncReport, ForwardContext,
+        ForwardPreparationError, ForwardPreparationErrorKind, ForwardPreparationOutcome,
+        ForwardQuotedRenderMode, ForwardWarning, MailboxCapability, MailboxCapabilityStatus,
         MailboxCapabilityUnavailableReason, MessageActionKind, MessageMutationErrorKind,
         MessageMutationReceipt, MessagePage, MessagePageCursor, MutationStatus, PreparedForward,
         RemoteHistoryState, RemoteMutationPhase, SystemFlagKind, SystemFlagMutationReceipt,
@@ -5017,6 +5017,57 @@ impl MailBackend {
         })
     }
 
+    /// Reads one immutable attachment from one exact, current draft version.
+    ///
+    /// The opaque attachment ID is resolved entirely inside Rust. Callers
+    /// receive bytes rather than a managed-store path, and must provide a
+    /// purpose-specific byte limit before any file is opened.
+    pub fn read_draft_attachment_bytes(
+        &self,
+        draft_id: &str,
+        expected_local_version: u64,
+        attachment_id: &str,
+        max_bytes: u64,
+    ) -> Result<(DraftAttachmentMeta, Vec<u8>)> {
+        if max_bytes == 0 {
+            return Err(MailError::Validation(
+                "the draft attachment read limit must be positive".to_owned(),
+            ));
+        }
+        let record = self.repository.get_draft_record(draft_id)?;
+        if record.draft.account_id != self.config.account_id
+            || record.local_version != expected_local_version
+        {
+            return Err(MailError::NotFound {
+                entity: "draft version",
+                id: draft_id.to_owned(),
+            });
+        }
+        let attachment = self
+            .managed_draft_attachments(&record)?
+            .into_iter()
+            .find(|attachment| attachment.meta.id == attachment_id)
+            .ok_or_else(|| MailError::NotFound {
+                entity: "draft attachment",
+                id: attachment_id.to_owned(),
+            })?;
+        if attachment.meta.size_bytes > max_bytes {
+            return Err(MailError::Validation(
+                "the draft attachment exceeds the requested read limit".to_owned(),
+            ));
+        }
+        let meta = attachment.meta.clone();
+        let mut mime_attachments = self.read_managed_mime_attachments(&[attachment])?;
+        let bytes = mime_attachments
+            .pop()
+            .ok_or_else(|| MailError::NotFound {
+                entity: "draft attachment",
+                id: attachment_id.to_owned(),
+            })?
+            .bytes;
+        Ok((meta, bytes))
+    }
+
     /// Imports platform-selected paths into immutable storage and advances one
     /// exact draft version. The paths are Rust-only picker results.
     pub fn add_draft_attachments(
@@ -8969,6 +9020,44 @@ mod tests {
             )
             .as_deref(),
             Some(persisted_digest.as_str())
+        );
+    }
+
+    #[test]
+    fn one_draft_attachment_can_be_read_only_by_opaque_id_exact_version_and_limit() {
+        let directory = tempdir().expect("tempdir");
+        let selected_directory = tempdir().expect("selected file");
+        let selected = selected_directory.path().join("notes.txt");
+        fs::write(&selected, b"bounded text attachment").expect("selected attachment");
+        let backend = MailBackend::open(
+            scoped_account_config("ai-attachment", "ai@example.com"),
+            directory.path().join("mail.db"),
+        )
+        .expect("backend");
+        backend.initialize().expect("initialize");
+        let draft = backend
+            .save_draft(compose("attachment", "body"))
+            .expect("draft");
+        let attached = backend
+            .add_draft_attachments(&draft.id, draft.local_version, &[selected])
+            .expect("attachment")
+            .draft;
+        let meta = attached.attachments.first().expect("metadata");
+
+        let (read_meta, bytes) = backend
+            .read_draft_attachment_bytes(&draft.id, attached.draft.local_version, &meta.id, 64)
+            .expect("bounded read");
+        assert_eq!(read_meta, *meta);
+        assert_eq!(bytes, b"bounded text attachment");
+        assert!(
+            backend
+                .read_draft_attachment_bytes(&draft.id, attached.draft.local_version, &meta.id, 4,)
+                .is_err()
+        );
+        assert!(
+            backend
+                .read_draft_attachment_bytes(&draft.id, draft.local_version, &meta.id, 64)
+                .is_err()
         );
     }
 
