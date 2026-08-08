@@ -15,6 +15,8 @@ const settings = {
   pollingIntervalMinutes: 5,
   autostartEnabled: false,
   notificationsEnabled: true,
+  notificationDelivery: "mine_mail",
+  windowsNotificationsAvailable: false,
   notificationSoundEnabled: true,
   notificationSound: "mail",
   remoteImageMode: "automatic",
@@ -143,6 +145,57 @@ describe("SettingsPanel account flow", () => {
     fireEvent.keyDown(help, { key: "Escape" });
     expect(help.getAttribute("aria-expanded")).toBe("false");
     expect(tooltip.dataset.open).toBeUndefined();
+  });
+
+  it("offers Windows notification delivery only when the desktop capability is available", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn();
+    const { rerender } = render(<SettingsPanel {...panelProps({ onSave })} />);
+
+    await user.click(screen.getByRole("button", { name: "功能设定" }));
+    expect(screen.queryByRole("combobox", { name: "通知方式" })).toBeNull();
+
+    rerender(
+      <SettingsPanel
+        {...panelProps({
+          onSave,
+          settings: {
+            ...settings,
+            windowsNotificationsAvailable: true,
+          },
+        })}
+      />,
+    );
+
+    const delivery = await screen.findByRole("combobox", { name: "通知方式" });
+    expect(delivery.disabled).toBe(false);
+    await user.click(delivery);
+    await user.click(screen.getByRole("option", { name: "Windows 通知" }));
+
+    expect(onSave).toHaveBeenLastCalledWith(
+      expect.objectContaining({ notificationDelivery: "windows" }),
+    );
+    expect(screen.getByText(/进入 Windows 通知中心/)).toBeTruthy();
+  });
+
+  it("disables notification delivery selection with the desktop notification switch", async () => {
+    const user = userEvent.setup();
+    render(
+      <SettingsPanel
+        {...panelProps({
+          settings: {
+            ...settings,
+            notificationsEnabled: false,
+            windowsNotificationsAvailable: true,
+          },
+        })}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "功能设定" }));
+    expect(screen.getByRole("combobox", { name: "通知方式" }).disabled).toBe(
+      true,
+    );
   });
 
   it("requires one confirmation before enabling MCP and retains the default child permissions", async () => {

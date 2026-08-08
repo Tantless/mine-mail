@@ -86,6 +86,30 @@ impl RemoteImageMode {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
+pub(crate) enum NotificationDelivery {
+    #[default]
+    MineMail,
+    Windows,
+}
+
+impl NotificationDelivery {
+    fn as_storage_value(self) -> &'static str {
+        match self {
+            Self::MineMail => "mine_mail",
+            Self::Windows => "windows",
+        }
+    }
+
+    fn from_storage_value(value: &str) -> Self {
+        match value {
+            "windows" => Self::Windows,
+            _ => Self::MineMail,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum NotificationSound {
     Default,
     #[default]
@@ -130,6 +154,7 @@ pub(super) struct StoredDesktopSettings {
     pub background_enabled: bool,
     pub poll_interval_minutes: u8,
     pub notifications_enabled: bool,
+    pub notification_delivery: NotificationDelivery,
     pub notification_sound_enabled: bool,
     pub notification_sound: NotificationSound,
     pub remote_image_mode: RemoteImageMode,
@@ -152,6 +177,7 @@ impl Default for StoredDesktopSettings {
             background_enabled: true,
             poll_interval_minutes: DEFAULT_POLL_INTERVAL_MINUTES,
             notifications_enabled: true,
+            notification_delivery: NotificationDelivery::MineMail,
             notification_sound_enabled: true,
             notification_sound: NotificationSound::Mail,
             remote_image_mode: RemoteImageMode::Automatic,
@@ -169,6 +195,7 @@ pub(crate) struct DesktopSettingsUpdate {
     pub background_enabled: Option<bool>,
     pub poll_interval_minutes: Option<u8>,
     pub notifications_enabled: Option<bool>,
+    pub notification_delivery: Option<NotificationDelivery>,
     pub notification_sound_enabled: Option<bool>,
     pub notification_sound: Option<NotificationSound>,
     pub remote_image_mode: Option<RemoteImageMode>,
@@ -183,6 +210,8 @@ pub(crate) struct DesktopSettingsDto {
     pub background_enabled: bool,
     pub poll_interval_minutes: u8,
     pub notifications_enabled: bool,
+    pub notification_delivery: NotificationDelivery,
+    pub windows_notifications_available: bool,
     pub notification_sound_enabled: bool,
     pub notification_sound: NotificationSound,
     pub remote_image_mode: RemoteImageMode,
@@ -214,6 +243,8 @@ impl DesktopSettingsStore {
                  poll_interval_minutes INTEGER NOT NULL
                      CHECK (poll_interval_minutes IN (1, 3, 5)),
                  notifications_enabled INTEGER NOT NULL CHECK (notifications_enabled IN (0, 1)),
+                 notification_delivery TEXT NOT NULL DEFAULT 'mine_mail'
+                     CHECK (notification_delivery IN ('mine_mail', 'windows')),
                  foreground_notifications_enabled INTEGER NOT NULL DEFAULT 1
                      CHECK (foreground_notifications_enabled IN (0, 1)),
                  notification_sound_enabled INTEGER NOT NULL DEFAULT 1
@@ -332,6 +363,17 @@ impl DesktopSettingsStore {
         )?;
         if !existing_columns
             .iter()
+            .any(|column| column == "notification_delivery")
+        {
+            connection.execute(
+                "ALTER TABLE desktop_settings
+                 ADD COLUMN notification_delivery TEXT NOT NULL DEFAULT 'mine_mail'
+                     CHECK (notification_delivery IN ('mine_mail', 'windows'))",
+                [],
+            )?;
+        }
+        if !existing_columns
+            .iter()
             .any(|column| column == "notification_sound_enabled")
         {
             connection.execute(
@@ -358,10 +400,11 @@ impl DesktopSettingsStore {
     pub(super) fn load(&self) -> rusqlite::Result<StoredDesktopSettings> {
         self.connection()?.query_row(
             "SELECT background_enabled, poll_interval_minutes,
-                    notifications_enabled, notification_baseline_initialized,
-                    notification_baseline_uid, remote_image_mode,
-                    notification_sound_enabled, notification_sound,
-                    mcp_enabled, mcp_information_enabled, mcp_send_enabled
+                    notifications_enabled, notification_delivery,
+                    notification_baseline_initialized, notification_baseline_uid,
+                    remote_image_mode, notification_sound_enabled,
+                    notification_sound, mcp_enabled, mcp_information_enabled,
+                    mcp_send_enabled
              FROM desktop_settings WHERE id = 1",
             [],
             |row| {
@@ -369,18 +412,21 @@ impl DesktopSettingsStore {
                     background_enabled: row.get::<_, i64>(0)? != 0,
                     poll_interval_minutes: row.get(1)?,
                     notifications_enabled: row.get::<_, i64>(2)? != 0,
-                    notification_baseline_initialized: row.get::<_, i64>(3)? != 0,
-                    notification_baseline_uid: row.get(4)?,
+                    notification_delivery: NotificationDelivery::from_storage_value(
+                        &row.get::<_, String>(3)?,
+                    ),
+                    notification_baseline_initialized: row.get::<_, i64>(4)? != 0,
+                    notification_baseline_uid: row.get(5)?,
                     remote_image_mode: RemoteImageMode::from_storage_value(
-                        &row.get::<_, String>(5)?,
+                        &row.get::<_, String>(6)?,
                     ),
-                    notification_sound_enabled: row.get::<_, i64>(6)? != 0,
+                    notification_sound_enabled: row.get::<_, i64>(7)? != 0,
                     notification_sound: NotificationSound::from_storage_value(
-                        &row.get::<_, String>(7)?,
+                        &row.get::<_, String>(8)?,
                     ),
-                    mcp_enabled: row.get::<_, i64>(8)? != 0,
-                    mcp_information_enabled: row.get::<_, i64>(9)? != 0,
-                    mcp_send_enabled: row.get::<_, i64>(10)? != 0,
+                    mcp_enabled: row.get::<_, i64>(9)? != 0,
+                    mcp_information_enabled: row.get::<_, i64>(10)? != 0,
+                    mcp_send_enabled: row.get::<_, i64>(11)? != 0,
                 })
             },
         )
@@ -392,21 +438,23 @@ impl DesktopSettingsStore {
                  background_enabled = ?1,
                  poll_interval_minutes = ?2,
                  notifications_enabled = ?3,
-                 notification_baseline_initialized = ?4,
-                 notification_baseline_uid = ?5,
-                 remote_image_mode = ?6,
+                 notification_delivery = ?4,
+                 notification_baseline_initialized = ?5,
+                 notification_baseline_uid = ?6,
+                 remote_image_mode = ?7,
                  foreground_notifications_enabled = ?3,
-                 notification_sound_enabled = ?7,
-                 notification_sound = ?8,
-                 mcp_enabled = ?9,
-                 mcp_information_enabled = ?10,
-                 mcp_send_enabled = ?11,
+                 notification_sound_enabled = ?8,
+                 notification_sound = ?9,
+                 mcp_enabled = ?10,
+                 mcp_information_enabled = ?11,
+                 mcp_send_enabled = ?12,
                  updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
              WHERE id = 1",
             params![
                 settings.background_enabled,
                 settings.poll_interval_minutes,
                 settings.notifications_enabled,
+                settings.notification_delivery.as_storage_value(),
                 settings.notification_baseline_initialized,
                 settings.notification_baseline_uid,
                 settings.remote_image_mode.as_storage_value(),
@@ -610,8 +658,9 @@ mod tests {
     use rusqlite::Connection;
 
     use super::{
-        DeleteProfileAvatarRequest, DesktopSettingsStore, NotificationBaseline, NotificationSound,
-        ProfileAvatarOwnerType, RemoteImageMode, SaveProfileAvatarRequest, StoredDesktopSettings,
+        DeleteProfileAvatarRequest, DesktopSettingsStore, NotificationBaseline,
+        NotificationDelivery, NotificationSound, ProfileAvatarOwnerType, RemoteImageMode,
+        SaveProfileAvatarRequest, StoredDesktopSettings,
     };
 
     #[test]
@@ -668,6 +717,10 @@ mod tests {
         let defaults = store.load().expect("default settings");
         assert!(defaults.background_enabled);
         assert!(defaults.notifications_enabled);
+        assert_eq!(
+            defaults.notification_delivery,
+            NotificationDelivery::MineMail
+        );
         assert!(defaults.notification_sound_enabled);
         assert_eq!(defaults.notification_sound, NotificationSound::Mail);
         #[cfg(target_os = "windows")]
@@ -686,6 +739,7 @@ mod tests {
             background_enabled: false,
             poll_interval_minutes: 3,
             notifications_enabled: false,
+            notification_delivery: NotificationDelivery::Windows,
             notification_sound_enabled: false,
             notification_sound: NotificationSound::Reminder,
             remote_image_mode: RemoteImageMode::Blocked,
@@ -726,6 +780,10 @@ mod tests {
             RemoteImageMode::Automatic,
         );
         let migrated = store.load().expect("migrated notification settings");
+        assert_eq!(
+            migrated.notification_delivery,
+            NotificationDelivery::MineMail
+        );
         assert!(migrated.notification_sound_enabled);
         assert_eq!(migrated.notification_sound, NotificationSound::Mail);
         assert!(!migrated.mcp_enabled);
