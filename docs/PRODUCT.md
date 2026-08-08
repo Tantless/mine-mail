@@ -264,6 +264,19 @@ product decision changes.
   current edit. A failed save prevents the switch.
 - Reply/forward context is immutable and separate from the authored editor.
   Forwarded ordinary attachments are visible and removable before sending.
+- Compose exposes a dedicated optimization action for the existing subject and
+  authored body. Optional user instructions refine that operation. It never
+  changes sender, recipients, attachments, or quoted source, and one atomic
+  result can be undone while it remains the latest AI edit.
+- Conversational AI sessions belong to the Mine Mail application rather than one
+  draft. A session may associate with every editable draft it actually reads or
+  changes. The association uses the stable draft ID, appears as a subject plus
+  short display-ID pill, and is removed after that draft is sent or deleted;
+  session history remains. Selecting a pill returns to that editable draft.
+- The assistant provides **自动**、**邮件生成** and read-only **聊天** modes.
+  Optimization remains a separate high-frequency action. The current milestone
+  is an in-memory front-end preview with deterministic mock responses: it makes
+  no external AI request and does not yet persist sessions or draft associations.
 
 ## Sending and Outbox
 

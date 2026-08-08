@@ -440,6 +440,80 @@ it("routes editor body updates through the dedicated high-frequency callback", a
   expect(onChange).not.toHaveBeenCalled();
 });
 
+it("opens the optimization prompt and applies one atomic mock rewrite with undo", async () => {
+  const onChange = vi.fn();
+  const user = userEvent.setup();
+  renderCompose({ onChange });
+
+  await user.click(screen.getByRole("button", { name: "填写优化要求" }));
+  const instruction = screen.getByRole("textbox", { name: "补充优化要求" });
+  await user.type(instruction, "更正式，保留原有信息");
+  await user.click(screen.getByRole("button", { name: "优化当前邮件" }));
+
+  const optimizeUpdate = onChange.mock.calls.at(-1)[0];
+  const optimized = optimizeUpdate(baseValue);
+  expect(optimized.subject).toBe("版本化附件");
+  expect(optimized.body_text).toContain("您好");
+  expect(optimized.body_text).toContain("期待您的回复");
+  expect(screen.queryByRole("textbox", { name: "补充优化要求" })).toBeNull();
+
+  await user.click(screen.getByRole("button", { name: "撤销优化" }));
+  const undoUpdate = onChange.mock.calls.at(-1)[0];
+  expect(undoUpdate(optimized)).toEqual(
+    expect.objectContaining({
+      subject: baseValue.subject,
+      body_text: baseValue.body_text,
+    }),
+  );
+});
+
+it("switches between the application session list and a conversation", async () => {
+  const user = userEvent.setup();
+  renderCompose();
+
+  await user.click(screen.getByRole("button", { name: "打开 AI 助理" }));
+  const assistant = screen.getByRole("complementary", { name: "AI 助理" });
+  expect(within(assistant).getByRole("button", { name: "收起 AI 助理" })).toBeTruthy();
+  expect(within(assistant).getByRole("button", { name: "AI 助理设置" })).toBeTruthy();
+  expect(within(assistant).queryByRole("button", { name: "新建会话" })).toBeNull();
+  expect(within(assistant).getByText("会话")).toBeTruthy();
+  expect(within(assistant).queryByText("整理一封更清晰、语气更自然的项目跟进邮件"))
+    .toBeNull();
+  expect(within(assistant).queryByText("1 个草稿")).toBeNull();
+
+  await user.click(
+    within(assistant).getByRole("button", { name: /确认项目交付时间/ }),
+  );
+  expect(within(assistant).getByText("帮我把这封项目交付确认邮件写得更清楚一些。"))
+    .toBeTruthy();
+  expect(
+    within(assistant).getByRole("button", { name: /版本化附件.*#[0-9A-F]{8}/ }),
+  ).toBeTruthy();
+
+  await user.click(within(assistant).getByRole("button", { name: "返回会话列表" }));
+  expect(within(assistant).getByText("客户感谢信")).toBeTruthy();
+});
+
+it("creates a mock session from the fixed composer and honors the selected mode", async () => {
+  const onChange = vi.fn();
+  const user = userEvent.setup();
+  renderCompose({ onChange });
+
+  await user.click(screen.getByRole("button", { name: "打开 AI 助理" }));
+  const assistant = screen.getByRole("complementary", { name: "AI 助理" });
+  await user.click(within(assistant).getByRole("combobox", { name: "选择 Agent 模式" }));
+  await user.click(within(assistant).getByRole("option", { name: "邮件生成" }));
+  const input = within(assistant).getByRole("textbox", { name: "向 AI 助理发送消息" });
+  await user.type(input, "写一封确认下周交付时间的邮件{Enter}");
+
+  expect(within(assistant).getAllByText("写一封确认下周交付时间的邮件").length)
+    .toBeGreaterThan(0);
+  expect(within(assistant).getByText("已生成并填入当前草稿。你可以继续提出修改要求。"))
+    .toBeTruthy();
+  const generateUpdate = onChange.mock.calls.at(-1)[0];
+  expect(generateUpdate(baseValue).body_text).toContain("下周交付时间");
+});
+
 it("renders only authoritative draft attachments and passes the exact local version", async () => {
   const onAddAttachments = vi.fn();
   const onRemoveAttachment = vi.fn();

@@ -252,6 +252,33 @@ All app-owned color and material decisions flow through custom properties in
 - The footer's icon-only stationery control exposes no paper, lined paper, and
   grid paper plus edit-only or send-with-message behavior. Every mode preserves
   editor geometry and writing origin. Paper rules scroll with authored content.
+- The footer keeps AI editing and conversational work separate. The compact
+  optimization split control runs from its primary magic-wand action; its second
+  segment opens a small upward prompt surface for optional instructions. A
+  successful optimization exposes one nearby undo action. The adjacent AI
+  assistant control opens or collapses the conversational panel.
+- On wide desktop viewports the AI assistant attaches to and extends the compose
+  surface on the right. Defensive narrower layouts overlay it within the compose
+  bounds. The panel has two full states: an application-level session list, and
+  one selected conversation. The bottom prompt and mode selector keep the same
+  position in both states. Session rows are compact, single-line controls that
+  show only the truncated session title and its last-active time. Rows stack
+  tightly, with a low-profile capsule surface appearing on hover or focus. That
+  surface carries a stronger primary tint in every non-night theme so the active
+  target remains unmistakable against pale panel backgrounds.
+- The AI prompt indicates focus only on its rounded outer composer surface; the
+  inner textarea never adds a second rectangular focus ring. Its mode trigger
+  has no fixed width: the capsule follows the active label, with the caret placed
+  immediately after the text at a consistent gap.
+- The assistant header centers its text title without a leading AI mark. Its
+  left-side actions begin with collapse and then a settings icon; settings is an
+  inert entry point until configuration content is implemented, and there is no
+  explicit new-session button. An active conversation keeps its back action
+  after those global controls. Associated editable drafts sit immediately beneath
+  as wrapping, low-profile pill buttons containing only the truncated subject and stable short display ID.
+  Conversation history owns the remaining scroll surface. **自动**、**邮件生成**
+  and **聊天** live in the fixed composer; optimization is not duplicated as an
+  agent mode.
 - Managed attachments show safe metadata, progress, conflict state, and
   keyboard-operable removal. Reply/forward source remains immutable and separate
   from the authored editor.

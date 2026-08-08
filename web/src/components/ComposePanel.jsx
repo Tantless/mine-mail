@@ -10,6 +10,7 @@ import {
 } from "react";
 import {
   CaretDown,
+  ChatCircleDots,
   DotsSix,
   File,
   FloppyDisk,
@@ -25,6 +26,10 @@ import {
   X,
 } from "@phosphor-icons/react";
 import { IconButton } from "./IconButton.jsx";
+import {
+  ComposeAiAssistant,
+  ComposeOptimizeControl,
+} from "./ComposeAiTools.jsx";
 import { HtmlMessageBody } from "./HtmlMessageBody.jsx";
 import { NativeHtmlMessageBody } from "./NativeHtmlMessageBody.jsx";
 import { RecipientInput } from "./RecipientInput.jsx";
@@ -46,6 +51,8 @@ const composeGeometryStorageKey = "mine-mail-compose-geometry-v1";
 const resizeDirections = ["n", "ne", "e", "se", "s", "sw", "w", "nw"];
 const composeWindowMotionFallbackMs = 260;
 const composeWindowMotionFallbackPaddingMs = 80;
+const composeAiAssistantWidth = 372;
+const composeAiOverlayBreakpoint = 1200;
 const dialogFocusableSelector = [
   "a[href]",
   "button:not([disabled])",
@@ -553,6 +560,7 @@ export function ComposePanel({
   const [windowMotion, setWindowMotion] = useState(null);
   const [isReplyExpanded, setIsReplyExpanded] = useState(false);
   const [isForwardExpanded, setIsForwardExpanded] = useState(false);
+  const [isAiAssistantOpen, setIsAiAssistantOpen] = useState(false);
   const interactionRef = useRef(null);
   const geometryRef = useRef(geometry);
   const minimizedGeometryRef = useRef(
@@ -563,6 +571,10 @@ export function ComposePanel({
   const pendingWindowMotionRef = useRef(null);
   const windowMotionRef = useRef(null);
   const windowMotionTokenRef = useRef(0);
+  const assistantRestoreXRef = useRef(null);
+  const localDraftIdentityRef = useRef(
+    draft?.id || draftId || `local-draft-${Date.now().toString(36)}`,
+  );
   const restoreFocusRef = useRef(
     typeof document !== "undefined" &&
       document.activeElement instanceof HTMLElement
@@ -596,6 +608,40 @@ export function ComposePanel({
       return next;
     });
   }, []);
+
+  useEffect(() => {
+    if (
+      !isAiAssistantOpen ||
+      isMinimized ||
+      window.innerWidth < composeAiOverlayBreakpoint
+    ) {
+      return;
+    }
+    const current = geometryRef.current;
+    const rightEdge = current.x + current.width + composeAiAssistantWidth;
+    const availableRight = window.innerWidth - composeMargin;
+    if (rightEdge <= availableRight) return;
+    if (assistantRestoreXRef.current === null) {
+      assistantRestoreXRef.current = current.x;
+    }
+    commitGeometry({
+      ...current,
+      x: Math.max(composeMargin, current.x - (rightEdge - availableRight)),
+    });
+  }, [commitGeometry, isAiAssistantOpen, isMinimized]);
+
+  const collapseAiAssistant = useCallback(() => {
+    setIsAiAssistantOpen(false);
+    if (assistantRestoreXRef.current === null) return;
+    const restoreX = assistantRestoreXRef.current;
+    assistantRestoreXRef.current = null;
+    commitGeometry((current) =>
+      constrainGeometry({
+        ...current,
+        x: restoreX,
+      }),
+    );
+  }, [commitGeometry]);
 
   const applyInteractionFrame = useCallback(() => {
     const interaction = interactionRef.current;
@@ -819,6 +865,7 @@ export function ComposePanel({
       return;
     }
     event.preventDefault();
+    assistantRestoreXRef.current = null;
     interactionRef.current = {
       kind: "drag",
       pointerX: event.clientX,
@@ -837,6 +884,7 @@ export function ComposePanel({
     if (event.button !== 0 || isMinimized || windowMotionRef.current) return;
     event.preventDefault();
     event.stopPropagation();
+    assistantRestoreXRef.current = null;
     interactionRef.current = {
       kind: "resize",
       direction,
@@ -899,6 +947,13 @@ export function ComposePanel({
     : [];
   const localVersion = authoritativeDraft?.local_version;
   const stableDraftId = authoritativeDraft?.id || draftId;
+  const currentDraftForAi = useMemo(
+    () => ({
+      id: stableDraftId || localDraftIdentityRef.current,
+      subject: value.subject,
+    }),
+    [stableDraftId, value.subject],
+  );
   const hasStableDraft =
     Boolean(stableDraftId) &&
     Number.isInteger(localVersion) &&
@@ -923,12 +978,20 @@ export function ComposePanel({
   const omittedInlineResources = (forwardWarnings || []).includes(
     "inline_resources_not_forwarded",
   );
+  const openLinkedDraft = useCallback((linkedDraft) => {
+    if (linkedDraft?.id !== currentDraftForAi.id) return;
+    document.getElementById("compose-subject")?.focus();
+  }, [currentDraftForAi.id]);
 
   useEffect(() => {
     const onKeyDown = (event) => {
       if (event.defaultPrevented) return;
       if (event.key === "Escape" && !isBusy) {
         event.preventDefault();
+        if (isAiAssistantOpen) {
+          collapseAiAssistant();
+          return;
+        }
         onClose();
         return;
       }
@@ -949,7 +1012,9 @@ export function ComposePanel({
   }, [
     attachmentMutationBusy,
     canSend,
+    collapseAiAssistant,
     controlsDisabled,
+    isAiAssistantOpen,
     isBusy,
     networkAvailable,
     onClose,
@@ -1063,6 +1128,9 @@ export function ComposePanel({
         aria-label={isMinimized ? minimizedTitle : undefined}
         aria-labelledby={isMinimized ? undefined : "compose-title"}
         data-minimized={isMinimized}
+        data-ai-assistant={
+          !isMinimized && isAiAssistantOpen ? "open" : undefined
+        }
         data-entered={hasEntered || undefined}
         data-interacting={interactionKind || undefined}
         data-window-motion={windowMotion || undefined}
@@ -1568,6 +1636,28 @@ export function ComposePanel({
                     <Paperclip size={19} />
                   </IconButton>
                 ) : null}
+                <ComposeOptimizeControl
+                  value={value}
+                  disabled={controlsDisabled}
+                  onApply={onChange}
+                />
+                <IconButton
+                  className="compose-ai-toggle"
+                  label={
+                    isAiAssistantOpen ? "收起 AI 助理" : "打开 AI 助理"
+                  }
+                  aria-pressed={isAiAssistantOpen}
+                  disabled={isBusy}
+                  onClick={() => {
+                    if (isAiAssistantOpen) collapseAiAssistant();
+                    else setIsAiAssistantOpen(true);
+                  }}
+                >
+                  <ChatCircleDots
+                    size={18}
+                    weight={isAiAssistantOpen ? "fill" : "regular"}
+                  />
+                </IconButton>
               </div>
               <div className="compose-footer__right">
                 <StationeryControl
@@ -1617,6 +1707,17 @@ export function ComposePanel({
             ))}
           </div>
         )}
+        {!isMinimized && isAiAssistantOpen ? (
+          <ComposeAiAssistant
+            value={value}
+            currentDraft={currentDraftForAi}
+            disabled={isBusy}
+            readOnly={readOnly}
+            onApplyDraft={onChange}
+            onCollapse={collapseAiAssistant}
+            onOpenDraft={openLinkedDraft}
+          />
+        ) : null}
       </section>
     </div>
   );
