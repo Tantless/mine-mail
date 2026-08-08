@@ -1365,10 +1365,20 @@ export function SettingsPanel({
                   />
                 </label>
 
-                <div className="settings-mcp-group">
+                <div
+                  className="settings-mcp-group"
+                  data-expanded={Boolean(value.mcpEnabled)}
+                >
                   <div className="settings-preference-row settings-preference-row--toggle">
                     <span>
                       <span className="settings-preference-row__title">
+                        <span
+                          className="settings-mcp-disclosure"
+                          data-expanded={Boolean(value.mcpEnabled)}
+                          aria-hidden="true"
+                        >
+                          <CaretRight size={13} weight="bold" />
+                        </span>
                         <strong id="settings-mcp-enabled-label">开启 MCP</strong>
                         <button
                           type="button"
@@ -1390,6 +1400,7 @@ export function SettingsPanel({
                       type="checkbox"
                       aria-labelledby="settings-mcp-enabled-label"
                       checked={Boolean(value.mcpEnabled)}
+                      aria-controls="settings-mcp-permissions"
                       onChange={(event) => {
                         if (event.target.checked) {
                           setIsMcpEnablePending(true);
@@ -1403,41 +1414,50 @@ export function SettingsPanel({
                     />
                   </div>
 
-                  <label className="settings-preference-row settings-preference-row--toggle settings-preference-row--child">
-                    <span>
-                      <strong>获取信息</strong>
-                      <small>允许读取、检索、同步、下载附件和整理邮件。</small>
-                    </span>
-                    <input
-                      type="checkbox"
-                      checked={Boolean(value.mcpInformationEnabled)}
-                      disabled={!value.mcpEnabled}
-                      onChange={(event) =>
-                        updateSettings((current) => ({
-                          ...current,
-                          mcpInformationEnabled: event.target.checked,
-                        }))
-                      }
-                    />
-                  </label>
+                  <div
+                    id="settings-mcp-permissions"
+                    className="settings-mcp-permissions"
+                    aria-hidden={!value.mcpEnabled}
+                    data-expanded={Boolean(value.mcpEnabled)}
+                  >
+                    <div className="settings-mcp-permissions__inner">
+                      <label className="settings-preference-row settings-preference-row--toggle settings-preference-row--child">
+                        <span>
+                          <strong>获取信息</strong>
+                          <small>允许读取、检索、同步、下载附件和整理邮件。</small>
+                        </span>
+                        <input
+                          type="checkbox"
+                          checked={Boolean(value.mcpInformationEnabled)}
+                          disabled={!value.mcpEnabled}
+                          onChange={(event) =>
+                            updateSettings((current) => ({
+                              ...current,
+                              mcpInformationEnabled: event.target.checked,
+                            }))
+                          }
+                        />
+                      </label>
 
-                  <label className="settings-preference-row settings-preference-row--toggle settings-preference-row--child">
-                    <span>
-                      <strong>发送邮件</strong>
-                      <small>允许管理草稿、添加附件、回复、转发和真正发送邮件。</small>
-                    </span>
-                    <input
-                      type="checkbox"
-                      checked={Boolean(value.mcpSendEnabled)}
-                      disabled={!value.mcpEnabled}
-                      onChange={(event) =>
-                        updateSettings((current) => ({
-                          ...current,
-                          mcpSendEnabled: event.target.checked,
-                        }))
-                      }
-                    />
-                  </label>
+                      <label className="settings-preference-row settings-preference-row--toggle settings-preference-row--child">
+                        <span>
+                          <strong>发送邮件</strong>
+                          <small>允许管理草稿、添加附件、回复、转发和真正发送邮件。</small>
+                        </span>
+                        <input
+                          type="checkbox"
+                          checked={Boolean(value.mcpSendEnabled)}
+                          disabled={!value.mcpEnabled}
+                          onChange={(event) =>
+                            updateSettings((current) => ({
+                              ...current,
+                              mcpSendEnabled: event.target.checked,
+                            }))
+                          }
+                        />
+                      </label>
+                    </div>
+                  </div>
                 </div>
               </div>
             </section>

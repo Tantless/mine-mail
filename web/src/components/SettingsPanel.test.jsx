@@ -204,6 +204,8 @@ describe("SettingsPanel account flow", () => {
     render(<SettingsPanel {...panelProps({ onSave })} />);
 
     await user.click(screen.getByRole("button", { name: "功能设定" }));
+    expect(screen.queryByRole("checkbox", { name: /获取信息/ })).toBeNull();
+    expect(screen.queryByRole("checkbox", { name: /发送邮件/ })).toBeNull();
     await user.click(screen.getByRole("checkbox", { name: /开启 MCP/ }));
 
     const dialog = screen.getByRole("dialog", { name: "开启 MCP？" });
@@ -218,6 +220,23 @@ describe("SettingsPanel account flow", () => {
         mcpSendEnabled: false,
       }),
     );
+    expect(screen.getByRole("checkbox", { name: /获取信息/ }).checked).toBe(
+      true,
+    );
+    expect(screen.getByRole("checkbox", { name: /发送邮件/ }).checked).toBe(
+      false,
+    );
+
+    await user.click(screen.getByRole("checkbox", { name: /开启 MCP/ }));
+    expect(onSave).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        mcpEnabled: false,
+        mcpInformationEnabled: true,
+        mcpSendEnabled: false,
+      }),
+    );
+    expect(screen.queryByRole("checkbox", { name: /获取信息/ })).toBeNull();
+    expect(screen.queryByRole("checkbox", { name: /发送邮件/ })).toBeNull();
   });
 
   it("opens a concise MCP tool guide from the question control", async () => {

@@ -391,10 +391,10 @@ product decision changes.
   LAN/public interface, and has no connection token. Loopback Host/Origin checks,
   bounded requests, and bounded concurrency reduce exposure to local web pages
   and accidental overload.
-- **获取信息** and **发送邮件** are persisted child permissions and cannot be
-  changed while the parent is off. Their values are retained while off; initial
-  defaults are information on and sending off. Every tool checks its permission
-  when called.
+- **获取信息** and **发送邮件** are persisted child permissions. They expand
+  beneath the parent while it is on and collapse while it is off, preserving
+  their saved values; initial defaults are information on and sending off. Every
+  tool checks its permission when called.
 - Information permission covers safe account listing, bounded synchronization,
   metadata and cached-body search, batched body hydration, selected message
   reading, received-attachment download, read/star state, Archive, Inbox, and

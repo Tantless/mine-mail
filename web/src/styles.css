@@ -8282,6 +8282,48 @@ html[data-surface="new-mail-notification"] #root {
   display: grid;
 }
 
+.settings-mcp-group[data-expanded="false"] > .settings-preference-row {
+  border-bottom-color: transparent;
+}
+
+.settings-mcp-disclosure {
+  display: inline-flex;
+  width: 13px;
+  height: 13px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-muted);
+  transition: color var(--motion-fast), transform var(--motion-normal);
+}
+
+.settings-mcp-disclosure[data-expanded="true"] {
+  color: var(--color-primary);
+  transform: rotate(90deg);
+}
+
+.settings-mcp-permissions {
+  display: grid;
+  grid-template-rows: 1fr;
+  opacity: 1;
+  transition: grid-template-rows var(--motion-normal), opacity var(--motion-fast),
+    visibility 0s;
+  visibility: visible;
+}
+
+.settings-mcp-permissions[data-expanded="false"] {
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition: grid-template-rows var(--motion-normal), opacity var(--motion-fast),
+    visibility 0s var(--motion-normal);
+  visibility: hidden;
+}
+
+.settings-mcp-permissions__inner {
+  min-height: 0;
+  overflow: hidden;
+}
+
 .settings-preference-row--child {
   min-height: 68px;
   padding-left: 38px;

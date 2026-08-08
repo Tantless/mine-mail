@@ -231,8 +231,9 @@ All app-owned color and material decisions flow through custom properties in
   platforms. Nearby helper copy explains that Windows presentation remains
   subject to system notification and do-not-disturb settings.
 - **开启 MCP** is a parent preference with a compact question action. **获取信息**
-  and **发送邮件** are visibly nested beneath it and disabled while the parent is
-  off. The inline note says Mine Mail must remain in the foreground or tray.
+  and **发送邮件** expand as visibly nested rows while the parent is on and
+  collapse while it is off; their saved values are preserved while collapsed.
+  The inline note says Mine Mail must remain in the foreground or tray.
   Enabling the parent uses one compact shared confirmation dialog; the question
   action opens a theme-owned tool explanation dialog rather than a tooltip.
 - About shows the version first, then the exact active product-data directory,
