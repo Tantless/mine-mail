@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   ArrowCounterClockwise,
@@ -102,22 +102,102 @@ function recordPatchOutcome(result, aiDraft, outcome) {
     .catch(() => undefined);
 }
 
-export function ComposeOptimizeControl({ aiDraft, disabled, onApply, value }) {
+function useOptimizationCacheState(cacheRef, key, initialValue) {
+  const [value, setValue] = useState(() => {
+    if (Object.prototype.hasOwnProperty.call(cacheRef.current, key)) {
+      return cacheRef.current[key];
+    }
+    const resolved =
+      typeof initialValue === "function" ? initialValue() : initialValue;
+    cacheRef.current[key] = resolved;
+    return resolved;
+  });
+  const setCachedValue = useCallback(
+    (nextValue) => {
+      const resolved =
+        typeof nextValue === "function"
+          ? nextValue(cacheRef.current[key])
+          : nextValue;
+      cacheRef.current[key] = resolved;
+      setValue(resolved);
+    },
+    [cacheRef, key],
+  );
+  return [value, setCachedValue];
+}
+
+export function ComposeOptimizeControl({
+  aiDraft,
+  cacheRef: providedCacheRef,
+  disabled,
+  onApply,
+  value,
+}) {
   const rootRef = useRef(null);
   const optimizeButtonRef = useRef(null);
   const latestValueRef = useRef(value);
-  const [promptOpen, setPromptOpen] = useState(false);
-  const [instruction, setInstruction] = useState("");
-  const [status, setStatus] = useState("idle");
-  const [errorMessage, setErrorMessage] = useState("");
-  const [reviewResult, setReviewResult] = useState(null);
-  const [reviewOpen, setReviewOpen] = useState(false);
-  const [leftAnnotations, setLeftAnnotations] = useState([]);
-  const [rightAnnotations, setRightAnnotations] = useState([]);
-  const [leftEdited, setLeftEdited] = useState(false);
-  const [rightEdited, setRightEdited] = useState(false);
-  const [confirmation, setConfirmation] = useState(null);
-  const [undoBackup, setUndoBackup] = useState(null);
+  const localCacheRef = useRef({});
+  const cacheRef = providedCacheRef || localCacheRef;
+  const [promptOpen, setPromptOpen] = useOptimizationCacheState(
+    cacheRef,
+    "promptOpen",
+    false,
+  );
+  const [instruction, setInstruction] = useOptimizationCacheState(
+    cacheRef,
+    "instruction",
+    "",
+  );
+  const [status, setStatus] = useOptimizationCacheState(
+    cacheRef,
+    "status",
+    "idle",
+  );
+  const [errorMessage, setErrorMessage] = useOptimizationCacheState(
+    cacheRef,
+    "errorMessage",
+    "",
+  );
+  const [reviewResult, setReviewResult] = useOptimizationCacheState(
+    cacheRef,
+    "reviewResult",
+    null,
+  );
+  const [reviewOpen, setReviewOpen] = useOptimizationCacheState(
+    cacheRef,
+    "reviewOpen",
+    false,
+  );
+  const [leftAnnotations, setLeftAnnotations] = useOptimizationCacheState(
+    cacheRef,
+    "leftAnnotations",
+    [],
+  );
+  const [rightAnnotations, setRightAnnotations] = useOptimizationCacheState(
+    cacheRef,
+    "rightAnnotations",
+    [],
+  );
+  const [leftEdited, setLeftEdited] = useOptimizationCacheState(
+    cacheRef,
+    "leftEdited",
+    false,
+  );
+  const [rightEdited, setRightEdited] = useOptimizationCacheState(
+    cacheRef,
+    "rightEdited",
+    false,
+  );
+  const [confirmation, setConfirmation] = useOptimizationCacheState(
+    cacheRef,
+    "confirmation",
+    null,
+  );
+  const [undoBackup, setUndoBackup] = useOptimizationCacheState(
+    cacheRef,
+    "undoBackup",
+    null,
+  );
   const hasContent = Boolean(String(value.body_text || "").trim());
 
   latestValueRef.current = value;

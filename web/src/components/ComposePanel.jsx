@@ -522,6 +522,7 @@ export function ComposePanel({
   readOnly = false,
   initiallyMinimized = false,
   restoreRequest = 0,
+  optimizationCache = null,
   onMinimizedChange = null,
   networkAvailable = true,
   onClose,
@@ -573,6 +574,7 @@ export function ComposePanel({
   const windowMotionRef = useRef(null);
   const windowMotionTokenRef = useRef(0);
   const assistantRestoreXRef = useRef(null);
+  const optimizationCacheRef = useRef(optimizationCache || {});
   const localDraftIdentityRef = useRef(
     draft?.id || draftId || `local-draft-${Date.now().toString(36)}`,
   );
@@ -1672,6 +1674,7 @@ export function ComposePanel({
                 ) : null}
                 <ComposeOptimizeControl
                   aiDraft={aiDraft}
+                  cacheRef={optimizationCacheRef}
                   value={value}
                   disabled={controlsDisabled}
                   onApply={onChange}

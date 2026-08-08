@@ -524,6 +524,58 @@ it("keeps compose interactive while optimization runs and only signals the finis
   expect(screen.queryByRole("dialog", { name: "优化结果对比" })).toBeNull();
 });
 
+it("keeps the optimization prompt and pending result through compose minimization", async () => {
+  let finishTurn;
+  const pendingTurn = new Promise((resolve) => {
+    finishTurn = resolve;
+  });
+  vi.spyOn(mailApi, "runAiTurn").mockReturnValueOnce(pendingTurn);
+  const user = userEvent.setup();
+  renderCompose();
+
+  await user.click(screen.getByRole("button", { name: "填写优化要求" }));
+  await user.type(
+    screen.getByRole("textbox", { name: "补充优化要求" }),
+    "帮我修改格式变得工整",
+  );
+  await user.click(screen.getByRole("button", { name: "优化当前邮件" }));
+
+  const dialog = screen.getByRole("dialog", { name: "编辑草稿" });
+  fireEvent.pointerDown(dialog.closest(".compose-layer"), { button: 0 });
+  expect(
+    screen.getByRole("button", {
+      name: "还原写信窗口：版本化附件(friend@example.com)",
+    }),
+  ).toBeTruthy();
+
+  await act(async () => {
+    finishTurn({
+      request_id: "ai-review-minimized",
+      draft: {
+        ...baseValue,
+        body_text: `${baseValue.body_text}\n优化后的排版`,
+      },
+      changed_fields: ["body_text"],
+    });
+    await pendingTurn;
+  });
+
+  await user.click(
+    screen.getByRole("button", {
+      name: "还原写信窗口：版本化附件(friend@example.com)",
+    }),
+  );
+  await user.click(screen.getByRole("button", { name: "填写优化要求" }));
+  expect(
+    screen.getByRole("textbox", { name: "补充优化要求" }).value,
+  ).toBe("帮我修改格式变得工整");
+
+  await user.click(screen.getByRole("button", { name: "查看优化结果" }));
+  expect(
+    screen.getByRole("textbox", { name: "编辑右侧优化结果" }).value,
+  ).toContain("优化后的排版");
+});
+
 it("uses a bounded revision identifier when optimizing a long body", async () => {
   const runTurn = vi.spyOn(mailApi, "runAiTurn");
   const user = userEvent.setup();

@@ -694,6 +694,7 @@ function createComposer(
     locked: false,
     startMinimized: false,
     minimized: false,
+    optimizationCache: {},
     attachmentOperations: { add: null, remove: {} },
     forwardWarnings: [...forwardWarnings],
   };
@@ -7945,6 +7946,7 @@ export function App() {
           readOnly={composer.readOnlyUnsupported}
           initiallyMinimized={composer.startMinimized}
           restoreRequest={composeRestoreRequest}
+          optimizationCache={composer.optimizationCache}
           onMinimizedChange={handleComposeMinimizedChange}
           networkAvailable={networkActionsAvailable}
           onClose={() => void handleCloseComposer()}
