@@ -2770,6 +2770,82 @@ html[data-surface="new-mail-notification"] #root {
   gap: 2px;
 }
 
+.reader-translation-action {
+  display: inline-flex;
+  min-width: max-content;
+  height: 38px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin-right: 7px;
+  padding: 0 11px;
+  border: 1px solid color-mix(in srgb, var(--color-border) 76%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--reader-toolbar-surface) 58%, transparent);
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: 10px;
+  font-weight: 650;
+  transition: border-color var(--motion-fast), background var(--motion-fast),
+    color var(--motion-fast), transform var(--motion-fast);
+}
+
+.reader-translation-action:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--color-primary) 34%, var(--color-border));
+  background: color-mix(in srgb, var(--color-primary) 8%, var(--reader-toolbar-surface));
+  color: var(--color-text);
+}
+
+.reader-translation-action:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.reader-translation-action:focus-visible,
+.reader-translation-toggle button:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.reader-translation-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+.reader-translation-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-right: 7px;
+  padding: 3px;
+  border: 1px solid color-mix(in srgb, var(--color-border) 76%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--reader-toolbar-surface) 58%, transparent);
+}
+
+.reader-translation-toggle button {
+  min-width: 42px;
+  height: 30px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--color-text-muted);
+  font: inherit;
+  font-size: 10px;
+  font-weight: 650;
+  transition: background var(--motion-fast), color var(--motion-fast);
+}
+
+.reader-translation-toggle button:hover {
+  background: color-mix(in srgb, var(--color-primary) 6%, transparent);
+  color: var(--color-text-secondary);
+}
+
+.reader-translation-toggle button[aria-pressed="true"] {
+  background: color-mix(in srgb, var(--color-primary) 13%, var(--reader-toolbar-surface));
+  color: var(--color-primary);
+}
+
 .reader-toolbar .icon-button {
   width: 44px;
   height: 44px;
@@ -2804,6 +2880,18 @@ html[data-surface="new-mail-notification"] #root {
   min-height: 0;
   padding: 32px clamp(28px, 3.1vw, 46px) 46px;
   background: var(--reader-content-surface);
+}
+
+.reader-translation-error {
+  max-width: 760px;
+  margin: -12px 0 20px;
+  padding: 9px 12px;
+  border: 1px solid var(--state-danger-edge);
+  border-radius: 9px;
+  background: var(--state-danger-surface);
+  color: var(--color-danger);
+  font-size: 10px;
+  line-height: 1.5;
 }
 
 .message-header,
@@ -8766,6 +8854,16 @@ html[data-surface="new-mail-notification"] #root {
 .agent-config-fields input:disabled {
   cursor: not-allowed;
   opacity: 0.52;
+}
+
+.agent-translation-language .themed-select {
+  width: min(280px, 100%);
+}
+
+.agent-translation-language .themed-select__trigger {
+  min-height: 40px;
+  border-color: color-mix(in srgb, var(--color-border) 88%, var(--surface-edge));
+  background: color-mix(in srgb, var(--compose-control-surface) 76%, transparent);
 }
 
 .agent-environment-option {

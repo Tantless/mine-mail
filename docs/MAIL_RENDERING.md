@@ -110,6 +110,27 @@ frontend code. An intentional threshold change must:
 - Links must use safe schemes and open through the desktop-owned path; mail HTML
   cannot execute script or navigate the application surface directly.
 
+## AI reader translation
+
+- Translation consumes only the currently hydrated, Rust-sanitized reader
+  representation. It never fetches a raw RFC822 message, attachment bytes,
+  headers, recipients, or account credentials for the model.
+- Plain bodies are sent as bounded text. For native and isolated HTML, Rust
+  reparses the sanitized fragment, extracts only non-empty visible text nodes,
+  assigns opaque numeric positions, and sends those text values to the configured
+  AI Provider. Script, style, title, template, and noscript text is excluded.
+- The model must return one strict JSON translation for every supplied position.
+  Rust rejects missing, duplicate, unknown, oversized, or malformed results.
+  Returned values are written back as text nodes and serialized, so model output
+  cannot introduce tags, attributes, links, styles, images, or active content.
+- Element order, attributes, sender styling, table/layout structure, links,
+  images, remote-image policy, and the selected native/isolated render mode stay
+  unchanged. Segmented replies translate each rendered segment while retaining
+  its quote metadata and collapse structure.
+- The translated representation is reader-only and in memory. Switching back to
+  the original uses the unchanged cached representation; translation never
+  rewrites MIME data, body cache rows, reply/forward sources, or search text.
+
 ## Attachment indexing and extraction
 
 - A bounded summary prefix advertises neither attachment bytes nor authoritative

@@ -119,6 +119,7 @@ const commandFailureMessages = Object.freeze({
   set_message_starred_by_id: "星标状态保存没有完成",
   switch_account: "邮箱账户切换没有完成",
   test_ai_connection: "AI 连接测试没有完成",
+  translate_mail_content: "AI 翻译没有完成",
   sync_all: "邮箱同步没有完成",
   sync_drafts: "草稿同步没有完成",
   sync_mailbox: "邮箱文件夹同步没有完成",
@@ -375,6 +376,18 @@ function normalizeAiConfig(config = {}) {
       config.environmentVariable ??
       config.environment_variable ??
       "DEEPSEEK_API_KEY",
+    translationLanguage:
+      config.translationLanguage ?? config.translation_language ?? "zh-Hans",
+    translationLanguages: Array.isArray(
+      config.translationLanguages ?? config.translation_languages,
+    )
+      ? (config.translationLanguages ?? config.translation_languages).map(
+          (language) => ({
+            value: language.value ?? language.id,
+            label: language.label,
+          }),
+        )
+      : [],
     presets: Array.isArray(config.presets)
       ? config.presets.map((preset) => ({
           id: preset.id,
@@ -417,7 +430,10 @@ export const mailApi = {
   },
 
   async saveAiConfig(config) {
-    const request = aiConnectionRequest(config);
+    const request = {
+      ...aiConnectionRequest(config),
+      translationLanguage: config.translationLanguage || "zh-Hans",
+    };
     if (isTauri) {
       return normalizeAiConfig(
         await desktopInvoke("save_ai_config", { request }),
@@ -441,6 +457,30 @@ export const mailApi = {
       : await callDemo("testAiConnection", request);
     return {
       latencyMs: Number(response?.latencyMs ?? response?.latency_ms ?? 0),
+    };
+  },
+
+  async translateMailContent(parts) {
+    const request = {
+      parts: Array.isArray(parts)
+        ? parts.map((part) => ({
+            id: part.id,
+            format: part.format,
+            content: part.content,
+          }))
+        : [],
+    };
+    const response = isTauri
+      ? await desktopInvoke("translate_mail_content", { request })
+      : await callDemo("translateMailContent", request);
+    return {
+      language: response?.language || "zh-Hans",
+      parts: Array.isArray(response?.parts)
+        ? response.parts.map((part) => ({
+            id: part.id,
+            content: part.content,
+          }))
+        : [],
     };
   },
 

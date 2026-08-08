@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MessageView } from "./MessageView.jsx";
@@ -138,6 +138,87 @@ describe("MessageView body hydration", () => {
 
     expect(screen.getByText("最终 HTML 排版")).toBeTruthy();
     expect(screen.queryByText("尚未确认排版的纯文本内容")).toBeNull();
+  });
+});
+
+describe("MessageView AI translation", () => {
+  it("translates safe HTML and switches between the original and translated body", async () => {
+    const user = userEvent.setup();
+    const onTranslateMessage = vi.fn().mockResolvedValue({
+      language: "zh-Hans",
+      parts: [
+        {
+          id: "body-html",
+          content: '<section data-layout="kept"><p><strong>你好，朋友</strong></p></section>',
+        },
+      ],
+    });
+    render(
+      <MessageView
+        message={messageFixture({
+          body_text: "Hello, friend",
+          body_html: '<section data-layout="kept"><p><strong>Hello, friend</strong></p></section>',
+          body_render_mode: "native_html",
+          body_html_loaded: true,
+        })}
+        onClose={vi.fn()}
+        onTranslateMessage={onTranslateMessage}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "AI 翻译" }));
+    await screen.findByRole("group", { name: "邮件正文显示语言" });
+    expect(onTranslateMessage).toHaveBeenCalledWith([
+      {
+        id: "body-html",
+        format: "html",
+        content:
+          '<section data-layout="kept"><p><strong>Hello, friend</strong></p></section>',
+      },
+    ]);
+    expect(screen.getByText("你好，朋友")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "译文" }).getAttribute("aria-pressed")).toBe(
+      "true",
+    );
+
+    await user.click(screen.getByRole("button", { name: "原文" }));
+    expect(screen.getByText("Hello, friend")).toBeTruthy();
+    expect(screen.queryByText("你好，朋友")).toBeNull();
+  });
+
+  it("keeps translation unavailable for outgoing mail", () => {
+    render(
+      <MessageView
+        message={messageFixture({ kind: "sent" })}
+        onClose={vi.fn()}
+        onTranslateMessage={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: "AI 翻译" })).toBeNull();
+  });
+
+  it("shows a retryable inline failure without replacing the original body", async () => {
+    const user = userEvent.setup();
+    const onTranslateMessage = vi
+      .fn()
+      .mockRejectedValue(new Error("AI service unavailable"));
+    render(
+      <MessageView
+        message={messageFixture()}
+        onClose={vi.fn()}
+        onTranslateMessage={onTranslateMessage}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "AI 翻译" }));
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "AI 翻译失败，请检查 Agent 配置后重试",
+    );
+    expect(screen.getByText("完整正文")).toBeTruthy();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "重试翻译" }).disabled).toBe(false),
+    );
   });
 });
 

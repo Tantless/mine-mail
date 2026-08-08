@@ -34,8 +34,9 @@ use account::{
 };
 use ai::{
     AiConfigDto, AiConnectionTestDto, AiContact, AiExecutionContext, AiModelListDto, AiRuntime,
-    AiSessionDto, AiSessionListItemDto, AiTurnEvent, AiTurnRequest, AiTurnResultDto,
-    CheckAiConnectionRequest, SaveAiConfigRequest, record_patch_outcome,
+    AiSessionDto, AiSessionListItemDto, AiTranslationRequest, AiTranslationResultDto, AiTurnEvent,
+    AiTurnRequest, AiTurnResultDto, CheckAiConnectionRequest, SaveAiConfigRequest,
+    record_patch_outcome,
 };
 use contacts::{ContactDirectoryDto, ContactRuntime};
 use desktop::{
@@ -1301,6 +1302,19 @@ async fn test_ai_connection(
     diagnostics::command_async("test_ai_connection", DiagnosticFields::default(), async {
         ai.inner().clone().test_connection(request).await
     })
+    .await
+}
+
+#[tauri::command]
+async fn translate_mail_content(
+    ai: State<'_, AiRuntime>,
+    request: AiTranslationRequest,
+) -> CommandResult<AiTranslationResultDto> {
+    diagnostics::command_async(
+        "translate_mail_content",
+        DiagnosticFields::default(),
+        async { ai.inner().clone().translate(request).await },
+    )
     .await
 }
 
@@ -3022,6 +3036,7 @@ pub fn run() {
             save_ai_config,
             list_ai_models,
             test_ai_connection,
+            translate_mail_content,
             run_ai_turn,
             record_ai_patch_outcome,
             list_contact_messages,

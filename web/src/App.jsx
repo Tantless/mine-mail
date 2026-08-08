@@ -7645,6 +7645,7 @@ export function App() {
           : selectedIndex >= 0 && selectedIndex < visibleMessages.length - 1
       }
       remoteImageMode={settings.remoteImageMode}
+      onTranslateMessage={(parts) => mailApi.translateMailContent(parts)}
       onOpenExternalLink={(url) => void handleOpenExternalLink(url)}
       resolveReferencedMessage={resolveReferencedMessage}
       onOpenReferencedMessage={handleOpenReferencedMessage}

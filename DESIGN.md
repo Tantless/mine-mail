@@ -172,6 +172,12 @@ All app-owned color and material decisions flow through custom properties in
 - The reader uses one outer scrollbar. Native text and semantic HTML participate
   in that surface; complex sender HTML remains sanitized and isolated according
   to `docs/MAIL_RENDERING.md`.
+- Incoming Inbox, Starred, Archive, and Trash mail exposes one compact **AI 翻译**
+  action in the reader toolbar after the body is ready. While translating, that
+  action alone shows progress. Success replaces it with a low-profile
+  **原文 / 译文** capsule; the selected half uses the restrained primary tint and
+  switching never reflows the toolbar. Sent, Draft, and Outbox content has no
+  translation action.
 - The compact header always keeps the real address available. Recipient details
   open in an overlay without moving the message body and expose only available
   From, To, Cc, and Bcc groups.
@@ -251,6 +257,9 @@ All app-owned color and material decisions flow through custom properties in
   accordion. Testing reports measured latency on success. These actions belong
   to the consequential provider-setup flow and do not introduce a global
   Settings footer.
+- **AI 翻译语言** sits with the model fields and uses `ThemedSelect`. It defaults
+  to Simplified Chinese and presents every language in its own written form,
+  such as **中文（简体）**、**中文（繁體）**、**English** and **日本語**.
 - About shows the version first, then the exact active product-data directory,
   total use, one segmented composition bar, and the icon-only **更改位置**
   action. Storage migration uses the shared consequential confirmation surface

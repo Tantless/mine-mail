@@ -37,6 +37,16 @@ function configuration(overrides = {}) {
     hasEnvironmentApiKey: false,
     environmentVariable: "DEEPSEEK_API_KEY",
     presets,
+    translationLanguage: "zh-Hans",
+    translationLanguages: [
+      { value: "zh-Hans", label: "中文（简体）" },
+      { value: "zh-Hant", label: "中文（繁體）" },
+      { value: "en", label: "English" },
+      { value: "ja", label: "日本語" },
+      { value: "ru", label: "Русский" },
+      { value: "es", label: "Español" },
+      { value: "fr", label: "Français" },
+    ],
     ...overrides,
   };
 }
@@ -146,6 +156,26 @@ describe("AgentSettings", () => {
     await waitFor(() => expect(api.saveAiConfig).toHaveBeenCalled());
     expect(keyInput.value).toBe("");
     expect(await screen.findByText("模型配置已保存。")).toBeTruthy();
+  });
+
+  it("saves the selected AI reading language using its native label", async () => {
+    const user = userEvent.setup();
+    const api = client();
+    render(<AgentSettings client={api} />);
+
+    const language = await screen.findByRole("combobox", {
+      name: "AI 翻译语言",
+    });
+    expect(language.textContent).toContain("中文（简体）");
+    await user.click(language);
+    await user.click(screen.getByRole("option", { name: "日本語" }));
+    await user.click(screen.getByRole("button", { name: "保存配置" }));
+
+    await waitFor(() =>
+      expect(api.saveAiConfig).toHaveBeenCalledWith(
+        expect.objectContaining({ translationLanguage: "ja" }),
+      ),
+    );
   });
 
   it("keeps the settings page visible when configuration loading throws synchronously", async () => {

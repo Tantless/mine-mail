@@ -165,6 +165,13 @@ product decision changes.
   Nearby help explains the open-time, IP/device, and tracking-pixel privacy risk.
 - Links use safe schemes and open through the desktop-owned path; sender content
   cannot navigate or script the application.
+- Incoming mail opened from Inbox, Starred, Archive, Trash, or contact history
+  may be translated through the configured AI Provider. Translation is an
+  explicit per-message action and does not alter the cached message, server
+  content, search index, reply source, or forwarding source. A completed result
+  remains a reader-only in-memory alternative that can be switched between
+  **原文** and **译文** while that message stays open. Sent, Draft, and Outbox
+  content does not expose this action.
 
 ## Folders, stars, and message actions
 
@@ -297,6 +304,9 @@ product decision changes.
   for DeepSeek, Kimi, OpenAI, Anthropic, Qwen, Xiaomi MiMo, MiniMax, ModelScope,
   Doubao Seed, GLM, and OpenRouter. Anthropic uses its native Messages and Models
   APIs; the other presets use their documented OpenAI-compatible interfaces.
+- The same configured Provider powers reader translation. **AI 翻译语言** is a
+  persisted reading preference, defaults to Simplified Chinese, and offers
+  common languages under their native display names.
 - Rust persists only provider ID, base URL, model name, and the environment-key
   preference as active configuration in the AI SQLite store. Each preset also
   provides a small built-in model list that is immediately selectable; a

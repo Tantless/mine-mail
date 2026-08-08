@@ -33,6 +33,20 @@ const demoAiPresets = [
   environmentVariable,
   models,
 }));
+const demoAiTranslationLanguages = [
+  ["zh-Hans", "中文（简体）"],
+  ["zh-Hant", "中文（繁體）"],
+  ["en", "English"],
+  ["ja", "日本語"],
+  ["ko", "한국어"],
+  ["ru", "Русский"],
+  ["es", "Español"],
+  ["fr", "Français"],
+  ["de", "Deutsch"],
+  ["pt", "Português"],
+  ["it", "Italiano"],
+  ["ar", "العربية"],
+].map(([value, label]) => ({ value, label }));
 
 const wait = (milliseconds) =>
   new Promise((resolve) => window.setTimeout(resolve, milliseconds));
@@ -51,6 +65,8 @@ function createDemoState() {
       hasEnvironmentApiKey: false,
       environmentVariable: "DEEPSEEK_API_KEY",
       presets: structuredClone(demoAiPresets),
+      translationLanguage: "zh-Hans",
+      translationLanguages: structuredClone(demoAiTranslationLanguages),
     },
     outbox: [],
     settings: {
@@ -531,6 +547,11 @@ function createDemoActions(
         baseUrl: request.baseUrl.trim(),
         modelName: request.modelName.trim(),
         useEnvironmentKey: Boolean(request.useEnvironmentKey),
+        translationLanguage: demoAiTranslationLanguages.some(
+          (language) => language.value === request.translationLanguage,
+        )
+          ? request.translationLanguage
+          : "zh-Hans",
         hasStoredApiKey:
           state.aiConfig.hasStoredApiKey || Boolean(request.apiKey?.trim()),
         environmentVariable: preset.environmentVariable,
@@ -555,6 +576,39 @@ function createDemoActions(
     testAiConnection(request) {
       if (!request.modelName?.trim()) throw new Error("请输入 MODEL_NAME");
       return { latencyMs: 128 };
+    },
+
+    translateMailContent(request) {
+      const language = state.aiConfig.translationLanguage || "zh-Hans";
+      const parts = (request.parts || []).map((part) => {
+        if (part.format !== "html") {
+          return {
+            id: part.id,
+            content: `【AI 译文】\n${part.content}`,
+          };
+        }
+        const template = document.createElement("template");
+        template.innerHTML = part.content;
+        const walker = document.createTreeWalker(template.content, 4);
+        let node = walker.nextNode();
+        while (node) {
+          const parentTag = node.parentElement?.tagName?.toLowerCase();
+          if (
+            node.textContent.trim()
+            && !["script", "style", "title", "template", "noscript"].includes(
+              parentTag,
+            )
+          ) {
+            const source = node.textContent;
+            const leading = source.slice(0, source.length - source.trimStart().length);
+            const trailing = source.slice(source.trimEnd().length);
+            node.textContent = `${leading}【译】${source.trim()}${trailing}`;
+          }
+          node = walker.nextNode();
+        }
+        return { id: part.id, content: template.innerHTML };
+      });
+      return { language, parts };
     },
 
     listAiSessions() {

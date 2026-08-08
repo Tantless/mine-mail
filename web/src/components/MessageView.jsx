@@ -21,6 +21,7 @@ import {
   SpinnerGap,
   TrayArrowDown,
   Trash,
+  Translate,
   WarningCircle,
 } from "@phosphor-icons/react";
 import { IconButton } from "./IconButton.jsx";
@@ -38,6 +39,51 @@ const REMOTE_MAILBOX_ROLES = new Set(["inbox", "sent", "archive", "trash"]);
 const MOVE_TO_INBOX_ROLES = new Set(["archive", "trash"]);
 const MOVE_TO_TRASH_ROLES = new Set(["inbox", "sent", "archive"]);
 const MAX_OUTBOX_ATTEMPTS = 0xffffffff;
+
+function translationPartsForMessage(message, bodyRenderMode) {
+  if (Array.isArray(message.body_segments) && message.body_segments.length) {
+    return message.body_segments.map((segment, index) => ({
+      id: `segment-${index}`,
+      format: segment.render_mode === "plain" ? "plain" : "html",
+      content: String(segment.content || ""),
+    }));
+  }
+  if (
+    (bodyRenderMode === "native_html" || bodyRenderMode === "isolated_html")
+    && typeof message.body_html === "string"
+  ) {
+    return [{ id: "body-html", format: "html", content: message.body_html }];
+  }
+  return [
+    {
+      id: "body-text",
+      format: "plain",
+      content: String(message.body_text || ""),
+    },
+  ];
+}
+
+function applyTranslatedParts(message, translatedParts) {
+  const translatedById = new Map(
+    translatedParts.map((part) => [part.id, part.content]),
+  );
+  if (Array.isArray(message.body_segments) && message.body_segments.length) {
+    return {
+      ...message,
+      body_segments: message.body_segments.map((segment, index) => ({
+        ...segment,
+        content: translatedById.get(`segment-${index}`) ?? segment.content,
+      })),
+    };
+  }
+  if (translatedById.has("body-html")) {
+    return { ...message, body_html: translatedById.get("body-html") };
+  }
+  if (translatedById.has("body-text")) {
+    return { ...message, body_text: translatedById.get("body-text") };
+  }
+  return message;
+}
 
 const ROLE_LABELS = {
   archive: "ARCHIVE",
@@ -489,15 +535,38 @@ export function MessageView({
   senderDisplayName = null,
   onSetSenderAvatar,
   onRemoveSenderAvatar,
+  onTranslateMessage,
 }) {
   const recipientDetailsId = useId();
   const recipientToggleRef = useRef(null);
   const recipientRegionRef = useRef(null);
+  const translationRequestRef = useRef(0);
   const [recipientDetailsOpen, setRecipientDetailsOpen] = useState(false);
+  const [translationState, setTranslationState] = useState({
+    status: "idle",
+    messageKey: null,
+    translatedMessage: null,
+    showTranslated: false,
+    error: null,
+  });
+  const translationMessageKey = message
+    ? messageNavigationKey(message) || String(message.id || "reader-message")
+    : null;
 
   useEffect(() => {
     setRecipientDetailsOpen(false);
   }, [message?.id]);
+
+  useEffect(() => {
+    translationRequestRef.current += 1;
+    setTranslationState({
+      status: "idle",
+      messageKey: translationMessageKey,
+      translatedMessage: null,
+      showTranslated: false,
+      error: null,
+    });
+  }, [translationMessageKey]);
 
   useEffect(() => {
     if (recipientDetailsOpen) recipientRegionRef.current?.focus();
@@ -531,13 +600,72 @@ export function MessageView({
       typeof message.body_text === "string" ||
       typeof message.body_html === "string" ||
       Boolean(message.body_segments?.length));
-  const body = bodyPayloadHydrated
-    ? message.body_text || "这封邮件没有纯文本正文。"
-    : "";
   const bodyIsPending = Boolean(isLoading) || (!error && !bodyPayloadHydrated);
   const bodyRenderMode =
     message.body_render_mode || (message.body_html ? "isolated_html" : "plain");
   const hasBodySegments = Boolean(message.body_segments?.length);
+  const translationIsCurrent =
+    translationState.messageKey === translationMessageKey;
+  const translatedMessage =
+    translationIsCurrent && translationState.translatedMessage
+      ? translationState.translatedMessage
+      : null;
+  const showTranslated = Boolean(
+    translatedMessage && translationState.showTranslated,
+  );
+  const displayedMessage = showTranslated ? translatedMessage : message;
+  const displayedBody = bodyPayloadHydrated
+    ? displayedMessage.body_text || "这封邮件没有纯文本正文。"
+    : "";
+  const canTranslate =
+    !isOutgoing
+    && role !== "draft"
+    && typeof onTranslateMessage === "function";
+  const startTranslation = async () => {
+    if (!canTranslate || bodyIsPending || error) return;
+    const requestId = translationRequestRef.current + 1;
+    translationRequestRef.current = requestId;
+    setTranslationState({
+      status: "loading",
+      messageKey: translationMessageKey,
+      translatedMessage: null,
+      showTranslated: false,
+      error: null,
+    });
+    try {
+      const requestParts = translationPartsForMessage(message, bodyRenderMode);
+      const result = await onTranslateMessage(requestParts);
+      if (translationRequestRef.current !== requestId) return;
+      const resultParts = Array.isArray(result?.parts) ? result.parts : [];
+      const returnedIds = new Set(resultParts.map((part) => part.id));
+      if (
+        resultParts.length !== requestParts.length
+        || requestParts.some((part) => !returnedIds.has(part.id))
+      ) {
+        throw new Error("AI 翻译结果不完整，请重试。");
+      }
+      const translated = applyTranslatedParts(message, resultParts);
+      setTranslationState({
+        status: "completed",
+        messageKey: translationMessageKey,
+        translatedMessage: translated,
+        showTranslated: true,
+        error: null,
+      });
+    } catch (translationError) {
+      if (translationRequestRef.current !== requestId) return;
+      setTranslationState({
+        status: "error",
+        messageKey: translationMessageKey,
+        translatedMessage: null,
+        showTranslated: false,
+        error: userFacingErrorMessage(
+          translationError,
+          "AI 翻译失败，请检查 Agent 配置后重试",
+        ),
+      });
+    }
+  };
   const outboxRecipientGroupsUnavailable =
     role === "outbox" &&
     (!message.recipient_groups ||
@@ -672,6 +800,62 @@ export function MessageView({
           ) : null}
         </div>
         <div className="reader-toolbar__group">
+          {canTranslate ? (
+            translationIsCurrent && translationState.status === "completed" ? (
+              <div
+                className="reader-translation-toggle"
+                role="group"
+                aria-label="邮件正文显示语言"
+              >
+                <button
+                  type="button"
+                  aria-pressed={!showTranslated}
+                  onClick={() =>
+                    setTranslationState((current) => ({
+                      ...current,
+                      showTranslated: false,
+                    }))
+                  }
+                >
+                  原文
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={showTranslated}
+                  onClick={() =>
+                    setTranslationState((current) => ({
+                      ...current,
+                      showTranslated: true,
+                    }))
+                  }
+                >
+                  译文
+                </button>
+                <span className="sr-only" role="status">
+                  AI 翻译已完成
+                </span>
+              </div>
+            ) : (
+              <button
+                type="button"
+                className="reader-translation-action"
+                aria-busy={translationState.status === "loading"}
+                disabled={bodyIsPending || Boolean(error) || translationState.status === "loading"}
+                onClick={() => void startTranslation()}
+              >
+                {translationState.status === "loading" ? (
+                  <SpinnerGap className="spin" size={16} aria-hidden="true" />
+                ) : (
+                  <Translate size={16} aria-hidden="true" />
+                )}
+                {translationState.status === "loading"
+                  ? "翻译中"
+                  : translationState.status === "error"
+                    ? "重试翻译"
+                    : "AI 翻译"}
+              </button>
+            )
+          ) : null}
           <IconButton
             label="上一封"
             onClick={onPrevious}
@@ -686,6 +870,11 @@ export function MessageView({
       </header>
 
       <div className="reader-scroll vertical-scroll-surface">
+        {translationIsCurrent && translationState.error ? (
+          <div className="reader-translation-error" role="alert">
+            {translationState.error}
+          </div>
+        ) : null}
         <div className="message-header">
           <p className="eyebrow">
             {role === "outbox" && message.outbox?.status === "sent"
@@ -867,35 +1056,36 @@ export function MessageView({
             </div>
           ) : hasBodySegments ? (
             <SegmentedMessageBody
-              key={renderKey}
-              message={message}
-              body={body}
+              key={`${renderKey}:${showTranslated ? "translated" : "original"}`}
+              message={displayedMessage}
+              body={displayedBody}
               bodyRenderMode={bodyRenderMode}
+              allowOriginalFormat={!showTranslated}
               remoteImageMode={remoteImageMode}
               onOpenExternalLink={onOpenExternalLink}
               resolveReferencedMessage={resolveReferencedMessage}
               onOpenReferencedMessage={onOpenReferencedMessage}
             />
-          ) : bodyRenderMode === "native_html" && message.body_html ? (
+          ) : bodyRenderMode === "native_html" && displayedMessage.body_html ? (
             <NativeHtmlMessageBody
-              key={renderKey}
-              html={message.body_html}
-              hasRemoteImages={message.has_remote_images}
+              key={`${renderKey}:${showTranslated ? "translated" : "original"}`}
+              html={displayedMessage.body_html}
+              hasRemoteImages={displayedMessage.has_remote_images}
               remoteImageMode={remoteImageMode}
               onOpenLink={onOpenExternalLink}
             />
-          ) : bodyRenderMode === "isolated_html" && message.body_html ? (
+          ) : bodyRenderMode === "isolated_html" && displayedMessage.body_html ? (
             <HtmlMessageBody
-              key={renderKey}
-              cacheKey={renderKey}
-              html={message.body_html}
-              hasRemoteImages={message.has_remote_images}
+              key={`${renderKey}:${showTranslated ? "translated" : "original"}`}
+              cacheKey={`${renderKey}:${showTranslated ? "translated" : "original"}`}
+              html={displayedMessage.body_html}
+              hasRemoteImages={displayedMessage.has_remote_images}
               remoteImageMode={remoteImageMode}
               title={message.subject}
               onOpenLink={onOpenExternalLink}
             />
           ) : (
-            body.split(/\n{2,}/).map((paragraph, index) => (
+            displayedBody.split(/\n{2,}/).map((paragraph, index) => (
               <p key={`${index}-${paragraph.slice(0, 12)}`}>
                 {paragraph.split("\n").map((line, lineIndex) => (
                   <span key={`${lineIndex}-${line.slice(0, 8)}`}>

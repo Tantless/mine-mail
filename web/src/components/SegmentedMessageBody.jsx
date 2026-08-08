@@ -171,6 +171,7 @@ export function SegmentedMessageBody({
   message,
   body,
   bodyRenderMode,
+  allowOriginalFormat = true,
   remoteImageMode,
   onOpenExternalLink,
   resolveReferencedMessage,
@@ -187,18 +188,20 @@ export function SegmentedMessageBody({
 
   return (
     <div className="segmented-message-body">
-      <div className="segmented-message-body__toolbar">
-        <button
-          type="button"
-          className="segmented-message-body__original-toggle"
-          aria-pressed={showOriginal}
-          onClick={() => setShowOriginal((current) => !current)}
-        >
-          {showOriginal ? "返回分段阅读" : "按原始格式查看"}
-        </button>
-      </div>
+      {allowOriginalFormat ? (
+        <div className="segmented-message-body__toolbar">
+          <button
+            type="button"
+            className="segmented-message-body__original-toggle"
+            aria-pressed={showOriginal}
+            onClick={() => setShowOriginal((current) => !current)}
+          >
+            {showOriginal ? "返回分段阅读" : "按原始格式查看"}
+          </button>
+        </div>
+      ) : null}
 
-      {showOriginal ? (
+      {allowOriginalFormat && showOriginal ? (
         <OriginalBody
           message={message}
           body={body}

@@ -11,6 +11,22 @@ import { mailApi } from "../services/mailApi.js";
 import { userFacingErrorMessage } from "../utils/userFacingError.js";
 import { useConfirmDialogFocus } from "./ConfirmDialogPrimitives.jsx";
 import { IconButton } from "./IconButton.jsx";
+import { ThemedSelect } from "./ThemedSelect.jsx";
+
+const fallbackTranslationLanguages = Object.freeze([
+  { value: "zh-Hans", label: "中文（简体）" },
+  { value: "zh-Hant", label: "中文（繁體）" },
+  { value: "en", label: "English" },
+  { value: "ja", label: "日本語" },
+  { value: "ko", label: "한국어" },
+  { value: "ru", label: "Русский" },
+  { value: "es", label: "Español" },
+  { value: "fr", label: "Français" },
+  { value: "de", label: "Deutsch" },
+  { value: "pt", label: "Português" },
+  { value: "it", label: "Italiano" },
+  { value: "ar", label: "العربية" },
+]);
 
 const initialConfiguration = Object.freeze({
   providerId: "deepseek",
@@ -22,6 +38,8 @@ const initialConfiguration = Object.freeze({
   hasEnvironmentApiKey: false,
   environmentVariable: "DEEPSEEK_API_KEY",
   presets: [],
+  translationLanguage: "zh-Hans",
+  translationLanguages: fallbackTranslationLanguages,
 });
 
 function normalizeConfiguration(config) {
@@ -31,6 +49,10 @@ function normalizeConfiguration(config) {
     ...value,
     apiKey: "",
     presets: Array.isArray(value.presets) ? value.presets : [],
+    translationLanguages: Array.isArray(value.translationLanguages)
+      && value.translationLanguages.length
+      ? value.translationLanguages
+      : fallbackTranslationLanguages,
   };
 }
 
@@ -40,6 +62,7 @@ function configurationRequest(form) {
     baseUrl: form.baseUrl.trim(),
     modelName: form.modelName.trim(),
     useEnvironmentKey: form.useEnvironmentKey,
+    translationLanguage: form.translationLanguage,
     apiKey: form.useEnvironmentKey ? "" : form.apiKey,
   };
 }
@@ -208,7 +231,7 @@ function AgentSettingsContent({ client }) {
         <span>
           <p className="eyebrow">AGENT</p>
           <h3 id="settings-agent-title">Agent 配置</h3>
-          <p>配置写信助理使用的模型服务。API Key 由系统凭据库保管。</p>
+          <p>配置写信助理与邮件翻译使用的模型服务。API Key 由系统凭据库保管。</p>
         </span>
       </header>
 
@@ -404,6 +427,21 @@ function AgentSettingsContent({ client }) {
                     </span>
                     <small>可直接选择预设模型；检索成功后会更新并保存当前供应商的列表。</small>
                   </div>
+
+                  <div className="settings-field agent-translation-language">
+                    <label htmlFor="agent-translation-language">AI 翻译语言</label>
+                    <ThemedSelect
+                      id="agent-translation-language"
+                      label="AI 翻译语言"
+                      value={form.translationLanguage}
+                      options={form.translationLanguages}
+                      disabled={busy}
+                      onValueChange={(value) =>
+                        updateField("translationLanguage", value)
+                      }
+                    />
+                    <small>选择阅读邮件时 AI 默认翻译成的语言。</small>
+                  </div>
                 </div>
 
                 <div className="agent-config-actions">
@@ -510,7 +548,7 @@ class AgentSettingsErrorBoundary extends Component {
           <span>
             <p className="eyebrow">AGENT</p>
             <h3 id="settings-agent-error-title">Agent 配置</h3>
-            <p>配置写信助理使用的模型服务。</p>
+            <p>配置写信助理与邮件翻译使用的模型服务。</p>
           </span>
         </header>
         <section className="agent-config-card agent-config-failure" role="alert">
