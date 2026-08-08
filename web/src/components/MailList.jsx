@@ -1,13 +1,11 @@
 import {
   ArrowClockwise,
-  CheckCircle,
   CircleNotch,
   FunnelSimple,
   List,
   MagnifyingGlass,
   SidebarSimple,
   Star,
-  XCircle,
 } from "@phosphor-icons/react";
 import { useEffect, useLayoutEffect, useRef } from "react";
 import { IconButton } from "./IconButton.jsx";
@@ -154,12 +152,6 @@ function SyncFeedbackRow({ feedback }) {
   const state = ["syncing", "success", "error"].includes(feedback.state)
     ? feedback.state
     : "syncing";
-  const Icon =
-    state === "success"
-      ? CheckCircle
-      : state === "error"
-        ? XCircle
-        : CircleNotch;
   const message =
     state === "error"
       ? userFacingErrorMessage(feedback.message, "邮箱同步没有完成")
@@ -173,7 +165,9 @@ function SyncFeedbackRow({ feedback }) {
       aria-live={state === "error" ? "assertive" : "polite"}
       aria-atomic="true"
     >
-      <Icon size={14} weight="regular" aria-hidden="true" />
+      {state === "syncing" ? (
+        <CircleNotch size={14} weight="regular" aria-hidden="true" />
+      ) : null}
       <span>{message}</span>
     </div>
   );

@@ -216,6 +216,12 @@ describe("mail synchronization feedback material contract", () => {
     const root = declarationsFor(":root");
     const feedback = declarationsFor("\\.mail-sync-feedback");
     const feedbackIcon = declarationsFor("\\.mail-sync-feedback svg");
+    const successFeedback = declarationsFor(
+      '\\.mail-sync-feedback\\[data-state="success"\\]',
+    );
+    const errorFeedback = declarationsFor(
+      '\\.mail-sync-feedback\\[data-state="error"\\]',
+    );
     const entrance = nestedBlockFor("@keyframes mail-sync-feedback-in");
 
     expect(styles.match(/--sync-feedback-row-surface:/g)).toHaveLength(1);
@@ -234,7 +240,7 @@ describe("mail synchronization feedback material contract", () => {
     );
     expect(feedback).toMatch(/column-gap:\s*9px/);
     expect(feedback).toMatch(/padding:\s*5px\s+16px\s+5px\s+19px/);
-    expect(feedback).toMatch(/border:\s*0/);
+    expect(feedback).toMatch(/border:\s*1px\s+solid\s+transparent/);
     expect(feedback).toMatch(/border-radius:\s*0/);
     expect(feedback).toMatch(/box-shadow:\s*none/);
     expect(feedback).toMatch(
@@ -248,7 +254,37 @@ describe("mail synchronization feedback material contract", () => {
     );
     expect(feedbackIcon).toMatch(/justify-self:\s*start/);
     expect(feedbackIcon).toMatch(/margin-inline-start:\s*9px/);
+    expect(successFeedback).toMatch(
+      /grid-template-columns:\s*minmax\(0,\s*1fr\)/,
+    );
+    expect(successFeedback).toMatch(
+      /border-color:\s*var\(--state-success-edge\)/,
+    );
+    expect(errorFeedback).toMatch(
+      /grid-template-columns:\s*minmax\(0,\s*1fr\)/,
+    );
+    expect(errorFeedback).toMatch(
+      /border-color:\s*var\(--state-danger-edge\)/,
+    );
     expect(entrance).not.toMatch(/transform/);
+  });
+});
+
+describe("toast feedback material contract", () => {
+  it("uses theme material with semantic result edges", () => {
+    const toast = declarationsFor("\\.toast");
+    const errorToast = declarationsFor('\\.toast\\[data-tone="error"\\]');
+    const infoToast = declarationsFor('\\.toast\\[data-tone="info"\\]');
+
+    expect(toast).toMatch(/--toast-edge:\s*var\(--state-success-edge\)/);
+    expect(toast).toMatch(/border:\s*1px\s+solid\s+var\(--toast-edge\)/);
+    expect(toast).toMatch(
+      /background:\s*color-mix\(in srgb,\s*var\(--color-panel\)\s*68%,\s*transparent\)/,
+    );
+    expect(errorToast).toMatch(
+      /--toast-edge:\s*var\(--state-danger-edge\)/,
+    );
+    expect(infoToast).toMatch(/--toast-edge:\s*var\(--state-info-edge\)/);
   });
 });
 

@@ -263,11 +263,6 @@
     var(--sync-feedback-row-surface) 94%,
     var(--color-text)
   );
-  --sync-feedback-error-surface: color-mix(
-    in srgb,
-    var(--sync-feedback-row-surface) 82%,
-    var(--color-danger)
-  );
   --sync-feedback-text: var(--color-text-secondary);
   --focus-ring: 0 0 0 2px var(--color-panel), 0 0 0 4px var(--color-primary);
 }
@@ -2126,7 +2121,7 @@ html[data-surface="new-mail-notification"] #root {
   margin: 0 -1px;
   padding: 5px 16px 5px 19px;
   overflow: hidden;
-  border: 0;
+  border: 1px solid transparent;
   border-radius: 0;
   background: var(--sync-feedback-surface);
   color: var(--sync-feedback-text);
@@ -2137,8 +2132,14 @@ html[data-surface="new-mail-notification"] #root {
   animation: mail-sync-feedback-in var(--motion-fast) ease-out both;
 }
 
+.mail-sync-feedback[data-state="success"] {
+  grid-template-columns: minmax(0, 1fr);
+  border-color: var(--state-success-edge);
+}
+
 .mail-sync-feedback[data-state="error"] {
-  background: var(--sync-feedback-error-surface);
+  grid-template-columns: minmax(0, 1fr);
+  border-color: var(--state-danger-edge);
 }
 
 .mail-sync-feedback svg {
@@ -2150,14 +2151,6 @@ html[data-surface="new-mail-notification"] #root {
 .mail-sync-feedback[data-state="syncing"] svg {
   color: var(--color-primary);
   animation: spin 900ms linear infinite;
-}
-
-.mail-sync-feedback[data-state="success"] svg {
-  color: var(--color-success);
-}
-
-.mail-sync-feedback[data-state="error"] svg {
-  color: var(--color-danger);
 }
 
 .mail-sync-feedback span {
@@ -8474,19 +8467,19 @@ html[data-surface="new-mail-notification"] #root {
 
 .toast {
   --toast-accent: var(--color-success);
+  --toast-edge: var(--state-success-edge);
   position: fixed;
   right: 24px;
   bottom: 22px;
   z-index: 60;
   display: grid;
   min-height: 48px;
-  grid-template-columns: 30px minmax(0, 1fr) 28px;
+  grid-template-columns: minmax(0, 1fr) 28px;
   align-items: center;
   gap: 8px;
   max-width: min(420px, calc(100vw - 32px));
-  padding: 8px;
-  border: 1px solid
-    color-mix(in srgb, var(--toast-accent) 24%, var(--surface-edge));
+  padding: 8px 8px 8px 14px;
+  border: 1px solid var(--toast-edge);
   border-radius: 14px;
   background: color-mix(in srgb, var(--color-panel) 68%, transparent);
   color: var(--toast-accent);
@@ -8499,12 +8492,19 @@ html[data-surface="new-mail-notification"] #root {
   animation: notice-in var(--motion-normal) ease-out;
 }
 
+.toast[data-has-icon="true"] {
+  grid-template-columns: 30px minmax(0, 1fr) 28px;
+  padding-left: 8px;
+}
+
 .toast[data-tone="error"] {
   --toast-accent: var(--color-danger);
+  --toast-edge: var(--state-danger-edge);
 }
 
 .toast[data-tone="info"] {
   --toast-accent: var(--color-primary);
+  --toast-edge: var(--state-info-edge);
 }
 
 .toast[data-state="exiting"] {

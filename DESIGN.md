@@ -131,6 +131,10 @@ All app-owned color and material decisions flow through custom properties in
 - Routine success is expressed by the resulting state or nearby status. Toasts
   are reserved for failures and consequential results that would otherwise be
   invisible.
+- Successful and failed toast or synchronization feedback does not repeat the
+  state with check or cross icons. Its surface and text remain theme-owned while
+  a semantic green or red edge communicates the result; informational and
+  in-progress indicators may retain their icons.
 
 ### Lists, overlays, and scrolling
 

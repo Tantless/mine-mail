@@ -166,12 +166,12 @@ describe("MailList folder contracts", () => {
   });
 
   it.each([
-    ["syncing", "正在同步收件箱…", "status"],
-    ["success", "同步成功，新增 3 封邮件", "status"],
-    ["error", "同步失败：请检查网络后重试", "alert"],
+    ["syncing", "正在同步收件箱…", "status", true],
+    ["success", "同步成功，新增 3 封邮件", "status", false],
+    ["error", "同步失败：请检查网络后重试", "alert", false],
   ])(
     "renders %s synchronization feedback in the shared inline row",
-    (state, message, role) => {
+    (state, message, role, hasIcon) => {
       const { container } = renderMailList({
         syncFeedback: { state, message },
       });
@@ -180,7 +180,7 @@ describe("MailList folder contracts", () => {
       expect(feedback?.dataset.state).toBe(state);
       expect(feedback?.textContent).toBe(message);
       expect(feedback?.getAttribute("role")).toBe(role);
-      expect(feedback?.querySelector("svg")?.getAttribute("width")).toBe("14");
+      expect(Boolean(feedback?.querySelector("svg"))).toBe(hasIcon);
     },
   );
 });
