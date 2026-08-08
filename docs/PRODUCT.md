@@ -311,10 +311,27 @@ product decision changes.
 - Later unread arrivals may show resolved sender identity/address, subject, and
   the receiving account identity/address. They never show body, HTML,
   attachments, remote images, or recipient headers.
-- One **桌面通知** setting controls popup delivery. Sound enablement and the sound
-  preset are separate settings.
+- One **桌面通知** setting controls delivery. On Windows, a separate persisted
+  **通知方式** choice selects exactly one of **Mine Mail 通知** and **Windows
+  通知** for future arrivals. Existing settings databases and new installations
+  default to **Mine Mail 通知**; the choice is not shown on other platforms.
+- **Mine Mail 通知** uses the existing app-owned lower-right card. **Windows
+  通知** uses the operating-system banner and notification center. The two
+  surfaces never present the same arrival together, and a failed or
+  system-blocked Windows delivery does not silently switch to the Mine Mail
+  surface.
+- Windows notification delivery is local and depends on Mine Mail remaining
+  open or in the tray. It does not use a Mine Mail cloud mailbox proxy or a
+  Windows push service. Windows notification, lock-screen, and do-not-disturb
+  settings remain authoritative over system presentation.
+- Sound enablement and the sound preset are shared by both delivery methods.
+  Mine Mail owns playback for its card; Windows owns playback and suppression
+  for a Windows notification.
 - A notification batch displays its bounded unread count, and clicking a card
-  opens the cached message in its owning account.
+  while Mine Mail is running or in the tray opens the cached message in its
+  owning account. A Windows notification left after an explicit application
+  exit is not required to restore that exact message in the first Windows
+  notification milestone.
 - Successful account binding is represented by connected-account state rather
   than a separate success toast.
 

@@ -225,6 +225,11 @@ All app-owned color and material decisions flow through custom properties in
   code. Gmail shows the current preview-access note beside its OAuth action.
 - Persistent backend health is not decoration. Show progress for the action the
   user started and failures that require attention.
+- **桌面通知** remains the master preference. On Windows, one adjacent
+  **通知方式** row uses `ThemedSelect` to choose **Mine Mail 通知** or **Windows
+  通知**; the row is disabled with the master preference and absent on other
+  platforms. Nearby helper copy explains that Windows presentation remains
+  subject to system notification and do-not-disturb settings.
 - **开启 MCP** is a parent preference with a compact question action. **获取信息**
   and **发送邮件** are visibly nested beneath it and disabled while the parent is
   off. The inline note says Mine Mail must remain in the foreground or tray.
@@ -301,9 +306,15 @@ All app-owned color and material decisions flow through custom properties in
 
 ### Notifications, confirmations, and updates
 
-- The native new-mail surface is a compact, always-readable lower-right card. It
-  uses the local-first sender avatar, subject, and receiving-account identity,
+- The Mine Mail new-mail surface is a compact, always-readable lower-right card.
+  It uses the local-first sender avatar, subject, and receiving-account identity,
   never body preview text.
+- On Windows, the user may instead select the operating-system notification
+  surface. Windows owns its banner and notification-center geometry, material,
+  app-name attribution, icon treatment, dismissal, and do-not-disturb behavior;
+  Mine Mail supplies bounded sender identity, subject, receiving-account
+  identity, and batch count. Do not imitate or overlay the Windows surface with
+  a second Mine Mail card.
 - Confirmation dialogs are compact, theme-owned, keyboard-operable, and limited
   to consequential actions such as enabling MCP, account removal, storage
   migration, uncertain delivery decisions, and permanent deletion.
