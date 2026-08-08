@@ -54,6 +54,11 @@ const notificationSoundOptions = [
   { value: "reminder", label: "提醒提示" },
 ];
 
+const notificationDeliveryOptions = [
+  { value: "mine_mail", label: "Mine Mail 通知" },
+  { value: "windows", label: "Windows 通知" },
+];
+
 const syncIntervalOptions = [
   { value: 1, label: "1 分钟" },
   { value: 3, label: "3 分钟" },
@@ -1233,6 +1238,32 @@ export function SettingsPanel({
                     }
                   />
                 </label>
+
+                {value.windowsNotificationsAvailable ? (
+                  <div className="settings-preference-row">
+                    <span>
+                      <strong>通知方式</strong>
+                      <small>
+                        {value.notificationDelivery === "windows"
+                          ? "进入 Windows 通知中心，并受系统通知和勿扰设置控制。"
+                          : "使用 Mine Mail 右下角的新邮件卡片。"}
+                      </small>
+                    </span>
+                    <SettingsSelect
+                      id="settings-notification-delivery"
+                      label="通知方式"
+                      value={value.notificationDelivery || "mine_mail"}
+                      options={notificationDeliveryOptions}
+                      disabled={!value.notificationsEnabled}
+                      onValueChange={(notificationDelivery) =>
+                        updateSettings((current) => ({
+                          ...current,
+                          notificationDelivery,
+                        }))
+                      }
+                    />
+                  </div>
+                ) : null}
 
                 <div className="settings-preference-row">
                   <span>

@@ -917,6 +917,8 @@ describe("Mine Mail MVP", () => {
         pollingIntervalMinutes: 3,
         autostartEnabled: true,
         notificationsEnabled: true,
+        notificationDelivery: "mine_mail",
+        windowsNotificationsAvailable: false,
         notificationSoundEnabled: true,
         notificationSound: "reminder",
         remoteImageMode: "ask",

@@ -39,8 +39,8 @@ pub(crate) use settings::{
     ProfileAvatarDto, SaveProfileAvatarRequest,
 };
 use settings::{
-    DesktopSettingsStore, NotificationBaseline, ProfileAvatarOwnerType, StoredDesktopSettings,
-    valid_poll_interval,
+    DesktopSettingsStore, NotificationBaseline, NotificationDelivery, ProfileAvatarOwnerType,
+    StoredDesktopSettings, valid_poll_interval,
 };
 
 const DRAFT_SYNC_INTERVAL: Duration = Duration::from_secs(5 * 60);
@@ -88,6 +88,13 @@ struct NewMailNotificationTarget {
     notification_id: u64,
     account_id: String,
     public_id: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct WindowsNotificationContent {
+    title: String,
+    subject: String,
+    context: String,
 }
 
 #[derive(Clone, Debug)]
@@ -312,6 +319,8 @@ impl DesktopRuntime {
             background_enabled: settings.background_enabled,
             poll_interval_minutes: settings.poll_interval_minutes,
             notifications_enabled: settings.notifications_enabled,
+            notification_delivery: settings.notification_delivery,
+            windows_notifications_available: cfg!(target_os = "windows"),
             notification_sound_enabled: settings.notification_sound_enabled,
             notification_sound: settings.notification_sound,
             remote_image_mode: settings.remote_image_mode,
@@ -341,6 +350,9 @@ impl DesktopRuntime {
         }
         if let Some(value) = update.notifications_enabled {
             settings.notifications_enabled = value;
+        }
+        if let Some(value) = update.notification_delivery {
+            settings.notification_delivery = value;
         }
         if let Some(value) = update.notification_sound_enabled {
             settings.notification_sound_enabled = value;
@@ -434,6 +446,7 @@ impl DesktopRuntime {
             background_enabled: Some(settings.background_enabled),
             poll_interval_minutes: Some(settings.poll_interval_minutes),
             notifications_enabled: Some(settings.notifications_enabled),
+            notification_delivery: Some(settings.notification_delivery),
             notification_sound_enabled: Some(settings.notification_sound_enabled),
             notification_sound: Some(settings.notification_sound),
             remote_image_mode: Some(settings.remote_image_mode),
@@ -2597,6 +2610,123 @@ fn show_new_mail_notification(
     count: usize,
     settings: StoredDesktopSettings,
 ) {
+    let sender = sanitize_notification_text(&sender, 80);
+    let sender_email = sanitize_notification_text(&sender_email, 320);
+    let sender_remark = sender_remark.map(|value| sanitize_notification_text(&value, 40));
+    let subject = sanitize_notification_text(&subject, 140);
+    let recipient_email = sanitize_notification_text(&recipient_email, 320);
+    let recipient_remark = recipient_remark.map(|value| sanitize_notification_text(&value, 40));
+
+    if effective_notification_delivery(settings.notification_delivery, cfg!(target_os = "windows"))
+        == NotificationDelivery::Windows
+    {
+        #[cfg(target_os = "windows")]
+        show_windows_new_mail_notification(
+            app,
+            windows_notification_content(
+                &sender,
+                &sender_email,
+                recipient_remark.as_deref(),
+                &recipient_email,
+                &subject,
+                count,
+            ),
+            NewMailNotificationTarget {
+                notification_id: 0,
+                account_id,
+                public_id,
+            },
+            settings,
+        );
+        return;
+    }
+
+    show_mine_mail_new_mail_notification(
+        app,
+        sender,
+        sender_email,
+        sender_remark,
+        sender_avatar_data_url,
+        subject,
+        recipient_email,
+        recipient_remark,
+        public_id,
+        account_id,
+        count,
+        settings,
+    );
+}
+
+fn effective_notification_delivery(
+    requested: NotificationDelivery,
+    windows_notifications_available: bool,
+) -> NotificationDelivery {
+    if windows_notifications_available && requested == NotificationDelivery::Windows {
+        NotificationDelivery::Windows
+    } else {
+        NotificationDelivery::MineMail
+    }
+}
+
+fn windows_notification_content(
+    sender: &str,
+    sender_email: &str,
+    recipient_remark: Option<&str>,
+    recipient_email: &str,
+    subject: &str,
+    count: usize,
+) -> WindowsNotificationContent {
+    let title = notification_identity_label(sender, sender_email, 120);
+    let recipient = notification_identity_label(
+        recipient_remark.unwrap_or(recipient_email),
+        recipient_email,
+        180,
+    );
+    let count_label = if count > 99 {
+        "99+ 封新邮件".to_owned()
+    } else {
+        format!("{} 封新邮件", count.max(1))
+    };
+    let context = match (count > 1, recipient.is_empty()) {
+        (true, false) => format!("{count_label} · 收信至 {recipient}"),
+        (true, true) => count_label,
+        (false, false) => format!("收信至 {recipient}"),
+        (false, true) => String::new(),
+    };
+    WindowsNotificationContent {
+        title,
+        subject: sanitize_notification_text(subject, 140),
+        context: sanitize_notification_text(&context, 220),
+    }
+}
+
+fn notification_identity_label(display: &str, email: &str, max_characters: usize) -> String {
+    let display = display.trim();
+    let email = email.trim();
+    let label = match (display.is_empty(), email.is_empty()) {
+        (true, true) => String::new(),
+        (true, false) => email.to_owned(),
+        (false, true) => display.to_owned(),
+        (false, false) if display.eq_ignore_ascii_case(email) => display.to_owned(),
+        (false, false) => format!("{display} · {email}"),
+    };
+    sanitize_notification_text(&label, max_characters)
+}
+
+fn show_mine_mail_new_mail_notification(
+    app: &AppHandle,
+    sender: String,
+    sender_email: String,
+    sender_remark: Option<String>,
+    sender_avatar_data_url: Option<String>,
+    subject: String,
+    recipient_email: String,
+    recipient_remark: Option<String>,
+    public_id: String,
+    account_id: String,
+    count: usize,
+    settings: StoredDesktopSettings,
+) {
     let runtime = app.state::<DesktopRuntime>();
     let web_sound = if settings.notification_sound_enabled {
         web_sound(settings.notification_sound)
@@ -2604,13 +2734,13 @@ fn show_new_mail_notification(
         None
     };
     let Ok(notification) = runtime.publish_new_mail_notification(
-        sanitize_notification_text(&sender, 80),
-        sanitize_notification_text(&sender_email, 320),
-        sender_remark.map(|value| sanitize_notification_text(&value, 40)),
+        sender,
+        sender_email,
+        sender_remark,
         sender_avatar_data_url,
-        sanitize_notification_text(&subject, 140),
-        sanitize_notification_text(&recipient_email, 320),
-        recipient_remark.map(|value| sanitize_notification_text(&value, 40)),
+        subject,
+        recipient_email,
+        recipient_remark,
         public_id,
         account_id,
         count,
@@ -2669,6 +2799,81 @@ fn show_new_mail_notification(
             "new_mail_notification",
             None,
             ErrorKind::NotFound,
+        );
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn show_windows_new_mail_notification(
+    app: &AppHandle,
+    content: WindowsNotificationContent,
+    target: NewMailNotificationTarget,
+    settings: StoredDesktopSettings,
+) {
+    let app = app.clone();
+    if app
+        .clone()
+        .run_on_main_thread(move || {
+            use tauri_winrt_notification::{Duration as ToastDuration, Sound, Toast};
+
+            let activation_app = app.clone();
+            let activation_target = target.clone();
+            let sound =
+                settings
+                    .notification_sound_enabled
+                    .then_some(match settings.notification_sound {
+                        settings::NotificationSound::Default => Sound::Default,
+                        settings::NotificationSound::Mail => Sound::Mail,
+                        settings::NotificationSound::Im => Sound::IM,
+                        settings::NotificationSound::Reminder => Sound::Reminder,
+                    });
+            let mut toast = Toast::new(&app.config().identifier)
+                .title(&content.title)
+                .text1(&content.subject)
+                .duration(ToastDuration::Short)
+                .sound(sound)
+                .on_activated(move |_| {
+                    match open_notification_target(&activation_app, &activation_target) {
+                        Ok(()) => diagnostics::limited_recovery(
+                            "notification_windows_open_failed",
+                            "notification_windows_open_recovered",
+                            "new_mail_notification",
+                            None,
+                        ),
+                        Err(_) => diagnostics::limited_failure(
+                            "notification_windows_open_failed",
+                            "new_mail_notification",
+                            None,
+                            ErrorKind::Runtime,
+                        ),
+                    }
+                    Ok(())
+                });
+            if !content.context.is_empty() {
+                toast = toast.text2(&content.context);
+            }
+            match toast.show() {
+                Ok(()) => diagnostics::limited_recovery(
+                    "notification_windows_delivery_failed",
+                    "notification_windows_delivery_recovered",
+                    "new_mail_notification",
+                    None,
+                ),
+                Err(_) => diagnostics::limited_failure(
+                    "notification_windows_delivery_failed",
+                    "new_mail_notification",
+                    None,
+                    ErrorKind::Runtime,
+                ),
+            }
+        })
+        .is_err()
+    {
+        diagnostics::limited_failure(
+            "notification_windows_schedule_failed",
+            "new_mail_notification",
+            None,
+            ErrorKind::Runtime,
         );
     }
 }
@@ -2940,6 +3145,22 @@ fn consume_open_new_mail_notification(
     Ok(true)
 }
 
+fn open_notification_target(
+    app: &AppHandle,
+    target: &NewMailNotificationTarget,
+) -> Result<(), String> {
+    show_main_window(app);
+    app.emit_to(
+        "main",
+        "mail:open-message",
+        OpenMessageEvent {
+            message_id: target.public_id.clone(),
+            account_id: target.account_id.clone(),
+        },
+    )
+    .map_err(|_| "The selected message could not be opened.".to_owned())
+}
+
 pub(crate) fn open_new_mail_notification(
     app: &AppHandle,
     notification_id: u64,
@@ -2948,18 +3169,7 @@ pub(crate) fn open_new_mail_notification(
     consume_open_new_mail_notification(
         &runtime,
         notification_id,
-        |target| {
-            show_main_window(app);
-            app.emit_to(
-                "main",
-                "mail:open-message",
-                OpenMessageEvent {
-                    message_id: target.public_id.clone(),
-                    account_id: target.account_id.clone(),
-                },
-            )
-            .map_err(|_| "The selected message could not be opened.".to_owned())
-        },
+        |target| open_notification_target(app, target),
         || {
             if let Some(window) = app.get_webview_window(NEW_MAIL_NOTIFICATION_WINDOW) {
                 window
@@ -3120,15 +3330,17 @@ mod tests {
     };
     use tokio::sync::Notify;
 
-    use super::settings::NotificationSound;
-    use super::settings::{NotificationBaseline, StoredDesktopSettings};
+    use super::settings::{
+        NotificationBaseline, NotificationDelivery, NotificationSound, StoredDesktopSettings,
+    };
     use super::{
         BeforeExitEvent, DesktopRuntime, EXIT_HANDSHAKE_TIMEOUT, SyncAllReport,
-        available_optional_mailbox_roles, consume_open_new_mail_notification, is_seen,
-        notification_candidates, notification_sender, notification_sender_email,
-        optional_role_participates_periodically, prioritize_active_account,
-        sanitize_notification_text, should_deliver_new_mail_notification,
-        trigger_discovers_mailbox_roles,
+        available_optional_mailbox_roles, consume_open_new_mail_notification,
+        effective_notification_delivery, is_seen, notification_candidates, notification_sender,
+        notification_sender_email, optional_role_participates_periodically,
+        prioritize_active_account, sanitize_notification_text,
+        should_deliver_new_mail_notification, trigger_discovers_mailbox_roles,
+        windows_notification_content,
     };
 
     fn message(flags: Vec<String>) -> InboxMessage {
@@ -3367,6 +3579,48 @@ mod tests {
         assert_eq!(notification_sender_email(&message), "sender@example.com");
         assert_eq!(notification_sender(&message, None), "Sender");
         assert_eq!(notification_sender(&message, Some("产品团队")), "产品团队");
+    }
+
+    #[test]
+    fn windows_delivery_is_used_only_when_the_platform_capability_is_available() {
+        assert_eq!(
+            effective_notification_delivery(NotificationDelivery::Windows, true),
+            NotificationDelivery::Windows
+        );
+        assert_eq!(
+            effective_notification_delivery(NotificationDelivery::Windows, false),
+            NotificationDelivery::MineMail
+        );
+        assert_eq!(
+            effective_notification_delivery(NotificationDelivery::MineMail, true),
+            NotificationDelivery::MineMail
+        );
+    }
+
+    #[test]
+    fn windows_notification_content_contains_identity_subject_account_and_bounded_count() {
+        let single = windows_notification_content(
+            "产品团队",
+            "sender@example.com",
+            Some("工作邮箱"),
+            "me@example.com",
+            "发布说明",
+            1,
+        );
+        assert_eq!(single.title, "产品团队 · sender@example.com");
+        assert_eq!(single.subject, "发布说明");
+        assert_eq!(single.context, "收信至 工作邮箱 · me@example.com");
+
+        let batch = windows_notification_content(
+            "sender@example.com",
+            "sender@example.com",
+            None,
+            "me@example.com",
+            "最新邮件",
+            120,
+        );
+        assert_eq!(batch.title, "sender@example.com");
+        assert_eq!(batch.context, "99+ 封新邮件 · 收信至 me@example.com");
     }
 
     #[test]

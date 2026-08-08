@@ -64,6 +64,8 @@ const defaultSettings = {
   pollingIntervalMinutes: 5,
   autostartEnabled: false,
   notificationsEnabled: true,
+  notificationDelivery: "mine_mail",
+  windowsNotificationsAvailable: false,
   notificationSoundEnabled: true,
   notificationSound: "mail",
   remoteImageMode: "automatic",

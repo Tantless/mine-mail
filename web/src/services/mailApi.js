@@ -144,6 +144,8 @@ function normalizeSettings(settings = {}) {
     settings.remoteImageMode ?? settings.remote_image_mode ?? "automatic";
   const notificationSound =
     settings.notificationSound ?? settings.notification_sound ?? "mail";
+  const notificationDelivery =
+    settings.notificationDelivery ?? settings.notification_delivery ?? "mine_mail";
   return {
     pollingIntervalMinutes: [1, 3, 5].includes(interval) ? interval : 5,
     autostartEnabled: Boolean(
@@ -151,6 +153,14 @@ function normalizeSettings(settings = {}) {
     ),
     notificationsEnabled: Boolean(
       settings.notificationsEnabled ?? settings.notifications_enabled ?? true,
+    ),
+    notificationDelivery: ["mine_mail", "windows"].includes(notificationDelivery)
+      ? notificationDelivery
+      : "mine_mail",
+    windowsNotificationsAvailable: Boolean(
+      settings.windowsNotificationsAvailable ??
+      settings.windows_notifications_available ??
+      false,
     ),
     notificationSoundEnabled: Boolean(
       settings.notificationSoundEnabled ??
@@ -192,6 +202,7 @@ function settingsDto(settings) {
     poll_interval_minutes: normalized.pollingIntervalMinutes,
     autostart_enabled: normalized.autostartEnabled,
     notifications_enabled: normalized.notificationsEnabled,
+    notification_delivery: normalized.notificationDelivery,
     notification_sound_enabled: normalized.notificationSoundEnabled,
     notification_sound: normalized.notificationSound,
     remote_image_mode: normalized.remoteImageMode,
