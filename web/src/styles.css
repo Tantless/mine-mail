@@ -4056,13 +4056,17 @@ html[data-surface="new-mail-notification"] #root {
 .compose-footer .icon-button {
   width: 34px;
   height: 34px;
-  border-color: color-mix(in srgb, var(--color-border) 74%, transparent);
-  background: var(--color-control);
+  border-color: transparent;
+  background: transparent;
 }
 
 .compose-footer .icon-button:hover:not(:disabled) {
   border-color: color-mix(in srgb, var(--color-primary) 28%, var(--compose-divider));
   background: var(--compose-control-hover);
+}
+
+.compose-footer .icon-button:active:not(:disabled) {
+  border-color: color-mix(in srgb, var(--color-primary) 40%, var(--compose-divider));
 }
 
 .compose-save-state {
@@ -4427,9 +4431,9 @@ html[data-surface="new-mail-notification"] #root {
   align-items: center;
   justify-content: center;
   gap: 1px;
-  border-color: color-mix(in srgb, var(--compose-divider) 72%, transparent);
+  border-color: transparent;
   border-radius: 9px;
-  background: var(--color-control);
+  background: transparent;
   color: var(--color-text-muted);
 }
 
@@ -4442,6 +4446,15 @@ html[data-surface="new-mail-notification"] #root {
 
 .compose-copy-toggle__caret {
   transition: transform var(--motion-fast);
+}
+
+.compose-field .compose-copy-toggle[data-expanded="true"]:not(:hover) {
+  border-color: transparent;
+  background: transparent;
+}
+
+.compose-field .compose-copy-toggle:active:not(:disabled) {
+  border-color: color-mix(in srgb, var(--color-primary) 40%, var(--compose-divider));
 }
 
 .compose-copy-toggle[data-expanded="true"] .compose-copy-toggle__caret {
@@ -4673,7 +4686,7 @@ html[data-surface="new-mail-notification"] #root {
   overflow: hidden;
   border: 1px solid var(--compose-divider);
   border-radius: 12px;
-  background: var(--compose-content-surface);
+  background: var(--compose-paper-surface);
   backdrop-filter: blur(12px) saturate(1.04);
   -webkit-backdrop-filter: blur(12px) saturate(1.04);
   transition: border-color var(--motion-fast), background var(--motion-fast),
@@ -4682,11 +4695,7 @@ html[data-surface="new-mail-notification"] #root {
 
 .compose-editor-shell:focus-within {
   border-color: color-mix(in srgb, var(--color-primary) 46%, var(--compose-divider));
-  background: color-mix(
-    in srgb,
-    var(--compose-content-surface) 82%,
-    var(--compose-control-hover)
-  );
+  background: var(--compose-paper-surface);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 10%, transparent);
 }
 
@@ -4698,7 +4707,7 @@ html[data-surface="new-mail-notification"] #root {
   place-items: center;
   border: 1px solid var(--compose-divider);
   border-radius: 12px;
-  background: var(--compose-content-surface);
+  background: var(--compose-paper-surface);
   color: var(--color-text-muted);
   font-size: 11px;
 }
@@ -5312,9 +5321,17 @@ html[data-surface="new-mail-notification"] #root {
   grid-template-columns: repeat(2, 33px);
   align-items: center;
   overflow: hidden;
-  border: 1px solid color-mix(in srgb, var(--compose-divider) 84%, var(--surface-edge));
+  border: 1px solid transparent;
   border-radius: 999px;
-  background: var(--color-control);
+  background: transparent;
+}
+
+.compose-optimize-split:hover {
+  border-color: color-mix(in srgb, var(--color-primary) 28%, var(--compose-divider));
+}
+
+.compose-optimize-split:active {
+  border-color: color-mix(in srgb, var(--color-primary) 40%, var(--compose-divider));
 }
 
 .compose-footer .compose-optimize-split .icon-button {
@@ -5432,9 +5449,18 @@ html[data-surface="new-mail-notification"] #root {
 }
 
 .compose-ai-toggle.icon-button[aria-pressed="true"] {
-  border-color: color-mix(in srgb, var(--color-primary) 42%, var(--compose-divider));
-  background: color-mix(in srgb, var(--color-primary) 13%, var(--color-control));
+  border-color: transparent;
+  background: transparent;
   color: var(--color-primary);
+}
+
+.compose-ai-toggle.icon-button[aria-pressed="true"]:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--color-primary) 28%, var(--compose-divider));
+  background: var(--compose-control-hover);
+}
+
+.compose-ai-toggle.icon-button[aria-pressed="true"]:active:not(:disabled) {
+  border-color: color-mix(in srgb, var(--color-primary) 40%, var(--compose-divider));
 }
 
 .compose-panel[data-ai-assistant="open"] {
@@ -5825,10 +5851,19 @@ html[data-surface="new-mail-notification"] #root {
 
 .compose-stationery-toggle.icon-button[aria-pressed="true"],
 .compose-stationery-toggle.icon-button[aria-pressed="true"]:hover:not(:disabled) {
+  border-color: transparent;
+  background: transparent;
+  color: var(--color-primary);
+  box-shadow: none;
+}
+
+.compose-stationery-toggle.icon-button[aria-pressed="true"]:hover:not(:disabled) {
   border-color: var(--color-primary);
-  background: var(--color-primary);
-  color: var(--color-on-primary);
-  box-shadow: 0 2px 8px color-mix(in srgb, var(--color-primary) 28%, transparent);
+  background: var(--compose-control-hover);
+}
+
+.compose-stationery-toggle.icon-button[aria-pressed="true"]:active:not(:disabled) {
+  border-color: var(--color-primary);
 }
 
 .compose-stationery-control__options {

@@ -509,12 +509,13 @@ describe("compose page and stationery policy", () => {
     expect(editorShell).toMatch(/border:\s*1px solid var\(--compose-divider\)/);
     expect(editorShell).toMatch(/border-radius:\s*12px/);
     expect(editorShell).toMatch(
-      /background:\s*var\(--compose-content-surface\)/,
+      /background:\s*var\(--compose-paper-surface\)/,
     );
     expect(editorShell).toMatch(/overflow:\s*hidden/);
 
     const editorFocus = declarationsFor("\\.compose-editor-shell:focus-within");
     expect(editorFocus).toMatch(/border-color:/);
+    expect(editorFocus).toMatch(/background:\s*var\(--compose-paper-surface\)/);
     expect(editorFocus).toMatch(/box-shadow:/);
 
     const proseMirrorFocus = declarationsFor(
@@ -838,6 +839,25 @@ describe("release-state accessibility and reflow contracts", () => {
     expect(
       declarationsFor("\\.compose-stationery-toggle\\.icon-button"),
     ).toMatch(/height:\s*34px/);
+    const composeFooterIcon = declarationsFor("\\.compose-footer \\.icon-button");
+    expect(composeFooterIcon).toMatch(/border-color:\s*transparent/);
+    expect(composeFooterIcon).toMatch(/background:\s*transparent/);
+    const composeRecipientToggle = declarationsFor(
+      "\\.compose-field \\.compose-copy-toggle",
+    );
+    expect(composeRecipientToggle).toMatch(/border-color:\s*transparent/);
+    expect(composeRecipientToggle).toMatch(/background:\s*transparent/);
+    const composeOptimize = declarationsFor("\\.compose-optimize-split");
+    expect(composeOptimize).toMatch(/border:\s*1px solid transparent/);
+    expect(composeOptimize).toMatch(/background:\s*transparent/);
+    expect(
+      declarationsFor('\\.compose-ai-toggle\\.icon-button\\[aria-pressed="true"\\]'),
+    ).toMatch(/border-color:\s*transparent[\s\S]*background:\s*transparent/);
+    expect(
+      declarationsFor(
+        '\\.compose-stationery-toggle\\.icon-button\\[aria-pressed="true"\\],\\s*\\r?\\n\\.compose-stationery-toggle\\.icon-button\\[aria-pressed="true"\\]:hover:not\\(:disabled\\)',
+      ),
+    ).toMatch(/border-color:\s*transparent[\s\S]*background:\s*transparent/);
     expect(declarationsFor("\\.compose-icon-segment")).toMatch(
       /border-radius:\s*999px/,
     );

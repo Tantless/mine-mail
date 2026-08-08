@@ -251,7 +251,13 @@ All app-owned color and material decisions flow through custom properties in
   caret; an empty editor has no instructional body placeholder.
 - The footer's icon-only stationery control exposes no paper, lined paper, and
   grid paper plus edit-only or send-with-message behavior. Every mode preserves
-  editor geometry and writing origin. Paper rules scroll with authored content.
+  editor geometry and writing origin. The plain editor and every stationery mode
+  share the same theme-owned paper surface; enabling stationery adds only its
+  lines or grid, without changing the underlying paper color. Paper rules scroll
+  with authored content.
+  Secondary icon controls in compose fields and the footer rest on transparent
+  fills without a visible border. Selected state relies on icon color; the
+  boundary and surface appear only during hover or press feedback.
 - The footer keeps AI editing and conversational work separate. The compact
   optimization split control runs from its primary magic-wand action; its second
   segment opens a small upward prompt surface for optional instructions. A
