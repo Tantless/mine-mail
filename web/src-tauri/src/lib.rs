@@ -1,4 +1,5 @@
 mod account;
+mod ai;
 mod app_update;
 mod contacts;
 mod desktop;
@@ -30,6 +31,10 @@ use url::Url;
 use account::{
     AccountPresetDto, AccountRuntime, AccountStatusDto, BackendState, ConfigureAccountRequest,
     RemoveAccountRequest, RemoveAccountResultDto,
+};
+use ai::{
+    AiContact, AiExecutionContext, AiRuntime, AiSessionDto, AiSessionListItemDto, AiTurnEvent,
+    AiTurnRequest, AiTurnResultDto, record_patch_outcome,
 };
 use contacts::{ContactDirectoryDto, ContactRuntime};
 use desktop::{
@@ -1171,6 +1176,132 @@ fn list_contacts(
     })
 }
 
+fn prepare_ai_execution_context(
+    request: &AiTurnRequest,
+    backend: &BackendState,
+    account: &AccountRuntime,
+    contacts: &ContactRuntime,
+) -> CommandResult<AiExecutionContext> {
+    let active_account_id = backend
+        .active_account_id()
+        .ok_or_else(|| "当前没有可用的邮箱账户。".to_owned())?;
+    if active_account_id != request.draft.account_id {
+        return Err("当前邮箱账户已经变化，请重新发起 AI 请求。".to_owned());
+    }
+    let local = backend.local_for(&active_account_id)?;
+    let (attachments, reply_context, forward_context) =
+        if let Some(draft_id) = request.draft.draft_id.as_deref() {
+            validate_draft_id(draft_id)?;
+            let local_version = request
+                .draft
+                .local_version
+                .ok_or_else(|| "当前草稿缺少可验证的版本。".to_owned())?;
+            let stored = local.draft_dto(draft_id).map_err(safe_mail_error)?;
+            if stored.draft.local_version != local_version {
+                return Err("当前草稿版本已经变化，请重试。".to_owned());
+            }
+            (
+                stored.attachments,
+                stored.draft.reply_context,
+                stored.forward_context,
+            )
+        } else {
+            (
+                Vec::new(),
+                request.draft.compose.reply_context.clone(),
+                None,
+            )
+        };
+    let (sender_email, sender_remark) = account
+        .account_email_and_remark(&active_account_id)
+        .ok_or_else(|| "当前邮箱账户不可用。".to_owned())?;
+    let activity_by_account = account
+        .account_ids()
+        .into_iter()
+        .map(|configured_account_id| {
+            backend
+                .local_for(&configured_account_id)?
+                .list_contact_activity()
+                .map(|activity| (configured_account_id, activity))
+                .map_err(safe_mail_error)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let directory = contacts.list_directory(&active_account_id, activity_by_account)?;
+    let mut seen = std::collections::HashSet::new();
+    let contacts = directory
+        .contacts
+        .into_iter()
+        .chain(directory.favorites)
+        .filter(|contact| seen.insert(contact.email.to_ascii_lowercase()))
+        .map(|contact| AiContact {
+            email: contact.email,
+            display_name: contact.display_name,
+            is_favorite: contact.is_favorite,
+        })
+        .collect();
+    Ok(AiExecutionContext {
+        backend: local,
+        sender_email,
+        sender_remark,
+        contacts,
+        attachments,
+        reply_context,
+        forward_context,
+    })
+}
+
+#[tauri::command]
+fn list_ai_sessions(ai: State<'_, AiRuntime>) -> CommandResult<Vec<AiSessionListItemDto>> {
+    diagnostics::command("list_ai_sessions", DiagnosticFields::default(), || {
+        ai.list_sessions()
+    })
+}
+
+#[tauri::command]
+fn get_ai_session(ai: State<'_, AiRuntime>, session_id: String) -> CommandResult<AiSessionDto> {
+    diagnostics::command("get_ai_session", DiagnosticFields::default(), || {
+        ai.get_session(&session_id)
+    })
+}
+
+#[tauri::command]
+async fn run_ai_turn(
+    ai: State<'_, AiRuntime>,
+    backend: State<'_, BackendState>,
+    account: State<'_, AccountRuntime>,
+    contacts: State<'_, ContactRuntime>,
+    request: AiTurnRequest,
+    on_event: tauri::ipc::Channel<AiTurnEvent>,
+) -> CommandResult<AiTurnResultDto> {
+    let fields = DiagnosticFields::default().account(&request.draft.account_id);
+    diagnostics::command_async("run_ai_turn", fields, async {
+        let ai = ai.inner().clone();
+        let context = prepare_ai_execution_context(&request, &backend, &account, &contacts)?;
+        ai.run_turn(request, context, Some(on_event)).await
+    })
+    .await
+}
+
+#[tauri::command]
+fn record_ai_patch_outcome(
+    request_id: String,
+    account_id: String,
+    draft_id: Option<String>,
+    outcome: String,
+    changed_fields: Vec<String>,
+) -> CommandResult<()> {
+    let fields = DiagnosticFields::default().account(&account_id);
+    diagnostics::command("record_ai_patch_outcome", fields, || {
+        record_patch_outcome(
+            &request_id,
+            &account_id,
+            draft_id.as_deref(),
+            &outcome,
+            &changed_fields,
+        )
+    })
+}
+
 /// Returns only existing message-summary fields plus a portable direction.
 /// Complete body text, sender HTML, and RFC822 bytes are never loaded by this
 /// query or serialized across the Tauri boundary.
@@ -1539,6 +1670,7 @@ fn remove_draft_attachment(
 #[tauri::command]
 fn delete_draft(
     app: AppHandle,
+    ai: State<'_, AiRuntime>,
     backend: State<'_, BackendState>,
     draft_id: String,
     expected_local_version: u64,
@@ -1582,6 +1714,18 @@ fn delete_draft(
             }),
         );
         if kind == DraftDeleteKind::Deleted {
+            if let Some(account_id) = account_id.as_deref()
+                && ai.unbind_draft(account_id, &draft_id).is_err()
+            {
+                diagnostics::warn(
+                    "ai_draft_binding_cleanup_failed",
+                    DiagnosticFields::default()
+                        .operation("ai_draft_unbind")
+                        .account(account_id)
+                        .item("draft", &draft_id)
+                        .error(DiagnosticErrorKind::Database),
+                );
+            }
             diagnostics::emit_event(
                 &app,
                 "mail:drafts-updated",
@@ -1597,6 +1741,7 @@ fn delete_draft(
 #[tauri::command]
 async fn send_draft(
     account: State<'_, AccountRuntime>,
+    ai: State<'_, AiRuntime>,
     backend: State<'_, BackendState>,
     desktop_runtime: State<'_, DesktopRuntime>,
     draft_id: String,
@@ -1646,6 +1791,18 @@ async fn send_draft(
             .await
         {
             Ok(item) => {
+                if let Some(account_id) = account_id.as_deref()
+                    && ai.unbind_draft(account_id, &draft_id).is_err()
+                {
+                    diagnostics::warn(
+                        "ai_draft_binding_cleanup_failed",
+                        DiagnosticFields::default()
+                            .operation("ai_draft_unbind")
+                            .account(account_id)
+                            .item("draft", &draft_id)
+                            .error(DiagnosticErrorKind::Database),
+                    );
+                }
                 diagnostics::info(
                     "send_completed",
                     fields
@@ -2641,6 +2798,7 @@ fn initialize_state(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Erro
     let local_backend_ready = backend.is_local_ready();
     let (desktop, sync_rx, shutdown_rx) = DesktopRuntime::open(&app_data);
     let contacts = ContactRuntime::open(&app_data);
+    let ai = AiRuntime::open(&app_data);
     if let Some(error) = path_error {
         desktop.record_startup_error(error);
     }
@@ -2651,6 +2809,7 @@ fn initialize_state(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Erro
     app.manage(desktop);
     app.manage(mcp::McpRuntime::default());
     app.manage(contacts);
+    app.manage(ai);
     app.manage(storage.runtime);
     app.manage(app_update::AppUpdateRuntime::default());
     let mcp_app = app.handle().clone();
@@ -2817,6 +2976,10 @@ pub fn run() {
             sync_sent,
             sync_all,
             list_contacts,
+            list_ai_sessions,
+            get_ai_session,
+            run_ai_turn,
+            record_ai_patch_outcome,
             list_contact_messages,
             set_contact_favorite,
             set_contact_remark,

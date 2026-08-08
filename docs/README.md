@@ -9,6 +9,10 @@ The repository keeps a small set of canonical documents:
 - [`MAIL_RENDERING.md`](MAIL_RENDERING.md) — mail HTML, MIME, remote content, and
   reply-history safety boundary.
 - [`MCP.md`](MCP.md) — local MCP permissions, tools, and supported-agent setup.
+- [`toolCalling/TOOLS.md`](toolCalling/TOOLS.md) — 内置 AI 工具名、中文说明、
+  权限边界和调用示例。
+- [`toolCalling/AGENT_MODULES.md`](toolCalling/AGENT_MODULES.md) — 写信优化、
+  邮件生成、聊天和自动模式的工具权限与运行约束。
 - [`RELEASE.md`](RELEASE.md) — mutable checklist for the next public release.
 - [`../README.md`](../README.md) — human project overview and development setup.
 

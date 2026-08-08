@@ -265,9 +265,19 @@ All app-owned color and material decisions flow through custom properties in
   boundary and surface appear only during hover or press feedback.
 - The footer keeps AI editing and conversational work separate. The compact
   optimization split control runs from its primary magic-wand action; its second
-  segment opens a small upward prompt surface for optional instructions. A
-  successful optimization exposes one nearby undo action. The adjacent AI
-  assistant control opens or collapses the conversational panel.
+  segment opens a small upward prompt surface for optional instructions. While
+  the request runs only the wand becomes a spinner; compose remains editable.
+  Completion adds a small danger-colored notice dot to the wand without changing
+  the draft. Reopening it shows a large, theme-owned two-pane comparison: the
+  submitted snapshot on the left and AI result on the right. Pure-text removals
+  use a restrained danger tint and additions use a success tint; formatting-only
+  changes are not marked. Both panes remain editable, and text entered during
+  review carries no difference tint. Each pane has one check action, followed by
+  a compact confirmation naming the selected side. The comparison can be
+  minimized without losing it or permanently closed after confirmation. Applying
+  a side backs up the then-live body before replacement and enables the adjacent
+  icon-only undo action; the undo stays visible but disabled without a backup.
+  The adjacent AI assistant control opens or collapses the conversational panel.
 - On wide desktop viewports the AI assistant attaches to and extends the compose
   surface on the right. Defensive narrower layouts overlay it within the compose
   bounds. The panel has two full states: an application-level session list, and

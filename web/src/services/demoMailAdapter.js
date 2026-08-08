@@ -21,6 +21,7 @@ function createDemoState() {
   return {
     messages: structuredClone(demoMessages),
     drafts: structuredClone(demoDrafts),
+    aiSessions: [],
     outbox: [],
     settings: {
       pollingIntervalMinutes: 5,
@@ -480,6 +481,123 @@ function createDemoActions(
   { normalizeSettings, normalizeProfileAvatar, normalizeContact },
 ) {
   return {
+    listAiSessions() {
+      return structuredClone(state.aiSessions).map(
+        ({ messages: _messages, ...session }) => ({ ...session, loaded: false }),
+      );
+    },
+
+    getAiSession(sessionId) {
+      const session = state.aiSessions.find(
+        (candidate) => candidate.id === sessionId,
+      );
+      if (!session) throw new Error("找不到这个 AI 会话");
+      return { ...structuredClone(session), loaded: true };
+    },
+
+    runAiTurn(request, onEvent) {
+      const requestId = crypto.randomUUID();
+      onEvent?.({ type: "started", request_id: requestId, mode: request.mode });
+      const initial = structuredClone(request.draft.compose);
+      let draft = null;
+      const changedFields = [];
+      const instruction = String(request.instruction || "").trim();
+      const shouldWrite =
+        request.mode === "optimize" ||
+        request.mode === "generate" ||
+        (request.mode === "auto" &&
+          /写|生成|回复|填入|改写|优化|润色/.test(instruction));
+      if (shouldWrite) {
+        draft = structuredClone(initial);
+        if (request.mode !== "optimize" && !draft.subject.trim()) {
+          draft.subject = `关于${instruction.slice(0, 18) || "相关事项"}的确认`;
+          changedFields.push("subject");
+        }
+        const source = String(draft.body_text || "").trim();
+        draft.body_text =
+          request.mode === "optimize"
+            ? `${source || "您好，"}\n\n感谢您的时间，期待您的回复。`
+            : `您好，\n\n想就${instruction || "相关事项"}与您确认一下。烦请您在方便时回复。\n\n感谢您的时间。`;
+        draft.format = { ...(draft.format || {}), body_html: null };
+        changedFields.push("body_text");
+        onEvent?.({
+          type: "draft_patch",
+          request_id: requestId,
+          changed_fields: changedFields,
+        });
+      }
+      const assistantMessage = shouldWrite
+        ? "已更新当前草稿。"
+        : "这是离线界面演示；桌面版会按需读取当前草稿后回答。";
+      let session = null;
+      if (request.mode !== "optimize") {
+        const current = request.session_id
+          ? state.aiSessions.find(
+              (candidate) => candidate.id === request.session_id,
+            )
+          : null;
+        const binding = request.draft.draft_id
+          ? {
+              id: request.draft.draft_id,
+              subject: draft?.subject || initial.subject || "无主题",
+            }
+          : null;
+        if (current) {
+          current.lastActive = "刚刚";
+          current.updatedAtMs = Date.now();
+          current.messages.push(
+            { id: crypto.randomUUID(), role: "user", content: instruction },
+            {
+              id: crypto.randomUUID(),
+              role: "assistant",
+              content: assistantMessage,
+            },
+          );
+          if (
+            binding &&
+            !current.drafts.some((item) => item.id === binding.id)
+          ) {
+            current.drafts.push(binding);
+          }
+          session = { ...structuredClone(current), loaded: true };
+        } else {
+          session = {
+            id: crypto.randomUUID(),
+            title: instruction.slice(0, 18) || "新会话",
+            lastActive: "刚刚",
+            updatedAtMs: Date.now(),
+            drafts: binding ? [binding] : [],
+            messages: [
+              { id: crypto.randomUUID(), role: "user", content: instruction },
+              {
+                id: crypto.randomUUID(),
+                role: "assistant",
+                content: assistantMessage,
+              },
+            ],
+            loaded: true,
+          };
+          state.aiSessions.unshift(structuredClone(session));
+        }
+      }
+      onEvent?.({
+        type: "content_delta",
+        request_id: requestId,
+        delta: assistantMessage,
+      });
+      onEvent?.({ type: "completed", request_id: requestId });
+      return {
+        request_id: requestId,
+        session,
+        assistant_message: assistantMessage,
+        draft_revision: request.draft_revision,
+        draft,
+        changed_fields: changedFields,
+      };
+    },
+
+    recordAiPatchOutcome() {},
+
     getMailboxCapabilities(accountId) {
       requireDemoAccount(accountId);
       return structuredClone(state.mailbox.capabilities);
@@ -834,6 +952,10 @@ function createDemoActions(
         return { kind: "stale" };
       }
       state.drafts = state.drafts.filter((draft) => draft.id !== draftId);
+      state.aiSessions = state.aiSessions.map((session) => ({
+        ...session,
+        drafts: session.drafts.filter((draft) => draft.id !== draftId),
+      }));
       return { kind: "deleted" };
     },
 
@@ -988,6 +1110,10 @@ function createDemoActions(
       state.drafts = state.drafts.map((item) =>
         item.id === draftId ? { ...item, status: "sent" } : item,
       );
+      state.aiSessions = state.aiSessions.map((session) => ({
+        ...session,
+        drafts: session.drafts.filter((draft) => draft.id !== draftId),
+      }));
       return structuredClone(result);
     },
 

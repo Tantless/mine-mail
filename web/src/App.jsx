@@ -7936,6 +7936,7 @@ export function App() {
       {composer ? (
         <ComposePanel
           key={composer.sessionId}
+          accountId={activeAccountId}
           value={composer.value}
           draft={composer.persistedDraft}
           draftId={composer.draftId}

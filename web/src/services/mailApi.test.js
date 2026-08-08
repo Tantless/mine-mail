@@ -6,7 +6,12 @@ const ipc = vi.hoisted(() => ({
 }));
 const OPAQUE_MESSAGE_ID = "9f1a7b32-4b55-4d6d-8db7-0e7bf1a32c41";
 
-vi.mock("@tauri-apps/api/core", () => ({ invoke: ipc.invoke }));
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: ipc.invoke,
+  Channel: class MockChannel {
+    onmessage = null;
+  },
+}));
 vi.mock("@tauri-apps/api/event", () => ({ listen: ipc.listen }));
 
 describe("mailApi desktop IPC contract", () => {
@@ -53,6 +58,46 @@ describe("mailApi desktop IPC contract", () => {
       draftId: "draft-7",
       expectedLocalVersion: 8,
       confirmedRecipients: ["friend@example.com"],
+    });
+  });
+
+  it("keeps AI provider access behind one typed desktop command", async () => {
+    ipc.invoke.mockResolvedValue({
+      session: null,
+      assistant_message: "已完成",
+      draft_revision: "revision-1",
+      draft: null,
+      changed_fields: [],
+    });
+    const { mailApi } = await import("./mailApi.js");
+    const request = {
+      mode: "chat",
+      instruction: "概括当前草稿",
+      session_id: null,
+      draft_revision: "revision-1",
+      draft: {
+        account_id: "account-1",
+        draft_id: null,
+        local_version: null,
+        compose: {
+          to: [],
+          cc: [],
+          bcc: [],
+          subject: "",
+          body_text: "",
+          format: {},
+          reply_context: null,
+        },
+        attachments: [],
+        forward_context: null,
+      },
+    };
+
+    await mailApi.runAiTurn(request, vi.fn());
+
+    expect(ipc.invoke).toHaveBeenCalledWith("run_ai_turn", {
+      request,
+      onEvent: expect.objectContaining({ onmessage: expect.any(Function) }),
     });
   });
 

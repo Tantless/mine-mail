@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
   toUserFacingError,
@@ -73,6 +73,7 @@ async function callDemo(method, ...args) {
 }
 
 const commandFailureMessages = Object.freeze({
+  get_ai_session: "AI 会话读取没有完成",
   add_draft_attachments: "添加附件没有完成",
   archive_message: "归档邮件没有完成",
   assign_archive_folder: "归档文件夹设置没有完成",
@@ -89,6 +90,7 @@ const commandFailureMessages = Object.freeze({
   list_contact_messages: "往来邮件读取没有完成",
   list_contacts: "联系人读取没有完成",
   list_archive_folder_candidates: "服务器文件夹读取没有完成",
+  list_ai_sessions: "AI 会话列表读取没有完成",
   list_mailbox_page: "邮件列表读取没有完成",
   load_older_mailbox_page: "更早邮件读取没有完成",
   move_message_to_inbox: "移回收件箱没有完成",
@@ -97,10 +99,12 @@ const commandFailureMessages = Object.freeze({
   prepare_forward: "转发邮件准备没有完成",
   prepare_permanent_delete: "永久删除确认没有完成",
   prepare_reply: "回复邮件准备没有完成",
+  record_ai_patch_outcome: "AI 草稿结果记录没有完成",
   remove_account: "移除邮箱账户没有完成",
   remove_draft_attachment: "移除附件没有完成",
   resolve_delivery_unknown: "投递结果处理没有完成",
   retry_outbox: "重新发送没有完成",
+  run_ai_turn: "AI 请求没有完成",
   save_draft: "草稿保存没有完成",
   save_message_attachment: "附件保存没有完成",
   save_profile_avatar: "头像保存没有完成",
@@ -321,6 +325,34 @@ function normalizeContact(contact = {}) {
   };
 }
 
+function relativeAiTime(value) {
+  const timestamp = Number(value || 0);
+  const elapsed = Math.max(0, Date.now() - timestamp);
+  if (!timestamp || elapsed < 60_000) return "刚刚";
+  if (elapsed < 60 * 60_000) return `${Math.floor(elapsed / 60_000)} 分钟前`;
+  if (elapsed < 24 * 60 * 60_000) {
+    return `${Math.floor(elapsed / (60 * 60_000))} 小时前`;
+  }
+  if (elapsed < 48 * 60 * 60_000) return "昨天";
+  return new Date(timestamp).toLocaleDateString("zh-CN", {
+    month: "numeric",
+    day: "numeric",
+  });
+}
+
+function normalizeAiSession(session = {}) {
+  const summary = session.summary || session;
+  return {
+    id: summary.id,
+    title: summary.title || "新会话",
+    updatedAtMs: Number(summary.updated_at_ms ?? summary.updatedAtMs ?? 0),
+    lastActive: relativeAiTime(summary.updated_at_ms ?? summary.updatedAtMs),
+    drafts: Array.isArray(summary.drafts) ? summary.drafts : [],
+    loaded: Array.isArray(session.messages),
+    messages: Array.isArray(session.messages) ? session.messages : [],
+  };
+}
+
 function profileAvatarRequest(request) {
   return {
     owner_type: request.ownerType,
@@ -330,6 +362,58 @@ function profileAvatarRequest(request) {
 }
 
 export const mailApi = {
+  async listAiSessions() {
+    if (isTauri) {
+      const sessions = await desktopInvoke("list_ai_sessions");
+      return sessions.map(normalizeAiSession);
+    }
+    return callDemo("listAiSessions");
+  },
+
+  async getAiSession(sessionId) {
+    if (isTauri) {
+      return normalizeAiSession(
+        await desktopInvoke("get_ai_session", { sessionId }),
+      );
+    }
+    return callDemo("getAiSession", sessionId);
+  },
+
+  async runAiTurn(request, onEvent = null) {
+    if (isTauri) {
+      const onEventChannel = new Channel();
+      onEventChannel.onmessage = (event) => onEvent?.(event);
+      const result = await desktopInvoke("run_ai_turn", {
+        request,
+        onEvent: onEventChannel,
+      });
+      return {
+        ...result,
+        session: result.session ? normalizeAiSession(result.session) : null,
+      };
+    }
+    return callDemo("runAiTurn", request, onEvent);
+  },
+
+  async recordAiPatchOutcome({
+    requestId,
+    accountId,
+    draftId = null,
+    outcome,
+    changedFields = [],
+  }) {
+    if (isTauri) {
+      return desktopInvoke("record_ai_patch_outcome", {
+        requestId,
+        accountId,
+        draftId,
+        outcome,
+        changedFields,
+      });
+    }
+    return callDemo("recordAiPatchOutcome");
+  },
+
   async getMailboxCapabilities(accountId) {
     if (isTauri) {
       return desktopInvoke("get_mailbox_capabilities", { accountId });
@@ -906,4 +990,5 @@ export const __testing = {
   normalizeAccountStatus,
   normalizeProfileAvatar,
   normalizeContact,
+  normalizeAiSession,
 };

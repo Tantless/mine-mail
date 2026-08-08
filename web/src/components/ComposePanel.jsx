@@ -513,6 +513,7 @@ function StationeryControl({ format, disabled, onChange }) {
 }
 
 export function ComposePanel({
+  accountId = null,
   value,
   draft = null,
   draftId,
@@ -958,6 +959,39 @@ export function ComposePanel({
     Boolean(stableDraftId) &&
     Number.isInteger(localVersion) &&
     localVersion >= 1;
+  const aiDraft = useMemo(() => {
+    if (!accountId) return null;
+    return {
+      account_id: accountId,
+      draft_id: hasStableDraft ? stableDraftId : null,
+      local_version: hasStableDraft ? localVersion : null,
+      compose: {
+        to: value.to || [],
+        cc: value.cc || [],
+        bcc: value.bcc || [],
+        subject: value.subject || "",
+        body_text: value.body_text || "",
+        format: value.format || {
+          body_html: null,
+          stationery: "none",
+          send_stationery: false,
+        },
+        reply_context: value.reply_context || null,
+      },
+      attachments: hasStableDraft ? attachments : [],
+      forward_context: hasStableDraft
+        ? authoritativeDraft?.forward_context || null
+        : null,
+    };
+  }, [
+    accountId,
+    attachments,
+    authoritativeDraft?.forward_context,
+    hasStableDraft,
+    localVersion,
+    stableDraftId,
+    value,
+  ]);
   const addOperation = attachmentOperations.add;
   const removeOperations = attachmentOperations.remove || {};
   const attachmentMutationBusy =
@@ -1637,6 +1671,7 @@ export function ComposePanel({
                   </IconButton>
                 ) : null}
                 <ComposeOptimizeControl
+                  aiDraft={aiDraft}
                   value={value}
                   disabled={controlsDisabled}
                   onApply={onChange}
@@ -1709,6 +1744,7 @@ export function ComposePanel({
         )}
         {!isMinimized && isAiAssistantOpen ? (
           <ComposeAiAssistant
+            aiDraft={aiDraft}
             value={value}
             currentDraft={currentDraftForAi}
             disabled={isBusy}
