@@ -1,11 +1,12 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, RwLock},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+use keyring::Entry;
 use mine_mail::{
     ComposeRequest, DraftAttachmentMeta, ForwardContext, MailBackend, ReplyContext,
     StationeryTheme, normalize_contact_email, sanitize_compose_html,
@@ -16,13 +17,19 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use tauri::ipc::Channel;
 use uuid::Uuid;
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::diagnostics::{self, ErrorKind as DiagnosticErrorKind, Fields as DiagnosticFields};
 
 const AI_DATABASE_NAME: &str = "desktop-ai.sqlite3";
+const AI_KEYRING_SERVICE: &str = "com.minemail.desktop";
+const AI_KEYRING_USERNAME_PREFIX: &str = "agent-api-";
 const DEFAULT_DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com";
 const DEFAULT_DEEPSEEK_MODEL: &str = "deepseek-v4-pro";
+const MAX_BASE_URL_BYTES: usize = 2 * 1024;
+const MAX_API_KEY_BYTES: usize = 16 * 1024;
+const MAX_MODEL_NAME_BYTES: usize = 256;
+const MAX_MODEL_LIST_ITEMS: usize = 1_000;
 const MAX_INSTRUCTION_BYTES: usize = 16 * 1024;
 const MAX_BODY_TEXT_BYTES: usize = 512 * 1024;
 const MAX_BODY_HTML_BYTES: usize = 512 * 1024;
@@ -36,6 +43,225 @@ const MAX_PROVIDER_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_TEXT_ATTACHMENT_BYTES: u64 = 256 * 1024;
 const MAX_SESSION_HISTORY_MESSAGES: usize = 24;
 const MAX_SESSIONS: usize = 100;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProviderProtocol {
+    OpenAi,
+    Anthropic,
+}
+
+#[derive(Clone, Copy)]
+struct ProviderPreset {
+    id: &'static str,
+    label: &'static str,
+    base_url: &'static str,
+    environment_variable: &'static str,
+    protocol: ProviderProtocol,
+    supports_images: bool,
+    default_models: &'static [&'static str],
+}
+
+const PROVIDER_PRESETS: &[ProviderPreset] = &[
+    ProviderPreset {
+        id: "custom",
+        label: "自定义",
+        base_url: "",
+        environment_variable: "AI_API_KEY",
+        protocol: ProviderProtocol::OpenAi,
+        supports_images: false,
+        default_models: &[],
+    },
+    ProviderPreset {
+        id: "deepseek",
+        label: "DeepSeek",
+        base_url: "https://api.deepseek.com",
+        environment_variable: "DEEPSEEK_API_KEY",
+        protocol: ProviderProtocol::OpenAi,
+        supports_images: false,
+        default_models: &["deepseek-v4-flash", "deepseek-v4-pro"],
+    },
+    ProviderPreset {
+        id: "kimi",
+        label: "Kimi",
+        base_url: "https://api.moonshot.cn/v1",
+        environment_variable: "MOONSHOT_API_KEY",
+        protocol: ProviderProtocol::OpenAi,
+        supports_images: true,
+        default_models: &["kimi-k2.6", "kimi-k3"],
+    },
+    ProviderPreset {
+        id: "openai",
+        label: "OpenAI",
+        base_url: "https://api.openai.com/v1",
+        environment_variable: "OPENAI_API_KEY",
+        protocol: ProviderProtocol::OpenAi,
+        supports_images: true,
+        default_models: &["gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"],
+    },
+    ProviderPreset {
+        id: "anthropic",
+        label: "Anthropic",
+        base_url: "https://api.anthropic.com",
+        environment_variable: "ANTHROPIC_API_KEY",
+        protocol: ProviderProtocol::Anthropic,
+        supports_images: true,
+        default_models: &[
+            "claude-haiku-4-5",
+            "claude-sonnet-5",
+            "claude-opus-4-8",
+            "claude-fable-5",
+        ],
+    },
+    ProviderPreset {
+        id: "qwen",
+        label: "通义千问",
+        base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        environment_variable: "DASHSCOPE_API_KEY",
+        protocol: ProviderProtocol::OpenAi,
+        supports_images: true,
+        default_models: &["qwen3.6-flash", "qwen3.7-plus", "qwen3.7-max"],
+    },
+    ProviderPreset {
+        id: "mimo",
+        label: "Xiaomi MiMo",
+        base_url: "https://api.xiaomimimo.com/v1",
+        environment_variable: "MIMO_API_KEY",
+        protocol: ProviderProtocol::OpenAi,
+        supports_images: true,
+        default_models: &["mimo-v2.5", "mimo-v2.5-pro"],
+    },
+    ProviderPreset {
+        id: "minimax",
+        label: "MiniMax",
+        base_url: "https://api.minimaxi.com/v1",
+        environment_variable: "MINIMAX_API_KEY",
+        protocol: ProviderProtocol::OpenAi,
+        supports_images: true,
+        default_models: &["MiniMax-M2.7-highspeed", "MiniMax-M2.7"],
+    },
+    ProviderPreset {
+        id: "modelscope",
+        label: "ModelScope",
+        base_url: "https://api-inference.modelscope.cn/v1",
+        environment_variable: "MODELSCOPE_SDK_TOKEN",
+        protocol: ProviderProtocol::OpenAi,
+        supports_images: true,
+        default_models: &["Qwen/Qwen3.5-35B-A3B", "Qwen/Qwen3.5-397B-A17B"],
+    },
+    ProviderPreset {
+        id: "doubaoseed",
+        label: "豆包 Seed",
+        base_url: "https://ark.cn-beijing.volces.com/api/v3",
+        environment_variable: "ARK_API_KEY",
+        protocol: ProviderProtocol::OpenAi,
+        supports_images: true,
+        default_models: &[
+            "doubao-seed-2-0-lite-260428",
+            "doubao-seed-2-0-mini-260428",
+            "doubao-seed-2-0-pro-260215",
+        ],
+    },
+    ProviderPreset {
+        id: "glm",
+        label: "智谱 GLM",
+        base_url: "https://open.bigmodel.cn/api/paas/v4",
+        environment_variable: "ZAI_API_KEY",
+        protocol: ProviderProtocol::OpenAi,
+        supports_images: true,
+        default_models: &["glm-4.7-flash", "glm-5-turbo", "glm-5.1"],
+    },
+    ProviderPreset {
+        id: "openrouter",
+        label: "OpenRouter",
+        base_url: "https://openrouter.ai/api/v1",
+        environment_variable: "OPENROUTER_API_KEY",
+        protocol: ProviderProtocol::OpenAi,
+        supports_images: true,
+        default_models: &[
+            "openrouter/auto",
+            "~anthropic/claude-sonnet-latest",
+            "~openai/gpt-latest",
+        ],
+    },
+];
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AiProviderPresetDto {
+    pub id: String,
+    pub label: String,
+    pub base_url: String,
+    pub environment_variable: String,
+    pub models: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AiConfigDto {
+    pub provider_id: String,
+    pub base_url: String,
+    pub model_name: String,
+    pub use_environment_key: bool,
+    pub has_stored_api_key: bool,
+    pub has_environment_api_key: bool,
+    pub environment_variable: String,
+    pub presets: Vec<AiProviderPresetDto>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SaveAiConfigRequest {
+    pub provider_id: String,
+    pub base_url: String,
+    pub model_name: String,
+    pub use_environment_key: bool,
+    #[serde(default)]
+    pub api_key: Option<String>,
+}
+
+impl Drop for SaveAiConfigRequest {
+    fn drop(&mut self) {
+        self.api_key.zeroize();
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CheckAiConnectionRequest {
+    pub provider_id: String,
+    pub base_url: String,
+    #[serde(default)]
+    pub model_name: String,
+    pub use_environment_key: bool,
+    #[serde(default)]
+    pub api_key: Option<String>,
+}
+
+impl Drop for CheckAiConnectionRequest {
+    fn drop(&mut self) {
+        self.api_key.zeroize();
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AiModelListDto {
+    pub models: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AiConnectionTestDto {
+    pub latency_ms: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct StoredAiConfig {
+    provider_id: String,
+    base_url: String,
+    model_name: String,
+    use_environment_key: bool,
+}
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -190,7 +416,11 @@ pub(crate) struct AiExecutionContext {
 #[derive(Clone)]
 pub(crate) struct AiRuntime {
     store: Option<AiStore>,
-    provider: Option<DeepSeekProvider>,
+    provider_state: Arc<RwLock<ProviderState>>,
+}
+
+struct ProviderState {
+    provider: Option<AiProvider>,
     provider_error: Option<String>,
 }
 
@@ -206,13 +436,17 @@ impl AiRuntime {
                 DiagnosticFields::default().error(DiagnosticErrorKind::Database),
             );
         }
-        let (provider, provider_error) = match DeepSeekProvider::from_env() {
+        let config = store
+            .as_ref()
+            .and_then(|store| store.load_config().ok().flatten())
+            .unwrap_or_else(development_config);
+        let (provider, provider_error) = match AiProvider::from_stored_config(&config) {
             Ok(provider) => (Some(provider), None),
             Err(error) => {
                 diagnostics::warn(
                     "ai_provider_unavailable",
                     DiagnosticFields::default()
-                        .provider("deepseek")
+                        .provider(provider_preset(&config.provider_id).map_or("custom", |p| p.id))
                         .error(DiagnosticErrorKind::Config),
                 );
                 (None, Some(error))
@@ -220,9 +454,113 @@ impl AiRuntime {
         };
         Self {
             store,
-            provider,
-            provider_error,
+            provider_state: Arc::new(RwLock::new(ProviderState {
+                provider,
+                provider_error,
+            })),
         }
+    }
+
+    pub(crate) fn get_config(&self) -> Result<AiConfigDto, String> {
+        let store = self.store()?;
+        let config = store
+            .load_config()
+            .map_err(ai_store_error)?
+            .unwrap_or_else(development_config);
+        let provider_models = store.load_provider_models().map_err(ai_store_error)?;
+        config_dto(&config, &provider_models)
+    }
+
+    pub(crate) fn save_config(
+        &self,
+        mut request: SaveAiConfigRequest,
+    ) -> Result<AiConfigDto, String> {
+        let config = validate_stored_config(
+            &request.provider_id,
+            &request.base_url,
+            &request.model_name,
+            request.use_environment_key,
+        )?;
+        let preset =
+            provider_preset(&config.provider_id).ok_or_else(|| "AI 供应商配置无效。".to_owned())?;
+        let supplied_key = request
+            .api_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let credential_change = if config.use_environment_key {
+            None
+        } else {
+            let entry = ai_keyring_entry(preset.id)?;
+            let previous_key = read_ai_credential(&entry)?;
+            if let Some(api_key) = supplied_key {
+                validate_api_key(api_key)?;
+                entry
+                    .set_password(api_key)
+                    .map_err(|_| "无法把 API Key 保存到系统凭据库。".to_owned())?;
+            } else if previous_key.is_none() {
+                request.api_key.zeroize();
+                return Err("请输入 API Key，或改为从系统环境变量读取。".to_owned());
+            }
+            Some((entry, previous_key))
+        };
+
+        if let Err(error) = self.store()?.save_config(&config) {
+            if let Some((entry, previous_key)) = credential_change.as_ref() {
+                restore_ai_credential(entry, previous_key.as_ref())?;
+            }
+            request.api_key.zeroize();
+            return Err(ai_store_error(error));
+        }
+        request.api_key.zeroize();
+
+        let (provider, provider_error) = match AiProvider::from_stored_config(&config) {
+            Ok(provider) => (Some(provider), None),
+            Err(error) => (None, Some(error)),
+        };
+        let mut state = self
+            .provider_state
+            .write()
+            .map_err(|_| "AI 配置状态暂时不可用，请重试。".to_owned())?;
+        state.provider = provider;
+        state.provider_error = provider_error;
+        drop(state);
+        diagnostics::info(
+            "ai_config_saved",
+            DiagnosticFields::default()
+                .operation("ai_config")
+                .provider(preset.id)
+                .model(&config.model_name)
+                .outcome("saved"),
+        );
+        let provider_models = self
+            .store()?
+            .load_provider_models()
+            .map_err(ai_store_error)?;
+        config_dto(&config, &provider_models)
+    }
+
+    pub(crate) async fn list_models(
+        &self,
+        mut request: CheckAiConnectionRequest,
+    ) -> Result<AiModelListDto, String> {
+        let provider = AiProvider::from_check_request(&request, false)?;
+        request.api_key.zeroize();
+        let models = provider.list_models().await?;
+        self.store()?
+            .save_provider_models(&provider.provider.id, &models)
+            .map_err(ai_store_error)?;
+        Ok(AiModelListDto { models })
+    }
+
+    pub(crate) async fn test_connection(
+        &self,
+        mut request: CheckAiConnectionRequest,
+    ) -> Result<AiConnectionTestDto, String> {
+        let provider = AiProvider::from_check_request(&request, true)?;
+        request.api_key.zeroize();
+        let latency_ms = provider.test_connection().await?;
+        Ok(AiConnectionTestDto { latency_ms })
     }
 
     pub(crate) fn list_sessions(&self) -> Result<Vec<AiSessionListItemDto>, String> {
@@ -246,11 +584,17 @@ impl AiRuntime {
         events: Option<Channel<AiTurnEvent>>,
     ) -> Result<AiTurnResultDto, String> {
         validate_turn_request(&request)?;
-        let provider = self.provider.as_ref().ok_or_else(|| {
-            self.provider_error
-                .clone()
-                .unwrap_or_else(|| "AI 服务尚未配置，请在开发环境中提供 API_KEY。".to_owned())
-        })?;
+        let provider = {
+            let state = self
+                .provider_state
+                .read()
+                .map_err(|_| "AI 配置状态暂时不可用，请重试。".to_owned())?;
+            state.provider.clone().ok_or_else(|| {
+                state.provider_error.clone().unwrap_or_else(|| {
+                    "AI 服务尚未配置，请前往“设置 > Agent 配置”完成模型配置。".to_owned()
+                })
+            })?
+        };
         let store = self.store()?;
         let operation_id = diagnostics::operation_id();
         let request_id = operation_id.as_str().to_owned();
@@ -265,7 +609,7 @@ impl AiRuntime {
         let mut fields = DiagnosticFields::default()
             .operation_id(operation_id.clone())
             .operation("ai_turn")
-            .provider("deepseek")
+            .provider(provider.provider.id)
             .model(&provider.model)
             .mode(request.mode.as_str())
             .account(&request.draft.account_id)
@@ -304,7 +648,7 @@ impl AiRuntime {
         }));
 
         let final_content = match run_tool_loop(
-            provider,
+            &provider,
             request.mode,
             &request_id,
             operation_id,
@@ -532,47 +876,95 @@ fn load_development_env() {
 }
 
 #[derive(Clone)]
-struct DeepSeekProvider {
+struct AiProvider {
     client: Client,
     api_key: Arc<Zeroizing<String>>,
+    provider: ProviderPreset,
+    base_url: Url,
     endpoint: Url,
     model: String,
     supports_images: bool,
 }
 
-impl DeepSeekProvider {
-    fn from_env() -> Result<Self, String> {
-        let api_key = std::env::var("API_KEY")
-            .ok()
-            .filter(|value| !value.trim().is_empty())
-            .ok_or_else(|| "AI 服务尚未配置，请在开发环境中提供 API_KEY。".to_owned())?;
-        let model = std::env::var("MODEL_NAME")
-            .ok()
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| DEFAULT_DEEPSEEK_MODEL.to_owned());
-        if model.len() > 128 || model.chars().any(char::is_control) {
-            return Err("AI 模型配置无效。".to_owned());
-        }
-        let base_url = std::env::var("AI_BASE_URL")
-            .ok()
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| DEFAULT_DEEPSEEK_BASE_URL.to_owned());
-        let endpoint = provider_endpoint(&base_url)?;
+impl AiProvider {
+    fn from_stored_config(config: &StoredAiConfig) -> Result<Self, String> {
+        let preset =
+            provider_preset(&config.provider_id).ok_or_else(|| "AI 供应商配置无效。".to_owned())?;
+        let api_key = resolve_configured_api_key(config, preset)?;
+        Self::new(config, preset, api_key)
+    }
+
+    fn from_check_request(
+        request: &CheckAiConnectionRequest,
+        require_model: bool,
+    ) -> Result<Self, String> {
+        let config = validate_connection_config(
+            &request.provider_id,
+            &request.base_url,
+            &request.model_name,
+            request.use_environment_key,
+            require_model,
+        )?;
+        let preset =
+            provider_preset(&config.provider_id).ok_or_else(|| "AI 供应商配置无效。".to_owned())?;
+        let api_key = if config.use_environment_key {
+            read_environment_api_key(preset)?
+        } else if let Some(value) = request
+            .api_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            validate_api_key(value)?;
+            Zeroizing::new(value.to_owned())
+        } else {
+            read_ai_credential(&ai_keyring_entry(preset.id)?)?.ok_or_else(|| {
+                "尚未保存 API Key，请先输入密钥或改为从系统环境变量读取。".to_owned()
+            })?
+        };
+        Self::new(&config, preset, api_key)
+    }
+
+    fn new(
+        config: &StoredAiConfig,
+        provider: ProviderPreset,
+        api_key: Zeroizing<String>,
+    ) -> Result<Self, String> {
+        let base_url = validate_base_url(&config.base_url)?;
+        let endpoint = match provider.protocol {
+            ProviderProtocol::OpenAi => append_endpoint(&base_url, "chat/completions")?,
+            ProviderProtocol::Anthropic => append_endpoint(&base_url, "v1/messages")?,
+        };
         let client = Client::builder()
             .connect_timeout(Duration::from_secs(15))
             .timeout(Duration::from_secs(90))
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|_| "AI 网络客户端初始化失败。".to_owned())?;
         Ok(Self {
             client,
-            api_key: Arc::new(Zeroizing::new(api_key)),
+            api_key: Arc::new(api_key),
+            provider,
+            base_url,
             endpoint,
-            model,
-            supports_images: false,
+            model: config.model_name.clone(),
+            supports_images: provider.supports_images,
         })
     }
 
     async fn complete(
+        &self,
+        messages: &[Value],
+        tools: &[ToolSpec],
+        trace: ProviderTrace,
+    ) -> Result<ProviderTurn, String> {
+        match self.provider.protocol {
+            ProviderProtocol::OpenAi => self.complete_openai(messages, tools, trace).await,
+            ProviderProtocol::Anthropic => self.complete_anthropic(messages, tools, trace).await,
+        }
+    }
+
+    async fn complete_openai(
         &self,
         messages: &[Value],
         tools: &[ToolSpec],
@@ -692,25 +1084,706 @@ impl DeepSeekProvider {
             finish_reason,
         })
     }
+
+    async fn complete_anthropic(
+        &self,
+        messages: &[Value],
+        tools: &[ToolSpec],
+        trace: ProviderTrace,
+    ) -> Result<ProviderTurn, String> {
+        let (system, messages) = anthropic_messages(messages)?;
+        let mut payload = json!({
+            "model": self.model,
+            "system": system,
+            "messages": messages,
+            "max_tokens": 8192,
+            "stream": false,
+        });
+        if !tools.is_empty() {
+            payload["tools"] = Value::Array(
+                tools
+                    .iter()
+                    .map(|tool| {
+                        json!({
+                            "name": tool.name,
+                            "description": tool.description,
+                            "input_schema": tool.parameters,
+                        })
+                    })
+                    .collect(),
+            );
+        }
+        let request_bytes =
+            serde_json::to_vec(&payload).map_err(|_| "AI 请求序列化失败。".to_owned())?;
+        if request_bytes.len() > MAX_PROVIDER_REQUEST_BYTES {
+            return Err("AI 请求上下文过大，已停止处理。".to_owned());
+        }
+        let request_bytes = request_bytes.len() as u64;
+        let started = Instant::now();
+        diagnostics::info(
+            "ai_provider_request_started",
+            trace
+                .fields()
+                .attempt(trace.round as u64)
+                .payload_bytes(request_bytes, 0),
+        );
+        let response = self
+            .client
+            .post(self.endpoint.clone())
+            .header("x-api-key", self.api_key.as_str())
+            .header("anthropic-version", "2023-06-01")
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|error| provider_network_error(error, &trace, request_bytes, started))?;
+        let status = response.status();
+        let response_bytes = response
+            .bytes()
+            .await
+            .map_err(|_| "AI 服务响应读取失败，请重试。".to_owned())?;
+        if response_bytes.len() > MAX_PROVIDER_RESPONSE_BYTES {
+            return Err("AI 服务返回的数据过大，已停止处理。".to_owned());
+        }
+        if !status.is_success() {
+            diagnostics::error(
+                "ai_provider_response_rejected",
+                trace
+                    .fields()
+                    .attempt(trace.round as u64)
+                    .payload_bytes(request_bytes, response_bytes.len() as u64)
+                    .duration(started.elapsed())
+                    .error(DiagnosticErrorKind::Runtime),
+            );
+            return Err(format!(
+                "AI 服务暂时不可用（HTTP {}），请稍后重试。",
+                status.as_u16()
+            ));
+        }
+        let response_value: Value = serde_json::from_slice(&response_bytes)
+            .map_err(|_| "AI 服务返回了无法识别的数据。".to_owned())?;
+        let blocks = response_value
+            .get("content")
+            .and_then(Value::as_array)
+            .ok_or_else(|| "AI 服务没有返回可用结果。".to_owned())?;
+        let mut content = String::new();
+        let mut tool_calls = Vec::new();
+        for block in blocks {
+            match block.get("type").and_then(Value::as_str) {
+                Some("text") => {
+                    if let Some(text) = block.get("text").and_then(Value::as_str) {
+                        content.push_str(text);
+                    }
+                }
+                Some("tool_use") => {
+                    let id = block
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| "AI 工具调用缺少标识。".to_owned())?;
+                    let name = block
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| "AI 工具调用缺少名称。".to_owned())?;
+                    let arguments = serde_json::to_string(
+                        block.get("input").unwrap_or(&Value::Object(Map::new())),
+                    )
+                    .map_err(|_| "AI 工具参数格式无效。".to_owned())?;
+                    tool_calls.push(json!({
+                        "id": id,
+                        "type": "function",
+                        "function": { "name": name, "arguments": arguments },
+                    }));
+                }
+                _ => {}
+            }
+        }
+        let stop_reason = response_value
+            .get("stop_reason")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let finish_reason = if tool_calls.is_empty() {
+            normalized_finish_reason(Some(stop_reason))
+        } else {
+            "tool_calls"
+        };
+        let mut message = Map::new();
+        message.insert("role".to_owned(), Value::String("assistant".to_owned()));
+        message.insert("content".to_owned(), Value::String(content));
+        if !tool_calls.is_empty() {
+            message.insert("tool_calls".to_owned(), Value::Array(tool_calls));
+        }
+        let usage = response_value.get("usage").and_then(Value::as_object);
+        let input_tokens = usage
+            .and_then(|usage| usage.get("input_tokens"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let output_tokens = usage
+            .and_then(|usage| usage.get("output_tokens"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        diagnostics::info(
+            "ai_provider_request_completed",
+            trace
+                .fields()
+                .attempt(trace.round as u64)
+                .payload_bytes(request_bytes, response_bytes.len() as u64)
+                .tokens(input_tokens, output_tokens)
+                .finish_reason(finish_reason)
+                .duration(started.elapsed())
+                .outcome("completed"),
+        );
+        Ok(ProviderTurn {
+            message,
+            finish_reason,
+        })
+    }
+
+    async fn list_models(&self) -> Result<Vec<String>, String> {
+        let endpoint = match self.provider.protocol {
+            ProviderProtocol::OpenAi => append_endpoint(&self.base_url, "models")?,
+            ProviderProtocol::Anthropic => append_endpoint(&self.base_url, "v1/models")?,
+        };
+        let started = Instant::now();
+        diagnostics::info(
+            "ai_model_list_started",
+            DiagnosticFields::default()
+                .operation("ai_model_list")
+                .provider(self.provider.id),
+        );
+        let request = self.client.get(endpoint);
+        let request = match self.provider.protocol {
+            ProviderProtocol::OpenAi => request.bearer_auth(self.api_key.as_str()),
+            ProviderProtocol::Anthropic => request
+                .header("x-api-key", self.api_key.as_str())
+                .header("anthropic-version", "2023-06-01"),
+        };
+        let response = request.send().await.map_err(|error| {
+            diagnostics::error(
+                "ai_model_list_failed",
+                DiagnosticFields::default()
+                    .operation("ai_model_list")
+                    .provider(self.provider.id)
+                    .duration(started.elapsed())
+                    .error(if error.is_timeout() {
+                        DiagnosticErrorKind::Timeout
+                    } else {
+                        DiagnosticErrorKind::Runtime
+                    }),
+            );
+            if error.is_timeout() {
+                "检索模型超时，请重试。".to_owned()
+            } else {
+                "无法连接模型服务，请检查网络和服务地址。".to_owned()
+            }
+        })?;
+        let status = response.status();
+        let response_bytes = response
+            .bytes()
+            .await
+            .map_err(|_| "模型列表响应读取失败，请重试。".to_owned())?;
+        if response_bytes.len() > MAX_PROVIDER_RESPONSE_BYTES {
+            return Err("模型列表返回的数据过大，已停止处理。".to_owned());
+        }
+        if !status.is_success() {
+            diagnostics::error(
+                "ai_model_list_failed",
+                DiagnosticFields::default()
+                    .operation("ai_model_list")
+                    .provider(self.provider.id)
+                    .duration(started.elapsed())
+                    .error(DiagnosticErrorKind::Runtime),
+            );
+            return Err(format!(
+                "模型列表检索失败（HTTP {}）。该供应商可能未开放模型列表接口。",
+                status.as_u16()
+            ));
+        }
+        let response_value: Value = serde_json::from_slice(&response_bytes)
+            .map_err(|_| "模型列表返回了无法识别的数据。".to_owned())?;
+        let models = response_value
+            .get("data")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|model| model.get("id").and_then(Value::as_str))
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        let models = normalize_model_list(models);
+        if models.is_empty() {
+            return Err("供应商没有返回可选模型，请手动填写模型名称。".to_owned());
+        }
+        diagnostics::info(
+            "ai_model_list_completed",
+            DiagnosticFields::default()
+                .operation("ai_model_list")
+                .provider(self.provider.id)
+                .changes(models.len())
+                .duration(started.elapsed())
+                .outcome("completed"),
+        );
+        Ok(models)
+    }
+
+    async fn test_connection(&self) -> Result<u64, String> {
+        let started = Instant::now();
+        diagnostics::info(
+            "ai_connection_test_started",
+            DiagnosticFields::default()
+                .operation("ai_connection_test")
+                .provider(self.provider.id)
+                .model(&self.model),
+        );
+        let payload = match self.provider.protocol {
+            ProviderProtocol::OpenAi => json!({
+                "model": self.model,
+                "messages": [{ "role": "user", "content": "仅回复 OK" }],
+                "max_tokens": 8,
+                "stream": false,
+            }),
+            ProviderProtocol::Anthropic => json!({
+                "model": self.model,
+                "messages": [{ "role": "user", "content": "仅回复 OK" }],
+                "max_tokens": 8,
+                "stream": false,
+            }),
+        };
+        let request = self.client.post(self.endpoint.clone()).json(&payload);
+        let request = match self.provider.protocol {
+            ProviderProtocol::OpenAi => request.bearer_auth(self.api_key.as_str()),
+            ProviderProtocol::Anthropic => request
+                .header("x-api-key", self.api_key.as_str())
+                .header("anthropic-version", "2023-06-01"),
+        };
+        let response = request.send().await.map_err(|error| {
+            diagnostics::error(
+                "ai_connection_test_failed",
+                DiagnosticFields::default()
+                    .operation("ai_connection_test")
+                    .provider(self.provider.id)
+                    .model(&self.model)
+                    .duration(started.elapsed())
+                    .error(if error.is_timeout() {
+                        DiagnosticErrorKind::Timeout
+                    } else {
+                        DiagnosticErrorKind::Runtime
+                    }),
+            );
+            if error.is_timeout() {
+                "连接测试超时，请检查模型服务后重试。".to_owned()
+            } else {
+                "连接测试失败，请检查网络和服务地址。".to_owned()
+            }
+        })?;
+        let status = response.status();
+        let response_bytes = response
+            .bytes()
+            .await
+            .map_err(|_| "连接测试响应读取失败，请重试。".to_owned())?;
+        if response_bytes.len() > MAX_PROVIDER_RESPONSE_BYTES {
+            return Err("连接测试返回的数据过大，已停止处理。".to_owned());
+        }
+        if !status.is_success() {
+            diagnostics::error(
+                "ai_connection_test_failed",
+                DiagnosticFields::default()
+                    .operation("ai_connection_test")
+                    .provider(self.provider.id)
+                    .model(&self.model)
+                    .duration(started.elapsed())
+                    .error(DiagnosticErrorKind::Runtime),
+            );
+            return Err(format!(
+                "连接测试失败（HTTP {}），请检查 API Key 和模型名称。",
+                status.as_u16()
+            ));
+        }
+        let _: Value = serde_json::from_slice(&response_bytes)
+            .map_err(|_| "连接测试返回了无法识别的数据。".to_owned())?;
+        let latency_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
+        diagnostics::info(
+            "ai_connection_test_completed",
+            DiagnosticFields::default()
+                .operation("ai_connection_test")
+                .provider(self.provider.id)
+                .model(&self.model)
+                .duration(started.elapsed())
+                .outcome("completed"),
+        );
+        Ok(latency_ms)
+    }
 }
 
-fn provider_endpoint(base_url: &str) -> Result<Url, String> {
-    let mut url = Url::parse(base_url.trim()).map_err(|_| "AI 服务地址无效。".to_owned())?;
+fn normalize_model_list(models: impl IntoIterator<Item = String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut models = models
+        .into_iter()
+        .map(|model| model.trim().to_owned())
+        .filter(|model| {
+            !model.is_empty()
+                && model.len() <= MAX_MODEL_NAME_BYTES
+                && !model.chars().any(char::is_control)
+                && seen.insert(model.clone())
+        })
+        .take(MAX_MODEL_LIST_ITEMS)
+        .collect::<Vec<_>>();
+    models.sort_by_key(|model| model_size_priority(model));
+    models
+}
+
+fn model_size_priority(model: &str) -> u8 {
+    let model = model.to_ascii_lowercase();
+    let minimax = model.contains("minimax");
+    if model.contains("flash")
+        || model.contains("highspeed")
+        || model.contains("haiku")
+        || model.contains("nano")
+        || model.contains("luna")
+        || model.contains("lite")
+        || model.contains("air")
+        || model.contains("turbo")
+        || (!minimax && model.contains("mini"))
+    {
+        return 0;
+    }
+    if model.contains("pro")
+        || model.contains("opus")
+        || model.contains("fable")
+        || model.contains("sol")
+        || model.contains("397b")
+        || (!minimax && model.contains("max"))
+    {
+        return 2;
+    }
+    1
+}
+
+fn provider_network_error(
+    error: reqwest::Error,
+    trace: &ProviderTrace,
+    request_bytes: u64,
+    started: Instant,
+) -> String {
+    diagnostics::error(
+        "ai_provider_request_failed",
+        trace
+            .fields()
+            .attempt(trace.round as u64)
+            .payload_bytes(request_bytes, 0)
+            .duration(started.elapsed())
+            .error(if error.is_timeout() {
+                DiagnosticErrorKind::Timeout
+            } else {
+                DiagnosticErrorKind::Runtime
+            }),
+    );
+    if error.is_timeout() {
+        "AI 服务响应超时，请重试。".to_owned()
+    } else {
+        "无法连接 AI 服务，请检查网络后重试。".to_owned()
+    }
+}
+
+fn validate_base_url(base_url: &str) -> Result<Url, String> {
+    let trimmed = base_url.trim();
+    if trimmed.is_empty() || trimmed.len() > MAX_BASE_URL_BYTES {
+        return Err("AI 服务地址无效。".to_owned());
+    }
+    let mut url = Url::parse(trimmed).map_err(|_| "AI 服务地址无效。".to_owned())?;
     if url.scheme() != "https"
         && !(url.scheme() == "http"
             && matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "::1")))
     {
         return Err("AI 服务地址必须使用 HTTPS；仅本机调试地址可使用 HTTP。".to_owned());
     }
-    if !url
-        .path()
-        .trim_end_matches('/')
-        .ends_with("/chat/completions")
+    if url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
     {
-        let path = format!("{}/chat/completions", url.path().trim_end_matches('/'));
-        url.set_path(&path);
+        return Err("AI 服务地址不能包含凭据、查询参数或片段。".to_owned());
     }
+    url.set_query(None);
+    url.set_fragment(None);
     Ok(url)
+}
+
+fn append_endpoint(base_url: &Url, suffix: &str) -> Result<Url, String> {
+    let mut url = base_url.clone();
+    let current = url.path().trim_end_matches('/');
+    if current.ends_with(&format!("/{suffix}")) {
+        return Ok(url);
+    }
+    let path = format!("{current}/{suffix}");
+    url.set_path(&path);
+    Ok(url)
+}
+
+fn provider_preset(provider_id: &str) -> Option<ProviderPreset> {
+    PROVIDER_PRESETS
+        .iter()
+        .copied()
+        .find(|preset| preset.id == provider_id)
+}
+
+fn development_config() -> StoredAiConfig {
+    StoredAiConfig {
+        provider_id: "deepseek".to_owned(),
+        base_url: std::env::var("AI_BASE_URL")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| DEFAULT_DEEPSEEK_BASE_URL.to_owned()),
+        model_name: std::env::var("MODEL_NAME")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| DEFAULT_DEEPSEEK_MODEL.to_owned()),
+        use_environment_key: true,
+    }
+}
+
+fn config_dto(
+    config: &StoredAiConfig,
+    provider_models: &HashMap<String, Vec<String>>,
+) -> Result<AiConfigDto, String> {
+    let preset =
+        provider_preset(&config.provider_id).ok_or_else(|| "AI 供应商配置无效。".to_owned())?;
+    let has_stored_api_key =
+        match ai_keyring_entry(preset.id).and_then(|entry| read_ai_credential(&entry)) {
+            Ok(credential) => credential.is_some(),
+            Err(_) => {
+                diagnostics::warn(
+                    "ai_credential_status_unavailable",
+                    DiagnosticFields::default()
+                        .operation("ai_config")
+                        .provider(preset.id)
+                        .error(DiagnosticErrorKind::Config),
+                );
+                false
+            }
+        };
+    let has_environment_api_key = environment_api_key(preset).is_some();
+    Ok(AiConfigDto {
+        provider_id: config.provider_id.clone(),
+        base_url: config.base_url.clone(),
+        model_name: config.model_name.clone(),
+        use_environment_key: config.use_environment_key,
+        has_stored_api_key,
+        has_environment_api_key,
+        environment_variable: preset.environment_variable.to_owned(),
+        presets: PROVIDER_PRESETS
+            .iter()
+            .map(|preset| AiProviderPresetDto {
+                id: preset.id.to_owned(),
+                label: preset.label.to_owned(),
+                base_url: preset.base_url.to_owned(),
+                environment_variable: preset.environment_variable.to_owned(),
+                models: provider_models.get(preset.id).cloned().unwrap_or_else(|| {
+                    preset
+                        .default_models
+                        .iter()
+                        .map(|model| (*model).to_owned())
+                        .collect()
+                }),
+            })
+            .collect(),
+    })
+}
+
+fn validate_stored_config(
+    provider_id: &str,
+    base_url: &str,
+    model_name: &str,
+    use_environment_key: bool,
+) -> Result<StoredAiConfig, String> {
+    validate_connection_config(provider_id, base_url, model_name, use_environment_key, true)
+}
+
+fn validate_connection_config(
+    provider_id: &str,
+    base_url: &str,
+    model_name: &str,
+    use_environment_key: bool,
+    require_model: bool,
+) -> Result<StoredAiConfig, String> {
+    let provider_id = provider_id.trim();
+    if provider_preset(provider_id).is_none() {
+        return Err("AI 供应商配置无效。".to_owned());
+    }
+    let base_url = base_url.trim();
+    validate_base_url(base_url)?;
+    let model_name = model_name.trim();
+    if (require_model && model_name.is_empty())
+        || model_name.len() > MAX_MODEL_NAME_BYTES
+        || model_name.chars().any(char::is_control)
+    {
+        return Err("AI 模型名称无效。".to_owned());
+    }
+    Ok(StoredAiConfig {
+        provider_id: provider_id.to_owned(),
+        base_url: base_url.to_owned(),
+        model_name: model_name.to_owned(),
+        use_environment_key,
+    })
+}
+
+fn validate_api_key(api_key: &str) -> Result<(), String> {
+    if api_key.trim().is_empty()
+        || api_key.len() > MAX_API_KEY_BYTES
+        || api_key.chars().any(char::is_control)
+    {
+        return Err("API Key 格式无效。".to_owned());
+    }
+    Ok(())
+}
+
+fn environment_api_key(preset: ProviderPreset) -> Option<Zeroizing<String>> {
+    std::env::var(preset.environment_variable)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            (preset.id == "deepseek")
+                .then(|| std::env::var("API_KEY").ok())
+                .flatten()
+                .filter(|value| !value.trim().is_empty())
+        })
+        .map(Zeroizing::new)
+}
+
+fn read_environment_api_key(preset: ProviderPreset) -> Result<Zeroizing<String>, String> {
+    let value = environment_api_key(preset).ok_or_else(|| {
+        format!(
+            "系统环境变量 {} 未设置；设置后请重启 Mine Mail。",
+            preset.environment_variable
+        )
+    })?;
+    validate_api_key(value.as_str())?;
+    Ok(value)
+}
+
+fn resolve_configured_api_key(
+    config: &StoredAiConfig,
+    preset: ProviderPreset,
+) -> Result<Zeroizing<String>, String> {
+    if config.use_environment_key {
+        return read_environment_api_key(preset);
+    }
+    read_ai_credential(&ai_keyring_entry(preset.id)?)?
+        .ok_or_else(|| "AI 服务尚未配置 API Key，请前往“设置 > Agent 配置”补充。".to_owned())
+}
+
+fn ai_keyring_entry(provider_id: &str) -> Result<Entry, String> {
+    if provider_preset(provider_id).is_none() {
+        return Err("AI 供应商配置无效。".to_owned());
+    }
+    Entry::new(
+        AI_KEYRING_SERVICE,
+        &format!("{AI_KEYRING_USERNAME_PREFIX}{provider_id}"),
+    )
+    .map_err(|_| "系统凭据库暂时不可用。".to_owned())
+}
+
+fn read_ai_credential(entry: &Entry) -> Result<Option<Zeroizing<String>>, String> {
+    match entry.get_password() {
+        Ok(password) => Ok(Some(Zeroizing::new(password))),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(_) => Err("无法读取系统凭据库中的 API Key。".to_owned()),
+    }
+}
+
+fn restore_ai_credential(
+    entry: &Entry,
+    previous: Option<&Zeroizing<String>>,
+) -> Result<(), String> {
+    match previous {
+        Some(password) => entry.set_password(password.as_str()),
+        None => match entry.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(error) => Err(error),
+        },
+    }
+    .map_err(|_| "保存失败后无法恢复原 API Key，请重新配置。".to_owned())
+}
+
+fn anthropic_messages(messages: &[Value]) -> Result<(String, Vec<Value>), String> {
+    let mut system = Vec::new();
+    let mut converted = Vec::<Value>::new();
+    for message in messages {
+        let role = message
+            .get("role")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "AI 消息格式无效。".to_owned())?;
+        if role == "system" {
+            if let Some(content) = message.get("content").and_then(Value::as_str) {
+                system.push(content.to_owned());
+            }
+            continue;
+        }
+        let (target_role, blocks) = match role {
+            "user" => (
+                "user",
+                vec![json!({
+                    "type": "text",
+                    "text": message.get("content").and_then(Value::as_str).unwrap_or_default(),
+                })],
+            ),
+            "assistant" => {
+                let mut blocks = Vec::new();
+                if let Some(content) = message
+                    .get("content")
+                    .and_then(Value::as_str)
+                    .filter(|content| !content.is_empty())
+                {
+                    blocks.push(json!({ "type": "text", "text": content }));
+                }
+                for call in message
+                    .get("tool_calls")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                {
+                    let function = call
+                        .get("function")
+                        .and_then(Value::as_object)
+                        .ok_or_else(|| "AI 工具调用格式无效。".to_owned())?;
+                    let arguments = function
+                        .get("arguments")
+                        .and_then(Value::as_str)
+                        .unwrap_or("{}");
+                    let input = serde_json::from_str::<Value>(arguments)
+                        .map_err(|_| "AI 工具参数格式无效。".to_owned())?;
+                    blocks.push(json!({
+                        "type": "tool_use",
+                        "id": call.get("id").and_then(Value::as_str).unwrap_or_default(),
+                        "name": function.get("name").and_then(Value::as_str).unwrap_or_default(),
+                        "input": input,
+                    }));
+                }
+                ("assistant", blocks)
+            }
+            "tool" => (
+                "user",
+                vec![json!({
+                    "type": "tool_result",
+                    "tool_use_id": message.get("tool_call_id").and_then(Value::as_str).unwrap_or_default(),
+                    "content": message.get("content").and_then(Value::as_str).unwrap_or_default(),
+                })],
+            ),
+            _ => return Err("AI 消息角色无效。".to_owned()),
+        };
+        if blocks.is_empty() {
+            continue;
+        }
+        if let Some(previous) = converted
+            .last_mut()
+            .filter(|previous| previous.get("role").and_then(Value::as_str) == Some(target_role))
+        {
+            if let Some(content) = previous.get_mut("content").and_then(Value::as_array_mut) {
+                content.extend(blocks);
+                continue;
+            }
+        }
+        converted.push(json!({ "role": target_role, "content": blocks }));
+    }
+    Ok((system.join("\n\n"), converted))
 }
 
 #[derive(Clone)]
@@ -719,6 +1792,7 @@ struct ProviderTrace {
     account_id: String,
     draft_id: Option<String>,
     mode: &'static str,
+    provider: &'static str,
     model: String,
     round: usize,
 }
@@ -728,7 +1802,7 @@ impl ProviderTrace {
         let mut fields = DiagnosticFields::default()
             .operation_id(self.operation_id.clone())
             .operation("ai_provider_request")
-            .provider("deepseek")
+            .provider(self.provider)
             .model(&self.model)
             .mode(self.mode)
             .account(&self.account_id);
@@ -745,7 +1819,7 @@ struct ProviderTurn {
 }
 
 async fn run_tool_loop(
-    provider: &DeepSeekProvider,
+    provider: &AiProvider,
     mode: AiMode,
     request_id: &str,
     operation_id: diagnostics::OperationId,
@@ -765,6 +1839,7 @@ async fn run_tool_loop(
                     account_id: working.snapshot.account_id.clone(),
                     draft_id: working.snapshot.draft_id.clone(),
                     mode: mode.as_str(),
+                    provider: provider.provider.id,
                     model: provider.model.clone(),
                     round,
                 },
@@ -1610,9 +2685,9 @@ fn validate_opaque_id(value: &str, label: &str) -> Result<(), String> {
 
 fn normalized_finish_reason(value: Option<&str>) -> &'static str {
     match value {
-        Some("stop") => "stop",
-        Some("tool_calls") => "tool_calls",
-        Some("length") => "length",
+        Some("stop" | "end_turn" | "stop_sequence") => "stop",
+        Some("tool_calls" | "tool_use") => "tool_calls",
+        Some("length" | "max_tokens") => "length",
         Some("content_filter") => "content_filter",
         _ => "other",
     }
@@ -1672,7 +2747,20 @@ impl AiStore {
              );
              CREATE INDEX IF NOT EXISTS idx_ai_session_drafts_session_time
                  ON ai_session_drafts(session_id, updated_at_ms DESC);
-             PRAGMA user_version = 1;",
+             CREATE TABLE IF NOT EXISTS ai_config (
+                 singleton INTEGER PRIMARY KEY NOT NULL CHECK (singleton = 1),
+                 provider_id TEXT NOT NULL,
+                 base_url TEXT NOT NULL,
+                 model_name TEXT NOT NULL,
+                 use_environment_key INTEGER NOT NULL CHECK (use_environment_key IN (0, 1)),
+                 updated_at_ms INTEGER NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS ai_provider_models (
+                 provider_id TEXT PRIMARY KEY NOT NULL,
+                 models_json TEXT NOT NULL,
+                 updated_at_ms INTEGER NOT NULL
+             );
+             PRAGMA user_version = 3;",
         )?;
         Ok(store)
     }
@@ -1682,6 +2770,106 @@ impl AiStore {
         connection.busy_timeout(Duration::from_secs(5))?;
         connection.execute_batch("PRAGMA foreign_keys = ON;")?;
         Ok(connection)
+    }
+
+    fn load_config(&self) -> rusqlite::Result<Option<StoredAiConfig>> {
+        let connection = self.connection()?;
+        connection
+            .query_row(
+                "SELECT provider_id, base_url, model_name, use_environment_key
+                 FROM ai_config
+                 WHERE singleton = 1",
+                [],
+                |row| {
+                    Ok(StoredAiConfig {
+                        provider_id: row.get(0)?,
+                        base_url: row.get(1)?,
+                        model_name: row.get(2)?,
+                        use_environment_key: row.get::<_, i64>(3)? != 0,
+                    })
+                },
+            )
+            .optional()
+    }
+
+    fn save_config(&self, config: &StoredAiConfig) -> rusqlite::Result<()> {
+        let connection = self.connection()?;
+        connection.execute(
+            "INSERT INTO ai_config (
+                 singleton, provider_id, base_url, model_name, use_environment_key, updated_at_ms
+             ) VALUES (1, ?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(singleton) DO UPDATE SET
+                 provider_id = excluded.provider_id,
+                 base_url = excluded.base_url,
+                 model_name = excluded.model_name,
+                 use_environment_key = excluded.use_environment_key,
+                 updated_at_ms = excluded.updated_at_ms",
+            params![
+                config.provider_id,
+                config.base_url,
+                config.model_name,
+                i64::from(config.use_environment_key),
+                now_ms() as i64,
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn load_provider_models(&self) -> rusqlite::Result<HashMap<String, Vec<String>>> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT provider_id, models_json
+             FROM ai_provider_models",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut provider_models = HashMap::new();
+        for row in rows {
+            let (provider_id, models_json) = row?;
+            let Some(preset) = provider_preset(&provider_id) else {
+                continue;
+            };
+            let Ok(models) = serde_json::from_str::<Vec<String>>(&models_json) else {
+                diagnostics::warn(
+                    "ai_model_cache_invalid",
+                    DiagnosticFields::default()
+                        .operation("ai_config")
+                        .provider(preset.id)
+                        .error(DiagnosticErrorKind::Database),
+                );
+                continue;
+            };
+            let models = normalize_model_list(models);
+            if !models.is_empty() {
+                provider_models.insert(provider_id, models);
+            }
+        }
+        Ok(provider_models)
+    }
+
+    fn save_provider_models(&self, provider_id: &str, models: &[String]) -> rusqlite::Result<()> {
+        if provider_preset(provider_id).is_none() {
+            return Err(rusqlite::Error::InvalidParameterName(
+                "provider_id".to_owned(),
+            ));
+        }
+        let models = normalize_model_list(models.iter().cloned());
+        if models.is_empty() {
+            return Err(rusqlite::Error::InvalidParameterName("models".to_owned()));
+        }
+        let models_json = serde_json::to_string(&models)
+            .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
+        let connection = self.connection()?;
+        connection.execute(
+            "INSERT INTO ai_provider_models (provider_id, models_json, updated_at_ms)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(provider_id) DO UPDATE SET
+                 models_json = excluded.models_json,
+                 updated_at_ms = excluded.updated_at_ms",
+            params![provider_id, models_json, now_ms() as i64],
+        )?;
+        Ok(())
     }
 
     fn list_sessions(&self) -> Result<Vec<AiSessionListItemDto>, String> {
@@ -1942,9 +3130,10 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        AiMode, AiStore, DeepSeekProvider, ProviderTrace, assistant_tool_message,
-        explicit_addresses, parse_final_envelope, session_title, tool_spec, tool_specs,
-        validate_tool_argument_keys,
+        AiMode, AiProvider, AiStore, ProviderTrace, StoredAiConfig, anthropic_messages,
+        append_endpoint, assistant_tool_message, development_config, explicit_addresses,
+        model_size_priority, normalized_finish_reason, parse_final_envelope, provider_preset,
+        session_title, tool_spec, tool_specs, validate_base_url, validate_tool_argument_keys,
     };
 
     #[test]
@@ -2082,10 +3271,184 @@ mod tests {
         assert!(validate_tool_argument_keys("get_draft_body", &valid).is_err());
     }
 
+    #[test]
+    fn provider_presets_keep_documented_connection_defaults() {
+        let cases = [
+            ("deepseek", "https://api.deepseek.com", "DEEPSEEK_API_KEY"),
+            ("kimi", "https://api.moonshot.cn/v1", "MOONSHOT_API_KEY"),
+            ("openai", "https://api.openai.com/v1", "OPENAI_API_KEY"),
+            (
+                "anthropic",
+                "https://api.anthropic.com",
+                "ANTHROPIC_API_KEY",
+            ),
+            (
+                "qwen",
+                "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                "DASHSCOPE_API_KEY",
+            ),
+            ("mimo", "https://api.xiaomimimo.com/v1", "MIMO_API_KEY"),
+            ("minimax", "https://api.minimaxi.com/v1", "MINIMAX_API_KEY"),
+            (
+                "modelscope",
+                "https://api-inference.modelscope.cn/v1",
+                "MODELSCOPE_SDK_TOKEN",
+            ),
+            (
+                "doubaoseed",
+                "https://ark.cn-beijing.volces.com/api/v3",
+                "ARK_API_KEY",
+            ),
+            ("glm", "https://open.bigmodel.cn/api/paas/v4", "ZAI_API_KEY"),
+            (
+                "openrouter",
+                "https://openrouter.ai/api/v1",
+                "OPENROUTER_API_KEY",
+            ),
+        ];
+        for (id, base_url, environment_variable) in cases {
+            let preset = provider_preset(id).expect("provider preset");
+            assert_eq!(preset.base_url, base_url);
+            assert_eq!(preset.environment_variable, environment_variable);
+        }
+    }
+
+    #[test]
+    fn provider_presets_offer_lightweight_models_before_flagships() {
+        let expected = [
+            ("deepseek", &["deepseek-v4-flash", "deepseek-v4-pro"][..]),
+            ("kimi", &["kimi-k2.6", "kimi-k3"][..]),
+            (
+                "openai",
+                &["gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"][..],
+            ),
+            ("mimo", &["mimo-v2.5", "mimo-v2.5-pro"][..]),
+            ("minimax", &["MiniMax-M2.7-highspeed", "MiniMax-M2.7"][..]),
+            ("glm", &["glm-4.7-flash", "glm-5-turbo", "glm-5.1"][..]),
+        ];
+        assert!(
+            provider_preset("custom")
+                .expect("custom")
+                .default_models
+                .is_empty()
+        );
+        for (provider_id, models) in expected {
+            let preset = provider_preset(provider_id).expect("provider preset");
+            assert_eq!(preset.default_models, models);
+            assert!(
+                preset
+                    .default_models
+                    .windows(2)
+                    .all(|pair| model_size_priority(pair[0]) <= model_size_priority(pair[1]))
+            );
+        }
+    }
+
+    #[test]
+    fn provider_urls_are_https_or_loopback_only() {
+        assert!(validate_base_url("https://api.example.com/v1").is_ok());
+        assert!(validate_base_url("http://127.0.0.1:11434/v1").is_ok());
+        assert!(validate_base_url("http://localhost:11434/v1").is_ok());
+        assert!(validate_base_url("http://api.example.com/v1").is_err());
+        assert!(validate_base_url("https://key@api.example.com/v1").is_err());
+        assert!(validate_base_url("https://api.example.com/v1?secret=1").is_err());
+
+        let openai = validate_base_url("https://api.openai.com/v1").expect("url");
+        assert_eq!(
+            append_endpoint(&openai, "chat/completions")
+                .expect("endpoint")
+                .as_str(),
+            "https://api.openai.com/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn anthropic_messages_preserve_tool_rounds_without_exposing_openai_shapes() {
+        let messages = vec![
+            json!({ "role": "system", "content": "system" }),
+            json!({ "role": "user", "content": "hello" }),
+            json!({
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [{
+                    "id": "call-1",
+                    "type": "function",
+                    "function": { "name": "get_draft_subject", "arguments": "{}" }
+                }]
+            }),
+            json!({ "role": "tool", "tool_call_id": "call-1", "content": "{\"subject\":\"Hi\"}" }),
+        ];
+        let (system, converted) = anthropic_messages(&messages).expect("convert");
+        assert_eq!(system, "system");
+        assert_eq!(converted[1]["content"][0]["type"], "tool_use");
+        assert_eq!(converted[2]["content"][0]["type"], "tool_result");
+        assert_eq!(normalized_finish_reason(Some("end_turn")), "stop");
+        assert_eq!(normalized_finish_reason(Some("tool_use")), "tool_calls");
+    }
+
+    #[test]
+    fn ai_store_persists_only_non_secret_provider_configuration() {
+        let directory = tempdir().expect("tempdir");
+        let store = AiStore::open(directory.path().join("ai.sqlite3")).expect("store");
+        let config = StoredAiConfig {
+            provider_id: "openrouter".to_owned(),
+            base_url: "https://openrouter.ai/api/v1".to_owned(),
+            model_name: "openai/gpt-5.2".to_owned(),
+            use_environment_key: true,
+        };
+        store.save_config(&config).expect("save config");
+        assert_eq!(store.load_config().expect("load config"), Some(config));
+        let connection = store.connection().expect("connection");
+        let columns = connection
+            .prepare("PRAGMA table_info(ai_config)")
+            .expect("columns")
+            .query_map([], |row| row.get::<_, String>(1))
+            .expect("query")
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .expect("collect");
+        assert!(!columns.iter().any(|column| {
+            matches!(
+                column.as_str(),
+                "api_key" | "authorization" | "credential" | "secret" | "token"
+            )
+        }));
+    }
+
+    #[test]
+    fn ai_store_persists_discovered_models_per_provider() {
+        let directory = tempdir().expect("tempdir");
+        let database_path = directory.path().join("ai.sqlite3");
+        let store = AiStore::open(&database_path).expect("store");
+        store
+            .save_provider_models(
+                "deepseek",
+                &["deepseek-v4-pro".to_owned(), "deepseek-v4-flash".to_owned()],
+            )
+            .expect("save deepseek models");
+        store
+            .save_provider_models("kimi", &["kimi-k3".to_owned(), "kimi-k2.6".to_owned()])
+            .expect("save kimi models");
+
+        let reopened = AiStore::open(&database_path).expect("reopen store");
+        let models = reopened.load_provider_models().expect("load models");
+        assert_eq!(
+            models.get("deepseek"),
+            Some(&vec![
+                "deepseek-v4-flash".to_owned(),
+                "deepseek-v4-pro".to_owned(),
+            ])
+        );
+        assert_eq!(
+            models.get("kimi"),
+            Some(&vec!["kimi-k3".to_owned(), "kimi-k2.6".to_owned()])
+        );
+    }
+
     #[tokio::test]
     #[ignore = "requires an explicitly supplied private DeepSeek API configuration"]
     async fn configured_deepseek_provider_can_complete_a_tool_round_trip() {
-        let provider = DeepSeekProvider::from_env().expect("configured provider");
+        let provider =
+            AiProvider::from_stored_config(&development_config()).expect("configured provider");
         let tools = vec![tool_spec("get_draft_subject").expect("tool")];
         let mut messages = vec![
             json!({
@@ -2099,6 +3462,7 @@ mod tests {
             account_id: "live-test-account".to_owned(),
             draft_id: None,
             mode: "test",
+            provider: provider.provider.id,
             model: provider.model.clone(),
             round: 1,
         };

@@ -73,6 +73,7 @@ async function callDemo(method, ...args) {
 }
 
 const commandFailureMessages = Object.freeze({
+  get_ai_config: "AI 配置读取没有完成",
   get_ai_session: "AI 会话读取没有完成",
   add_draft_attachments: "添加附件没有完成",
   archive_message: "归档邮件没有完成",
@@ -91,6 +92,7 @@ const commandFailureMessages = Object.freeze({
   list_contacts: "联系人读取没有完成",
   list_archive_folder_candidates: "服务器文件夹读取没有完成",
   list_ai_sessions: "AI 会话列表读取没有完成",
+  list_ai_models: "可用模型检索没有完成",
   list_mailbox_page: "邮件列表读取没有完成",
   load_older_mailbox_page: "更早邮件读取没有完成",
   move_message_to_inbox: "移回收件箱没有完成",
@@ -105,6 +107,7 @@ const commandFailureMessages = Object.freeze({
   resolve_delivery_unknown: "投递结果处理没有完成",
   retry_outbox: "重新发送没有完成",
   run_ai_turn: "AI 请求没有完成",
+  save_ai_config: "AI 配置保存没有完成",
   save_draft: "草稿保存没有完成",
   save_message_attachment: "附件保存没有完成",
   save_profile_avatar: "头像保存没有完成",
@@ -115,6 +118,7 @@ const commandFailureMessages = Object.freeze({
   set_message_seen: "已读状态保存没有完成",
   set_message_starred_by_id: "星标状态保存没有完成",
   switch_account: "邮箱账户切换没有完成",
+  test_ai_connection: "AI 连接测试没有完成",
   sync_all: "邮箱同步没有完成",
   sync_drafts: "草稿同步没有完成",
   sync_mailbox: "邮箱文件夹同步没有完成",
@@ -353,6 +357,49 @@ function normalizeAiSession(session = {}) {
   };
 }
 
+function normalizeAiConfig(config = {}) {
+  return {
+    providerId: config.providerId ?? config.provider_id ?? "deepseek",
+    baseUrl: config.baseUrl ?? config.base_url ?? "https://api.deepseek.com",
+    modelName: config.modelName ?? config.model_name ?? "",
+    useEnvironmentKey: Boolean(
+      config.useEnvironmentKey ?? config.use_environment_key ?? true,
+    ),
+    hasStoredApiKey: Boolean(
+      config.hasStoredApiKey ?? config.has_stored_api_key ?? false,
+    ),
+    hasEnvironmentApiKey: Boolean(
+      config.hasEnvironmentApiKey ?? config.has_environment_api_key ?? false,
+    ),
+    environmentVariable:
+      config.environmentVariable ??
+      config.environment_variable ??
+      "DEEPSEEK_API_KEY",
+    presets: Array.isArray(config.presets)
+      ? config.presets.map((preset) => ({
+          id: preset.id,
+          label: preset.label,
+          baseUrl: preset.baseUrl ?? preset.base_url ?? "",
+          environmentVariable:
+            preset.environmentVariable ?? preset.environment_variable ?? "",
+          models: Array.isArray(preset.models)
+            ? preset.models.filter((model) => typeof model === "string")
+            : [],
+        }))
+      : [],
+  };
+}
+
+function aiConnectionRequest(config) {
+  return {
+    providerId: config.providerId,
+    baseUrl: config.baseUrl,
+    modelName: config.modelName || "",
+    useEnvironmentKey: Boolean(config.useEnvironmentKey),
+    apiKey: config.apiKey || null,
+  };
+}
+
 function profileAvatarRequest(request) {
   return {
     owner_type: request.ownerType,
@@ -362,6 +409,41 @@ function profileAvatarRequest(request) {
 }
 
 export const mailApi = {
+  async getAiConfig() {
+    if (isTauri) {
+      return normalizeAiConfig(await desktopInvoke("get_ai_config"));
+    }
+    return normalizeAiConfig(await callDemo("getAiConfig"));
+  },
+
+  async saveAiConfig(config) {
+    const request = aiConnectionRequest(config);
+    if (isTauri) {
+      return normalizeAiConfig(
+        await desktopInvoke("save_ai_config", { request }),
+      );
+    }
+    return normalizeAiConfig(await callDemo("saveAiConfig", request));
+  },
+
+  async listAiModels(config) {
+    const request = aiConnectionRequest(config);
+    const response = isTauri
+      ? await desktopInvoke("list_ai_models", { request })
+      : await callDemo("listAiModels", request);
+    return Array.isArray(response?.models) ? response.models : [];
+  },
+
+  async testAiConnection(config) {
+    const request = aiConnectionRequest(config);
+    const response = isTauri
+      ? await desktopInvoke("test_ai_connection", { request })
+      : await callDemo("testAiConnection", request);
+    return {
+      latencyMs: Number(response?.latencyMs ?? response?.latency_ms ?? 0),
+    };
+  },
+
   async listAiSessions() {
     if (isTauri) {
       const sessions = await desktopInvoke("list_ai_sessions");

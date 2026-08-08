@@ -124,6 +124,43 @@ describe("SettingsPanel account flow", () => {
     }
   });
 
+  it("opens Agent configuration as a first-class settings category", async () => {
+    const user = userEvent.setup();
+    const agentClient = {
+      getAiConfig: vi.fn().mockResolvedValue({
+        providerId: "deepseek",
+        baseUrl: "https://api.deepseek.com",
+        modelName: "deepseek-v4-pro",
+        useEnvironmentKey: true,
+        hasStoredApiKey: false,
+        hasEnvironmentApiKey: true,
+        environmentVariable: "DEEPSEEK_API_KEY",
+        presets: [
+          {
+            id: "deepseek",
+            label: "DeepSeek",
+            baseUrl: "https://api.deepseek.com",
+            environmentVariable: "DEEPSEEK_API_KEY",
+          },
+        ],
+      }),
+      saveAiConfig: vi.fn(),
+      listAiModels: vi.fn(),
+      testAiConnection: vi.fn(),
+    };
+    render(<SettingsPanel {...panelProps({ agentClient })} />);
+
+    await user.click(screen.getByRole("button", { name: "Agent 配置" }));
+    expect(
+      await screen.findByRole("heading", { name: "Agent 配置" }),
+    ).toBeTruthy();
+    expect(
+      screen
+        .getByRole("button", { name: /模型配置/ })
+        .getAttribute("aria-expanded"),
+    ).toBe("true");
+  });
+
   it("connects the remote-image privacy help control for pointer and keyboard users", async () => {
     const user = userEvent.setup();
     render(<SettingsPanel {...panelProps()} />);

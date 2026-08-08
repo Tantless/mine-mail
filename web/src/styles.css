@@ -8591,6 +8591,396 @@ html[data-surface="new-mail-notification"] #root {
   overflow-wrap: anywhere;
 }
 
+.agent-config-card {
+  overflow: visible;
+  border: 1px solid color-mix(in srgb, var(--compose-divider) 82%, var(--surface-edge));
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--compose-content-surface) 68%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--surface-highlight) 68%, transparent);
+  backdrop-filter: blur(14px) saturate(1.04);
+  -webkit-backdrop-filter: blur(14px) saturate(1.04);
+}
+
+.agent-config-card__heading {
+  display: flex;
+  width: 100%;
+  min-height: 68px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 14px 18px;
+  border: 0;
+  border-radius: 14px;
+  background: transparent;
+  color: var(--color-text);
+  text-align: left;
+}
+
+.agent-config-card__heading:hover {
+  background: color-mix(in srgb, var(--compose-control-hover) 62%, transparent);
+}
+
+.agent-config-card__heading:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.agent-config-card__heading > span {
+  display: grid;
+  gap: 4px;
+}
+
+.agent-config-card__heading strong {
+  font-size: 13px;
+  font-weight: 690;
+}
+
+.agent-config-card__heading small {
+  color: var(--color-text-muted);
+  font-size: 10px;
+}
+
+.agent-config-card__heading svg {
+  color: var(--color-text-muted);
+  transition: transform var(--motion-fast);
+}
+
+.agent-config-card__heading[aria-expanded="true"] svg {
+  transform: rotate(180deg);
+}
+
+.agent-config-card__content {
+  display: grid;
+  gap: 24px;
+  padding: 4px 18px 18px;
+  border-top: 1px solid color-mix(in srgb, var(--compose-divider) 70%, transparent);
+}
+
+.agent-config-loading {
+  display: flex;
+  min-height: 120px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: 11px;
+}
+
+.agent-config-failure {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 20px;
+}
+
+.agent-config-failure > span {
+  display: grid;
+  gap: 5px;
+}
+
+.agent-config-failure strong {
+  color: var(--color-text);
+}
+
+.agent-config-failure small {
+  color: var(--color-text-muted);
+}
+
+.agent-config-failure .secondary-button {
+  flex: 0 0 auto;
+}
+
+.agent-provider-presets {
+  min-width: 0;
+  margin: 0;
+  padding: 20px 0 0;
+  border: 0;
+}
+
+.agent-provider-presets legend {
+  margin: 0 0 10px;
+  padding: 0;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.agent-provider-presets > div {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.agent-provider-presets button {
+  min-width: 0;
+  min-height: 38px;
+  padding: 0 10px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--compose-divider) 82%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--compose-control-surface) 72%, transparent);
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  font-weight: 620;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-provider-presets button:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--color-primary) 30%, var(--compose-divider));
+  background: color-mix(in srgb, var(--color-primary) 7%, var(--compose-control-hover));
+  color: var(--color-text);
+}
+
+.agent-provider-presets button[data-selected="true"] {
+  border-color: color-mix(in srgb, var(--color-primary) 55%, var(--surface-edge));
+  background: color-mix(in srgb, var(--color-primary) 13%, var(--compose-control-surface));
+  color: var(--color-primary);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--surface-highlight) 72%, transparent);
+}
+
+.agent-config-fields {
+  display: grid;
+  gap: 15px;
+}
+
+.agent-config-fields .settings-input-shell {
+  border: 1px solid color-mix(in srgb, var(--color-border) 88%, var(--surface-edge));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--compose-control-surface) 76%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--surface-highlight) 72%, transparent);
+}
+
+.agent-config-fields .settings-input-shell:focus-within {
+  border-color: color-mix(in srgb, var(--color-primary) 18%, var(--color-border));
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--surface-highlight) 72%, transparent);
+}
+
+.agent-config-fields .settings-input-shell input:focus,
+.agent-config-fields .settings-input-shell input:focus-visible {
+  box-shadow: none;
+}
+
+.agent-config-fields input:disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
+}
+
+.agent-environment-option {
+  display: flex;
+  width: fit-content;
+  align-items: center;
+  gap: 7px;
+  color: var(--color-text-secondary);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.agent-environment-option > input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--color-primary);
+}
+
+.agent-environment-option > small {
+  color: var(--color-text-muted);
+  font-size: 9px;
+}
+
+.agent-environment-option > small[data-available="true"] {
+  color: var(--color-primary);
+}
+
+.agent-model-control {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 38px auto;
+  gap: 7px;
+  align-items: stretch;
+}
+
+.agent-model-control__search,
+.agent-model-control__toggle {
+  min-height: 40px;
+  border: 1px solid color-mix(in srgb, var(--color-border) 88%, var(--surface-edge));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--compose-control-surface) 76%, transparent);
+  color: var(--color-text-secondary);
+}
+
+.agent-model-control__search {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 0 12px;
+  font-size: 10px;
+  font-weight: 630;
+}
+
+.agent-model-control__search:hover:not(:disabled),
+.agent-model-control__toggle:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--color-primary) 40%, var(--color-border));
+  background: var(--compose-control-hover);
+  color: var(--color-text);
+}
+
+.agent-model-control__search:disabled,
+.agent-model-control__toggle:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.agent-model-options {
+  position: absolute;
+  top: calc(100% + 7px);
+  right: 0;
+  left: 0;
+  z-index: 12;
+  display: grid;
+  max-height: 230px;
+  gap: 3px;
+  padding: 6px;
+  overflow-y: auto;
+  border: 1px solid color-mix(in srgb, var(--panel-border) 88%, var(--surface-edge));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--color-panel) 91%, transparent);
+  box-shadow: 0 18px 48px color-mix(in srgb, var(--color-text) 18%, transparent),
+    inset 0 1px 0 color-mix(in srgb, var(--surface-highlight) 88%, transparent);
+  backdrop-filter: blur(22px) saturate(1.08);
+  -webkit-backdrop-filter: blur(22px) saturate(1.08);
+  animation: themed-select-menu-in var(--motion-fast) ease-out;
+}
+
+.agent-model-options button {
+  display: flex;
+  width: 100%;
+  min-height: 36px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 9px 0 10px;
+  overflow: hidden;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  text-align: left;
+  transition: border-color var(--motion-fast), background var(--motion-fast),
+    color var(--motion-fast);
+}
+
+.agent-model-options button:hover {
+  border-color: color-mix(in srgb, var(--color-primary) 16%, transparent);
+  background: color-mix(in srgb, var(--color-primary) 9%, var(--compose-control-hover));
+  color: var(--color-text);
+}
+
+.agent-model-options button[aria-selected="true"] {
+  background: color-mix(in srgb, var(--color-primary) 13%, transparent);
+  color: var(--color-primary);
+  font-weight: 690;
+}
+
+.agent-model-options button:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--color-primary) 58%, transparent);
+  outline-offset: -2px;
+}
+
+.agent-model-options button span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-model-options button svg {
+  flex: 0 0 auto;
+  color: var(--color-primary);
+}
+
+.agent-config-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 9px;
+  padding-top: 2px;
+}
+
+.agent-config-actions .send-button,
+.agent-config-actions .secondary-button {
+  min-width: 96px;
+}
+
+.agent-config-feedback {
+  min-width: 0;
+  margin-right: auto;
+  color: var(--color-text-muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.agent-config-feedback[data-tone="success"] {
+  color: var(--color-success);
+}
+
+.agent-config-feedback[data-tone="danger"] {
+  color: var(--color-danger);
+}
+
+.spin {
+  animation: spin 850ms linear infinite;
+}
+
+.agent-environment-dialog {
+  width: min(560px, calc(100vw - 32px));
+}
+
+.agent-environment-list {
+  display: grid;
+  max-height: min(390px, 52vh);
+  margin: 4px 0 0;
+  overflow-y: auto;
+  border: 1px solid color-mix(in srgb, var(--compose-divider) 78%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--compose-control-surface) 58%, transparent);
+}
+
+.agent-environment-list > div {
+  display: grid;
+  grid-template-columns: minmax(100px, 0.75fr) minmax(0, 1.25fr);
+  gap: 14px;
+  align-items: center;
+  padding: 10px 13px;
+  border-bottom: 1px solid color-mix(in srgb, var(--compose-divider) 65%, transparent);
+}
+
+.agent-environment-list > div:last-child {
+  border-bottom: 0;
+}
+
+.agent-environment-list dt {
+  color: var(--color-text-secondary);
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.agent-environment-list dd {
+  min-width: 0;
+  margin: 0;
+}
+
+.agent-environment-list code {
+  color: var(--color-text);
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+
 .mcp-help-dialog__tools dd > span {
   display: grid;
   grid-template-columns: minmax(112px, auto) minmax(0, 1fr);
@@ -9473,7 +9863,7 @@ html[data-surface="new-mail-notification"] #root {
   }
 
   .settings-nav {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 5px;
   }
 
@@ -9487,6 +9877,28 @@ html[data-surface="new-mail-notification"] #root {
   .settings-nav__icon {
     width: 30px;
     height: 30px;
+  }
+
+  .agent-provider-presets > div {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .agent-model-control {
+    grid-template-columns: minmax(0, 1fr) 38px;
+  }
+
+  .agent-model-control__search {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+
+  .agent-config-actions {
+    align-items: stretch;
+    flex-wrap: wrap;
+  }
+
+  .agent-config-feedback {
+    flex: 1 1 100%;
   }
 
   .settings-content {

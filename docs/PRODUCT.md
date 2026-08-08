@@ -275,6 +275,9 @@ product decision changes.
   either side requires an explicit side-named confirmation. Mine Mail backs up
   the then-live body immediately before replacement and exposes one icon-only
   rollback until it is used or replaced by a later optimization application.
+  The instruction text, an in-flight request, its completed comparison, and the
+  rollback backup remain attached to the live compose session through minimize
+  and restore.
   Minimizing the comparison preserves it; permanently closing it requires
   confirmation and discards that result.
 - Conversational AI sessions belong to the Mine Mail application rather than one
@@ -286,8 +289,27 @@ product decision changes.
   Optimization remains a separate high-frequency action. Rust selects a hard
   tool allowlist for every mode; prompts alone never grant a capability.
 - The built-in assistant calls its configured AI Provider directly from Rust.
-  It does not route through the local MCP service, and API credentials never
-  cross into React. The browser demo remains offline and deterministic.
+  It does not route through the local MCP service. A manually entered API Key
+  exists in React only as transient form input until the narrow Tauri command
+  consumes it; Rust never returns a key to React, and the browser demo remains
+  offline and deterministic.
+- Agent configuration supports custom OpenAI-compatible services plus presets
+  for DeepSeek, Kimi, OpenAI, Anthropic, Qwen, Xiaomi MiMo, MiniMax, ModelScope,
+  Doubao Seed, GLM, and OpenRouter. Anthropic uses its native Messages and Models
+  APIs; the other presets use their documented OpenAI-compatible interfaces.
+- Rust persists only provider ID, base URL, model name, and the environment-key
+  preference as active configuration in the AI SQLite store. Each preset also
+  provides a small built-in model list that is immediately selectable; a
+  successful model-discovery request replaces the stored list for that provider
+  across restarts without changing other providers. Manually supplied keys are
+  kept per provider in the OS credential store. Environment-key mode ignores any
+  form value and reads the preset's documented variable after application startup.
+- Provider base URLs must use HTTPS, except loopback-only HTTP for local
+  development, and cannot contain embedded credentials, query parameters, or
+  fragments. Model discovery and connection tests run in Rust with bounded
+  responses and privacy-safe logs. A connection test performs one minimal model
+  request and reports Rust-observed latency; it does not imply that every model
+  capability is available.
 - Except for the user's instruction and visible Session history, draft data is
   not placed in the initial model context. The model must use bounded tools to
   read the current subject, body, sender, recipients, immutable reply/forward

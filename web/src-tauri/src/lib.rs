@@ -33,8 +33,9 @@ use account::{
     RemoveAccountRequest, RemoveAccountResultDto,
 };
 use ai::{
-    AiContact, AiExecutionContext, AiRuntime, AiSessionDto, AiSessionListItemDto, AiTurnEvent,
-    AiTurnRequest, AiTurnResultDto, record_patch_outcome,
+    AiConfigDto, AiConnectionTestDto, AiContact, AiExecutionContext, AiModelListDto, AiRuntime,
+    AiSessionDto, AiSessionListItemDto, AiTurnEvent, AiTurnRequest, AiTurnResultDto,
+    CheckAiConnectionRequest, SaveAiConfigRequest, record_patch_outcome,
 };
 use contacts::{ContactDirectoryDto, ContactRuntime};
 use desktop::{
@@ -1262,6 +1263,45 @@ fn get_ai_session(ai: State<'_, AiRuntime>, session_id: String) -> CommandResult
     diagnostics::command("get_ai_session", DiagnosticFields::default(), || {
         ai.get_session(&session_id)
     })
+}
+
+#[tauri::command]
+fn get_ai_config(ai: State<'_, AiRuntime>) -> CommandResult<AiConfigDto> {
+    diagnostics::command("get_ai_config", DiagnosticFields::default(), || {
+        ai.get_config()
+    })
+}
+
+#[tauri::command]
+fn save_ai_config(
+    ai: State<'_, AiRuntime>,
+    request: SaveAiConfigRequest,
+) -> CommandResult<AiConfigDto> {
+    diagnostics::command("save_ai_config", DiagnosticFields::default(), || {
+        ai.save_config(request)
+    })
+}
+
+#[tauri::command]
+async fn list_ai_models(
+    ai: State<'_, AiRuntime>,
+    request: CheckAiConnectionRequest,
+) -> CommandResult<AiModelListDto> {
+    diagnostics::command_async("list_ai_models", DiagnosticFields::default(), async {
+        ai.inner().clone().list_models(request).await
+    })
+    .await
+}
+
+#[tauri::command]
+async fn test_ai_connection(
+    ai: State<'_, AiRuntime>,
+    request: CheckAiConnectionRequest,
+) -> CommandResult<AiConnectionTestDto> {
+    diagnostics::command_async("test_ai_connection", DiagnosticFields::default(), async {
+        ai.inner().clone().test_connection(request).await
+    })
+    .await
 }
 
 #[tauri::command]
@@ -2978,6 +3018,10 @@ pub fn run() {
             list_contacts,
             list_ai_sessions,
             get_ai_session,
+            get_ai_config,
+            save_ai_config,
+            list_ai_models,
+            test_ai_connection,
             run_ai_turn,
             record_ai_patch_outcome,
             list_contact_messages,

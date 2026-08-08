@@ -101,6 +101,72 @@ describe("mailApi desktop IPC contract", () => {
     });
   });
 
+  it("maps Agent configuration through narrow desktop commands", async () => {
+    ipc.invoke
+      .mockResolvedValueOnce({
+        providerId: "deepseek",
+        baseUrl: "https://api.deepseek.com",
+        modelName: "deepseek-v4-pro",
+        useEnvironmentKey: false,
+        hasStoredApiKey: true,
+        hasEnvironmentApiKey: false,
+        environmentVariable: "DEEPSEEK_API_KEY",
+        presets: [{
+          id: "deepseek",
+          label: "DeepSeek",
+          base_url: "https://api.deepseek.com",
+          environment_variable: "DEEPSEEK_API_KEY",
+          models: ["deepseek-v4-flash", "deepseek-v4-pro"],
+        }],
+      })
+      .mockResolvedValueOnce({ models: ["deepseek-v4-pro"] })
+      .mockResolvedValueOnce({ latencyMs: 73 })
+      .mockResolvedValueOnce({
+        providerId: "deepseek",
+        baseUrl: "https://api.deepseek.com",
+        modelName: "deepseek-v4-pro",
+        useEnvironmentKey: false,
+        hasStoredApiKey: true,
+        hasEnvironmentApiKey: false,
+        environmentVariable: "DEEPSEEK_API_KEY",
+        presets: [],
+      });
+    const { mailApi } = await import("./mailApi.js");
+    const configuration = {
+      providerId: "deepseek",
+      baseUrl: "https://api.deepseek.com",
+      modelName: "deepseek-v4-pro",
+      useEnvironmentKey: false,
+      apiKey: "test-secret",
+    };
+
+    const loaded = await mailApi.getAiConfig();
+    expect(loaded.hasStoredApiKey).toBe(true);
+    expect(loaded.presets[0].models).toEqual([
+      "deepseek-v4-flash",
+      "deepseek-v4-pro",
+    ]);
+    expect(await mailApi.listAiModels(configuration)).toEqual([
+      "deepseek-v4-pro",
+    ]);
+    expect(await mailApi.testAiConnection(configuration)).toEqual({
+      latencyMs: 73,
+    });
+    const saved = await mailApi.saveAiConfig(configuration);
+    expect(saved).not.toHaveProperty("apiKey");
+
+    expect(ipc.invoke).toHaveBeenNthCalledWith(1, "get_ai_config", undefined);
+    expect(ipc.invoke).toHaveBeenNthCalledWith(2, "list_ai_models", {
+      request: configuration,
+    });
+    expect(ipc.invoke).toHaveBeenNthCalledWith(3, "test_ai_connection", {
+      request: configuration,
+    });
+    expect(ipc.invoke).toHaveBeenNthCalledWith(4, "save_ai_config", {
+      request: configuration,
+    });
+  });
+
   it("maps one reviewed delivery-unknown generation and its explicit risk decision", async () => {
     const confirmed = {
       id: "outbox-unknown",

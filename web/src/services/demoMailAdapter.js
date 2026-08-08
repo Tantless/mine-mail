@@ -13,6 +13,26 @@ const demoSyncRoles = new Set([
   "trash",
 ]);
 const creatableDemoRoles = new Set(["trash"]);
+const demoAiPresets = [
+  ["custom", "自定义", "", "AI_API_KEY", []],
+  ["deepseek", "DeepSeek", "https://api.deepseek.com", "DEEPSEEK_API_KEY", ["deepseek-v4-flash", "deepseek-v4-pro"]],
+  ["kimi", "Kimi", "https://api.moonshot.cn/v1", "MOONSHOT_API_KEY", ["kimi-k2.6", "kimi-k3"]],
+  ["openai", "OpenAI", "https://api.openai.com/v1", "OPENAI_API_KEY", ["gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"]],
+  ["anthropic", "Anthropic", "https://api.anthropic.com", "ANTHROPIC_API_KEY", ["claude-haiku-4-5", "claude-sonnet-5", "claude-opus-4-8", "claude-fable-5"]],
+  ["qwen", "通义千问", "https://dashscope.aliyuncs.com/compatible-mode/v1", "DASHSCOPE_API_KEY", ["qwen3.6-flash", "qwen3.7-plus", "qwen3.7-max"]],
+  ["mimo", "Xiaomi MiMo", "https://api.xiaomimimo.com/v1", "MIMO_API_KEY", ["mimo-v2.5", "mimo-v2.5-pro"]],
+  ["minimax", "MiniMax", "https://api.minimaxi.com/v1", "MINIMAX_API_KEY", ["MiniMax-M2.7-highspeed", "MiniMax-M2.7"]],
+  ["modelscope", "ModelScope", "https://api-inference.modelscope.cn/v1", "MODELSCOPE_SDK_TOKEN", ["Qwen/Qwen3.5-35B-A3B", "Qwen/Qwen3.5-397B-A17B"]],
+  ["doubaoseed", "豆包 Seed", "https://ark.cn-beijing.volces.com/api/v3", "ARK_API_KEY", ["doubao-seed-2-0-lite-260428", "doubao-seed-2-0-mini-260428", "doubao-seed-2-0-pro-260215"]],
+  ["glm", "智谱 GLM", "https://open.bigmodel.cn/api/paas/v4", "ZAI_API_KEY", ["glm-4.7-flash", "glm-5-turbo", "glm-5.1"]],
+  ["openrouter", "OpenRouter", "https://openrouter.ai/api/v1", "OPENROUTER_API_KEY", ["openrouter/auto", "~anthropic/claude-sonnet-latest", "~openai/gpt-latest"]],
+].map(([id, label, baseUrl, environmentVariable, models]) => ({
+  id,
+  label,
+  baseUrl,
+  environmentVariable,
+  models,
+}));
 
 const wait = (milliseconds) =>
   new Promise((resolve) => window.setTimeout(resolve, milliseconds));
@@ -22,6 +42,16 @@ function createDemoState() {
     messages: structuredClone(demoMessages),
     drafts: structuredClone(demoDrafts),
     aiSessions: [],
+    aiConfig: {
+      providerId: "deepseek",
+      baseUrl: "https://api.deepseek.com",
+      modelName: "deepseek-v4-pro",
+      useEnvironmentKey: false,
+      hasStoredApiKey: false,
+      hasEnvironmentApiKey: false,
+      environmentVariable: "DEEPSEEK_API_KEY",
+      presets: structuredClone(demoAiPresets),
+    },
     outbox: [],
     settings: {
       pollingIntervalMinutes: 5,
@@ -481,6 +511,52 @@ function createDemoActions(
   { normalizeSettings, normalizeProfileAvatar, normalizeContact },
 ) {
   return {
+    getAiConfig() {
+      return structuredClone(state.aiConfig);
+    },
+
+    saveAiConfig(request) {
+      const preset = demoAiPresets.find(
+        (candidate) => candidate.id === request.providerId,
+      );
+      if (!preset) throw new Error("AI 供应商配置无效");
+      if (!request.baseUrl?.trim()) throw new Error("请输入 BASE_URL");
+      if (!request.modelName?.trim()) throw new Error("请输入 MODEL_NAME");
+      if (!request.useEnvironmentKey && !request.apiKey?.trim()) {
+        throw new Error("请输入 API Key，或改为从系统环境变量读取");
+      }
+      state.aiConfig = {
+        ...state.aiConfig,
+        providerId: request.providerId,
+        baseUrl: request.baseUrl.trim(),
+        modelName: request.modelName.trim(),
+        useEnvironmentKey: Boolean(request.useEnvironmentKey),
+        hasStoredApiKey:
+          state.aiConfig.hasStoredApiKey || Boolean(request.apiKey?.trim()),
+        environmentVariable: preset.environmentVariable,
+      };
+      return structuredClone(state.aiConfig);
+    },
+
+    listAiModels(request) {
+      if (!request.baseUrl?.trim()) throw new Error("请输入 BASE_URL");
+      const models =
+        request.providerId === "deepseek"
+          ? ["deepseek-v4-flash", "deepseek-v4-pro"]
+          : ["demo-model-fast", "demo-model-pro"];
+      state.aiConfig.presets = state.aiConfig.presets.map((preset) =>
+        preset.id === request.providerId ? { ...preset, models } : preset,
+      );
+      return {
+        models,
+      };
+    },
+
+    testAiConnection(request) {
+      if (!request.modelName?.trim()) throw new Error("请输入 MODEL_NAME");
+      return { latencyMs: 128 };
+    },
+
     listAiSessions() {
       return structuredClone(state.aiSessions).map(
         ({ messages: _messages, ...session }) => ({ ...session, loaded: false }),

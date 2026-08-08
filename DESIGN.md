@@ -235,6 +235,22 @@ All app-owned color and material decisions flow through custom properties in
   off. The inline note says Mine Mail must remain in the foreground or tray.
   Enabling the parent uses one compact shared confirmation dialog; the question
   action opens a theme-owned tool explanation dialog rather than a tooltip.
+- **Agent 配置** is its own category between feature preferences and About. Its
+  **模型配置** card is a compact accordion, expanded by default, and keeps
+  provider presets above the editable connection fields. Selecting a preset
+  fills `BASE_URL` without hiding or locking the field.
+- `API_KEY` is a masked field with an adjacent **从系统环境变量获取** option.
+  Enabling the option disables the field; its question action opens one
+  theme-owned dialog listing every preset's exact environment-variable name.
+  `MODEL_NAME` remains editable. Every named preset exposes a short, current
+  default model list immediately, ordered from faster/lighter choices toward
+  flagship choices; custom providers may begin empty. **检索可用模型** replaces
+  and persists that provider's choices after a successful request. Choices
+  appear in a bounded themed popover rather than a native select.
+- Model setup uses local **测试连接** and **保存配置** actions inside the
+  accordion. Testing reports measured latency on success. These actions belong
+  to the consequential provider-setup flow and do not introduce a global
+  Settings footer.
 - About shows the version first, then the exact active product-data directory,
   total use, one segmented composition bar, and the icon-only **更改位置**
   action. Storage migration uses the shared consequential confirmation surface
