@@ -6301,6 +6301,10 @@ html[data-surface="new-mail-notification"] #root {
   min-width: 0;
 }
 
+.compose-ai-message__markdown-loading {
+  white-space: pre-wrap;
+}
+
 .compose-ai-message__content > :first-child,
 .compose-ai-message__content > :first-child > :first-child {
   margin-top: 0;

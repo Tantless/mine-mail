@@ -75,6 +75,7 @@ if (!entry) {
 for (const prefix of [
   "brand-icons-",
   "ContactsWorkspace-",
+  "ComposeAiMarkdown-",
   "SettingsPanel-",
   "RichTextEditor-",
   "react-runtime-",

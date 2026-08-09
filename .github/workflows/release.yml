@@ -61,9 +61,42 @@ jobs:
           console.log(`All project versions match ${tag}.`);
           NODE
 
+  validate-frontend:
+    name: Validate release frontend
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Test frontend
+        working-directory: web
+        run: npm test -- --run
+
+      - name: Build frontend
+        working-directory: web
+        run: npm run build
+
+      - name: Verify production bundle boundaries
+        working-directory: web
+        run: npm run verify:production-bundle
+
   prepare-release:
     name: Prepare draft release
-    needs: validate-version
+    needs:
+      - validate-version
+      - validate-frontend
     runs-on: ubuntu-22.04
     timeout-minutes: 5
     outputs:

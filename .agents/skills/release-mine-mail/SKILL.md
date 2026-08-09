@@ -106,7 +106,7 @@ Run all repository release checks after the version change:
 
 ```text
 cargo test
-cd web && npm test -- --run && npm run build
+cd web && npm test -- --run && npm run build && npm run verify:production-bundle
 cd web/src-tauri && cargo test && cargo check
 cd installer/windows && npm test
 ```

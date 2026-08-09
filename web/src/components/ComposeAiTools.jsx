@@ -1,7 +1,13 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { createPortal } from "react-dom";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 import {
   ArrowCounterClockwise,
   ArrowLeft,
@@ -27,6 +33,8 @@ import {
   optimizationAnnotationText,
 } from "./ComposeOptimizationReviewDialog.jsx";
 import { mailApi } from "../services/mailApi.js";
+
+const ComposeAiMarkdown = lazy(() => import("./ComposeAiMarkdown.jsx"));
 
 const agentModeOptions = [
   { value: "auto", label: "自动" },
@@ -491,31 +499,22 @@ function SessionList({ disabled, onOpenSession, sessions }) {
 
 function SafeMarkdown({ children, onOpenExternalLink }) {
   return (
-    <ReactMarkdown
-      remarkPlugins={[remarkGfm]}
-      components={{
-        a({ href, children: label }) {
-          return (
-            <a
-              href={href}
-              onClick={(event) => {
-                event.preventDefault();
-                if (!href) return;
-                if (onOpenExternalLink) onOpenExternalLink(href);
-                else void mailApi.openExternalUrl(href);
-              }}
-            >
-              {label}
-            </a>
-          );
-        },
-        img({ alt }) {
-          return <span>{alt ? `[图片：${alt}]` : "[图片]"}</span>;
-        },
-      }}
+    <Suspense
+      fallback={(
+        <p className="compose-ai-message__markdown-loading">
+          {children || ""}
+        </p>
+      )}
     >
-      {children || ""}
-    </ReactMarkdown>
+      <ComposeAiMarkdown
+        onOpenExternalLink={(href) => {
+          if (onOpenExternalLink) return onOpenExternalLink(href);
+          return mailApi.openExternalUrl(href);
+        }}
+      >
+        {children || ""}
+      </ComposeAiMarkdown>
+    </Suspense>
   );
 }
 
