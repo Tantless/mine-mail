@@ -98,7 +98,12 @@ function statusMessage(error, fallback) {
   return userFacingErrorMessage(error, fallback);
 }
 
-function AgentSettingsContent({ client }) {
+function AgentSettingsContent({
+  client,
+  defaultAiAssistantOpen,
+  onDefaultAiAssistantOpenChange,
+  children,
+}) {
   const [expanded, setExpanded] = useState(true);
   const [loadState, setLoadState] = useState("loading");
   const [form, setForm] = useState(initialConfiguration);
@@ -524,19 +529,35 @@ function AgentSettingsContent({ client }) {
                     <small>可直接选择预设模型；检索成功后会更新并保存当前供应商的列表。</small>
                   </div>
 
-                  <div className="settings-field agent-translation-language">
-                    <label htmlFor="agent-translation-language">AI 翻译语言</label>
-                    <ThemedSelect
-                      id="agent-translation-language"
-                      label="AI 翻译语言"
-                      value={form.translationLanguage}
-                      options={form.translationLanguages}
-                      disabled={busy}
-                      onValueChange={(value) =>
-                        updateField("translationLanguage", value)
-                      }
-                    />
-                    <small>选择阅读邮件时 AI 默认翻译成的语言。</small>
+                  <div className="agent-compose-preferences">
+                    <div className="settings-field agent-translation-language">
+                      <label htmlFor="agent-translation-language">AI 翻译语言</label>
+                      <ThemedSelect
+                        id="agent-translation-language"
+                        label="AI 翻译语言"
+                        value={form.translationLanguage}
+                        options={form.translationLanguages}
+                        disabled={busy}
+                        onValueChange={(value) =>
+                          updateField("translationLanguage", value)
+                        }
+                      />
+                      <small>选择阅读邮件时 AI 默认翻译成的语言。</small>
+                    </div>
+
+                    <label className="settings-field settings-preference-row--toggle agent-assistant-default">
+                      <span>默认开启 AI 助理</span>
+                      <span className="agent-assistant-default__control">
+                        <small>打开写信界面时自动展开右侧助理。</small>
+                        <input
+                          type="checkbox"
+                          checked={Boolean(defaultAiAssistantOpen)}
+                          onChange={(event) =>
+                            onDefaultAiAssistantOpenChange(event.target.checked)
+                          }
+                        />
+                      </span>
+                    </label>
                   </div>
                 </div>
 
@@ -577,6 +598,8 @@ function AgentSettingsContent({ client }) {
           </div>
         ) : null}
       </section>
+
+      {children}
 
       {helpOpen ? (
         <div className="confirm-layer" onPointerDown={helpFocus.onBackdropPointerDown}>
@@ -669,10 +692,21 @@ class AgentSettingsErrorBoundary extends Component {
   }
 }
 
-export function AgentSettings({ client = mailApi }) {
+export function AgentSettings({
+  client = mailApi,
+  defaultAiAssistantOpen = true,
+  onDefaultAiAssistantOpenChange = () => {},
+  children = null,
+}) {
   return (
     <AgentSettingsErrorBoundary>
-      <AgentSettingsContent client={client} />
+      <AgentSettingsContent
+        client={client}
+        defaultAiAssistantOpen={defaultAiAssistantOpen}
+        onDefaultAiAssistantOpenChange={onDefaultAiAssistantOpenChange}
+      >
+        {children}
+      </AgentSettingsContent>
     </AgentSettingsErrorBoundary>
   );
 }

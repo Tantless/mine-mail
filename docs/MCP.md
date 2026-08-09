@@ -15,7 +15,7 @@ ChatGPT Desktop, Claude Code, OpenClaw, and Hermes only.
 
 1. Start the full Mine Mail desktop application. The React-only demo does not
    host MCP.
-2. Open **设置 → 功能设定 → 开启 MCP**, read the single confirmation, and
+2. Open **设置 → Agent 配置 → 开启 MCP**, read the single confirmation, and
    choose the permissions needed by the agent.
 3. Keep Mine Mail open or in the system tray. Fully exiting it stops MCP.
 

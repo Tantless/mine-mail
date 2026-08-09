@@ -138,6 +138,17 @@ it("summarizes minimized drafts from subject and first recipient", () => {
   ).toBe("季度计划(林夏)");
 });
 
+it("opens the AI assistant when the compose preference requests it", async () => {
+  renderCompose({ defaultAiAssistantOpen: true });
+
+  const assistant = await screen.findByRole("complementary", {
+    name: "AI 助理",
+  });
+  expect(
+    within(assistant).getByRole("button", { name: "收起 AI 助理" }),
+  ).toBeTruthy();
+});
+
 it("coalesces drag and resize pointer samples into one geometry write per frame", () => {
   window.localStorage.setItem(
     "mine-mail-compose-geometry-v1",

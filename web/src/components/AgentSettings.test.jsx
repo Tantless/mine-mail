@@ -178,6 +178,25 @@ describe("AgentSettings", () => {
     );
   });
 
+  it("shows the compose assistant default as an enabled capsule preference", async () => {
+    const user = userEvent.setup();
+    const onDefaultAiAssistantOpenChange = vi.fn();
+    render(
+      <AgentSettings
+        client={client()}
+        defaultAiAssistantOpen
+        onDefaultAiAssistantOpenChange={onDefaultAiAssistantOpenChange}
+      />,
+    );
+
+    const preference = await screen.findByRole("checkbox", {
+      name: /默认开启 AI 助理/,
+    });
+    expect(preference.checked).toBe(true);
+    await user.click(preference);
+    expect(onDefaultAiAssistantOpenChange).toHaveBeenCalledWith(false);
+  });
+
   it("automatically saves valid edits while retaining the manual save action", async () => {
     const user = userEvent.setup();
     const api = client();

@@ -652,6 +652,7 @@ describe("mailApi desktop IPC contract", () => {
         notification_sound_enabled: true,
         notification_sound: "im",
         remote_image_mode: "ask",
+        ai_assistant_default_open: true,
       })
       .mockResolvedValueOnce({
         poll_interval_minutes: 1,
@@ -662,6 +663,7 @@ describe("mailApi desktop IPC contract", () => {
         notification_sound_enabled: false,
         notification_sound: "reminder",
         remote_image_mode: "blocked",
+        ai_assistant_default_open: false,
       })
       .mockResolvedValueOnce({
         configured: true,
@@ -688,6 +690,7 @@ describe("mailApi desktop IPC contract", () => {
       notificationSoundEnabled: true,
       notificationSound: "im",
       remoteImageMode: "ask",
+      aiAssistantDefaultOpen: true,
       mcpEnabled: false,
       mcpInformationEnabled: true,
       mcpSendEnabled: false,
@@ -703,6 +706,7 @@ describe("mailApi desktop IPC contract", () => {
       notificationSoundEnabled: false,
       notificationSound: "reminder",
       remoteImageMode: "blocked",
+      aiAssistantDefaultOpen: false,
     });
     expect(await mailApi.getAccountStatus()).toMatchObject({
       configured: true,
@@ -726,6 +730,7 @@ describe("mailApi desktop IPC contract", () => {
         notification_sound_enabled: false,
         notification_sound: "reminder",
         remote_image_mode: "blocked",
+        ai_assistant_default_open: false,
         mcp_enabled: false,
         mcp_information_enabled: true,
         mcp_send_enabled: false,

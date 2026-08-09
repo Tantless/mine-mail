@@ -184,6 +184,11 @@ function normalizeSettings(settings = {}) {
     remoteImageMode: ["automatic", "ask", "blocked"].includes(remoteImageMode)
       ? remoteImageMode
       : "automatic",
+    aiAssistantDefaultOpen: Boolean(
+      settings.aiAssistantDefaultOpen ??
+      settings.ai_assistant_default_open ??
+      true,
+    ),
     mcpEnabled: Boolean(settings.mcpEnabled ?? settings.mcp_enabled ?? false),
     mcpInformationEnabled: Boolean(
       settings.mcpInformationEnabled ?? settings.mcp_information_enabled ?? true,
@@ -215,6 +220,7 @@ function settingsDto(settings) {
     notification_sound_enabled: normalized.notificationSoundEnabled,
     notification_sound: normalized.notificationSound,
     remote_image_mode: normalized.remoteImageMode,
+    ai_assistant_default_open: normalized.aiAssistantDefaultOpen,
     mcp_enabled: normalized.mcpEnabled,
     mcp_information_enabled: normalized.mcpInformationEnabled,
     mcp_send_enabled: normalized.mcpSendEnabled,

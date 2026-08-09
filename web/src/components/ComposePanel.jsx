@@ -534,6 +534,7 @@ export function ComposePanel({
   sendShortcut,
   contacts = [],
   remoteImageMode = "automatic",
+  defaultAiAssistantOpen = false,
   onOpenExternalLink,
   attachmentOperations = {},
   forwardWarnings = [],
@@ -562,7 +563,9 @@ export function ComposePanel({
   const [windowMotion, setWindowMotion] = useState(null);
   const [isReplyExpanded, setIsReplyExpanded] = useState(false);
   const [isForwardExpanded, setIsForwardExpanded] = useState(false);
-  const [isAiAssistantOpen, setIsAiAssistantOpen] = useState(false);
+  const [isAiAssistantOpen, setIsAiAssistantOpen] = useState(
+    () => Boolean(defaultAiAssistantOpen),
+  );
   const interactionRef = useRef(null);
   const geometryRef = useRef(geometry);
   const minimizedGeometryRef = useRef(

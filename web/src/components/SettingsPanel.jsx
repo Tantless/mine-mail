@@ -1374,6 +1374,25 @@ export function SettingsPanel({
                   />
                 </label>
 
+              </div>
+            </section>
+          ) : null}
+
+          {activeSection === "agent" ? (
+            <AgentSettings
+              client={agentClient}
+              defaultAiAssistantOpen={value.aiAssistantDefaultOpen}
+              onDefaultAiAssistantOpenChange={(aiAssistantDefaultOpen) =>
+                updateSettings((current) => ({
+                  ...current,
+                  aiAssistantDefaultOpen,
+                }))
+              }
+            >
+              <section
+                className="settings-preference-card agent-mcp-card"
+                aria-label="MCP 配置"
+              >
                 <div
                   className="settings-mcp-group"
                   data-expanded={Boolean(value.mcpEnabled)}
@@ -1468,12 +1487,8 @@ export function SettingsPanel({
                     </div>
                   </div>
                 </div>
-              </div>
-            </section>
-          ) : null}
-
-          {activeSection === "agent" ? (
-            <AgentSettings client={agentClient} />
+              </section>
+            </AgentSettings>
           ) : null}
 
           {activeSection === "version" ? (

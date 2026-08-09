@@ -267,6 +267,10 @@ product decision changes.
 - Each account owns at most one live compose session. Account switching saves and
   hides the source session; returning restores it as the minimized compose bar.
   **写信** restores an existing minimized session instead of creating another.
+- **默认开启 AI 助理** is a persisted desktop preference that defaults on. It
+  determines whether a newly opened compose surface initially expands the right
+  assistant panel; the user may still collapse or reopen that panel while
+  composing.
 - Selecting a different draft while compose is minimized first stabilizes the
   current edit. A failed save prevents the switch.
 - Reply/forward context is immutable and separate from the authored editor.
@@ -463,6 +467,8 @@ product decision changes.
 
 ## Local MCP access
 
+- The MCP controls live in **设置 → Agent 配置**, as the card immediately below
+  **模型配置**.
 - **开启 MCP** is a persisted parent setting. Turning it on requires one compact
   confirmation; an already enabled persisted setting restarts the service with
   the app without prompting again. Mine Mail must remain open or in the tray.

@@ -69,6 +69,7 @@ const defaultSettings = {
   notificationSoundEnabled: true,
   notificationSound: "mail",
   remoteImageMode: "automatic",
+  aiAssistantDefaultOpen: true,
   mcpEnabled: false,
   mcpInformationEnabled: true,
   mcpSendEnabled: false,
@@ -7963,6 +7964,7 @@ export function App() {
           sendShortcut={platform === "mac" ? "⌘ ↵" : "Ctrl ↵"}
           contacts={composeContactsWithAvatars}
           remoteImageMode={settings.remoteImageMode}
+          defaultAiAssistantOpen={settings.aiAssistantDefaultOpen}
           onOpenExternalLink={handleOpenExternalLink}
           attachmentOperations={composer.attachmentOperations}
           forwardWarnings={composer.forwardWarnings}

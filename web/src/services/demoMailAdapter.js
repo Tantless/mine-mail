@@ -78,6 +78,7 @@ function createDemoState() {
       notificationSoundEnabled: true,
       notificationSound: "mail",
       remoteImageMode: "automatic",
+      aiAssistantDefaultOpen: true,
       mcpEnabled: false,
       mcpInformationEnabled: true,
       mcpSendEnabled: false,

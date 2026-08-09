@@ -252,12 +252,6 @@ All app-owned color and material decisions flow through custom properties in
   通知**; the row is disabled with the master preference and absent on other
   platforms. Nearby helper copy explains that Windows presentation remains
   subject to system notification and do-not-disturb settings.
-- **开启 MCP** is a parent preference with a compact question action. **获取信息**
-  and **发送邮件** expand as visibly nested rows while the parent is on and
-  collapse while it is off; their saved values are preserved while collapsed.
-  The inline note says Mine Mail must remain in the foreground or tray.
-  Enabling the parent uses one compact shared confirmation dialog; the question
-  action opens a theme-owned tool explanation dialog rather than a tooltip.
 - **Agent 配置** is its own category between feature preferences and About. Its
   **模型配置** card is a compact accordion, expanded by default, and keeps
   provider presets above the editable connection fields. Selecting a preset
@@ -275,9 +269,20 @@ All app-owned color and material decisions flow through custom properties in
   local **保存配置** action remains as an immediate save and explicit retry;
   **测试连接** reports measured latency on success. These actions stay inside the
   accordion and do not introduce a global Settings footer.
-- **AI 翻译语言** sits with the model fields and uses `ThemedSelect`. It defaults
-  to Simplified Chinese and presents every language in its own written form,
-  such as **中文（简体）**、**中文（繁體）**、**English** and **日本語**.
+- **AI 翻译语言** and **默认开启 AI 助理** share the final two-column row of
+  the model card and stack at the defensive narrow reflow. Translation uses
+  `ThemedSelect`, defaults to Simplified Chinese, and presents every language in
+  its own written form, such as **中文（简体）**、**中文（繁體）**、**English**
+  and **日本語**. The assistant preference uses the shared compact capsule
+  switch and defaults on.
+- The MCP configuration is a second card immediately below **模型配置** on the
+  Agent page. **开启 MCP** is its parent preference with a compact question
+  action. **获取信息** and **发送邮件** expand as visibly nested rows while the
+  parent is on and collapse while it is off; their saved values are preserved
+  while collapsed. The inline note says Mine Mail must remain in the foreground
+  or tray. Enabling the parent uses one compact shared confirmation dialog; the
+  question action opens a theme-owned tool explanation dialog rather than a
+  tooltip.
 - The Agent configuration page keeps a bounded blank inset after its last card,
   allowing bottom fields and their downward-opening menus to scroll above a
   minimized compose bar.
@@ -324,6 +329,9 @@ All app-owned color and material decisions flow through custom properties in
   a side backs up the then-live body before replacement and enables the adjacent
   icon-only undo action; the undo stays visible but disabled without a backup.
   The adjacent AI assistant control opens or collapses the conversational panel.
+- A persisted **默认开启 AI 助理** preference controls the panel's initial state
+  whenever a compose surface is opened. It defaults on; the compose control can
+  still collapse or reopen the panel for the current surface.
 - On wide desktop viewports the AI assistant attaches to and extends the compose
   surface on the right. Defensive narrower layouts overlay it within the compose
   bounds. The panel has two full states: an application-level session list, and

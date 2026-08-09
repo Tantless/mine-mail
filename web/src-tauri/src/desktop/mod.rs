@@ -324,6 +324,7 @@ impl DesktopRuntime {
             notification_sound_enabled: settings.notification_sound_enabled,
             notification_sound: settings.notification_sound,
             remote_image_mode: settings.remote_image_mode,
+            ai_assistant_default_open: settings.ai_assistant_default_open,
             mcp_enabled: settings.mcp_enabled,
             mcp_information_enabled: settings.mcp_information_enabled,
             mcp_send_enabled: settings.mcp_send_enabled,
@@ -362,6 +363,9 @@ impl DesktopRuntime {
         }
         if let Some(value) = update.remote_image_mode {
             settings.remote_image_mode = value;
+        }
+        if let Some(value) = update.ai_assistant_default_open {
+            settings.ai_assistant_default_open = value;
         }
         if let Some(value) = update.mcp_enabled {
             settings.mcp_enabled = value;
@@ -450,6 +454,7 @@ impl DesktopRuntime {
             notification_sound_enabled: Some(settings.notification_sound_enabled),
             notification_sound: Some(settings.notification_sound),
             remote_image_mode: Some(settings.remote_image_mode),
+            ai_assistant_default_open: Some(settings.ai_assistant_default_open),
             mcp_enabled: Some(settings.mcp_enabled),
             mcp_information_enabled: Some(settings.mcp_information_enabled),
             mcp_send_enabled: Some(settings.mcp_send_enabled),

@@ -9004,6 +9004,13 @@ html[data-surface="new-mail-notification"] #root {
   gap: 15px;
 }
 
+.agent-compose-preferences {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  gap: 18px;
+}
+
 .agent-config-fields .settings-input-shell {
   border: 1px solid color-mix(in srgb, var(--color-border) 88%, var(--surface-edge));
   border-radius: 10px;
@@ -9034,6 +9041,28 @@ html[data-surface="new-mail-notification"] #root {
   min-height: 40px;
   border-color: color-mix(in srgb, var(--color-border) 88%, var(--surface-edge));
   background: color-mix(in srgb, var(--compose-control-surface) 76%, transparent);
+}
+
+.agent-assistant-default__control {
+  display: flex;
+  min-height: 40px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 11px;
+  border: 1px solid color-mix(in srgb, var(--color-border) 88%, var(--surface-edge));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--compose-control-surface) 76%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--surface-highlight) 72%, transparent);
+}
+
+.agent-assistant-default__control small {
+  min-width: 0;
+  line-height: 1.35;
+}
+
+.agent-mcp-card {
+  margin-top: 15px;
 }
 
 .agent-environment-option {
@@ -10156,6 +10185,10 @@ html[data-surface="new-mail-notification"] #root {
 
   .agent-provider-presets > div {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .agent-compose-preferences {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .agent-model-control {

@@ -922,6 +922,7 @@ describe("Mine Mail MVP", () => {
         notificationSoundEnabled: true,
         notificationSound: "reminder",
         remoteImageMode: "ask",
+        aiAssistantDefaultOpen: true,
         mcpEnabled: false,
         mcpInformationEnabled: true,
         mcpSendEnabled: false,

@@ -20,6 +20,7 @@ const settings = {
   notificationSoundEnabled: true,
   notificationSound: "mail",
   remoteImageMode: "automatic",
+  aiAssistantDefaultOpen: true,
   mcpEnabled: false,
   mcpInformationEnabled: true,
   mcpSendEnabled: false,
@@ -241,6 +242,8 @@ describe("SettingsPanel account flow", () => {
     render(<SettingsPanel {...panelProps({ onSave })} />);
 
     await user.click(screen.getByRole("button", { name: "功能设定" }));
+    expect(screen.queryByRole("checkbox", { name: /开启 MCP/ })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Agent 配置" }));
     expect(screen.queryByRole("checkbox", { name: /获取信息/ })).toBeNull();
     expect(screen.queryByRole("checkbox", { name: /发送邮件/ })).toBeNull();
     await user.click(screen.getByRole("checkbox", { name: /开启 MCP/ }));
@@ -280,7 +283,7 @@ describe("SettingsPanel account flow", () => {
     const user = userEvent.setup();
     render(<SettingsPanel {...panelProps()} />);
 
-    await user.click(screen.getByRole("button", { name: "功能设定" }));
+    await user.click(screen.getByRole("button", { name: "Agent 配置" }));
     await user.click(
       screen.getByRole("button", { name: "了解 Mine Mail MCP 支持的工具" }),
     );
