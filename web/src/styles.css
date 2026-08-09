@@ -9223,7 +9223,7 @@ html[data-surface="new-mail-notification"] #root {
 }
 
 .agent-config-feedback[data-tone="success"] {
-  color: var(--color-success);
+  color: var(--color-primary);
 }
 
 .agent-config-feedback[data-tone="danger"] {

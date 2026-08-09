@@ -65,6 +65,14 @@ describe("reader translation popup layering", () => {
   });
 });
 
+describe("Agent configuration feedback", () => {
+  it("uses the theme accent for successful saved state copy", () => {
+    expect(
+      declarationsFor('\\.agent-config-feedback\\[data-tone="success"\\]'),
+    ).toMatch(/color:\s*var\(--color-primary\)/);
+  });
+});
+
 describe("isolated mail sizing contract", () => {
   it("uses the placeholder height only until the measured document is ready", () => {
     expect(declarationsFor("\\.html-message__document")).toMatch(

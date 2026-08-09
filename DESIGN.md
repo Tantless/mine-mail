@@ -268,7 +268,9 @@ All app-owned color and material decisions flow through custom properties in
   and expose compact nearby saving, success, or retryable failure feedback. The
   local **保存配置** action remains as an immediate save and explicit retry;
   **测试连接** reports measured latency on success. These actions stay inside the
-  accordion and do not introduce a global Settings footer.
+  accordion and do not introduce a global Settings footer. Successful Agent
+  configuration feedback uses the current theme accent rather than semantic
+  green so the compact saved state remains visually emphasized.
 - **AI 翻译语言** and **默认开启 AI 助理** share the final two-column row of
   the model card and stack at the defensive narrow reflow. Translation uses
   `ThemedSelect`, defaults to Simplified Chinese, and presents every language in
