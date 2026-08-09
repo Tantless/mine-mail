@@ -453,6 +453,13 @@ export const mailApi = {
     return normalizeAiConfig(await callDemo("saveAiConfig", request));
   },
 
+  async setAiTranslationLanguage(languageId) {
+    const response = isTauri
+      ? await desktopInvoke("set_ai_translation_language", { languageId })
+      : await callDemo("setAiTranslationLanguage", languageId);
+    return normalizeAiConfig(response);
+  },
+
   async listAiModels(config) {
     const request = aiConnectionRequest(config);
     const response = isTauri

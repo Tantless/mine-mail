@@ -21,12 +21,12 @@ import {
   SpinnerGap,
   TrayArrowDown,
   Trash,
-  Translate,
   WarningCircle,
 } from "@phosphor-icons/react";
 import { IconButton } from "./IconButton.jsx";
 import { HtmlMessageBody } from "./HtmlMessageBody.jsx";
 import { NativeHtmlMessageBody } from "./NativeHtmlMessageBody.jsx";
+import { ReaderTranslationControl } from "./ReaderTranslationControl.jsx";
 import { ReaderIdleExperience } from "./ReaderIdleExperience.jsx";
 import { SegmentedMessageBody } from "./SegmentedMessageBody.jsx";
 import { EditableProfileAvatar, ProfileAvatar } from "./ProfileAvatar.jsx";
@@ -39,6 +39,20 @@ const REMOTE_MAILBOX_ROLES = new Set(["inbox", "sent", "archive", "trash"]);
 const MOVE_TO_INBOX_ROLES = new Set(["archive", "trash"]);
 const MOVE_TO_TRASH_ROLES = new Set(["inbox", "sent", "archive"]);
 const MAX_OUTBOX_ATTEMPTS = 0xffffffff;
+const FALLBACK_TRANSLATION_LANGUAGES = [
+  { value: "zh-Hans", label: "中文（简体）" },
+  { value: "zh-Hant", label: "中文（繁體）" },
+  { value: "en", label: "English" },
+  { value: "ja", label: "日本語" },
+  { value: "ko", label: "한국어" },
+  { value: "ru", label: "Русский" },
+  { value: "es", label: "Español" },
+  { value: "fr", label: "Français" },
+  { value: "de", label: "Deutsch" },
+  { value: "pt", label: "Português" },
+  { value: "it", label: "Italiano" },
+  { value: "ar", label: "العربية" },
+];
 
 function translationPartsForMessage(message, bodyRenderMode) {
   if (Array.isArray(message.body_segments) && message.body_segments.length) {
@@ -536,6 +550,8 @@ export function MessageView({
   onSetSenderAvatar,
   onRemoveSenderAvatar,
   onTranslateMessage,
+  onLoadTranslationConfig,
+  onChangeTranslationLanguage,
 }) {
   const recipientDetailsId = useId();
   const recipientToggleRef = useRef(null);
@@ -549,9 +565,21 @@ export function MessageView({
     showTranslated: false,
     error: null,
   });
+  const [translationPreference, setTranslationPreference] = useState({
+    status: "idle",
+    language: "zh-Hans",
+    options: FALLBACK_TRANSLATION_LANGUAGES,
+    error: null,
+  });
   const translationMessageKey = message
     ? messageNavigationKey(message) || String(message.id || "reader-message")
     : null;
+  const translationRole = message ? normalizedMailboxRole(message) : "";
+  const translationEligible = Boolean(
+    message
+      && !["draft", "outbox", "sent"].includes(translationRole)
+      && typeof onTranslateMessage === "function",
+  );
 
   useEffect(() => {
     setRecipientDetailsOpen(false);
@@ -569,6 +597,56 @@ export function MessageView({
   }, [translationMessageKey]);
 
   useEffect(() => {
+    if (
+      !translationEligible
+      || typeof onLoadTranslationConfig !== "function"
+    ) {
+      return undefined;
+    }
+    let active = true;
+    setTranslationPreference((current) => ({
+      ...current,
+      status: "loading",
+      error: null,
+    }));
+    Promise.resolve(onLoadTranslationConfig())
+      .then((config) => {
+        if (!active) return;
+        const options = Array.isArray(config?.translationLanguages)
+          && config.translationLanguages.length
+          ? config.translationLanguages
+          : FALLBACK_TRANSLATION_LANGUAGES;
+        const configuredLanguage = String(
+          config?.translationLanguage || "zh-Hans",
+        );
+        setTranslationPreference({
+          status: "ready",
+          language: options.some(
+            (option) => String(option.value) === configuredLanguage,
+          )
+            ? configuredLanguage
+            : String(options[0]?.value || "zh-Hans"),
+          options,
+          error: null,
+        });
+      })
+      .catch((configError) => {
+        if (!active) return;
+        setTranslationPreference((current) => ({
+          ...current,
+          status: "error",
+          error: userFacingErrorMessage(
+            configError,
+            "无法读取 AI 翻译语言，请前往 Agent 配置检查",
+          ),
+        }));
+      });
+    return () => {
+      active = false;
+    };
+  }, [onLoadTranslationConfig, translationEligible, translationMessageKey]);
+
+  useEffect(() => {
     if (recipientDetailsOpen) recipientRegionRef.current?.focus();
   }, [recipientDetailsOpen]);
 
@@ -584,7 +662,7 @@ export function MessageView({
     );
   }
 
-  const role = normalizedMailboxRole(message);
+  const role = translationRole;
   const fromRecipients = senderRecipients(message, senderDisplayName);
   const primarySender = fromRecipients[0] || { email: "", name: "" };
   const sender = primarySender.name || primarySender.email || "未知发件人";
@@ -617,12 +695,59 @@ export function MessageView({
   const displayedBody = bodyPayloadHydrated
     ? displayedMessage.body_text || "这封邮件没有纯文本正文。"
     : "";
-  const canTranslate =
-    !isOutgoing
-    && role !== "draft"
-    && typeof onTranslateMessage === "function";
+  const canTranslate = translationEligible;
+  const translationLanguageBusy = ["loading", "saving"].includes(
+    translationPreference.status,
+  );
+  const changeTranslationLanguage = async (language) => {
+    const nextLanguage = String(language);
+    if (
+      translationLanguageBusy
+      || nextLanguage === translationPreference.language
+      || typeof onChangeTranslationLanguage !== "function"
+    ) {
+      return;
+    }
+    const previousLanguage = translationPreference.language;
+    setTranslationPreference((current) => ({
+      ...current,
+      status: "saving",
+      language: nextLanguage,
+      error: null,
+    }));
+    setTranslationState((current) => ({
+      ...current,
+      status: "idle",
+      translatedMessage: null,
+      showTranslated: false,
+      error: null,
+    }));
+    try {
+      const config = await onChangeTranslationLanguage(nextLanguage);
+      const options = Array.isArray(config?.translationLanguages)
+        && config.translationLanguages.length
+        ? config.translationLanguages
+        : translationPreference.options;
+      setTranslationPreference({
+        status: "ready",
+        language: String(config?.translationLanguage || nextLanguage),
+        options,
+        error: null,
+      });
+    } catch (languageError) {
+      setTranslationPreference((current) => ({
+        ...current,
+        status: "error",
+        language: previousLanguage,
+        error: userFacingErrorMessage(
+          languageError,
+          "AI 翻译语言保存失败，请重试",
+        ),
+      }));
+    }
+  };
   const startTranslation = async () => {
-    if (!canTranslate || bodyIsPending || error) return;
+    if (!canTranslate || bodyIsPending || error || translationLanguageBusy) return;
     const requestId = translationRequestRef.current + 1;
     translationRequestRef.current = requestId;
     setTranslationState({
@@ -836,24 +961,27 @@ export function MessageView({
                 </span>
               </div>
             ) : (
-              <button
-                type="button"
-                className="reader-translation-action"
-                aria-busy={translationState.status === "loading"}
-                disabled={bodyIsPending || Boolean(error) || translationState.status === "loading"}
-                onClick={() => void startTranslation()}
-              >
-                {translationState.status === "loading" ? (
-                  <SpinnerGap className="spin" size={16} aria-hidden="true" />
-                ) : (
-                  <Translate size={16} aria-hidden="true" />
-                )}
-                {translationState.status === "loading"
-                  ? "翻译中"
-                  : translationState.status === "error"
-                    ? "重试翻译"
-                    : "AI 翻译"}
-              </button>
+              <ReaderTranslationControl
+                value={translationPreference.language}
+                options={translationPreference.options}
+                translating={translationState.status === "loading"}
+                retry={translationState.status === "error"}
+                runDisabled={
+                  bodyIsPending
+                  || Boolean(error)
+                  || translationState.status === "loading"
+                  || translationLanguageBusy
+                }
+                selectDisabled={
+                  translationState.status === "loading"
+                  || translationLanguageBusy
+                  || typeof onChangeTranslationLanguage !== "function"
+                }
+                onRun={() => void startTranslation()}
+                onValueChange={(language) =>
+                  void changeTranslationLanguage(language)
+                }
+              />
             )
           ) : null}
           <IconButton
@@ -870,9 +998,10 @@ export function MessageView({
       </header>
 
       <div className="reader-scroll vertical-scroll-surface">
-        {translationIsCurrent && translationState.error ? (
+        {(translationIsCurrent && translationState.error)
+        || translationPreference.error ? (
           <div className="reader-translation-error" role="alert">
-            {translationState.error}
+            {translationState.error || translationPreference.error}
           </div>
         ) : null}
         <div className="message-header">

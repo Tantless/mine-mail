@@ -200,6 +200,26 @@ describe("mailApi desktop IPC contract", () => {
     });
   });
 
+  it("updates only the persisted AI translation language", async () => {
+    ipc.invoke.mockResolvedValue({
+      providerId: "deepseek",
+      baseUrl: "https://api.deepseek.com",
+      modelName: "deepseek-chat",
+      useEnvironmentKey: true,
+      translationLanguage: "ja",
+      translationLanguages: [{ id: "ja", label: "日本語" }],
+      presets: [],
+    });
+    const { mailApi } = await import("./mailApi.js");
+
+    await expect(mailApi.setAiTranslationLanguage("ja")).resolves.toEqual(
+      expect.objectContaining({ translationLanguage: "ja" }),
+    );
+    expect(ipc.invoke).toHaveBeenCalledWith("set_ai_translation_language", {
+      languageId: "ja",
+    });
+  });
+
   it("maps one reviewed delivery-unknown generation and its explicit risk decision", async () => {
     const confirmed = {
       id: "outbox-unknown",

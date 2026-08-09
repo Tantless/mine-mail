@@ -180,12 +180,20 @@ All app-owned color and material decisions flow through custom properties in
 - The reader uses one outer scrollbar. Native text and semantic HTML participate
   in that surface; complex sender HTML remains sanitized and isolated according
   to `docs/MAIL_RENDERING.md`.
-- Incoming Inbox, Starred, Archive, and Trash mail exposes one compact **AI 翻译**
-  action in the reader toolbar after the body is ready. While translating, that
-  action alone shows progress. Success replaces it with a low-profile
-  **原文 / 译文** capsule; the selected half uses the restrained primary tint and
-  switching never reflows the toolbar. Sent, Draft, and Outbox content has no
-  translation action.
+- Incoming Inbox, Starred, Archive, and Trash mail exposes one compact split
+  **AI 翻译** capsule in the reader toolbar after the body is ready. Its left
+  icon runs translation and its right, content-width language trigger changes
+  the persisted **AI 翻译语言** through a reader-specific bounded popup rather
+  than reusing the settings-field presentation. A minimized compose bar is
+  always treated as the lower popup boundary. Opening or focusing the control
+  never draws a primary-colored outer selection ring around the whole capsule;
+  keyboard focus is shown only as restrained inset feedback on the active
+  segment. Its language popup uses an opaque theme surface and stays above the
+  mail body so sender text cannot show through or intercept its options. While
+  translating, the icon alone shows progress. Success replaces the split
+  control with a low-profile **原文 / 译文** capsule; the selected half uses the
+  restrained primary tint and switching never reflows the toolbar. Sent, Draft,
+  and Outbox content has no translation action.
 - The compact header always keeps the real address available. Recipient details
   open in an overlay without moving the message body and expose only available
   From, To, Cc, and Bcc groups.

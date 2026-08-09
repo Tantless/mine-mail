@@ -142,6 +142,49 @@ describe("MessageView body hydration", () => {
 });
 
 describe("MessageView AI translation", () => {
+  it("uses a split capsule and persists a language selected from the reader", async () => {
+    const user = userEvent.setup();
+    const onLoadTranslationConfig = vi.fn().mockResolvedValue({
+      translationLanguage: "zh-Hans",
+      translationLanguages: [
+        { value: "zh-Hans", label: "中文（简体）" },
+        { value: "ja", label: "日本語" },
+      ],
+    });
+    const onChangeTranslationLanguage = vi.fn().mockResolvedValue({
+      translationLanguage: "ja",
+      translationLanguages: [
+        { value: "zh-Hans", label: "中文（简体）" },
+        { value: "ja", label: "日本語" },
+      ],
+    });
+    const { container } = render(
+      <MessageView
+        message={messageFixture()}
+        onClose={vi.fn()}
+        onTranslateMessage={vi.fn()}
+        onLoadTranslationConfig={onLoadTranslationConfig}
+        onChangeTranslationLanguage={onChangeTranslationLanguage}
+      />,
+    );
+
+    const languageSelect = await screen.findByRole("combobox", {
+      name: "AI 翻译语言",
+    });
+    expect(languageSelect.textContent).toContain("中文（简体）");
+    expect(languageSelect.className).toBe("reader-translation-language-trigger");
+    expect(container.querySelector(".reader-translation-control")).toBeTruthy();
+    expect(container.querySelector(".reader-translation-control .themed-select")).toBeNull();
+    expect(screen.getByRole("button", { name: "AI 翻译" })).toBeTruthy();
+
+    await user.click(languageSelect);
+    await user.click(screen.getByRole("option", { name: "日本語" }));
+    await waitFor(() =>
+      expect(onChangeTranslationLanguage).toHaveBeenCalledWith("ja"),
+    );
+    expect(languageSelect.textContent).toContain("日本語");
+  });
+
   it("translates safe HTML and switches between the original and translated body", async () => {
     const user = userEvent.setup();
     const onTranslateMessage = vi.fn().mockResolvedValue({
@@ -217,7 +260,7 @@ describe("MessageView AI translation", () => {
     );
     expect(screen.getByText("完整正文")).toBeTruthy();
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: "重试翻译" }).disabled).toBe(false),
+      expect(screen.getByRole("button", { name: "AI 翻译" }).disabled).toBe(false),
     );
   });
 });

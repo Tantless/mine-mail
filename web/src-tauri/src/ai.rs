@@ -682,6 +682,29 @@ impl AiRuntime {
         config_dto(&config, &provider_models)
     }
 
+    pub(crate) fn set_translation_language(
+        &self,
+        language_id: &str,
+    ) -> Result<AiConfigDto, String> {
+        let language = translation_language(language_id.trim())
+            .ok_or_else(|| "请选择有效的 AI 翻译语言。".to_owned())?;
+        let store = self.store()?;
+        let mut config = store
+            .load_config()
+            .map_err(ai_store_error)?
+            .unwrap_or_else(development_config);
+        config.translation_language = language.id.to_owned();
+        store.save_config(&config).map_err(ai_store_error)?;
+        diagnostics::info(
+            "ai_translation_language_saved",
+            DiagnosticFields::default()
+                .operation("ai_translation_language")
+                .outcome("saved"),
+        );
+        let provider_models = store.load_provider_models().map_err(ai_store_error)?;
+        config_dto(&config, &provider_models)
+    }
+
     pub(crate) async fn list_models(
         &self,
         mut request: CheckAiConnectionRequest,
@@ -3642,12 +3665,12 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        AiMode, AiProvider, AiStore, AiTranslationFormat, AiTranslationPartRequest, ProviderTrace,
-        StoredAiConfig, anthropic_messages, append_endpoint, apply_translation_units,
-        assistant_tool_message, collect_translation_units, development_config, explicit_addresses,
-        model_size_priority, normalized_finish_reason, parse_final_envelope,
-        parse_translation_envelope, provider_preset, session_title, tool_spec, tool_specs,
-        validate_base_url, validate_tool_argument_keys,
+        AiMode, AiProvider, AiRuntime, AiStore, AiTranslationFormat, AiTranslationPartRequest,
+        ProviderTrace, StoredAiConfig, anthropic_messages, append_endpoint,
+        apply_translation_units, assistant_tool_message, collect_translation_units,
+        development_config, explicit_addresses, model_size_priority, normalized_finish_reason,
+        parse_final_envelope, parse_translation_envelope, provider_preset, session_title,
+        tool_spec, tool_specs, validate_base_url, validate_tool_argument_keys,
     };
 
     #[test]
@@ -3977,6 +4000,42 @@ mod tests {
                 "api_key" | "authorization" | "credential" | "secret" | "token"
             )
         }));
+    }
+
+    #[test]
+    fn translation_language_can_change_without_replacing_provider_configuration() {
+        let directory = tempdir().expect("tempdir");
+        let runtime = AiRuntime::open(directory.path());
+        let original = StoredAiConfig {
+            provider_id: "openrouter".to_owned(),
+            base_url: "https://openrouter.ai/api/v1".to_owned(),
+            model_name: "openai/gpt-5.2".to_owned(),
+            use_environment_key: true,
+            translation_language: "zh-Hans".to_owned(),
+        };
+        runtime
+            .store()
+            .expect("store")
+            .save_config(&original)
+            .expect("save original config");
+
+        let changed = runtime
+            .set_translation_language("fr")
+            .expect("change language");
+        assert_eq!(changed.translation_language, "fr");
+
+        let stored = runtime
+            .store()
+            .expect("store")
+            .load_config()
+            .expect("load config")
+            .expect("stored config");
+        assert_eq!(stored.provider_id, original.provider_id);
+        assert_eq!(stored.base_url, original.base_url);
+        assert_eq!(stored.model_name, original.model_name);
+        assert_eq!(stored.use_environment_key, original.use_environment_key);
+        assert_eq!(stored.translation_language, "fr");
+        assert!(runtime.set_translation_language("unknown").is_err());
     }
 
     #[test]

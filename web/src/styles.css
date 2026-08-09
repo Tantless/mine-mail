@@ -2539,7 +2539,9 @@ html[data-surface="new-mail-notification"] #root {
 }
 
 .reader-panel--message .reader-toolbar {
+  z-index: 3;
   flex: 0 0 64px;
+  overflow: visible;
 }
 
 .reader-panel--message .reader-scroll {
@@ -2763,45 +2765,174 @@ html[data-surface="new-mail-notification"] #root {
   gap: 2px;
 }
 
-.reader-translation-action {
+.reader-translation-control {
+  position: relative;
   display: inline-flex;
-  min-width: max-content;
   height: 38px;
   align-items: center;
-  justify-content: center;
-  gap: 6px;
   margin-right: 7px;
-  padding: 0 11px;
   border: 1px solid color-mix(in srgb, var(--color-border) 76%, transparent);
   border-radius: 999px;
   background: color-mix(in srgb, var(--reader-toolbar-surface) 58%, transparent);
   color: var(--color-text-secondary);
-  font: inherit;
-  font-size: 10px;
-  font-weight: 650;
-  transition: border-color var(--motion-fast), background var(--motion-fast),
-    color var(--motion-fast), transform var(--motion-fast);
+  transition: border-color var(--motion-fast), background var(--motion-fast);
 }
 
-.reader-translation-action:hover:not(:disabled) {
+.reader-translation-control:hover {
   border-color: color-mix(in srgb, var(--color-primary) 34%, var(--color-border));
   background: color-mix(in srgb, var(--color-primary) 8%, var(--reader-toolbar-surface));
+}
+
+.reader-translation-control[data-open="true"] {
+  z-index: 34;
+  border-color: color-mix(in srgb, var(--color-text-muted) 28%, var(--color-border));
+  background: color-mix(in srgb, var(--reader-toolbar-surface) 72%, transparent);
+}
+
+.reader-translation-run {
+  display: inline-grid;
+  width: 37px;
+  height: 36px;
+  flex: 0 0 37px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-right: 1px solid color-mix(in srgb, var(--color-border) 68%, transparent);
+  border-radius: 999px 0 0 999px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  font: inherit;
+  transition: background var(--motion-fast), color var(--motion-fast),
+    transform var(--motion-fast);
+}
+
+.reader-translation-run:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-primary) 11%, transparent);
   color: var(--color-text);
 }
 
-.reader-translation-action:active:not(:disabled) {
+.reader-translation-run:active:not(:disabled) {
   transform: translateY(1px);
 }
 
-.reader-translation-action:focus-visible,
+.reader-translation-run:focus-visible {
+  outline: none;
+  background: color-mix(in srgb, var(--color-primary) 10%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-primary) 34%, transparent);
+}
+
 .reader-translation-toggle button:focus-visible {
   outline: none;
   box-shadow: var(--focus-ring);
 }
 
-.reader-translation-action:disabled {
+.reader-translation-run:disabled {
   cursor: not-allowed;
   opacity: 0.48;
+}
+
+.reader-translation-language-trigger {
+  display: inline-flex;
+  width: auto;
+  min-width: max-content;
+  height: 36px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 11px 0 10px;
+  border: 0;
+  border-radius: 0 999px 999px 0;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 650;
+  white-space: nowrap;
+  transition: background var(--motion-fast), color var(--motion-fast);
+}
+
+.reader-translation-language-trigger:hover:not(:disabled),
+.reader-translation-control[data-open="true"] .reader-translation-language-trigger {
+  background: color-mix(in srgb, var(--color-primary) 7%, transparent);
+  color: var(--color-text);
+}
+
+.reader-translation-language-trigger:focus-visible {
+  outline: none;
+  background: color-mix(in srgb, var(--color-primary) 9%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-primary) 30%, transparent);
+}
+
+.reader-translation-language-trigger:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+.reader-translation-language-menu {
+  position: absolute;
+  z-index: 40;
+  top: calc(100% + 7px);
+  right: 0;
+  display: grid;
+  width: max-content;
+  min-width: 142px;
+  max-width: 204px;
+  gap: 2px;
+  padding: 5px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  border: 1px solid color-mix(in srgb, var(--panel-border) 88%, var(--surface-edge));
+  border-radius: 10px;
+  background: var(--color-panel);
+  box-shadow: 0 14px 36px color-mix(in srgb, var(--color-text) 16%, transparent),
+    inset 0 1px 0 color-mix(in srgb, var(--surface-highlight) 88%, transparent);
+  animation: themed-select-menu-in var(--motion-fast) ease-out;
+}
+
+.reader-translation-language-option {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  height: 32px;
+  grid-template-columns: minmax(0, 1fr) 16px;
+  gap: 8px;
+  align-items: center;
+  padding: 0 8px 0 9px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 610;
+  text-align: left;
+  white-space: nowrap;
+  transition: background var(--motion-fast), color var(--motion-fast);
+}
+
+.reader-translation-language-option:hover,
+.reader-translation-language-option[data-active="true"] {
+  background: color-mix(in srgb, var(--color-primary) 7%, transparent);
+  color: var(--color-text);
+}
+
+.reader-translation-language-option[aria-selected="true"] {
+  background: color-mix(in srgb, var(--color-primary) 10%, transparent);
+  color: var(--color-primary);
+}
+
+.reader-translation-language-option:focus-visible {
+  outline: none;
+  background: color-mix(in srgb, var(--color-primary) 9%, transparent);
+}
+
+.reader-translation-language-option:disabled {
+  cursor: not-allowed;
+  opacity: 0.46;
 }
 
 .reader-translation-toggle {

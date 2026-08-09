@@ -1284,6 +1284,18 @@ fn save_ai_config(
 }
 
 #[tauri::command]
+fn set_ai_translation_language(
+    ai: State<'_, AiRuntime>,
+    language_id: String,
+) -> CommandResult<AiConfigDto> {
+    diagnostics::command(
+        "set_ai_translation_language",
+        DiagnosticFields::default(),
+        || ai.set_translation_language(&language_id),
+    )
+}
+
+#[tauri::command]
 async fn list_ai_models(
     ai: State<'_, AiRuntime>,
     request: CheckAiConnectionRequest,
@@ -3034,6 +3046,7 @@ pub fn run() {
             get_ai_session,
             get_ai_config,
             save_ai_config,
+            set_ai_translation_language,
             list_ai_models,
             test_ai_connection,
             translate_mail_content,

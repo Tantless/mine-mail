@@ -306,7 +306,9 @@ product decision changes.
   APIs; the other presets use their documented OpenAI-compatible interfaces.
 - The same configured Provider powers reader translation. **AI 翻译语言** is a
   persisted reading preference, defaults to Simplified Chinese, and offers
-  common languages under their native display names.
+  common languages under their native display names. The reader toolbar may
+  update this preference directly without resubmitting or replacing the
+  Provider, model, or API credential configuration.
 - Valid Agent configuration edits persist automatically after a short quiet
   period. Incomplete transient input remains local and does not produce repeated
   failures. The manual save action remains available for immediate persistence

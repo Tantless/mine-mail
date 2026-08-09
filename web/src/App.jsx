@@ -7648,6 +7648,8 @@ export function App() {
       }
       remoteImageMode={settings.remoteImageMode}
       onTranslateMessage={(parts) => mailApi.translateMailContent(parts)}
+      onLoadTranslationConfig={mailApi.getAiConfig}
+      onChangeTranslationLanguage={mailApi.setAiTranslationLanguage}
       onOpenExternalLink={(url) => void handleOpenExternalLink(url)}
       resolveReferencedMessage={resolveReferencedMessage}
       onOpenReferencedMessage={handleOpenReferencedMessage}

@@ -51,6 +51,20 @@ describe("text selection policy", () => {
   });
 });
 
+describe("reader translation popup layering", () => {
+  it("keeps the popup interactive above an opaque mail body", () => {
+    expect(declarationsFor("\.reader-panel--message \.reader-toolbar")).toMatch(
+      /z-index:\s*3[\s\S]*overflow:\s*visible/,
+    );
+    expect(declarationsFor("\.reader-translation-language-menu")).toMatch(
+      /z-index:\s*40[\s\S]*background:\s*var\(--color-panel\)/,
+    );
+    expect(declarationsFor("\.reader-translation-language-menu")).not.toMatch(
+      /background:\s*color-mix[^;]*transparent/,
+    );
+  });
+});
+
 describe("isolated mail sizing contract", () => {
   it("uses the placeholder height only until the measured document is ready", () => {
     expect(declarationsFor("\\.html-message__document")).toMatch(

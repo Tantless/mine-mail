@@ -561,6 +561,18 @@ function createDemoActions(
       return structuredClone(state.aiConfig);
     },
 
+    setAiTranslationLanguage(languageId) {
+      if (
+        !demoAiTranslationLanguages.some(
+          (language) => language.value === languageId,
+        )
+      ) {
+        throw new Error("请选择有效的 AI 翻译语言");
+      }
+      state.aiConfig.translationLanguage = languageId;
+      return structuredClone(state.aiConfig);
+    },
+
     listAiModels(request) {
       if (!request.baseUrl?.trim()) throw new Error("请输入 BASE_URL");
       const models =
