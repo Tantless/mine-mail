@@ -178,6 +178,34 @@ describe("AgentSettings", () => {
     );
   });
 
+  it("automatically saves valid edits while retaining the manual save action", async () => {
+    const user = userEvent.setup();
+    const api = client();
+    render(<AgentSettings client={api} />);
+
+    const language = await screen.findByRole("combobox", {
+      name: "AI 翻译语言",
+    });
+    expect(api.saveAiConfig).not.toHaveBeenCalled();
+
+    await user.click(language);
+    await user.click(screen.getByRole("option", { name: "日本語" }));
+
+    await waitFor(
+      () =>
+        expect(api.saveAiConfig).toHaveBeenCalledWith(
+          expect.objectContaining({ translationLanguage: "ja" }),
+        ),
+      { timeout: 1800 },
+    );
+    expect(await screen.findByText("配置已自动保存。")).toBeTruthy();
+
+    const manualSave = screen.getByRole("button", { name: "保存配置" });
+    expect(manualSave).toBeTruthy();
+    await user.click(manualSave);
+    await waitFor(() => expect(api.saveAiConfig).toHaveBeenCalledTimes(2));
+  });
+
   it("keeps the settings page visible when configuration loading throws synchronously", async () => {
     const api = client({
       getAiConfig: vi.fn(() => {

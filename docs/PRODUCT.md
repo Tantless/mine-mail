@@ -307,8 +307,13 @@ product decision changes.
 - The same configured Provider powers reader translation. **AI 翻译语言** is a
   persisted reading preference, defaults to Simplified Chinese, and offers
   common languages under their native display names.
-- Rust persists only provider ID, base URL, model name, and the environment-key
-  preference as active configuration in the AI SQLite store. Each preset also
+- Valid Agent configuration edits persist automatically after a short quiet
+  period. Incomplete transient input remains local and does not produce repeated
+  failures. The manual save action remains available for immediate persistence
+  and explicit retry after an automatic-save failure.
+- Rust persists only provider ID, base URL, model name, translation language,
+  and the environment-key preference as active configuration in the AI SQLite
+  store. Each preset also
   provides a small built-in model list that is immediately selectable; a
   successful model-discovery request replaces the stored list for that provider
   across restarts without changing other providers. Manually supplied keys are

@@ -43,6 +43,8 @@ const initialConfiguration = Object.freeze({
   translationLanguages: fallbackTranslationLanguages,
 });
 
+const automaticSaveDelayMs = 600;
+
 function normalizeConfiguration(config) {
   const value = config && typeof config === "object" ? config : {};
   return {
@@ -68,6 +70,30 @@ function configurationRequest(form) {
   };
 }
 
+function canSaveConfiguration(form) {
+  if (
+    !form.providerId?.trim()
+    || !form.baseUrl?.trim()
+    || !form.modelName?.trim()
+    || !form.translationLanguage?.trim()
+  ) {
+    return false;
+  }
+
+  try {
+    const url = new URL(form.baseUrl.trim());
+    if (url.protocol !== "https:" && url.protocol !== "http:") return false;
+  } catch {
+    return false;
+  }
+
+  return Boolean(
+    form.useEnvironmentKey
+    || form.hasStoredApiKey
+    || form.apiKey?.trim(),
+  );
+}
+
 function statusMessage(error, fallback) {
   return userFacingErrorMessage(error, fallback);
 }
@@ -79,7 +105,11 @@ function AgentSettingsContent({ client }) {
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [actionState, setActionState] = useState("idle");
   const [feedback, setFeedback] = useState(null);
+  const [editRevision, setEditRevision] = useState(0);
   const [helpOpen, setHelpOpen] = useState(false);
+  const editRevisionRef = useRef(0);
+  const savedRevisionRef = useRef(0);
+  const blockedAutomaticRevisionRef = useRef(null);
   const helpCloseRef = useRef(null);
   const modelMenuRef = useRef(null);
   const modelMenuLayout = useBoundedDropdown({
@@ -106,6 +136,10 @@ function AgentSettingsContent({ client }) {
       .then((config) => {
         if (cancelled) return;
         setForm(normalizeConfiguration(config));
+        editRevisionRef.current = 0;
+        savedRevisionRef.current = 0;
+        blockedAutomaticRevisionRef.current = null;
+        setEditRevision(0);
         setLoadState("ready");
       })
       .catch((error) => {
@@ -143,8 +177,15 @@ function AgentSettingsContent({ client }) {
     setModelMenuOpen(false);
   };
 
+  const markConfigurationEdited = () => {
+    editRevisionRef.current += 1;
+    blockedAutomaticRevisionRef.current = null;
+    setEditRevision(editRevisionRef.current);
+  };
+
   const updateField = (field, value, { resetModels = false } = {}) => {
     setForm((current) => ({ ...current, [field]: value }));
+    markConfigurationEdited();
     setFeedback(null);
     if (resetModels) resetModelResults();
   };
@@ -160,6 +201,7 @@ function AgentSettingsContent({ client }) {
       hasStoredApiKey: false,
       hasEnvironmentApiKey: false,
     }));
+    markConfigurationEdited();
     setFeedback(null);
     resetModelResults();
   };
@@ -179,6 +221,7 @@ function AgentSettingsContent({ client }) {
             : preset,
         ),
       }));
+      markConfigurationEdited();
       setModelMenuOpen(true);
       setFeedback({
         tone: "success",
@@ -214,22 +257,67 @@ function AgentSettingsContent({ client }) {
     }
   };
 
-  const saveConfiguration = async () => {
+  const saveConfiguration = async ({ automatic = false, revision = editRevision } = {}) => {
+    if (!canSaveConfiguration(form)) {
+      if (!automatic) {
+        setFeedback({
+          tone: "danger",
+          text: "请先完整填写模型地址、API Key 和模型名称。",
+        });
+      }
+      return;
+    }
+
+    const request = configurationRequest(form);
     setActionState("saving");
-    setFeedback(null);
+    setFeedback(
+      automatic
+        ? { tone: "neutral", text: "正在自动保存配置…" }
+        : null,
+    );
     try {
-      const saved = await client.saveAiConfig(configurationRequest(form));
-      setForm(normalizeConfiguration(saved));
-      setFeedback({ tone: "success", text: "模型配置已保存。" });
+      const saved = await client.saveAiConfig(request);
+      savedRevisionRef.current = Math.max(savedRevisionRef.current, revision);
+      blockedAutomaticRevisionRef.current = null;
+      if (editRevisionRef.current === revision) {
+        setForm(normalizeConfiguration(saved));
+        setFeedback({
+          tone: "success",
+          text: automatic ? "配置已自动保存。" : "模型配置已保存。",
+        });
+      }
     } catch (error) {
+      blockedAutomaticRevisionRef.current = revision;
       setFeedback({
         tone: "danger",
-        text: statusMessage(error, "模型配置保存失败，请检查后重试。"),
+        text: statusMessage(
+          error,
+          automatic
+            ? "配置自动保存失败，可修改后重试或点击保存配置。"
+            : "模型配置保存失败，请检查后重试。",
+        ),
       });
     } finally {
       setActionState("idle");
     }
   };
+
+  useEffect(() => {
+    if (
+      loadState !== "ready"
+      || actionState !== "idle"
+      || editRevision <= savedRevisionRef.current
+      || blockedAutomaticRevisionRef.current === editRevision
+      || !canSaveConfiguration(form)
+    ) {
+      return undefined;
+    }
+
+    const timer = window.setTimeout(() => {
+      void saveConfiguration({ automatic: true, revision: editRevision });
+    }, automaticSaveDelayMs);
+    return () => window.clearTimeout(timer);
+  }, [actionState, editRevision, form, loadState]);
 
   return (
     <section className="settings-page agent-settings" aria-labelledby="settings-agent-title">
@@ -339,6 +427,7 @@ function AgentSettingsContent({ client }) {
                           useEnvironmentKey: event.target.checked,
                           apiKey: event.target.checked ? "" : current.apiKey,
                         }));
+                        markConfigurationEdited();
                         setFeedback(null);
                         resetModelResults();
                       }}
@@ -472,7 +561,11 @@ function AgentSettingsContent({ client }) {
                   <button
                     type="button"
                     className="send-button"
-                    disabled={busy || loadState !== "ready"}
+                    disabled={
+                      busy
+                      || loadState !== "ready"
+                      || !canSaveConfiguration(form)
+                    }
                     onClick={() => void saveConfiguration()}
                   >
                     {actionState === "saving" ? <SpinnerGap size={15} className="spin" /> : null}

@@ -262,10 +262,11 @@ All app-owned color and material decisions flow through custom properties in
   flagship choices; custom providers may begin empty. **检索可用模型** replaces
   and persists that provider's choices after a successful request. Choices
   appear in a bounded themed popover rather than a native select.
-- Model setup uses local **测试连接** and **保存配置** actions inside the
-  accordion. Testing reports measured latency on success. These actions belong
-  to the consequential provider-setup flow and do not introduce a global
-  Settings footer.
+- Valid model-configuration edits save automatically after a short quiet period
+  and expose compact nearby saving, success, or retryable failure feedback. The
+  local **保存配置** action remains as an immediate save and explicit retry;
+  **测试连接** reports measured latency on success. These actions stay inside the
+  accordion and do not introduce a global Settings footer.
 - **AI 翻译语言** sits with the model fields and uses `ThemedSelect`. It defaults
   to Simplified Chinese and presents every language in its own written form,
   such as **中文（简体）**、**中文（繁體）**、**English** and **日本語**.
