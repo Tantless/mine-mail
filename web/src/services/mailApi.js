@@ -377,11 +377,11 @@ function normalizeAiSession(session = {}) {
 
 function normalizeAiConfig(config = {}) {
   return {
-    providerId: config.providerId ?? config.provider_id ?? "deepseek",
-    baseUrl: config.baseUrl ?? config.base_url ?? "https://api.deepseek.com",
+    providerId: config.providerId ?? config.provider_id ?? "custom",
+    baseUrl: config.baseUrl ?? config.base_url ?? "",
     modelName: config.modelName ?? config.model_name ?? "",
     useEnvironmentKey: Boolean(
-      config.useEnvironmentKey ?? config.use_environment_key ?? true,
+      config.useEnvironmentKey ?? config.use_environment_key ?? false,
     ),
     hasStoredApiKey: Boolean(
       config.hasStoredApiKey ?? config.has_stored_api_key ?? false,
@@ -392,7 +392,7 @@ function normalizeAiConfig(config = {}) {
     environmentVariable:
       config.environmentVariable ??
       config.environment_variable ??
-      "DEEPSEEK_API_KEY",
+      "AI_API_KEY",
     translationLanguage:
       config.translationLanguage ?? config.translation_language ?? "zh-Hans",
     translationLanguages: Array.isArray(

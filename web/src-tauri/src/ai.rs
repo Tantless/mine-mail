@@ -25,8 +25,6 @@ use crate::diagnostics::{self, ErrorKind as DiagnosticErrorKind, Fields as Diagn
 const AI_DATABASE_NAME: &str = "desktop-ai.sqlite3";
 const AI_KEYRING_SERVICE: &str = "com.minemail.desktop";
 const AI_KEYRING_USERNAME_PREFIX: &str = "agent-api-";
-const DEFAULT_DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com";
-const DEFAULT_DEEPSEEK_MODEL: &str = "deepseek-v4-pro";
 const MAX_BASE_URL_BYTES: usize = 2 * 1024;
 const MAX_API_KEY_BYTES: usize = 16 * 1024;
 const MAX_MODEL_NAME_BYTES: usize = 256;
@@ -580,7 +578,7 @@ impl AiRuntime {
         let config = store
             .as_ref()
             .and_then(|store| store.load_config().ok().flatten())
-            .unwrap_or_else(development_config);
+            .unwrap_or_else(default_config);
         let (provider, provider_error) = match AiProvider::from_stored_config(&config) {
             Ok(provider) => (Some(provider), None),
             Err(error) => {
@@ -607,7 +605,7 @@ impl AiRuntime {
         let config = store
             .load_config()
             .map_err(ai_store_error)?
-            .unwrap_or_else(development_config);
+            .unwrap_or_else(default_config);
         let provider_models = store.load_provider_models().map_err(ai_store_error)?;
         config_dto(&config, &provider_models)
     }
@@ -692,7 +690,7 @@ impl AiRuntime {
         let mut config = store
             .load_config()
             .map_err(ai_store_error)?
-            .unwrap_or_else(development_config);
+            .unwrap_or_else(default_config);
         config.translation_language = language.id.to_owned();
         store.save_config(&config).map_err(ai_store_error)?;
         diagnostics::info(
@@ -739,7 +737,7 @@ impl AiRuntime {
             .store()?
             .load_config()
             .map_err(ai_store_error)?
-            .unwrap_or_else(development_config);
+            .unwrap_or_else(default_config);
         let language = translation_language(&config.translation_language)
             .ok_or_else(|| "AI 翻译语言配置无效，请前往 Agent 配置重新选择。".to_owned())?;
         let units = collect_translation_units(&parts)?;
@@ -1823,18 +1821,12 @@ fn translation_language(language_id: &str) -> Option<TranslationLanguage> {
         .find(|language| language.id == language_id)
 }
 
-fn development_config() -> StoredAiConfig {
+fn default_config() -> StoredAiConfig {
     StoredAiConfig {
-        provider_id: "deepseek".to_owned(),
-        base_url: std::env::var("AI_BASE_URL")
-            .ok()
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| DEFAULT_DEEPSEEK_BASE_URL.to_owned()),
-        model_name: std::env::var("MODEL_NAME")
-            .ok()
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| DEFAULT_DEEPSEEK_MODEL.to_owned()),
-        use_environment_key: true,
+        provider_id: "custom".to_owned(),
+        base_url: String::new(),
+        model_name: String::new(),
+        use_environment_key: false,
         translation_language: default_translation_language(),
     }
 }
@@ -3667,10 +3659,11 @@ mod tests {
     use super::{
         AiMode, AiProvider, AiRuntime, AiStore, AiTranslationFormat, AiTranslationPartRequest,
         ProviderTrace, StoredAiConfig, anthropic_messages, append_endpoint,
-        apply_translation_units, assistant_tool_message, collect_translation_units,
-        development_config, explicit_addresses, model_size_priority, normalized_finish_reason,
-        parse_final_envelope, parse_translation_envelope, provider_preset, session_title,
-        tool_spec, tool_specs, validate_base_url, validate_tool_argument_keys,
+        apply_translation_units, assistant_tool_message, collect_translation_units, default_config,
+        default_translation_language, explicit_addresses, model_size_priority,
+        normalized_finish_reason, parse_final_envelope, parse_translation_envelope,
+        provider_preset, session_title, tool_spec, tool_specs, validate_base_url,
+        validate_tool_argument_keys,
     };
 
     #[test]
@@ -3932,6 +3925,16 @@ mod tests {
     }
 
     #[test]
+    fn unconfigured_ai_defaults_to_custom_provider_and_manual_key_entry() {
+        let config = default_config();
+
+        assert_eq!(config.provider_id, "custom");
+        assert!(config.base_url.is_empty());
+        assert!(config.model_name.is_empty());
+        assert!(!config.use_environment_key);
+    }
+
+    #[test]
     fn provider_urls_are_https_or_loopback_only() {
         assert!(validate_base_url("https://api.example.com/v1").is_ok());
         assert!(validate_base_url("http://127.0.0.1:11434/v1").is_ok());
@@ -4101,8 +4104,20 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires an explicitly supplied private DeepSeek API configuration"]
     async fn configured_deepseek_provider_can_complete_a_tool_round_trip() {
-        let provider =
-            AiProvider::from_stored_config(&development_config()).expect("configured provider");
+        let config = StoredAiConfig {
+            provider_id: "deepseek".to_owned(),
+            base_url: std::env::var("AI_BASE_URL")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| "https://api.deepseek.com".to_owned()),
+            model_name: std::env::var("MODEL_NAME")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| "deepseek-v4-pro".to_owned()),
+            use_environment_key: true,
+            translation_language: default_translation_language(),
+        };
+        let provider = AiProvider::from_stored_config(&config).expect("configured provider");
         let tools = vec![tool_spec("get_draft_subject").expect("tool")];
         let mut messages = vec![
             json!({

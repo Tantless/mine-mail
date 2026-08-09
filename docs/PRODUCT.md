@@ -307,7 +307,10 @@ product decision changes.
 - Agent configuration supports custom OpenAI-compatible services plus presets
   for DeepSeek, Kimi, OpenAI, Anthropic, Qwen, Xiaomi MiMo, MiniMax, ModelScope,
   Doubao Seed, GLM, and OpenRouter. Anthropic uses its native Messages and Models
-  APIs; the other presets use their documented OpenAI-compatible interfaces.
+  APIs; the other presets use their documented OpenAI-compatible interfaces. An
+  unconfigured installation starts on **自定义** with empty service and model
+  fields, and does not opt into reading an API Key from the environment. Existing
+  persisted provider and key-source choices continue to load unchanged.
 - The same configured Provider powers reader translation. **AI 翻译语言** is a
   persisted reading preference, defaults to Simplified Chinese, and offers
   common languages under their native display names. The reader toolbar may

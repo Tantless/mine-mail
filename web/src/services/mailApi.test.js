@@ -181,6 +181,21 @@ describe("mailApi desktop IPC contract", () => {
     });
   });
 
+  it("uses neutral custom defaults when Agent configuration fields are absent", async () => {
+    ipc.invoke.mockResolvedValue({});
+    const { mailApi } = await import("./mailApi.js");
+
+    await expect(mailApi.getAiConfig()).resolves.toEqual(
+      expect.objectContaining({
+        providerId: "custom",
+        baseUrl: "",
+        modelName: "",
+        useEnvironmentKey: false,
+        environmentVariable: "AI_API_KEY",
+      }),
+    );
+  });
+
   it("sends only bounded render parts through the AI translation command", async () => {
     ipc.invoke.mockResolvedValue({
       language: "zh-Hans",

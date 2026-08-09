@@ -30,14 +30,14 @@ const fallbackTranslationLanguages = Object.freeze([
 ]);
 
 const initialConfiguration = Object.freeze({
-  providerId: "deepseek",
-  baseUrl: "https://api.deepseek.com",
+  providerId: "custom",
+  baseUrl: "",
   modelName: "",
   apiKey: "",
-  useEnvironmentKey: true,
+  useEnvironmentKey: false,
   hasStoredApiKey: false,
   hasEnvironmentApiKey: false,
-  environmentVariable: "DEEPSEEK_API_KEY",
+  environmentVariable: "AI_API_KEY",
   presets: [],
   translationLanguage: "zh-Hans",
   translationLanguages: fallbackTranslationLanguages,
@@ -202,6 +202,7 @@ function AgentSettingsContent({
       baseUrl: preset.baseUrl,
       modelName: preset.models?.[0] || "",
       apiKey: "",
+      useEnvironmentKey: false,
       environmentVariable: preset.environmentVariable,
       hasStoredApiKey: false,
       hasEnvironmentApiKey: false,

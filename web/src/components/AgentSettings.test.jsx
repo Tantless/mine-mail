@@ -74,6 +74,51 @@ function client(overrides = {}) {
 describe("AgentSettings", () => {
   afterEach(() => cleanup());
 
+  it("shows an unconfigured custom provider with manual API Key entry", async () => {
+    const api = client({
+      getAiConfig: vi.fn().mockResolvedValue(
+        configuration({
+          providerId: "custom",
+          baseUrl: "",
+          modelName: "",
+          useEnvironmentKey: false,
+          hasStoredApiKey: false,
+          environmentVariable: "AI_API_KEY",
+        }),
+      ),
+    });
+    render(<AgentSettings client={api} />);
+
+    const customProvider = await screen.findByRole("button", { name: "自定义" });
+    expect(customProvider.getAttribute("data-selected")).toBe("true");
+    expect(screen.getByLabelText("BASE_URL").value).toBe("");
+    expect(screen.getByLabelText("MODEL_NAME").value).toBe("");
+    expect(screen.getByLabelText("API_KEY").disabled).toBe(false);
+    expect(
+      screen.getByRole("checkbox", { name: "从系统环境变量获取" }).checked,
+    ).toBe(false);
+  });
+
+  it("turns off environment-key mode when choosing another provider", async () => {
+    const user = userEvent.setup();
+    const api = client({
+      getAiConfig: vi.fn().mockResolvedValue(
+        configuration({
+          useEnvironmentKey: true,
+          hasEnvironmentApiKey: true,
+        }),
+      ),
+    });
+    render(<AgentSettings client={api} />);
+
+    await user.click(await screen.findByRole("button", { name: "Kimi" }));
+
+    expect(
+      screen.getByRole("checkbox", { name: "从系统环境变量获取" }).checked,
+    ).toBe(false);
+    expect(screen.getByLabelText("API_KEY").disabled).toBe(false);
+  });
+
   it("offers preset models immediately and replaces them after retrieval", async () => {
     const user = userEvent.setup();
     const api = client({
