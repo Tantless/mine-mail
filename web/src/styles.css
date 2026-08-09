@@ -5981,6 +5981,21 @@ html[data-surface="new-mail-notification"] #root {
   content: "";
 }
 
+.compose-ai-header[data-view="conversation"] {
+  grid-template-columns: auto minmax(0, 1fr);
+  column-gap: 8px;
+}
+
+.compose-ai-header[data-view="conversation"] > strong {
+  max-width: 100%;
+  justify-self: start;
+  text-align: left;
+}
+
+.compose-ai-header[data-view="conversation"]::after {
+  display: none;
+}
+
 .compose-ai-header__actions {
   display: flex;
   min-width: 0;

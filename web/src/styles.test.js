@@ -73,6 +73,21 @@ describe("Agent configuration feedback", () => {
   });
 });
 
+describe("compose AI conversation header", () => {
+  it("reserves space between the back action and the session title", () => {
+    expect(
+      declarationsFor('\\.compose-ai-header\\[data-view="conversation"\\]'),
+    ).toMatch(
+      /grid-template-columns:\s*auto\s+minmax\(0,\s*1fr\)[\s\S]*column-gap:\s*8px/,
+    );
+    expect(
+      declarationsFor(
+        '\\.compose-ai-header\\[data-view="conversation"\\] > strong',
+      ),
+    ).toMatch(/max-width:\s*100%[\s\S]*justify-self:\s*start/);
+  });
+});
+
 describe("isolated mail sizing contract", () => {
   it("uses the placeholder height only until the measured document is ready", () => {
     expect(declarationsFor("\\.html-message__document")).toMatch(

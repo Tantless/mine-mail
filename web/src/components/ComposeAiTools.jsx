@@ -1121,7 +1121,10 @@ export function ComposeAiAssistant({
 
   return (
     <aside className="compose-ai-assistant" aria-label="AI 助理" hidden={hidden}>
-      <header className="compose-ai-header">
+      <header
+        className="compose-ai-header"
+        data-view={activeSession ? "conversation" : "sessions"}
+      >
         <div className="compose-ai-header__actions">
           <IconButton label="收起 AI 助理" onClick={onCollapse}>
             <SidebarSimple size={18} />
@@ -1140,7 +1143,10 @@ export function ComposeAiAssistant({
             </IconButton>
           ) : null}
         </div>
-        <strong title={activeSession?.title || "AI 助理"}>
+        <strong
+          className="compose-ai-header__title"
+          title={activeSession?.title || "AI 助理"}
+        >
           {activeSession?.title || "AI 助理"}
         </strong>
       </header>

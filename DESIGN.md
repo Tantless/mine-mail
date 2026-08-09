@@ -360,8 +360,10 @@ All app-owned color and material decisions flow through custom properties in
   left-side actions begin with collapse and then a settings icon; settings is an
   inert entry point until configuration content is implemented, and there is no
   explicit new-session button. An active conversation keeps its back action
-  after those global controls. Associated editable drafts sit immediately beneath
-  as wrapping, low-profile pill buttons containing only the truncated subject and stable short display ID.
+  after those global controls; its truncated title begins after the back action
+  with reserved spacing so the controls never overlap it. Associated editable
+  drafts sit immediately beneath as wrapping, low-profile pill buttons containing
+  only the truncated subject and stable short display ID.
   Conversation history owns the remaining scroll surface. **自动**、**邮件生成**
   and **聊天** live in the fixed composer; optimization is not duplicated as an
   agent mode.
