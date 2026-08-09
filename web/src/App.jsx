@@ -7651,6 +7651,9 @@ export function App() {
       onTranslateMessage={(parts) => mailApi.translateMailContent(parts)}
       onLoadTranslationConfig={mailApi.getAiConfig}
       onChangeTranslationLanguage={mailApi.setAiTranslationLanguage}
+      onAgentConfigurationRequired={() =>
+        showToast("请先前往设置界面完成AGENT配置", "warning")
+      }
       onOpenExternalLink={(url) => void handleOpenExternalLink(url)}
       resolveReferencedMessage={resolveReferencedMessage}
       onOpenReferencedMessage={handleOpenReferencedMessage}

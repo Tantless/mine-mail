@@ -315,7 +315,11 @@ product decision changes.
   persisted reading preference, defaults to Simplified Chinese, and offers
   common languages under their native display names. The reader toolbar may
   update this preference directly without resubmitting or replacing the
-  Provider, model, or API credential configuration.
+  Provider, model, or API credential configuration. When translation cannot
+  start because the Agent Provider, model, or API credential configuration is
+  incomplete, the reader keeps the original content visible and shows the
+  bottom-right warning **请先前往设置界面完成AGENT配置** instead of an inline
+  reader error.
 - Valid Agent configuration edits persist automatically after a short quiet
   period. Incomplete transient input remains local and does not produce repeated
   failures. The manual save action remains available for immediate persistence

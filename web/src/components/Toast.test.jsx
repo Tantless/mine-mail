@@ -9,6 +9,7 @@ describe("Toast", () => {
   it.each([
     ["success", "操作已完成", "status"],
     ["error", "操作没有完成", "alert"],
+    ["warning", "请先前往设置界面完成AGENT配置", "alert"],
   ])("omits the %s status icon", (tone, message, role) => {
     const { container } = render(
       <Toast toast={{ tone, message }} onClose={vi.fn()} />,

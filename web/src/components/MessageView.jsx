@@ -54,6 +54,24 @@ const FALLBACK_TRANSLATION_LANGUAGES = [
   { value: "ar", label: "العربية" },
 ];
 
+const AGENT_CONFIGURATION_ERROR_PATTERN =
+  /(?:AI (?:供应商配置|服务地址|模型名称).*无效|AI 服务尚未配置|系统环境变量\s+\S+\s+未设置|尚未(?:保存|配置)\s*API Key)/u;
+
+function isAgentConfigurationError(error) {
+  let current = error;
+  for (let depth = 0; current && depth < 3; depth += 1) {
+    const message =
+      typeof current === "string"
+        ? current
+        : typeof current?.message === "string"
+          ? current.message
+          : "";
+    if (AGENT_CONFIGURATION_ERROR_PATTERN.test(message)) return true;
+    current = typeof current === "object" ? current.cause : null;
+  }
+  return false;
+}
+
 function translationPartsForMessage(message, bodyRenderMode) {
   if (Array.isArray(message.body_segments) && message.body_segments.length) {
     return message.body_segments.map((segment, index) => ({
@@ -552,6 +570,7 @@ export function MessageView({
   onTranslateMessage,
   onLoadTranslationConfig,
   onChangeTranslationLanguage,
+  onAgentConfigurationRequired,
 }) {
   const recipientDetailsId = useId();
   const recipientToggleRef = useRef(null);
@@ -779,15 +798,19 @@ export function MessageView({
       });
     } catch (translationError) {
       if (translationRequestRef.current !== requestId) return;
+      const configurationRequired = isAgentConfigurationError(translationError);
+      if (configurationRequired) onAgentConfigurationRequired?.();
       setTranslationState({
         status: "error",
         messageKey: translationMessageKey,
         translatedMessage: null,
         showTranslated: false,
-        error: userFacingErrorMessage(
-          translationError,
-          "AI 翻译失败，请检查 Agent 配置后重试",
-        ),
+        error: configurationRequired
+          ? null
+          : userFacingErrorMessage(
+              translationError,
+              "AI 翻译失败，请检查 Agent 配置后重试",
+            ),
       });
     }
   };

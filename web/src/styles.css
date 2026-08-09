@@ -263,6 +263,11 @@
     var(--sync-feedback-row-surface) 94%,
     var(--color-text)
   );
+  --sync-feedback-error-surface: color-mix(
+    in srgb,
+    var(--sync-feedback-row-surface) 82%,
+    var(--color-danger)
+  );
   --sync-feedback-text: var(--color-text-secondary);
   --focus-ring: 0 0 0 2px var(--color-panel), 0 0 0 4px var(--color-primary);
 }
@@ -2121,7 +2126,7 @@ html[data-surface="new-mail-notification"] #root {
   margin: 0 -1px;
   padding: 5px 16px 5px 19px;
   overflow: hidden;
-  border: 1px solid transparent;
+  border: 0;
   border-radius: 0;
   background: var(--sync-feedback-surface);
   color: var(--sync-feedback-text);
@@ -2134,12 +2139,11 @@ html[data-surface="new-mail-notification"] #root {
 
 .mail-sync-feedback[data-state="success"] {
   grid-template-columns: minmax(0, 1fr);
-  border-color: var(--state-success-edge);
 }
 
 .mail-sync-feedback[data-state="error"] {
   grid-template-columns: minmax(0, 1fr);
-  border-color: var(--state-danger-edge);
+  background: var(--sync-feedback-error-surface);
 }
 
 .mail-sync-feedback svg {
@@ -9360,6 +9364,7 @@ html[data-surface="new-mail-notification"] #root {
 .toast {
   --toast-accent: var(--color-success);
   --toast-edge: var(--state-success-edge);
+  --toast-surface: color-mix(in srgb, var(--color-panel) 68%, transparent);
   position: fixed;
   right: 24px;
   bottom: 22px;
@@ -9373,7 +9378,7 @@ html[data-surface="new-mail-notification"] #root {
   padding: 8px 8px 8px 14px;
   border: 1px solid var(--toast-edge);
   border-radius: 14px;
-  background: color-mix(in srgb, var(--color-panel) 68%, transparent);
+  background: var(--toast-surface);
   color: var(--toast-accent);
   box-shadow:
     0 14px 38px rgba(18, 35, 52, 0.16),
@@ -9392,6 +9397,12 @@ html[data-surface="new-mail-notification"] #root {
 .toast[data-tone="error"] {
   --toast-accent: var(--color-danger);
   --toast-edge: var(--state-danger-edge);
+}
+
+.toast[data-tone="warning"] {
+  --toast-accent: var(--color-warning);
+  --toast-edge: var(--state-warning-edge);
+  --toast-surface: var(--state-warning-surface);
 }
 
 .toast[data-tone="info"] {

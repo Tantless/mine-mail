@@ -263,6 +263,34 @@ describe("MessageView AI translation", () => {
       expect(screen.getByRole("button", { name: "AI 翻译" }).disabled).toBe(false),
     );
   });
+
+  it("routes missing Agent configuration to the shared warning toast", async () => {
+    const user = userEvent.setup();
+    const onAgentConfigurationRequired = vi.fn();
+    const onTranslateMessage = vi
+      .fn()
+      .mockRejectedValue(
+        new Error(
+          "系统环境变量 ANTHROPIC_API_KEY 未设置；设置后请重启 Mine Mail。",
+        ),
+      );
+    render(
+      <MessageView
+        message={messageFixture()}
+        onClose={vi.fn()}
+        onTranslateMessage={onTranslateMessage}
+        onAgentConfigurationRequired={onAgentConfigurationRequired}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "AI 翻译" }));
+    await waitFor(() =>
+      expect(onAgentConfigurationRequired).toHaveBeenCalledOnce(),
+    );
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByText("完整正文")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "AI 翻译" }).disabled).toBe(false);
+  });
 });
 
 describe("MessageView window motion", () => {

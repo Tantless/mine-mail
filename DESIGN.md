@@ -131,9 +131,12 @@ All app-owned color and material decisions flow through custom properties in
 - Routine success is expressed by the resulting state or nearby status. Toasts
   are reserved for failures and consequential results that would otherwise be
   invisible.
-- Successful and failed toast or synchronization feedback does not repeat the
-  state with check or cross icons. Its surface and text remain theme-owned while
-  a semantic green or red edge communicates the result; informational and
+- Standalone floating success and failure feedback, including the bottom-right
+  toast and top notice surfaces, does not repeat the state with check or cross
+  icons. Its surface and text remain theme-owned while a semantic green or red
+  edge communicates the result. A warning toast uses the theme-owned yellow
+  warning surface and edge without adding a state icon. Embedded status feedback
+  such as mailbox synchronization remains borderless; informational and
   in-progress indicators may retain their icons.
 
 ### Lists, overlays, and scrolling
@@ -193,7 +196,10 @@ All app-owned color and material decisions flow through custom properties in
   translating, the icon alone shows progress. Success replaces the split
   control with a low-profile **原文 / 译文** capsule; the selected half uses the
   restrained primary tint and switching never reflows the toolbar. Sent, Draft,
-  and Outbox content has no translation action.
+  and Outbox content has no translation action. If translation cannot start
+  because Agent configuration is incomplete, the reader uses the shared
+  bottom-right yellow warning toast with the fixed copy **请先前往设置界面完成AGENT配置**
+  instead of placing an error banner above the message.
 - The compact header always keeps the real address available. Recipient details
   open in an overlay without moving the message body and expose only available
   From, To, Cc, and Bcc groups.

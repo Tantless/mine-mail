@@ -3,6 +3,7 @@ import { userFacingErrorMessage } from "../utils/userFacingError.js";
 
 export function Toast({ toast, onClose }) {
   if (!toast) return null;
+  const isAlert = toast.tone === "error" || toast.tone === "warning";
   const message =
     toast.tone === "error"
       ? userFacingErrorMessage(toast.message, "该操作没有完成")
@@ -11,7 +12,7 @@ export function Toast({ toast, onClose }) {
   return (
     <div
       className="toast"
-      role={toast.tone === "error" ? "alert" : "status"}
+      role={isAlert ? "alert" : "status"}
       data-tone={toast.tone || "success"}
       data-state={toast.exiting ? "exiting" : "visible"}
       data-has-icon={hasInfoIcon || undefined}

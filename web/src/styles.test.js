@@ -248,11 +248,15 @@ describe("mail synchronization feedback material contract", () => {
 
     expect(styles.match(/--sync-feedback-row-surface:/g)).toHaveLength(1);
     expect(styles.match(/--sync-feedback-surface:/g)).toHaveLength(1);
+    expect(styles.match(/--sync-feedback-error-surface:/g)).toHaveLength(1);
     expect(root).toMatch(
       /--sync-feedback-row-surface:\s*color-mix\(\s*in srgb,\s*var\(--mail-list-surface\)\s*44%,\s*var\(--row-hover-surface\)\s*\)/,
     );
     expect(root).toMatch(
       /--sync-feedback-surface:\s*color-mix\(\s*in srgb,\s*var\(--sync-feedback-row-surface\)\s*94%,\s*var\(--color-text\)\s*\)/,
+    );
+    expect(root).toMatch(
+      /--sync-feedback-error-surface:\s*color-mix\(\s*in srgb,\s*var\(--sync-feedback-row-surface\)\s*82%,\s*var\(--color-danger\)\s*\)/,
     );
     expect(feedback).toMatch(/width:\s*calc\(100%\s*\+\s*2px\)/);
     expect(feedback).toMatch(/margin:\s*0\s+-1px/);
@@ -262,7 +266,7 @@ describe("mail synchronization feedback material contract", () => {
     );
     expect(feedback).toMatch(/column-gap:\s*9px/);
     expect(feedback).toMatch(/padding:\s*5px\s+16px\s+5px\s+19px/);
-    expect(feedback).toMatch(/border:\s*1px\s+solid\s+transparent/);
+    expect(feedback).toMatch(/border:\s*0/);
     expect(feedback).toMatch(/border-radius:\s*0/);
     expect(feedback).toMatch(/box-shadow:\s*none/);
     expect(feedback).toMatch(
@@ -279,15 +283,14 @@ describe("mail synchronization feedback material contract", () => {
     expect(successFeedback).toMatch(
       /grid-template-columns:\s*minmax\(0,\s*1fr\)/,
     );
-    expect(successFeedback).toMatch(
-      /border-color:\s*var\(--state-success-edge\)/,
-    );
     expect(errorFeedback).toMatch(
       /grid-template-columns:\s*minmax\(0,\s*1fr\)/,
     );
     expect(errorFeedback).toMatch(
-      /border-color:\s*var\(--state-danger-edge\)/,
+      /background:\s*var\(--sync-feedback-error-surface\)/,
     );
+    expect(successFeedback).not.toMatch(/border(?:-color)?:/);
+    expect(errorFeedback).not.toMatch(/border(?:-color)?:/);
     expect(entrance).not.toMatch(/transform/);
   });
 });
@@ -297,16 +300,26 @@ describe("toast feedback material contract", () => {
     const toast = declarationsFor("\\.toast");
     const errorToast = declarationsFor('\\.toast\\[data-tone="error"\\]');
     const infoToast = declarationsFor('\\.toast\\[data-tone="info"\\]');
+    const warningToast = declarationsFor(
+      '\\.toast\\[data-tone="warning"\\]',
+    );
 
     expect(toast).toMatch(/--toast-edge:\s*var\(--state-success-edge\)/);
     expect(toast).toMatch(/border:\s*1px\s+solid\s+var\(--toast-edge\)/);
     expect(toast).toMatch(
-      /background:\s*color-mix\(in srgb,\s*var\(--color-panel\)\s*68%,\s*transparent\)/,
+      /--toast-surface:\s*color-mix\(in srgb,\s*var\(--color-panel\)\s*68%,\s*transparent\)/,
     );
+    expect(toast).toMatch(/background:\s*var\(--toast-surface\)/);
     expect(errorToast).toMatch(
       /--toast-edge:\s*var\(--state-danger-edge\)/,
     );
     expect(infoToast).toMatch(/--toast-edge:\s*var\(--state-info-edge\)/);
+    expect(warningToast).toMatch(
+      /--toast-edge:\s*var\(--state-warning-edge\)/,
+    );
+    expect(warningToast).toMatch(
+      /--toast-surface:\s*var\(--state-warning-surface\)/,
+    );
   });
 });
 
