@@ -18,6 +18,9 @@ export default defineConfig({
           ) {
             return "react-runtime";
           }
+          if (normalizedId.includes("/node_modules/simple-icons/")) {
+            return "brand-icons";
+          }
           return undefined;
         },
       },

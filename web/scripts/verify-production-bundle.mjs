@@ -73,6 +73,7 @@ if (!entry) {
 }
 
 for (const prefix of [
+  "brand-icons-",
   "ContactsWorkspace-",
   "SettingsPanel-",
   "RichTextEditor-",
