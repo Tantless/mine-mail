@@ -149,6 +149,10 @@ All app-owned color and material decisions flow through custom properties in
 - Use the shared portal tooltip for icon-only or unfamiliar actions. Dense
   frosted popups are shared by theme selection, account menus, recipient
   suggestions, and selects.
+- Open selects and model-choice popovers treat the minimized compose bar as a
+  lower viewport boundary. They always open downward, show about four choices at
+  most, and reduce their height further with internal scrolling when needed to
+  remain above that bar.
 - Each workspace owns one obvious vertical scroll surface. Avoid nested reader
   scrollbars, horizontal panel drift, and top rubber-banding. Content may have a
   bounded end inset when the last row needs breathing room.
@@ -265,6 +269,9 @@ All app-owned color and material decisions flow through custom properties in
 - **AI 翻译语言** sits with the model fields and uses `ThemedSelect`. It defaults
   to Simplified Chinese and presents every language in its own written form,
   such as **中文（简体）**、**中文（繁體）**、**English** and **日本語**.
+- The Agent configuration page keeps a bounded blank inset after its last card,
+  allowing bottom fields and their downward-opening menus to scroll above a
+  minimized compose bar.
 - About shows the version first, then the exact active product-data directory,
   total use, one segmented composition bar, and the icon-only **更改位置**
   action. Storage migration uses the shared consequential confirmation surface

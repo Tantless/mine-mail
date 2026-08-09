@@ -1,5 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { CaretDown, Check } from "@phosphor-icons/react";
+import { useBoundedDropdown } from "../hooks/useBoundedDropdown.js";
 
 function optionIndex(options, value) {
   return Math.max(
@@ -24,6 +25,11 @@ export function ThemedSelect({
   const optionRefs = useRef([]);
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(() => optionIndex(options, value));
+  const menuLayout = useBoundedDropdown({
+    open,
+    anchorRef: rootRef,
+    preferredMaxHeight: 166,
+  });
   const selected = useMemo(
     () => options.find((option) => String(option.value) === String(value)) || options[0],
     [options, value],
@@ -145,6 +151,7 @@ export function ThemedSelect({
           className="themed-select__menu vertical-scroll-surface"
           role="listbox"
           aria-label={label}
+          style={{ maxHeight: `${menuLayout.maxHeight}px` }}
           onKeyDown={handleListKeyDown}
         >
           {options.map((option, index) => {

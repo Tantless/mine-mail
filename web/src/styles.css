@@ -8724,6 +8724,10 @@ html[data-surface="new-mail-notification"] #root {
   -webkit-backdrop-filter: blur(14px) saturate(1.04);
 }
 
+.agent-settings {
+  padding-bottom: clamp(120px, 16vh, 180px);
+}
+
 .agent-config-card__heading {
   display: flex;
   width: 100%;

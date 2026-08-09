@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ThemedSelect } from "./ThemedSelect.jsx";
 
@@ -28,7 +28,9 @@ describe("ThemedSelect", () => {
     );
 
     await user.click(screen.getByRole("combobox", { name: "完整校准间隔" }));
-    expect(screen.getByRole("listbox", { name: "完整校准间隔" })).toBeTruthy();
+    expect(screen.getByRole("listbox", { name: "完整校准间隔" }).style.maxHeight).toBe(
+      "166px",
+    );
     expect(screen.getByRole("option", { name: "5 分钟" }).getAttribute("aria-selected")).toBe(
       "true",
     );
@@ -88,5 +90,69 @@ describe("ThemedSelect", () => {
     expect(
       option.querySelector(".themed-select__option-label")?.style.fontFamily,
     ).toContain("Noto Sans SC Variable");
+  });
+
+  it("keeps the menu above a minimized compose bar", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+      function getBoundingClientRect() {
+        if (this.matches?.('.compose-panel[data-minimized="true"]')) {
+          return {
+            top: 300,
+            right: 500,
+            bottom: 344,
+            left: 160,
+            width: 340,
+            height: 44,
+            x: 160,
+            y: 340,
+            toJSON: () => ({}),
+          };
+        }
+        if (this.matches?.(".themed-select")) {
+          return {
+            top: 100,
+            right: 260,
+            bottom: 140,
+            left: 60,
+            width: 200,
+            height: 40,
+            x: 60,
+            y: 100,
+            toJSON: () => ({}),
+          };
+        }
+        return {
+          top: 0,
+          right: 0,
+          bottom: 0,
+          left: 0,
+          width: 0,
+          height: 0,
+          x: 0,
+          y: 0,
+          toJSON: () => ({}),
+        };
+      },
+    );
+
+    render(
+      <>
+        <div className="compose-panel" data-minimized="true" />
+        <ThemedSelect
+          label="翻译语言"
+          value={1}
+          options={options}
+          onValueChange={vi.fn()}
+        />
+      </>,
+    );
+
+    await user.click(screen.getByRole("combobox", { name: "翻译语言" }));
+    const menu = screen.getByRole("listbox", { name: "翻译语言" });
+
+    await waitFor(() => {
+      expect(menu.style.maxHeight).toBe("143px");
+    });
   });
 });

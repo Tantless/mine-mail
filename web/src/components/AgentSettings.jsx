@@ -8,6 +8,7 @@ import {
   X,
 } from "@phosphor-icons/react";
 import { mailApi } from "../services/mailApi.js";
+import { useBoundedDropdown } from "../hooks/useBoundedDropdown.js";
 import { userFacingErrorMessage } from "../utils/userFacingError.js";
 import { useConfirmDialogFocus } from "./ConfirmDialogPrimitives.jsx";
 import { IconButton } from "./IconButton.jsx";
@@ -81,6 +82,11 @@ function AgentSettingsContent({ client }) {
   const [helpOpen, setHelpOpen] = useState(false);
   const helpCloseRef = useRef(null);
   const modelMenuRef = useRef(null);
+  const modelMenuLayout = useBoundedDropdown({
+    open: modelMenuOpen,
+    anchorRef: modelMenuRef,
+    preferredMaxHeight: 166,
+  });
   const helpFocus = useConfirmDialogFocus({
     open: helpOpen,
     initialFocusRef: helpCloseRef,
@@ -406,6 +412,7 @@ function AgentSettingsContent({ client }) {
                           className="agent-model-options vertical-scroll-surface"
                           role="listbox"
                           aria-label="可用模型"
+                          style={{ maxHeight: `${modelMenuLayout.maxHeight}px` }}
                         >
                           {models.map((model) => (
                             <button

@@ -489,6 +489,14 @@ describe("storage composition styling", () => {
   });
 });
 
+describe("agent settings scroll clearance", () => {
+  it("keeps enough blank space to scroll bottom controls above minimized compose", () => {
+    expect(declarationsFor("\\.agent-settings")).toMatch(
+      /padding-bottom:\s*clamp\(120px,\s*16vh,\s*180px\)/,
+    );
+  });
+});
+
 describe("compose page and stationery policy", () => {
   it("keeps the solid compose page and the original rounded editor surface", () => {
     const panel = declarationsFor("(?:^|\\r?\\n)\\.compose-panel");
