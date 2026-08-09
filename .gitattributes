@@ -1,3 +1,7 @@
 # Tauri regenerates capability schemas with LF on every platform. Keeping the
 # checked-out form identical prevents a clean Windows build from appearing dirty.
 /web/src-tauri/gen/schemas/*.json text eol=lf
+
+# Cargo and related tooling may rewrite this manifest with LF during Windows
+# builds. Pinning its checkout form avoids a content-identical dirty worktree.
+/web/src-tauri/Cargo.toml text eol=lf
