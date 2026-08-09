@@ -665,6 +665,7 @@ it("switches between the application session list and a conversation", async () 
 
 it("creates an AI session from the fixed composer and honors the selected mode", async () => {
   const onChange = vi.fn();
+  const runAiTurn = vi.spyOn(mailApi, "runAiTurn");
   const user = userEvent.setup();
   renderCompose({ onChange });
 
@@ -676,11 +677,21 @@ it("creates an AI session from the fixed composer and honors the selected mode",
   await waitFor(() => expect(modeSelect.disabled).toBe(false));
   await user.click(modeSelect);
   await user.click(within(assistant).getByRole("option", { name: "邮件生成" }));
+  await waitFor(() => {
+    expect(modeSelect.getAttribute("aria-expanded")).toBe("false");
+    expect(modeSelect.textContent).toContain("邮件生成");
+    expect(document.activeElement).toBe(modeSelect);
+  });
   const input = within(assistant).getByRole("textbox", { name: "向 AI 助理发送消息" });
+  await user.click(input);
   await user.type(input, "写一封确认下周交付时间的邮件{Enter}");
 
   await waitFor(() =>
     expect(within(assistant).getByText("已更新当前草稿。")).toBeTruthy(),
+  );
+  expect(runAiTurn).toHaveBeenCalledWith(
+    expect.objectContaining({ mode: "generate" }),
+    expect.any(Function),
   );
   await waitFor(() => expect(onChange).toHaveBeenCalled());
   const generateUpdate = onChange.mock.calls.at(-1)[0];
