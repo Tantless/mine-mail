@@ -365,6 +365,24 @@ All app-owned color and material decisions flow through custom properties in
   Conversation history owns the remaining scroll surface. **自动**、**邮件生成**
   and **聊天** live in the fixed composer; optimization is not duplicated as an
   agent mode.
+- The three conversational modes stream safe Markdown into the active assistant
+  message. Each running assistant message owns an append-only activity trail:
+  a thinking step, every tool call, and later thinking steps remain in execution
+  order instead of competing for one transient row. Provider-supplied visible
+  reasoning deltas may stream only inside the current thinking step; completing
+  that step replaces its temporary detail with **分析完成** or **答案整理完毕**.
+  Tool arguments, tool results, and unavailable hidden reasoning are never shown.
+  Final Markdown streams independently beneath the trail and never clears it.
+  While a turn runs, the send action becomes an icon-only stop action, session
+  and mode switching are disabled, and the prompt remains editable for the next
+  turn. Collapsing or minimizing compose does not cancel generation.
+- Agent write tools never replace live compose automatically. A completed
+  assistant message may contain two read-only, primary-tinted proposal cards:
+  one groups To, Cc, Bcc, and Subject; the other groups body and stationery.
+  Each changed group has one icon-only apply action. Applying immediately
+  replaces only that group and turns the action into an undo for its stored
+  pre-apply backup; neither action opens a confirmation. Old proposal cards stay
+  actionable in their conversation until their seven-day rich-state expiry.
 - Managed attachments show safe metadata, progress, conflict state, and
   keyboard-operable removal. Reply/forward source remains immutable and separate
   from the authored editor.

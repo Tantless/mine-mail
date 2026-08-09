@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import {
   ArrowCounterClockwise,
   ArrowLeft,
   CaretDown,
   CaretUp,
+  Check,
   CheckCircle,
   Gear,
   MagicWand,
@@ -12,6 +15,7 @@ import {
   SidebarSimple,
   Sparkle,
   SpinnerGap,
+  Stop,
   Trash,
 } from "@phosphor-icons/react";
 import { IconButton } from "./IconButton.jsx";
@@ -459,7 +463,7 @@ function DraftPills({ drafts, onOpenDraft }) {
   );
 }
 
-function SessionList({ onOpenSession, sessions }) {
+function SessionList({ disabled, onOpenSession, sessions }) {
   return (
     <div className="compose-ai-session-list vertical-scroll-surface">
       <h3>会话</h3>
@@ -469,6 +473,7 @@ function SessionList({ onOpenSession, sessions }) {
             key={session.id}
             className="compose-ai-session-row"
             type="button"
+            disabled={disabled}
             onClick={() => onOpenSession(session.id)}
           >
             <strong className="compose-ai-session-row__title">
@@ -484,9 +489,234 @@ function SessionList({ onOpenSession, sessions }) {
   );
 }
 
-function Conversation({ session }) {
+function SafeMarkdown({ children, onOpenExternalLink }) {
   return (
-    <div className="compose-ai-conversation vertical-scroll-surface" aria-live="polite">
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      components={{
+        a({ href, children: label }) {
+          return (
+            <a
+              href={href}
+              onClick={(event) => {
+                event.preventDefault();
+                if (!href) return;
+                if (onOpenExternalLink) onOpenExternalLink(href);
+                else void mailApi.openExternalUrl(href);
+              }}
+            >
+              {label}
+            </a>
+          );
+        },
+        img({ alt }) {
+          return <span>{alt ? `[图片：${alt}]` : "[图片]"}</span>;
+        },
+      }}
+    >
+      {children || ""}
+    </ReactMarkdown>
+  );
+}
+
+function mergeProposalGroup(current, resolved, group) {
+  if (group === "headers") {
+    return {
+      ...current,
+      to: resolved.to || [],
+      cc: resolved.cc || [],
+      bcc: resolved.bcc || [],
+      subject: resolved.subject || "",
+    };
+  }
+  return {
+    ...current,
+    body_text: resolved.body_text || "",
+    format: copyFormat(resolved.format),
+  };
+}
+
+function updateStreamingAssistant(sessions, sessionId, updater) {
+  if (!sessionId) return sessions;
+  return sessions.map((session) => ({
+    ...session,
+    messages:
+      session.id === sessionId
+        ? (session.messages || []).map((message) =>
+            message.role === "assistant" && message.status === "streaming"
+              ? updater(message)
+              : message,
+          )
+        : session.messages,
+  }));
+}
+
+function finishRunningActivities(message, status) {
+  return {
+    ...message,
+    status,
+    activities: (message.activities || []).map((activity) =>
+      activity.status === "running"
+        ? {
+            ...activity,
+            detail: "",
+            label:
+              activity.kind === "thinking"
+                ? status === "stopped"
+                  ? "思考已停止"
+                  : "思考中断"
+                : status === "stopped"
+                  ? "工具调用已停止"
+                  : "工具调用未完成",
+            status,
+            success: false,
+          }
+        : activity,
+    ),
+  };
+}
+
+function ProposalAction({ busy, group, label, proposal, onResolve }) {
+  const state = proposal[group];
+  if (!state?.changed) return null;
+  const undo = state.status === "applied" && state.canUndo;
+  return (
+    <IconButton
+      className="compose-ai-proposal__apply"
+      label={`${undo ? "回退" : "应用"}${label}`}
+      disabled={busy}
+      aria-busy={busy || undefined}
+      onClick={() => onResolve(group, undo ? "undo" : "apply")}
+    >
+      {busy ? (
+        <SpinnerGap size={15} weight="bold" />
+      ) : undo ? (
+        <ArrowCounterClockwise size={15} weight="bold" />
+      ) : (
+        <Check size={15} weight="bold" />
+      )}
+    </IconButton>
+  );
+}
+
+function ProposalCard({ busyGroup, proposal, onResolve }) {
+  const draft = proposal.draft || {};
+  return (
+    <div className="compose-ai-proposals" aria-label="AI 草稿修改提案">
+      {proposal.headers?.changed ? (
+        <section className="compose-ai-proposal" aria-label="邮件信息修改提案">
+          <header>
+            <strong>邮件信息</strong>
+            <ProposalAction
+              busy={busyGroup === "headers"}
+              group="headers"
+              label="邮件信息提案"
+              proposal={proposal}
+              onResolve={onResolve}
+            />
+          </header>
+          <dl>
+            <div><dt>收件人</dt><dd>{draft.to?.join("、") || "未填写"}</dd></div>
+            <div><dt>抄送</dt><dd>{draft.cc?.join("、") || "未填写"}</dd></div>
+            <div><dt>密送</dt><dd>{draft.bcc?.join("、") || "未填写"}</dd></div>
+            <div><dt>主题</dt><dd>{draft.subject || "无主题"}</dd></div>
+          </dl>
+        </section>
+      ) : null}
+      {proposal.body?.changed ? (
+        <section className="compose-ai-proposal" aria-label="正文与信纸修改提案">
+          <header>
+            <strong>正文与信纸</strong>
+            <ProposalAction
+              busy={busyGroup === "body"}
+              group="body"
+              label="正文与信纸提案"
+              proposal={proposal}
+              onResolve={onResolve}
+            />
+          </header>
+          <pre>{draft.body_text || "（空正文）"}</pre>
+          <small>
+            信纸：{draft.format?.stationery === "lined"
+              ? "横线纸"
+              : draft.format?.stationery === "grid"
+                ? "方格纸"
+                : "无"}
+            {draft.format?.send_stationery ? " · 随邮件发送" : " · 仅编辑时显示"}
+          </small>
+        </section>
+      ) : null}
+    </div>
+  );
+}
+
+function ActivityTimeline({ activities = [] }) {
+  if (!activities.length) return null;
+  return (
+    <ol className="compose-ai-activity-list" aria-label="Agent 执行过程">
+      {activities.map((activity) => (
+        <li
+          key={activity.id}
+          className="compose-ai-activity-step"
+          data-kind={activity.kind}
+          data-status={activity.status}
+        >
+          <span className="compose-ai-activity-step__icon" aria-hidden="true">
+            {activity.status === "running" ? (
+              <SpinnerGap size={13} weight="bold" />
+            ) : activity.status === "completed" ? (
+              <CheckCircle size={13} weight="fill" />
+            ) : (
+              <span>•</span>
+            )}
+          </span>
+          <div>
+            <strong>{activity.label}</strong>
+            {activity.detail ? (
+              <p className="compose-ai-activity-step__detail">{activity.detail}</p>
+            ) : null}
+          </div>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+function Conversation({
+  busyProposal,
+  onOpenExternalLink,
+  onResolveProposal,
+  session,
+}) {
+  const scrollRef = useRef(null);
+  const followRef = useRef(true);
+  const contentKey = session.messages
+    .map((message) => {
+      const activityKey = (message.activities || [])
+        .map((activity) =>
+          `${activity.id}:${activity.status}:${activity.detail?.length || 0}`,
+        )
+        .join(",");
+      return `${message.id}:${message.content?.length || 0}:${message.status}:${activityKey}`;
+    })
+    .join("|");
+
+  useEffect(() => {
+    if (!followRef.current || !scrollRef.current) return;
+    scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+  }, [contentKey]);
+
+  return (
+    <div
+      ref={scrollRef}
+      className="compose-ai-conversation vertical-scroll-surface"
+      aria-live="polite"
+      onScroll={(event) => {
+        const element = event.currentTarget;
+        followRef.current =
+          element.scrollHeight - element.scrollTop - element.clientHeight < 36;
+      }}
+    >
       {session.messages.map((message) => (
         <article
           key={message.id}
@@ -498,7 +728,39 @@ function Conversation({ session }) {
               <Sparkle size={14} weight="fill" />
             </span>
           ) : null}
-          <p>{message.content}</p>
+          <div className="compose-ai-message__content">
+            {message.role === "assistant" ? (
+              <ActivityTimeline activities={message.activities} />
+            ) : null}
+            {message.content ? (
+              message.role === "assistant" ? (
+                <SafeMarkdown onOpenExternalLink={onOpenExternalLink}>
+                  {message.content}
+                </SafeMarkdown>
+              ) : (
+                <p>{message.content}</p>
+              )
+            ) : null}
+            {message.proposal ? (
+              <ProposalCard
+                proposal={message.proposal}
+                busyGroup={busyProposal?.messageId === message.id
+                  ? busyProposal.group
+                  : null}
+                onResolve={(group, action) =>
+                  onResolveProposal(message.id, message.proposal, group, action)
+                }
+              />
+            ) : null}
+            {message.status === "stopped" ? (
+              <small className="compose-ai-message__state">已停止</small>
+            ) : null}
+            {message.status === "failed" ? (
+              <small className="compose-ai-message__state compose-ai-message__state--error">
+                生成中断，可重新发送
+              </small>
+            ) : null}
+          </div>
         </article>
       ))}
     </div>
@@ -509,23 +771,27 @@ export function ComposeAiAssistant({
   aiDraft,
   currentDraft,
   disabled,
+  hidden = false,
   onApplyDraft,
   onCollapse,
   onOpenDraft,
+  onOpenExternalLink,
   readOnly = false,
   value,
 }) {
   const inputRef = useRef(null);
   const latestValueRef = useRef(value);
+  const streamingSessionIdRef = useRef(null);
   const [sessions, setSessions] = useState([]);
   const [activeSessionId, setActiveSessionId] = useState(null);
   const [mode, setMode] = useState("auto");
   const [input, setInput] = useState("");
   const [isLoadingSessions, setIsLoadingSessions] = useState(true);
   const [isLoadingActiveSession, setIsLoadingActiveSession] = useState(false);
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [activityLabel, setActivityLabel] = useState("");
+  const [activeRequest, setActiveRequest] = useState(null);
   const [errorMessage, setErrorMessage] = useState("");
+  const [busyProposal, setBusyProposal] = useState(null);
+  const isSubmitting = Boolean(activeRequest);
   latestValueRef.current = value;
   const availableModeOptions = useMemo(
     () =>
@@ -543,8 +809,11 @@ export function ComposeAiAssistant({
   useEffect(() => {
     let cancelled = false;
     setIsLoadingSessions(true);
-    mailApi
-      .listAiSessions()
+    const listSessions =
+      typeof mailApi.listAiSessions === "function"
+        ? mailApi.listAiSessions()
+        : Promise.resolve([]);
+    listSessions
       .then((items) => {
         if (!cancelled) setSessions(items);
       })
@@ -578,6 +847,7 @@ export function ComposeAiAssistant({
   }, [mode, readOnly]);
 
   const openSession = async (sessionId) => {
+    if (isSubmitting) return;
     setActiveSessionId(sessionId);
     setErrorMessage("");
     const existing = sessions.find(
@@ -607,9 +877,7 @@ export function ComposeAiAssistant({
       isLoadingActiveSession ||
       !aiDraft
     ) return;
-    const baseFingerprint = editableDraftFingerprint(value);
-    setIsSubmitting(true);
-    setActivityLabel("正在连接 AI…");
+    setActiveRequest({ id: null });
     setErrorMessage("");
     try {
       const result = await mailApi.runAiTurn(
@@ -621,22 +889,169 @@ export function ComposeAiAssistant({
           draft: { ...aiDraft, compose: value },
         },
         (event) => {
-          if (event?.type === "tool_started") {
-            setActivityLabel("正在读取或更新草稿…");
+          if (event?.type === "started") {
+            setActiveRequest({ id: event.request_id });
+            if (event.session) {
+              streamingSessionIdRef.current = event.session.id;
+              setSessions((current) => [
+                event.session,
+                ...current.filter((session) => session.id !== event.session.id),
+              ]);
+              setActiveSessionId(event.session.id);
+              setInput("");
+            }
+          } else if (event?.type === "thinking_started") {
+            setSessions((current) =>
+              updateStreamingAssistant(
+                current,
+                streamingSessionIdRef.current,
+                (message) => ({
+                  ...message,
+                  activities: [
+                    ...(message.activities || []),
+                    {
+                      id: event.activity_id,
+                      kind: "thinking",
+                      label: "正在思考…",
+                      detail: "",
+                      status: "running",
+                      success: null,
+                    },
+                  ],
+                }),
+              ),
+            );
+          } else if (event?.type === "reasoning_delta") {
+            setSessions((current) =>
+              updateStreamingAssistant(
+                current,
+                streamingSessionIdRef.current,
+                (message) => ({
+                  ...message,
+                  activities: (message.activities || []).map((activity) =>
+                    activity.id === event.activity_id
+                      ? {
+                          ...activity,
+                          detail: `${activity.detail || ""}${event.delta || ""}`,
+                        }
+                      : activity,
+                  ),
+                }),
+              ),
+            );
+          } else if (event?.type === "thinking_finished") {
+            setSessions((current) =>
+              updateStreamingAssistant(
+                current,
+                streamingSessionIdRef.current,
+                (message) => ({
+                  ...message,
+                  activities: (message.activities || []).map((activity) =>
+                    activity.id === event.activity_id
+                      ? {
+                          ...activity,
+                          label: event.summary || "分析完成",
+                          detail: "",
+                          status: event.success ? "completed" : "failed",
+                          success: Boolean(event.success),
+                        }
+                      : activity,
+                  ),
+                }),
+              ),
+            );
+          } else if (event?.type === "tool_started") {
+            setSessions((current) =>
+              updateStreamingAssistant(
+                current,
+                streamingSessionIdRef.current,
+                (message) => ({
+                  ...message,
+                  activities: [
+                    ...(message.activities || []),
+                    {
+                      id: event.activity_id,
+                      kind: "tool",
+                      label: `正在调用「${event.display_name || event.name}」工具…`,
+                      detail: "",
+                      status: "running",
+                      success: null,
+                    },
+                  ],
+                }),
+              ),
+            );
+          } else if (event?.type === "tool_finished") {
+            setSessions((current) =>
+              updateStreamingAssistant(
+                current,
+                streamingSessionIdRef.current,
+                (message) => ({
+                  ...message,
+                  activities: (message.activities || []).map((activity) =>
+                    activity.id === event.activity_id
+                      ? {
+                          ...activity,
+                          label: event.success
+                            ? `已调用「${event.display_name || event.name}」工具`
+                            : `「${event.display_name || event.name}」工具调用未完成`,
+                          status: event.success ? "completed" : "failed",
+                          success: Boolean(event.success),
+                        }
+                      : activity,
+                  ),
+                }),
+              ),
+            );
+          } else if (event?.type === "content_reset") {
+            setSessions((current) =>
+              updateStreamingAssistant(
+                current,
+                streamingSessionIdRef.current,
+                (message) => ({
+                  ...message,
+                  activities: (message.activities || []).map((activity) =>
+                    activity.kind === "thinking" && activity.status === "running"
+                      ? {
+                          ...activity,
+                          detail: activity.detail || message.content || "",
+                        }
+                      : activity,
+                  ),
+                  content: "",
+                }),
+              ),
+            );
           } else if (event?.type === "content_delta") {
-            setActivityLabel("正在整理回答…");
+            setSessions((current) =>
+              updateStreamingAssistant(
+                current,
+                streamingSessionIdRef.current,
+                (message) => ({
+                  ...message,
+                  content: `${message.content || ""}${event.delta || ""}`,
+                }),
+              ),
+            );
+          } else if (event?.type === "failed") {
+            setSessions((current) =>
+              updateStreamingAssistant(
+                current,
+                streamingSessionIdRef.current,
+                (message) => finishRunningActivities(message, "failed"),
+              ),
+            );
+          } else if (event?.type === "stopped") {
+            setSessions((current) =>
+              updateStreamingAssistant(
+                current,
+                streamingSessionIdRef.current,
+                (message) => finishRunningActivities(message, "stopped"),
+              ),
+            );
           }
         },
       );
-      if (result.draft) {
-        if (editableDraftFingerprint(latestValueRef.current) !== baseFingerprint) {
-          recordPatchOutcome(result, aiDraft, "rejected");
-          setErrorMessage("草稿在 AI 处理过程中发生了变化，生成结果未应用");
-        } else {
-          onApplyDraft((current) => applyAiDraft(current, result.draft));
-          recordPatchOutcome(result, aiDraft, "applied");
-        }
-      }
       if (result.session) {
         setSessions((current) => [
           result.session,
@@ -644,29 +1059,81 @@ export function ComposeAiAssistant({
         ]);
         setActiveSessionId(result.session.id);
       }
-      setInput("");
     } catch (error) {
       setErrorMessage(error?.message || "AI 请求没有完成，请重试");
     } finally {
-      setIsSubmitting(false);
-      setActivityLabel("");
+      setActiveRequest(null);
+      streamingSessionIdRef.current = null;
+    }
+  };
+
+  const stop = async () => {
+    if (!activeRequest?.id) return;
+    setSessions((current) =>
+      updateStreamingAssistant(
+        current,
+        streamingSessionIdRef.current,
+        (message) => ({
+          ...message,
+          activities: (message.activities || []).map((activity) =>
+            activity.status === "running"
+              ? { ...activity, label: "正在停止…" }
+              : activity,
+          ),
+        }),
+      ),
+    );
+    try {
+      await mailApi.cancelAiTurn(activeRequest.id);
+    } catch (error) {
+      setErrorMessage(error?.message || "无法停止 AI 请求");
+    }
+  };
+
+  const resolveProposal = async (messageId, proposal, group, action) => {
+    if (!aiDraft || busyProposal) return;
+    setBusyProposal({ messageId, group });
+    setErrorMessage("");
+    try {
+      const result = await mailApi.resolveAiProposalGroup({
+        proposal_id: proposal.id,
+        group,
+        action,
+        draft: { ...aiDraft, compose: latestValueRef.current },
+      });
+      onApplyDraft((current) => mergeProposalGroup(current, result.draft, group));
+      setSessions((current) =>
+        current.map((session) => ({
+          ...session,
+          messages: (session.messages || []).map((message) =>
+            message.id === messageId
+              ? { ...message, proposal: result.proposal }
+              : message,
+          ),
+        })),
+      );
+    } catch (error) {
+      setErrorMessage(error?.message || "AI 草稿提案没有完成应用");
+    } finally {
+      setBusyProposal(null);
     }
   };
 
   return (
-    <aside className="compose-ai-assistant" aria-label="AI 助理">
+    <aside className="compose-ai-assistant" aria-label="AI 助理" hidden={hidden}>
       <header className="compose-ai-header">
         <div className="compose-ai-header__actions">
           <IconButton label="收起 AI 助理" onClick={onCollapse}>
             <SidebarSimple size={18} />
           </IconButton>
-          <IconButton label="AI 助理设置">
+          <IconButton label="AI 助理设置" disabled={isSubmitting}>
             <Gear size={18} />
           </IconButton>
           {activeSession ? (
             <IconButton
               className="compose-ai-header__back"
               label="返回会话列表"
+              disabled={isSubmitting}
               onClick={() => setActiveSessionId(null)}
             >
               <ArrowLeft size={18} />
@@ -681,10 +1148,19 @@ export function ComposeAiAssistant({
       {activeSession ? (
         <>
           <DraftPills drafts={activeSession.drafts} onOpenDraft={onOpenDraft} />
-          <Conversation session={activeSession} />
+          <Conversation
+            session={activeSession}
+            busyProposal={busyProposal}
+            onOpenExternalLink={onOpenExternalLink}
+            onResolveProposal={(...args) => void resolveProposal(...args)}
+          />
         </>
       ) : (
-        <SessionList sessions={sessions} onOpenSession={(id) => void openSession(id)} />
+        <SessionList
+          disabled={isSubmitting}
+          sessions={sessions}
+          onOpenSession={(id) => void openSession(id)}
+        />
       )}
 
       {isLoadingSessions && !activeSession ? (
@@ -692,9 +1168,6 @@ export function ComposeAiAssistant({
       ) : null}
       {isLoadingActiveSession ? (
         <p className="compose-ai-status" role="status">正在读取会话内容…</p>
-      ) : null}
-      {activityLabel ? (
-        <p className="compose-ai-status" role="status">{activityLabel}</p>
       ) : null}
       {errorMessage ? (
         <p className="compose-ai-status compose-ai-status--error" role="status">
@@ -710,7 +1183,6 @@ export function ComposeAiAssistant({
           value={input}
           disabled={
             disabled ||
-            isSubmitting ||
             isLoadingSessions ||
             isLoadingActiveSession ||
             !aiDraft
@@ -718,7 +1190,7 @@ export function ComposeAiAssistant({
           placeholder={agentModePlaceholders[mode]}
           onChange={(event) => setInput(event.target.value)}
           onKeyDown={(event) => {
-            if (event.key === "Enter" && !event.shiftKey) {
+            if (event.key === "Enter" && !event.shiftKey && !isSubmitting) {
               event.preventDefault();
               void submit();
             }
@@ -742,19 +1214,23 @@ export function ComposeAiAssistant({
           />
           <IconButton
             className="compose-ai-send"
-            label="发送给 AI 助理"
+            label={isSubmitting ? "停止 AI 助理" : "发送给 AI 助理"}
             disabled={
               disabled ||
-              isSubmitting ||
               isLoadingSessions ||
               isLoadingActiveSession ||
-              !input.trim() ||
+              (!isSubmitting && !input.trim()) ||
+              (isSubmitting && !activeRequest?.id) ||
               !aiDraft
             }
             aria-busy={isSubmitting}
-            onClick={() => void submit()}
+            onClick={() => (isSubmitting ? void stop() : void submit())}
           >
-            <PaperPlaneRight size={17} weight="fill" />
+            {isSubmitting ? (
+              <Stop size={16} weight="fill" />
+            ) : (
+              <PaperPlaneRight size={17} weight="fill" />
+            )}
           </IconButton>
         </div>
       </div>

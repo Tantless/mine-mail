@@ -293,9 +293,15 @@ product decision changes.
   confirmation and discards that result.
 - Conversational AI sessions belong to the Mine Mail application rather than one
   draft and persist in a Rust-owned SQLite store. A session may associate with
-  every saved, editable draft it actually reads or changes. The association uses
-  the stable draft ID, appears as a subject plus short display-ID pill, and is
-  removed after that draft is sent or deleted; session history remains.
+  every editable draft from which the user sends a prompt. The association uses
+  the stable draft ID, or the live compose identity before the first save, appears
+  as a subject plus short display-ID pill, and is removed after that draft is sent
+  or deleted; session history remains.
+- Sending a conversational prompt immediately persists the user message and an
+  assistant placeholder. Assistant messages carry `streaming`, `completed`,
+  `stopped`, or `failed` state; stopping or failing keeps any received partial
+  Markdown. Session and mode switching are locked only while that turn runs,
+  while compose, collapse/minimize, and editing the next prompt remain usable.
 - The assistant provides **自动**、**邮件生成** and read-only **聊天** modes.
   Optimization remains a separate high-frequency action. Rust selects a hard
   tool allowlist for every mode; prompts alone never grant a capability.
@@ -345,25 +351,36 @@ product decision changes.
   ID within a size and type allowlist. PDF, Office, archive, executable, and
   other binary formats are not parsed. Image tools are registered only for a
   Provider/model with implemented multimodal support.
-- **邮件生成** may replace recipients, subject, body, and supported body
-  formatting. **聊天** has no write tools. **自动** combines those read and write
+- **邮件生成** may replace recipients, subject, body, supported body formatting,
+  and stationery. **聊天** has no write tools. **自动** combines those read and write
   tools according to the user's request. No built-in AI mode can switch the
   draft account, mutate immutable quoted context, manipulate attachments, send
   mail, or operate Outbox.
-- Tool writes apply only to a Rust in-memory working copy. For conversational
-  generation and automatic modes, React applies the returned complete patch only
-  if the live compose fingerprint still matches the local request baseline;
-  otherwise it rejects the patch so a slow response cannot overwrite newer
-  edits. Independent optimization instead retains its click-time snapshot for
+- Tool writes apply only to a Rust in-memory working copy. A successfully
+  validated conversational write becomes one or two read-only proposal cards in
+  the assistant message: recipients/Cc/Bcc/subject form one group, and
+  body/format/stationery form the other. The user applies each changed group with
+  one icon action, without confirmation. Apply replaces only that group and
+  stores its then-live value as an undo backup; an old proposal intentionally
+  remains applicable even after later edits. Stopped, failed, or invalid turns
+  never create a proposal. Independent optimization instead retains its click-time snapshot for
   comparison and never writes until the user selects and confirms one side; the
   live body is backed up immediately before that intentional replacement. The
   short opaque request revision sent to Rust is correlation metadata, not the
   serialized draft body. The user always reviews the result and clicks **发送**
   explicitly.
-- The first Provider implementation is non-streaming but uses one typed Tauri
-  Channel lifecycle for start, tool progress, result, completion, and failure.
-  Future streaming for **邮件生成**、**聊天** and **自动** extends that protocol
-  with text deltas; standalone optimization may remain non-streaming.
+- **邮件生成**、**聊天** and **自动** use Provider SSE streaming for both
+  OpenAI-compatible chat completions and Anthropic Messages. Safe Markdown is
+  rendered incrementally beneath an append-only execution trail. Each Provider
+  reasoning round and tool call becomes its own ordered step. A Provider may
+  supply visible reasoning deltas for the active step; that temporary detail is
+  replaced by a bounded completion summary when the step ends and is never saved
+  as Session message text. Hidden reasoning, tool arguments, and tool results are
+  not exposed. Stop cancels the Provider stream and prevents later tools.
+  Standalone optimization remains non-streaming.
+- Proposal payloads, tool lifecycle metadata, and apply backups expire seven
+  days after Session activity. Cleanup runs at startup no more than once per day;
+  user and final assistant Markdown remain as plain Session history.
 - The canonical built-in tool protocol and per-mode permission matrix live in
   [`toolCalling/TOOLS.md`](toolCalling/TOOLS.md) and
   [`toolCalling/AGENT_MODULES.md`](toolCalling/AGENT_MODULES.md).

@@ -77,6 +77,7 @@ describe("mailApi desktop IPC contract", () => {
       draft_revision: "revision-1",
       draft: {
         account_id: "account-1",
+        compose_instance_id: "compose-1",
         draft_id: null,
         local_version: null,
         compose: {
@@ -99,6 +100,42 @@ describe("mailApi desktop IPC contract", () => {
       request,
       onEvent: expect.objectContaining({ onmessage: expect.any(Function) }),
     });
+  });
+
+  it("routes AI cancellation and proposal resolution through narrow commands", async () => {
+    ipc.invoke
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce({
+        proposal: {
+          id: "proposal-1",
+          request_id: "request-1",
+          changed_fields: ["body_text"],
+          draft: { body_text: "新正文", format: {} },
+          headers: { changed: false, status: "pending", can_undo: false },
+          body: { changed: true, status: "applied", can_undo: true },
+          expires_at_ms: 42,
+        },
+        draft: { body_text: "新正文", format: {} },
+      });
+    const { mailApi } = await import("./mailApi.js");
+
+    expect(await mailApi.cancelAiTurn("request-1")).toBe(true);
+    const request = {
+      proposal_id: "proposal-1",
+      group: "body",
+      action: "apply",
+      draft: { account_id: "account-1", compose: {} },
+    };
+    const resolved = await mailApi.resolveAiProposalGroup(request);
+
+    expect(ipc.invoke).toHaveBeenNthCalledWith(1, "cancel_ai_turn", {
+      requestId: "request-1",
+    });
+    expect(ipc.invoke).toHaveBeenNthCalledWith(2, "resolve_ai_proposal_group", {
+      request,
+    });
+    expect(resolved.proposal.body.canUndo).toBe(true);
+    expect(resolved.proposal.changedFields).toEqual(["body_text"]);
   });
 
   it("maps Agent configuration through narrow desktop commands", async () => {

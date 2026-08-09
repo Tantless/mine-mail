@@ -968,6 +968,7 @@ export function ComposePanel({
     if (!accountId) return null;
     return {
       account_id: accountId,
+      compose_instance_id: localDraftIdentityRef.current,
       draft_id: hasStableDraft ? stableDraftId : null,
       local_version: hasStableDraft ? localVersion : null,
       compose: {
@@ -1748,18 +1749,18 @@ export function ComposePanel({
             ))}
           </div>
         )}
-        {!isMinimized && isAiAssistantOpen ? (
-          <ComposeAiAssistant
-            aiDraft={aiDraft}
-            value={value}
-            currentDraft={currentDraftForAi}
-            disabled={isBusy}
-            readOnly={readOnly}
-            onApplyDraft={onChange}
-            onCollapse={collapseAiAssistant}
-            onOpenDraft={openLinkedDraft}
-          />
-        ) : null}
+        <ComposeAiAssistant
+          hidden={isMinimized || !isAiAssistantOpen}
+          aiDraft={aiDraft}
+          value={value}
+          currentDraft={currentDraftForAi}
+          disabled={isBusy}
+          readOnly={readOnly}
+          onApplyDraft={onChange}
+          onCollapse={collapseAiAssistant}
+          onOpenDraft={openLinkedDraft}
+          onOpenExternalLink={onOpenExternalLink}
+        />
       </section>
     </div>
   );

@@ -529,6 +529,7 @@ function createDemoActions(
   state,
   { normalizeSettings, normalizeProfileAvatar, normalizeContact },
 ) {
+  const activeAiTurns = new Map();
   return {
     getAiConfig() {
       return structuredClone(state.aiConfig);
@@ -640,9 +641,8 @@ function createDemoActions(
       return { ...structuredClone(session), loaded: true };
     },
 
-    runAiTurn(request, onEvent) {
+    async runAiTurn(request, onEvent) {
       const requestId = crypto.randomUUID();
-      onEvent?.({ type: "started", request_id: requestId, mode: request.mode });
       const initial = structuredClone(request.draft.compose);
       let draft = null;
       const changedFields = [];
@@ -665,16 +665,12 @@ function createDemoActions(
             : `您好，\n\n想就${instruction || "相关事项"}与您确认一下。烦请您在方便时回复。\n\n感谢您的时间。`;
         draft.format = { ...(draft.format || {}), body_html: null };
         changedFields.push("body_text");
-        onEvent?.({
-          type: "draft_patch",
-          request_id: requestId,
-          changed_fields: changedFields,
-        });
       }
       const assistantMessage = shouldWrite
-        ? "已更新当前草稿。"
+        ? "已生成邮件修改提案，请在下方分别检查并应用。"
         : "这是离线界面演示；桌面版会按需读取当前草稿后回答。";
       let session = null;
+      let assistantEntry = null;
       if (request.mode !== "optimize") {
         const current = request.session_id
           ? state.aiSessions.find(
@@ -690,13 +686,17 @@ function createDemoActions(
         if (current) {
           current.lastActive = "刚刚";
           current.updatedAtMs = Date.now();
+          assistantEntry = {
+            id: crypto.randomUUID(),
+            role: "assistant",
+            content: "",
+            status: "streaming",
+            activities: [],
+            proposal: null,
+          };
           current.messages.push(
-            { id: crypto.randomUUID(), role: "user", content: instruction },
-            {
-              id: crypto.randomUUID(),
-              role: "assistant",
-              content: assistantMessage,
-            },
+            { id: crypto.randomUUID(), role: "user", content: instruction, status: "completed" },
+            assistantEntry,
           );
           if (
             binding &&
@@ -713,24 +713,192 @@ function createDemoActions(
             updatedAtMs: Date.now(),
             drafts: binding ? [binding] : [],
             messages: [
-              { id: crypto.randomUUID(), role: "user", content: instruction },
-              {
+              { id: crypto.randomUUID(), role: "user", content: instruction, status: "completed" },
+              (assistantEntry = {
                 id: crypto.randomUUID(),
                 role: "assistant",
-                content: assistantMessage,
-              },
+                content: "",
+                status: "streaming",
+                activities: [],
+                proposal: null,
+              }),
             ],
             loaded: true,
           };
           state.aiSessions.unshift(structuredClone(session));
         }
+        session = current
+          ? { ...structuredClone(current), loaded: true }
+          : session;
       }
       onEvent?.({
-        type: "content_delta",
+        type: "started",
         request_id: requestId,
-        delta: assistantMessage,
+        mode: request.mode,
+        session,
       });
-      onEvent?.({ type: "completed", request_id: requestId });
+      if (request.mode !== "optimize") {
+        const turn = { cancelled: false };
+        activeAiTurns.set(requestId, turn);
+        const firstThinkingId = `${requestId}:thinking:1`;
+        assistantEntry.activities.push({
+          id: firstThinkingId,
+          kind: "thinking",
+          label: "正在思考…",
+          status: "running",
+          success: null,
+          detail: "",
+        });
+        onEvent?.({
+          type: "thinking_started",
+          request_id: requestId,
+          activity_id: firstThinkingId,
+        });
+        for (const delta of ["正在理解你的要求，", "并检查需要使用的草稿工具。"]) {
+          await wait(28);
+          onEvent?.({
+            type: "reasoning_delta",
+            request_id: requestId,
+            activity_id: firstThinkingId,
+            delta,
+          });
+        }
+        if (shouldWrite) {
+          assistantEntry.activities[0] = {
+            ...assistantEntry.activities[0],
+            label: "分析完成",
+            status: "completed",
+            success: true,
+          };
+          onEvent?.({
+            type: "thinking_finished",
+            request_id: requestId,
+            activity_id: firstThinkingId,
+            summary: "分析完成",
+            success: true,
+          });
+          const toolActivityId = `${requestId}:tool:1:0`;
+          assistantEntry.activities.push({
+            id: toolActivityId,
+            kind: "tool",
+            label: "正在调用「修改草稿正文」工具…",
+            status: "running",
+            success: null,
+            detail: "",
+          });
+          onEvent?.({
+            type: "tool_started",
+            request_id: requestId,
+            activity_id: toolActivityId,
+            name: "replace_draft_body",
+            display_name: "修改草稿正文",
+          });
+          await wait(80);
+          onEvent?.({
+            type: "tool_finished",
+            request_id: requestId,
+            activity_id: toolActivityId,
+            name: "replace_draft_body",
+            display_name: "修改草稿正文",
+            success: true,
+          });
+          assistantEntry.activities.at(-1).label = "已调用「修改草稿正文」工具";
+          assistantEntry.activities.at(-1).status = "completed";
+          assistantEntry.activities.at(-1).success = true;
+        }
+        const finalThinkingId = shouldWrite
+          ? `${requestId}:thinking:2`
+          : firstThinkingId;
+        if (shouldWrite) {
+          assistantEntry.activities.push({
+            id: finalThinkingId,
+            kind: "thinking",
+            label: "正在思考…",
+            status: "running",
+            success: null,
+            detail: "",
+          });
+          onEvent?.({
+            type: "thinking_started",
+            request_id: requestId,
+            activity_id: finalThinkingId,
+          });
+        }
+        onEvent?.({
+          type: "reasoning_delta",
+          request_id: requestId,
+          activity_id: finalThinkingId,
+          delta: "正在整理最终回答。",
+        });
+        const chunks = assistantMessage.match(/.{1,6}/gu) || [assistantMessage];
+        for (const chunk of chunks) {
+          await wait(24);
+          if (turn.cancelled) break;
+          assistantEntry.content += chunk;
+          onEvent?.({ type: "content_delta", request_id: requestId, delta: chunk });
+        }
+        if (turn.cancelled) {
+          assistantEntry.status = "stopped";
+          const thinking = assistantEntry.activities.find(
+            (activity) => activity.id === finalThinkingId,
+          );
+          if (thinking) {
+            thinking.label = "思考已停止";
+            thinking.status = "stopped";
+            thinking.success = false;
+          }
+          onEvent?.({
+            type: "thinking_finished",
+            request_id: requestId,
+            activity_id: finalThinkingId,
+            summary: "思考已停止",
+            success: false,
+          });
+          onEvent?.({ type: "stopped", request_id: requestId });
+        } else {
+          assistantEntry.status = "completed";
+          const thinking = assistantEntry.activities.find(
+            (activity) => activity.id === finalThinkingId,
+          );
+          if (thinking) {
+            thinking.label = "答案整理完毕";
+            thinking.status = "completed";
+            thinking.success = true;
+          }
+          onEvent?.({
+            type: "thinking_finished",
+            request_id: requestId,
+            activity_id: finalThinkingId,
+            summary: "答案整理完毕",
+            success: true,
+          });
+          if (draft && changedFields.length) {
+            const headerFields = new Set(["to", "cc", "bcc", "subject"]);
+            const headerChanged = changedFields.some((field) => headerFields.has(field));
+            const bodyChanged = changedFields.some((field) => !headerFields.has(field));
+            assistantEntry.proposal = {
+              id: crypto.randomUUID(),
+              requestId,
+              draft: structuredClone(draft),
+              changedFields: [...changedFields],
+              headers: { changed: headerChanged, status: "pending", canUndo: false },
+              body: { changed: bodyChanged, status: "pending", canUndo: false },
+              expiresAtMs: Date.now() + 7 * 24 * 60 * 60 * 1000,
+              backups: {},
+            };
+            onEvent?.({
+              type: "draft_patch",
+              request_id: requestId,
+              changed_fields: changedFields,
+            });
+          }
+          onEvent?.({ type: "completed", request_id: requestId });
+        }
+        activeAiTurns.delete(requestId);
+        const stored = state.aiSessions.find((item) => item.id === session.id);
+        if (stored) Object.assign(stored, structuredClone(session));
+        session = { ...structuredClone(session), loaded: true };
+      }
       return {
         request_id: requestId,
         session,
@@ -738,7 +906,53 @@ function createDemoActions(
         draft_revision: request.draft_revision,
         draft,
         changed_fields: changedFields,
+        status: assistantEntry?.status || "completed",
       };
+    },
+
+    cancelAiTurn(requestId) {
+      const turn = activeAiTurns.get(requestId);
+      if (!turn) return false;
+      turn.cancelled = true;
+      return true;
+    },
+
+    resolveAiProposalGroup(request) {
+      const message = state.aiSessions
+        .flatMap((session) => session.messages)
+        .find((entry) => entry.proposal?.id === request.proposal_id);
+      if (!message) throw new Error("找不到这个 AI 草稿提案，或提案已过期");
+      const proposal = message.proposal;
+      const group = request.group;
+      const current = structuredClone(request.draft.compose);
+      if (request.action === "apply") {
+        proposal.backups[group] = structuredClone(current);
+        if (group === "headers") {
+          current.to = structuredClone(proposal.draft.to || []);
+          current.cc = structuredClone(proposal.draft.cc || []);
+          current.bcc = structuredClone(proposal.draft.bcc || []);
+          current.subject = proposal.draft.subject || "";
+        } else {
+          current.body_text = proposal.draft.body_text || "";
+          current.format = structuredClone(proposal.draft.format || {});
+        }
+        proposal[group] = { ...proposal[group], status: "applied", canUndo: true };
+      } else {
+        const backup = proposal.backups[group];
+        if (!backup) throw new Error("这组提案没有可回退的应用记录");
+        if (group === "headers") {
+          current.to = backup.to;
+          current.cc = backup.cc;
+          current.bcc = backup.bcc;
+          current.subject = backup.subject;
+        } else {
+          current.body_text = backup.body_text;
+          current.format = backup.format;
+        }
+        delete proposal.backups[group];
+        proposal[group] = { ...proposal[group], status: "pending", canUndo: false };
+      }
+      return { proposal: structuredClone(proposal), draft: current };
     },
 
     recordAiPatchOutcome() {},

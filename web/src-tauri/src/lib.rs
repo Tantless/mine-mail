@@ -35,8 +35,8 @@ use account::{
 use ai::{
     AiConfigDto, AiConnectionTestDto, AiContact, AiExecutionContext, AiModelListDto, AiRuntime,
     AiSessionDto, AiSessionListItemDto, AiTranslationRequest, AiTranslationResultDto, AiTurnEvent,
-    AiTurnRequest, AiTurnResultDto, CheckAiConnectionRequest, SaveAiConfigRequest,
-    record_patch_outcome,
+    AiTurnRequest, AiTurnResultDto, CheckAiConnectionRequest, ResolveAiProposalRequest,
+    ResolveAiProposalResultDto, SaveAiConfigRequest, record_patch_outcome,
 };
 use contacts::{ContactDirectoryDto, ContactRuntime};
 use desktop::{
@@ -1346,6 +1346,23 @@ async fn run_ai_turn(
         ai.run_turn(request, context, Some(on_event)).await
     })
     .await
+}
+
+#[tauri::command]
+fn cancel_ai_turn(ai: State<'_, AiRuntime>, request_id: String) -> CommandResult<bool> {
+    let fields = DiagnosticFields::default().operation_id_value(&request_id);
+    diagnostics::command("cancel_ai_turn", fields, || ai.cancel_turn(&request_id))
+}
+
+#[tauri::command]
+fn resolve_ai_proposal_group(
+    ai: State<'_, AiRuntime>,
+    request: ResolveAiProposalRequest,
+) -> CommandResult<ResolveAiProposalResultDto> {
+    let fields = DiagnosticFields::default().account(&request.draft.account_id);
+    diagnostics::command("resolve_ai_proposal_group", fields, || {
+        ai.resolve_proposal(request)
+    })
 }
 
 #[tauri::command]
@@ -3051,6 +3068,8 @@ pub fn run() {
             test_ai_connection,
             translate_mail_content,
             run_ai_turn,
+            cancel_ai_turn,
+            resolve_ai_proposal_group,
             record_ai_patch_outcome,
             list_contact_messages,
             set_contact_favorite,

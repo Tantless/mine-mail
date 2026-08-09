@@ -107,6 +107,8 @@ const commandFailureMessages = Object.freeze({
   resolve_delivery_unknown: "投递结果处理没有完成",
   retry_outbox: "重新发送没有完成",
   run_ai_turn: "AI 请求没有完成",
+  cancel_ai_turn: "无法停止 AI 请求",
+  resolve_ai_proposal_group: "AI 草稿提案没有完成应用",
   save_ai_config: "AI 配置保存没有完成",
   save_draft: "草稿保存没有完成",
   save_message_attachment: "附件保存没有完成",
@@ -371,7 +373,45 @@ function normalizeAiSession(session = {}) {
     lastActive: relativeAiTime(summary.updated_at_ms ?? summary.updatedAtMs),
     drafts: Array.isArray(summary.drafts) ? summary.drafts : [],
     loaded: Array.isArray(session.messages),
-    messages: Array.isArray(session.messages) ? session.messages : [],
+    messages: Array.isArray(session.messages)
+      ? session.messages.map((message) => ({
+          ...message,
+          status: message.status || "completed",
+          activities: Array.isArray(message.activities)
+            ? message.activities.map((activity) => ({
+                id: activity.id,
+                kind: activity.kind || "thinking",
+                label: activity.label || "执行步骤",
+                status: activity.status || "completed",
+                success: activity.success ?? null,
+                detail: "",
+              }))
+            : [],
+          proposal: message.proposal
+            ? normalizeAiProposal(message.proposal)
+            : null,
+        }))
+      : [],
+  };
+}
+
+function normalizeAiProposal(proposal = {}) {
+  return {
+    id: proposal.id,
+    requestId: proposal.requestId ?? proposal.request_id,
+    draft: proposal.draft,
+    changedFields: proposal.changedFields ?? proposal.changed_fields ?? [],
+    headers: {
+      changed: Boolean(proposal.headers?.changed),
+      status: proposal.headers?.status || "pending",
+      canUndo: Boolean(proposal.headers?.canUndo ?? proposal.headers?.can_undo),
+    },
+    body: {
+      changed: Boolean(proposal.body?.changed),
+      status: proposal.body?.status || "pending",
+      canUndo: Boolean(proposal.body?.canUndo ?? proposal.body?.can_undo),
+    },
+    expiresAtMs: Number(proposal.expiresAtMs ?? proposal.expires_at_ms ?? 0),
   };
 }
 
@@ -528,7 +568,11 @@ export const mailApi = {
   async runAiTurn(request, onEvent = null) {
     if (isTauri) {
       const onEventChannel = new Channel();
-      onEventChannel.onmessage = (event) => onEvent?.(event);
+      onEventChannel.onmessage = (event) =>
+        onEvent?.({
+          ...event,
+          session: event?.session ? normalizeAiSession(event.session) : null,
+        });
       const result = await desktopInvoke("run_ai_turn", {
         request,
         onEvent: onEventChannel,
@@ -539,6 +583,26 @@ export const mailApi = {
       };
     }
     return callDemo("runAiTurn", request, onEvent);
+  },
+
+  async cancelAiTurn(requestId) {
+    if (isTauri) {
+      return desktopInvoke("cancel_ai_turn", { requestId });
+    }
+    return callDemo("cancelAiTurn", requestId);
+  },
+
+  async resolveAiProposalGroup(request) {
+    if (isTauri) {
+      const result = await desktopInvoke("resolve_ai_proposal_group", {
+        request,
+      });
+      return {
+        ...result,
+        proposal: normalizeAiProposal(result.proposal),
+      };
+    }
+    return callDemo("resolveAiProposalGroup", request);
   },
 
   async recordAiPatchOutcome({

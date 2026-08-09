@@ -5938,6 +5938,10 @@ html[data-surface="new-mail-notification"] #root {
   animation: compose-ai-panel-in var(--motion-normal) ease-out both;
 }
 
+.compose-panel > .compose-ai-assistant[hidden] {
+  display: none;
+}
+
 @keyframes compose-ai-panel-in {
   from {
     opacity: 0;
@@ -6087,6 +6091,11 @@ html[data-surface="new-mail-notification"] #root {
 
 .compose-ai-session-row:active {
   background: color-mix(in srgb, var(--color-primary) 13%, var(--compose-control-hover));
+}
+
+.compose-ai-session-row:disabled {
+  cursor: default;
+  opacity: 0.64;
 }
 
 :root:is([data-theme="daylight"], [data-theme="dusk"], [data-theme="forest"])
@@ -6271,6 +6280,225 @@ html[data-surface="new-mail-notification"] #root {
   border-color: var(--color-primary);
   background: var(--compose-surface-hover);
   color: var(--color-on-primary);
+}
+
+.compose-ai-message__content {
+  min-width: 0;
+}
+
+.compose-ai-message__content > :first-child,
+.compose-ai-message__content > :first-child > :first-child {
+  margin-top: 0;
+}
+
+.compose-ai-message__content > :last-child,
+.compose-ai-message__content > :last-child > :last-child {
+  margin-bottom: 0;
+}
+
+.compose-ai-message__content :is(h1, h2, h3, h4) {
+  margin: 0.8em 0 0.35em;
+  color: var(--color-text);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.compose-ai-message__content :is(ul, ol) {
+  margin: 0.45em 0;
+  padding-left: 1.55em;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.compose-ai-message__content code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--color-text) 7%, transparent);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.92em;
+}
+
+.compose-ai-message__content pre {
+  overflow-x: auto;
+  margin: 0.55em 0;
+  padding: 9px;
+  border: 1px solid var(--compose-divider);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--compose-content-surface) 78%, var(--color-control));
+  white-space: pre-wrap;
+}
+
+.compose-ai-message__content pre code {
+  padding: 0;
+  background: transparent;
+}
+
+.compose-ai-message__content a {
+  color: var(--color-primary);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+
+.compose-ai-message__content blockquote {
+  margin: 0.55em 0;
+  padding-left: 9px;
+  border-left: 2px solid color-mix(in srgb, var(--color-primary) 45%, var(--compose-divider));
+  color: var(--color-text-muted);
+}
+
+.compose-ai-activity-list {
+  display: grid;
+  gap: 7px;
+  margin: 0 0 10px;
+  padding: 0;
+  list-style: none;
+}
+
+.compose-ai-activity-step {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  align-items: start;
+  gap: 5px;
+  min-width: 0;
+  color: var(--color-text-muted);
+}
+
+.compose-ai-activity-step__icon {
+  display: grid;
+  width: 16px;
+  height: 17px;
+  place-items: center;
+  color: color-mix(in srgb, var(--color-primary) 76%, var(--color-text-muted));
+}
+
+.compose-ai-activity-step strong {
+  display: block;
+  font-size: 10px;
+  font-weight: 620;
+  line-height: 1.7;
+}
+
+.compose-ai-activity-step[data-status="completed"] {
+  color: color-mix(in srgb, var(--color-text-muted) 84%, transparent);
+}
+
+.compose-ai-activity-step[data-status="failed"],
+.compose-ai-activity-step[data-status="stopped"] {
+  color: var(--color-danger);
+}
+
+.compose-ai-activity-step__detail {
+  margin: 2px 0 0 !important;
+  color: var(--color-text-secondary) !important;
+  font-size: 10px !important;
+  line-height: 1.55 !important;
+  white-space: pre-wrap;
+}
+
+.compose-ai-activity-step[data-status="running"] .compose-ai-activity-step__icon svg,
+.compose-ai-proposal__apply[aria-busy="true"] svg {
+  animation: compose-optimize-spin 0.9s linear infinite;
+}
+
+.compose-ai-message__state {
+  display: block;
+  margin-top: 6px;
+  color: var(--color-text-muted);
+  font-size: 9px;
+}
+
+.compose-ai-message__state--error {
+  color: var(--color-danger);
+}
+
+.compose-ai-proposals {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.compose-ai-proposal {
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--color-primary) 34%, var(--compose-divider));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--color-primary) 7%, var(--compose-content-surface));
+  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--color-primary) 70%, transparent);
+}
+
+.compose-ai-proposal > header {
+  display: flex;
+  min-height: 34px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 6px 5px 11px;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-primary) 18%, var(--compose-divider));
+}
+
+.compose-ai-proposal > header strong {
+  color: var(--color-text);
+  font-size: 10px;
+  font-weight: 720;
+}
+
+.compose-ai-proposal__apply.icon-button {
+  width: 27px;
+  height: 27px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--color-primary);
+}
+
+.compose-ai-proposal dl {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding: 9px 11px 10px;
+}
+
+.compose-ai-proposal dl > div {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  gap: 7px;
+}
+
+.compose-ai-proposal dt,
+.compose-ai-proposal dd {
+  min-width: 0;
+  margin: 0;
+  font-size: 10px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.compose-ai-proposal dt,
+.compose-ai-proposal > small {
+  color: var(--color-text-muted);
+}
+
+.compose-ai-proposal dd {
+  color: var(--color-text-secondary);
+}
+
+.compose-ai-proposal > pre {
+  max-height: 180px;
+  overflow: auto;
+  margin: 0;
+  padding: 10px 11px 7px;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-family: inherit;
+  font-size: 10px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.compose-ai-proposal > small {
+  display: block;
+  padding: 0 11px 10px;
+  font-size: 9px;
 }
 
 @media (max-width: 1199px) {

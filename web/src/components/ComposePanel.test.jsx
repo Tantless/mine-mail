@@ -687,15 +687,238 @@ it("creates an AI session from the fixed composer and honors the selected mode",
   await user.type(input, "写一封确认下周交付时间的邮件{Enter}");
 
   await waitFor(() =>
-    expect(within(assistant).getByText("已更新当前草稿。")).toBeTruthy(),
+    expect(
+      within(assistant).getByText("已生成邮件修改提案，请在下方分别检查并应用。"),
+    ).toBeTruthy(),
   );
   expect(runAiTurn).toHaveBeenCalledWith(
     expect.objectContaining({ mode: "generate" }),
     expect.any(Function),
   );
+  expect(onChange).not.toHaveBeenCalled();
+  await user.click(
+    within(assistant).getByRole("button", { name: "应用正文与信纸提案" }),
+  );
   await waitFor(() => expect(onChange).toHaveBeenCalled());
   const generateUpdate = onChange.mock.calls.at(-1)[0];
   expect(generateUpdate(baseValue).body_text).toContain("下周交付时间");
+});
+
+it("keeps a streamed Markdown turn alive while the AI sidebar is collapsed", async () => {
+  let emit;
+  let finish;
+  const runAiTurn = vi.spyOn(mailApi, "runAiTurn").mockImplementation(
+    (_request, onEvent) => new Promise((resolve) => {
+      emit = onEvent;
+      finish = resolve;
+    }),
+  );
+  const user = userEvent.setup();
+  renderCompose();
+
+  await user.click(screen.getByRole("button", { name: "打开 AI 助理" }));
+  const assistant = screen.getByRole("complementary", { name: "AI 助理" });
+  const input = within(assistant).getByRole("textbox", { name: "向 AI 助理发送消息" });
+  await waitFor(() => expect(input.disabled).toBe(false));
+  await user.type(input, "检查当前草稿{Enter}");
+  await waitFor(() => expect(runAiTurn).toHaveBeenCalledTimes(1));
+
+  const streamingSession = {
+    id: "session-stream",
+    title: "检查当前草稿",
+    lastActive: "刚刚",
+    drafts: [],
+    loaded: true,
+    messages: [
+      { id: "user-stream", role: "user", content: "检查当前草稿", status: "completed" },
+      { id: "assistant-stream", role: "assistant", content: "", status: "streaming" },
+    ],
+  };
+  await act(async () => {
+    emit({ type: "started", request_id: "request-stream", session: streamingSession });
+    emit({
+      type: "thinking_started",
+      request_id: "request-stream",
+      activity_id: "thinking-1",
+    });
+    emit({
+      type: "reasoning_delta",
+      request_id: "request-stream",
+      activity_id: "thinking-1",
+      delta: "正在检查当前草稿",
+    });
+  });
+  expect(within(assistant).getByText("正在检查当前草稿")).toBeTruthy();
+  await act(async () => {
+    emit({
+      type: "thinking_finished",
+      request_id: "request-stream",
+      activity_id: "thinking-1",
+      summary: "分析完成",
+      success: true,
+    });
+    emit({
+      type: "tool_started",
+      request_id: "request-stream",
+      activity_id: "tool-1",
+      name: "get_draft_body",
+      display_name: "读取草稿正文",
+    });
+    emit({
+      type: "tool_finished",
+      request_id: "request-stream",
+      activity_id: "tool-1",
+      name: "get_draft_body",
+      display_name: "读取草稿正文",
+      success: true,
+    });
+    emit({
+      type: "thinking_started",
+      request_id: "request-stream",
+      activity_id: "thinking-2",
+    });
+    emit({
+      type: "reasoning_delta",
+      request_id: "request-stream",
+      activity_id: "thinking-2",
+      delta: "正在整理最终答案",
+    });
+    emit({ type: "content_delta", request_id: "request-stream", delta: "**草稿**" });
+  });
+  expect(within(assistant).queryByText("正在检查当前草稿")).toBeNull();
+  expect(within(assistant).getByText("分析完成")).toBeTruthy();
+  expect(within(assistant).getByText("已调用「读取草稿正文」工具")).toBeTruthy();
+  expect(within(assistant).getByText("正在整理最终答案")).toBeTruthy();
+  expect(within(assistant).getByText("草稿").tagName).toBe("STRONG");
+  expect(input.disabled).toBe(false);
+
+  await user.click(within(assistant).getByRole("button", { name: "收起 AI 助理" }));
+  expect(screen.queryByRole("complementary", { name: "AI 助理" })).toBeNull();
+  const completedSession = {
+    ...streamingSession,
+    messages: [
+      streamingSession.messages[0],
+      {
+        ...streamingSession.messages[1],
+        content: "**草稿** 已检查",
+        status: "completed",
+        activities: [
+          {
+            id: "thinking-1",
+            kind: "thinking",
+            label: "分析完成",
+            status: "completed",
+            success: true,
+            detail: "",
+          },
+          {
+            id: "tool-1",
+            kind: "tool",
+            label: "已调用「读取草稿正文」工具",
+            status: "completed",
+            success: true,
+            detail: "",
+          },
+          {
+            id: "thinking-2",
+            kind: "thinking",
+            label: "答案整理完毕",
+            status: "completed",
+            success: true,
+            detail: "",
+          },
+        ],
+      },
+    ],
+  };
+  await act(async () => {
+    emit({ type: "content_delta", request_id: "request-stream", delta: " 已检查" });
+    emit({
+      type: "thinking_finished",
+      request_id: "request-stream",
+      activity_id: "thinking-2",
+      summary: "答案整理完毕",
+      success: true,
+    });
+    emit({ type: "completed", request_id: "request-stream" });
+    finish({
+      request_id: "request-stream",
+      session: completedSession,
+      assistant_message: "**草稿** 已检查",
+      draft: null,
+      changed_fields: [],
+      status: "completed",
+    });
+  });
+
+  await user.click(screen.getByRole("button", { name: "打开 AI 助理" }));
+  expect(
+    within(screen.getByRole("complementary", { name: "AI 助理" })).getByText("已检查", {
+      exact: false,
+    }),
+  ).toBeTruthy();
+});
+
+it("stops a streamed AI turn and keeps the received partial answer", async () => {
+  let emit;
+  let finish;
+  vi.spyOn(mailApi, "runAiTurn").mockImplementation(
+    (_request, onEvent) => new Promise((resolve) => {
+      emit = onEvent;
+      finish = resolve;
+    }),
+  );
+  const cancel = vi.spyOn(mailApi, "cancelAiTurn").mockImplementation(async () => {
+    emit({ type: "stopped", request_id: "request-stop" });
+    finish({
+      request_id: "request-stop",
+      session: {
+        id: "session-stop",
+        title: "停止测试",
+        lastActive: "刚刚",
+        drafts: [],
+        loaded: true,
+        messages: [
+          { id: "user-stop", role: "user", content: "停止测试", status: "completed" },
+          { id: "assistant-stop", role: "assistant", content: "部分回答", status: "stopped" },
+        ],
+      },
+      assistant_message: "部分回答",
+      draft: null,
+      changed_fields: [],
+      status: "stopped",
+    });
+    return true;
+  });
+  const user = userEvent.setup();
+  renderCompose();
+  await user.click(screen.getByRole("button", { name: "打开 AI 助理" }));
+  const assistant = screen.getByRole("complementary", { name: "AI 助理" });
+  const input = within(assistant).getByRole("textbox", { name: "向 AI 助理发送消息" });
+  await waitFor(() => expect(input.disabled).toBe(false));
+  await user.type(input, "停止测试{Enter}");
+  await act(async () => {
+    emit({
+      type: "started",
+      request_id: "request-stop",
+      session: {
+        id: "session-stop",
+        title: "停止测试",
+        lastActive: "刚刚",
+        drafts: [],
+        loaded: true,
+        messages: [
+          { id: "user-stop", role: "user", content: "停止测试", status: "completed" },
+          { id: "assistant-stop", role: "assistant", content: "", status: "streaming" },
+        ],
+      },
+    });
+    emit({ type: "content_delta", request_id: "request-stop", delta: "部分回答" });
+  });
+  await user.click(within(assistant).getByRole("button", { name: "停止 AI 助理" }));
+  await waitFor(() => expect(cancel).toHaveBeenCalledWith("request-stop"));
+  expect(within(assistant).getByText("部分回答")).toBeTruthy();
+  expect(within(assistant).getByText("已停止")).toBeTruthy();
 });
 
 it("renders only authoritative draft attachments and passes the exact local version", async () => {
