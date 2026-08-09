@@ -1,8 +1,9 @@
 # Mine Mail 内置 AI Agent 模块
 
 本文说明写信界面的每个 AI 功能模块、可见行为和工具权限。工具的输入、输出与
-示例见 [`TOOLS.md`](TOOLS.md)。本文描述的是应用内 AI；外部 Agent 的 MCP 权限
-由 [`../MCP.md`](../MCP.md) 定义。
+示例见 [`TOOLS.md`](TOOLS.md)，各功能当前使用的固定提示词见
+[`PROMPTS.md`](PROMPTS.md)。本文描述的是应用内 AI；外部 Agent 的 MCP 权限由
+[`../MCP.md`](../MCP.md) 定义。
 
 ## 共同运行模型
 
