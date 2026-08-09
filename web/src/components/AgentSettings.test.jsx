@@ -63,6 +63,9 @@ function client(overrides = {}) {
             ?.environmentVariable || "AI_API_KEY",
       }),
     ),
+    setAiTranslationLanguage: vi.fn().mockImplementation(async (languageId) =>
+      configuration({ translationLanguage: languageId }),
+    ),
     listAiModels: vi
       .fn()
       .mockResolvedValue(["deepseek-v4-flash", "deepseek-v4-pro"]),
@@ -71,10 +74,38 @@ function client(overrides = {}) {
   };
 }
 
+async function expandModelConfiguration(user) {
+  const disclosure = await screen.findByRole("button", { name: /模型配置/ });
+  if (disclosure.getAttribute("aria-expanded") !== "true") {
+    await user.click(disclosure);
+  }
+  return disclosure;
+}
+
 describe("AgentSettings", () => {
   afterEach(() => cleanup());
 
+  it("keeps model configuration collapsed while exposing separate AI preferences", async () => {
+    render(<AgentSettings client={client()} />);
+
+    const disclosure = await screen.findByRole("button", { name: /模型配置/ });
+    expect(disclosure.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByLabelText("BASE_URL")).toBeNull();
+    const translationLanguage = screen.getByRole("combobox", {
+      name: "AI 翻译语言",
+    });
+    const assistantDefault = screen.getByRole("checkbox", {
+      name: /默认开启 AI 助理/,
+    });
+    const translationCard = translationLanguage.closest(".settings-preference-card");
+    const assistantCard = assistantDefault.closest(".settings-preference-card");
+    expect(translationCard).toBeTruthy();
+    expect(assistantCard).toBeTruthy();
+    expect(translationCard).not.toBe(assistantCard);
+  });
+
   it("shows an unconfigured custom provider with manual API Key entry", async () => {
+    const user = userEvent.setup();
     const api = client({
       getAiConfig: vi.fn().mockResolvedValue(
         configuration({
@@ -88,6 +119,7 @@ describe("AgentSettings", () => {
       ),
     });
     render(<AgentSettings client={api} />);
+    await expandModelConfiguration(user);
 
     const customProvider = await screen.findByRole("button", { name: "自定义" });
     expect(customProvider.getAttribute("data-selected")).toBe("true");
@@ -110,6 +142,7 @@ describe("AgentSettings", () => {
       ),
     });
     render(<AgentSettings client={api} />);
+    await expandModelConfiguration(user);
 
     await user.click(await screen.findByRole("button", { name: "Kimi" }));
 
@@ -125,6 +158,7 @@ describe("AgentSettings", () => {
       listAiModels: vi.fn().mockResolvedValue(["kimi-k2.7", "kimi-k3"]),
     });
     render(<AgentSettings client={api} />);
+    await expandModelConfiguration(user);
 
     await screen.findByRole("button", { name: "Kimi" });
     await user.click(screen.getByRole("button", { name: "Kimi" }));
@@ -163,6 +197,7 @@ describe("AgentSettings", () => {
         .mockResolvedValue(configuration({ hasEnvironmentApiKey: true })),
     });
     render(<AgentSettings client={api} />);
+    await expandModelConfiguration(user);
 
     const environmentOption = await screen.findByRole("checkbox", {
       name: "从系统环境变量获取",
@@ -193,6 +228,7 @@ describe("AgentSettings", () => {
     const user = userEvent.setup();
     const api = client();
     render(<AgentSettings client={api} />);
+    await expandModelConfiguration(user);
 
     const keyInput = await screen.findByLabelText("API_KEY");
     await user.type(keyInput, "new-secret");
@@ -214,13 +250,12 @@ describe("AgentSettings", () => {
     expect(language.textContent).toContain("中文（简体）");
     await user.click(language);
     await user.click(screen.getByRole("option", { name: "日本語" }));
-    await user.click(screen.getByRole("button", { name: "保存配置" }));
 
     await waitFor(() =>
-      expect(api.saveAiConfig).toHaveBeenCalledWith(
-        expect.objectContaining({ translationLanguage: "ja" }),
-      ),
+      expect(api.setAiTranslationLanguage).toHaveBeenCalledWith("ja"),
     );
+    expect(api.saveAiConfig).not.toHaveBeenCalled();
+    expect(await screen.findByText("翻译语言已保存。")).toBeTruthy();
   });
 
   it("shows the compose assistant default as an enabled capsule preference", async () => {
@@ -246,19 +281,18 @@ describe("AgentSettings", () => {
     const user = userEvent.setup();
     const api = client();
     render(<AgentSettings client={api} />);
+    await expandModelConfiguration(user);
 
-    const language = await screen.findByRole("combobox", {
-      name: "AI 翻译语言",
-    });
+    const modelName = await screen.findByLabelText("MODEL_NAME");
     expect(api.saveAiConfig).not.toHaveBeenCalled();
 
-    await user.click(language);
-    await user.click(screen.getByRole("option", { name: "日本語" }));
+    await user.clear(modelName);
+    await user.type(modelName, "deepseek-v4-flash");
 
     await waitFor(
       () =>
         expect(api.saveAiConfig).toHaveBeenCalledWith(
-          expect.objectContaining({ translationLanguage: "ja" }),
+          expect.objectContaining({ modelName: "deepseek-v4-flash" }),
         ),
       { timeout: 1800 },
     );
@@ -271,6 +305,7 @@ describe("AgentSettings", () => {
   });
 
   it("keeps the settings page visible when configuration loading throws synchronously", async () => {
+    const user = userEvent.setup();
     const api = client({
       getAiConfig: vi.fn(() => {
         throw new Error("desktop bridge is not ready");
@@ -278,6 +313,9 @@ describe("AgentSettings", () => {
     });
 
     render(<AgentSettings client={api} />);
+    const disclosure = await screen.findByRole("button", { name: /模型配置/ });
+    await waitFor(() => expect(disclosure.textContent).toContain("配置读取失败"));
+    await user.click(disclosure);
 
     expect(
       await screen.findByText(/AI 配置读取失败，请重试/),

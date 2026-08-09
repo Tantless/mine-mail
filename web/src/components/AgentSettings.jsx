@@ -104,12 +104,14 @@ function AgentSettingsContent({
   onDefaultAiAssistantOpenChange,
   children,
 }) {
-  const [expanded, setExpanded] = useState(true);
+  const [expanded, setExpanded] = useState(false);
   const [loadState, setLoadState] = useState("loading");
   const [form, setForm] = useState(initialConfiguration);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [actionState, setActionState] = useState("idle");
   const [feedback, setFeedback] = useState(null);
+  const [translationState, setTranslationState] = useState("idle");
+  const [translationFeedback, setTranslationFeedback] = useState(null);
   const [editRevision, setEditRevision] = useState(0);
   const [helpOpen, setHelpOpen] = useState(false);
   const editRevisionRef = useRef(0);
@@ -308,6 +310,45 @@ function AgentSettingsContent({
     }
   };
 
+  const updateTranslationLanguage = async (languageId) => {
+    if (languageId === form.translationLanguage || translationState === "saving") {
+      return;
+    }
+
+    const previousLanguage = form.translationLanguage;
+    setForm((current) => ({ ...current, translationLanguage: languageId }));
+    setTranslationState("saving");
+    setTranslationFeedback({ tone: "neutral", text: "正在保存翻译语言…" });
+    try {
+      if (typeof client?.setAiTranslationLanguage !== "function") {
+        throw new Error("AI translation language client is unavailable");
+      }
+      const saved = normalizeConfiguration(
+        await client.setAiTranslationLanguage(languageId),
+      );
+      setForm((current) => ({
+        ...current,
+        translationLanguage: saved.translationLanguage,
+        translationLanguages: saved.translationLanguages,
+      }));
+      setTranslationFeedback({ tone: "success", text: "翻译语言已保存。" });
+    } catch (error) {
+      setForm((current) => ({
+        ...current,
+        translationLanguage:
+          current.translationLanguage === languageId
+            ? previousLanguage
+            : current.translationLanguage,
+      }));
+      setTranslationFeedback({
+        tone: "danger",
+        text: statusMessage(error, "翻译语言保存失败，请重试。"),
+      });
+    } finally {
+      setTranslationState("idle");
+    }
+  };
+
   useEffect(() => {
     if (
       loadState !== "ready"
@@ -345,7 +386,13 @@ function AgentSettingsContent({
         >
           <span>
             <strong>模型配置</strong>
-            <small>{selectedPreset?.label || "选择模型供应商"}</small>
+            <small>
+              {loadState === "loading"
+                ? "正在读取配置…"
+                : loadState === "error"
+                  ? "配置读取失败"
+                  : selectedPreset?.label || "选择模型供应商"}
+            </small>
           </span>
           <CaretDown size={17} aria-hidden="true" />
         </button>
@@ -530,36 +577,6 @@ function AgentSettingsContent({
                     <small>可直接选择预设模型；检索成功后会更新并保存当前供应商的列表。</small>
                   </div>
 
-                  <div className="agent-compose-preferences">
-                    <div className="settings-field agent-translation-language">
-                      <label htmlFor="agent-translation-language">AI 翻译语言</label>
-                      <ThemedSelect
-                        id="agent-translation-language"
-                        label="AI 翻译语言"
-                        value={form.translationLanguage}
-                        options={form.translationLanguages}
-                        disabled={busy}
-                        onValueChange={(value) =>
-                          updateField("translationLanguage", value)
-                        }
-                      />
-                      <small>选择阅读邮件时 AI 默认翻译成的语言。</small>
-                    </div>
-
-                    <label className="settings-field settings-preference-row--toggle agent-assistant-default">
-                      <span>默认开启 AI 助理</span>
-                      <span className="agent-assistant-default__control">
-                        <small>打开写信界面时自动展开右侧助理。</small>
-                        <input
-                          type="checkbox"
-                          checked={Boolean(defaultAiAssistantOpen)}
-                          onChange={(event) =>
-                            onDefaultAiAssistantOpenChange(event.target.checked)
-                          }
-                        />
-                      </span>
-                    </label>
-                  </div>
                 </div>
 
                 <div className="agent-config-actions">
@@ -598,6 +615,52 @@ function AgentSettingsContent({
             )}
           </div>
         ) : null}
+      </section>
+
+      <section
+        className="settings-preference-card agent-preference-card"
+        aria-label="AI 翻译语言设置"
+      >
+        <div className="settings-preference-row agent-translation-language">
+          <span>
+            <strong>AI 翻译语言</strong>
+            <small
+              className="agent-preference-feedback"
+              data-tone={translationFeedback?.tone}
+              role={translationFeedback?.tone === "danger" ? "alert" : "status"}
+              aria-live="polite"
+            >
+              {translationFeedback?.text || "选择阅读邮件时 AI 默认翻译成的语言。"}
+            </small>
+          </span>
+          <ThemedSelect
+            id="agent-translation-language"
+            label="AI 翻译语言"
+            value={form.translationLanguage}
+            options={form.translationLanguages}
+            disabled={loadState !== "ready" || translationState === "saving"}
+            onValueChange={(value) => void updateTranslationLanguage(value)}
+          />
+        </div>
+      </section>
+
+      <section
+        className="settings-preference-card agent-preference-card"
+        aria-label="AI 助理默认状态"
+      >
+        <label className="settings-preference-row settings-preference-row--toggle agent-assistant-default">
+          <span>
+            <strong>默认开启 AI 助理</strong>
+            <small>打开写信界面时自动展开右侧助理。</small>
+          </span>
+          <input
+            type="checkbox"
+            checked={Boolean(defaultAiAssistantOpen)}
+            onChange={(event) =>
+              onDefaultAiAssistantOpenChange(event.target.checked)
+            }
+          />
+        </label>
       </section>
 
       {children}

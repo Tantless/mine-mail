@@ -161,7 +161,13 @@ describe("SettingsPanel account flow", () => {
       screen
         .getByRole("button", { name: /模型配置/ })
         .getAttribute("aria-expanded"),
-    ).toBe("true");
+    ).toBe("false");
+    expect(
+      screen.getByRole("combobox", { name: "AI 翻译语言" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("checkbox", { name: /默认开启 AI 助理/ }),
+    ).toBeTruthy();
   });
 
   it("connects the remote-image privacy help control for pointer and keyboard users", async () => {

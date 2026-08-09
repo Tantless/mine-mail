@@ -259,7 +259,7 @@ All app-owned color and material decisions flow through custom properties in
   platforms. Nearby helper copy explains that Windows presentation remains
   subject to system notification and do-not-disturb settings.
 - **Agent 配置** is its own category between feature preferences and About. Its
-  **模型配置** card is a compact accordion, expanded by default, and keeps
+  **模型配置** card is a compact accordion, collapsed by default, and keeps
   provider presets above the editable connection fields. Selecting a preset
   fills `BASE_URL` without hiding or locking the field. A fresh, unconfigured
   card selects **自定义** with empty connection fields; selecting any preset
@@ -280,20 +280,22 @@ All app-owned color and material decisions flow through custom properties in
   accordion and do not introduce a global Settings footer. Successful Agent
   configuration feedback uses the current theme accent rather than semantic
   green so the compact saved state remains visually emphasized.
-- **AI 翻译语言** and **默认开启 AI 助理** share the final two-column row of
-  the model card and stack at the defensive narrow reflow. Translation uses
+- **AI 翻译语言** and **默认开启 AI 助理** live outside the model accordion as
+  two separate, always-visible single-row preference cards. Translation uses
   `ThemedSelect`, defaults to Simplified Chinese, and presents every language in
   its own written form, such as **中文（简体）**、**中文（繁體）**、**English**
-  and **日本語**. The assistant preference uses the shared compact capsule
-  switch and defaults on.
-- The MCP configuration is a second card immediately below **模型配置** on the
+  and **日本語**. Its select matches the standard settings-control height, and
+  its open menu stays above later preference cards. The assistant preference
+  uses the shared compact capsule switch and defaults on.
+- The MCP configuration follows the two independent AI preference cards on the
   Agent page. **开启 MCP** is its parent preference with a compact question
   action. **获取信息** and **发送邮件** expand as visibly nested rows while the
   parent is on and collapse while it is off; their saved values are preserved
   while collapsed. The inline note says Mine Mail must remain in the foreground
   or tray. Enabling the parent uses one compact shared confirmation dialog; the
   question action opens a theme-owned tool explanation dialog rather than a
-  tooltip.
+  tooltip. The collapsed model, translation, assistant, and MCP cards share one
+  compact outer height; expanded content increases only the active card.
 - The Agent configuration page keeps a bounded blank inset after its last card,
   allowing bottom fields and their downward-opening menus to scroll above a
   minimized compose bar.

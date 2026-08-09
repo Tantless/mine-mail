@@ -9251,13 +9251,6 @@ html[data-surface="new-mail-notification"] #root {
   gap: 15px;
 }
 
-.agent-compose-preferences {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  align-items: start;
-  gap: 18px;
-}
-
 .agent-config-fields .settings-input-shell {
   border: 1px solid color-mix(in srgb, var(--color-border) 88%, var(--surface-edge));
   border-radius: 10px;
@@ -9282,34 +9275,42 @@ html[data-surface="new-mail-notification"] #root {
 
 .agent-translation-language .themed-select {
   width: min(280px, 100%);
+  flex: 0 1 280px;
 }
 
 .agent-translation-language .themed-select__trigger {
+  height: 40px;
   min-height: 40px;
   border-color: color-mix(in srgb, var(--color-border) 88%, var(--surface-edge));
   background: color-mix(in srgb, var(--compose-control-surface) 76%, transparent);
 }
 
-.agent-assistant-default__control {
-  display: flex;
-  min-height: 40px;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 7px 11px;
-  border: 1px solid color-mix(in srgb, var(--color-border) 88%, var(--surface-edge));
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--compose-control-surface) 76%, transparent);
-  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--surface-highlight) 72%, transparent);
-}
-
-.agent-assistant-default__control small {
-  min-width: 0;
-  line-height: 1.35;
-}
-
+.agent-preference-card,
 .agent-mcp-card {
+  position: relative;
   margin-top: 15px;
+}
+
+.agent-preference-card > .settings-preference-row,
+.agent-mcp-card .settings-mcp-group > .settings-preference-row {
+  min-height: 68px;
+  padding-block: 14px;
+}
+
+.agent-preference-card:has(.themed-select[data-open="true"]) {
+  z-index: 4;
+}
+
+.agent-preference-feedback {
+  color: var(--color-text-muted);
+}
+
+.agent-preference-feedback[data-tone="success"] {
+  color: var(--color-primary);
+}
+
+.agent-preference-feedback[data-tone="danger"] {
+  color: var(--color-danger);
 }
 
 .agent-environment-option {
@@ -10439,10 +10440,6 @@ html[data-surface="new-mail-notification"] #root {
 
   .agent-provider-presets > div {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .agent-compose-preferences {
-    grid-template-columns: minmax(0, 1fr);
   }
 
   .agent-model-control {
