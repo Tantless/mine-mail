@@ -266,6 +266,9 @@ All app-owned color and material decisions flow through custom properties in
   keeps the environment-variable option off until the user explicitly enables
   it. Persisted configurations retain their saved provider and key-source choice.
 - `API_KEY` is a masked field with an adjacent **从系统环境变量获取** option.
+  A successfully stored manual key remains visible as a fixed non-secret mask;
+  focusing the field prepares it for replacement, and leaving it empty restores
+  the mask without reading the real key back from Rust.
   Enabling the option disables the field; its question action opens one
   theme-owned dialog listing every preset's exact environment-variable name.
   `MODEL_NAME` remains editable. Every named preset exposes a short, current

@@ -308,8 +308,9 @@ product decision changes.
 - The built-in assistant calls its configured AI Provider directly from Rust.
   It does not route through the local MCP service. A manually entered API Key
   exists in React only as transient form input until the narrow Tauri command
-  consumes it; Rust never returns a key to React, and the browser demo remains
-  offline and deterministic.
+  consumes it. After a successful save, React shows only a fixed non-secret mask
+  derived from `has_stored_api_key`; Rust never returns a key to React, and the
+  browser demo remains offline and deterministic.
 - Agent configuration supports custom OpenAI-compatible services plus presets
   for DeepSeek, Kimi, OpenAI, Anthropic, Qwen, Xiaomi MiMo, MiniMax, ModelScope,
   Doubao Seed, GLM, and OpenRouter. Anthropic uses its native Messages and Models

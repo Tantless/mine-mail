@@ -224,19 +224,28 @@ describe("AgentSettings", () => {
     expect(within(dialog).getByText("MOONSHOT_API_KEY")).toBeTruthy();
   });
 
-  it("clears the transient key after saving it to the Rust boundary", async () => {
+  it("replaces the transient key with a non-secret mask after saving", async () => {
     const user = userEvent.setup();
     const api = client();
     render(<AgentSettings client={api} />);
     await expandModelConfiguration(user);
 
     const keyInput = await screen.findByLabelText("API_KEY");
+    expect(keyInput.value).toBe("••••••••••••");
     await user.type(keyInput, "new-secret");
     await user.click(screen.getByRole("button", { name: "保存配置" }));
 
     await waitFor(() => expect(api.saveAiConfig).toHaveBeenCalled());
-    expect(keyInput.value).toBe("");
+    expect(api.saveAiConfig).toHaveBeenCalledWith(
+      expect.objectContaining({ apiKey: "new-secret" }),
+    );
+    expect(keyInput.value).toBe("••••••••••••");
     expect(await screen.findByText("模型配置已保存。")).toBeTruthy();
+
+    await user.click(keyInput);
+    expect(keyInput.value).toBe("");
+    await user.tab();
+    expect(keyInput.value).toBe("••••••••••••");
   });
 
   it("saves the selected AI reading language using its native label", async () => {

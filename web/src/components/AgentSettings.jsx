@@ -44,6 +44,7 @@ const initialConfiguration = Object.freeze({
 });
 
 const automaticSaveDelayMs = 600;
+const storedApiKeyMask = "••••••••••••";
 
 function normalizeConfiguration(config) {
   const value = config && typeof config === "object" ? config : {};
@@ -114,6 +115,7 @@ function AgentSettingsContent({
   const [translationFeedback, setTranslationFeedback] = useState(null);
   const [editRevision, setEditRevision] = useState(0);
   const [helpOpen, setHelpOpen] = useState(false);
+  const [editingStoredApiKey, setEditingStoredApiKey] = useState(false);
   const editRevisionRef = useRef(0);
   const savedRevisionRef = useRef(0);
   const blockedAutomaticRevisionRef = useRef(null);
@@ -143,6 +145,7 @@ function AgentSettingsContent({
       .then((config) => {
         if (cancelled) return;
         setForm(normalizeConfiguration(config));
+        setEditingStoredApiKey(false);
         editRevisionRef.current = 0;
         savedRevisionRef.current = 0;
         blockedAutomaticRevisionRef.current = null;
@@ -198,6 +201,7 @@ function AgentSettingsContent({
   };
 
   const chooseProvider = (preset) => {
+    setEditingStoredApiKey(false);
     setForm((current) => ({
       ...current,
       providerId: preset.id,
@@ -289,6 +293,7 @@ function AgentSettingsContent({
       blockedAutomaticRevisionRef.current = null;
       if (editRevisionRef.current === revision) {
         setForm(normalizeConfiguration(saved));
+        setEditingStoredApiKey(false);
         setFeedback({
           tone: "success",
           text: automatic ? "配置已自动保存。" : "模型配置已保存。",
@@ -447,7 +452,14 @@ function AgentSettingsContent({
                     <span className="settings-input-shell settings-input-shell--text">
                       <input
                         type="password"
-                        value={form.apiKey}
+                        value={
+                          form.apiKey
+                          || (!form.useEnvironmentKey
+                            && form.hasStoredApiKey
+                            && !editingStoredApiKey
+                            ? storedApiKeyMask
+                            : "")
+                        }
                         disabled={busy || form.useEnvironmentKey}
                         autoCapitalize="none"
                         autoComplete="off"
@@ -455,11 +467,20 @@ function AgentSettingsContent({
                         placeholder={
                           form.useEnvironmentKey
                             ? `使用 ${form.environmentVariable}`
-                            : form.hasStoredApiKey
-                              ? "已安全保存；留空则保持不变"
-                              : "输入供应商 API Key"
+                            : "输入供应商 API Key"
                         }
+                        onFocus={() => {
+                          if (form.hasStoredApiKey && !form.apiKey) {
+                            setEditingStoredApiKey(true);
+                          }
+                        }}
+                        onBlur={() => {
+                          if (form.hasStoredApiKey && !form.apiKey) {
+                            setEditingStoredApiKey(false);
+                          }
+                        }}
                         onChange={(event) => {
+                          setEditingStoredApiKey(true);
                           updateField("apiKey", event.target.value, {
                             resetModels: true,
                           });
@@ -475,6 +496,9 @@ function AgentSettingsContent({
                       checked={form.useEnvironmentKey}
                       disabled={busy}
                       onChange={(event) => {
+                        if (event.target.checked) {
+                          setEditingStoredApiKey(false);
+                        }
                         setForm((current) => ({
                           ...current,
                           useEnvironmentKey: event.target.checked,
