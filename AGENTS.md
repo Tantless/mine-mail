@@ -92,6 +92,11 @@ screen-specific copy, timing constants, pixel values, or speculative future plan
   Fix shared primitives instead of copying a nearby implementation.
 - Keep Tauri commands narrow, typed, and privacy-safe. Validate inputs again at
   the Rust boundary even when React already validates them.
+- When adding a feature, assess its observability needs as part of the same
+  implementation. Add privacy-safe diagnostics for meaningful lifecycle
+  transitions, external calls, persistence, and failure or recovery paths when
+  they materially help troubleshooting; avoid noisy logs for routine UI input
+  and interaction.
 - Schema and persistent-state changes need migrations, backward-compatible reads
   where practical, and failure-path tests.
 - User-visible failures must preserve recoverable local state and explain the next
