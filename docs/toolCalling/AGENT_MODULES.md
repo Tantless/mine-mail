@@ -33,8 +33,9 @@
 - 当前 DeepSeek 调试适配按纯文本模型处理，因此不注册 `read_image_attachment`。
   将来新增多模态 Provider 时，必须先实现图片内容块转换和大小限制，再声明模型
   支持图片。
-- DeepSeek 思考模式产生工具调用时，Provider 会把该轮 `reasoning_content` 仅作为
-  协议状态带回下一次 API 请求；它不显示在界面、不进入 Session，也不写日志。
+- DeepSeek 思考模式产生工具调用时，Provider 会把该轮 `reasoning_content` 作为
+  协议状态带回下一次 API 请求。Provider 明确返回的可见推理增量会在当前思考步骤
+  中临时流式展示，步骤完成后由结果摘要替换；它不进入 Session，也不写日志。
 - 保存过的草稿附件元数据、回复上下文和转发上下文由 Rust 按草稿 ID 与精确版本
   重新读取，不能由 React 请求快照声明或扩大读取范围。
 

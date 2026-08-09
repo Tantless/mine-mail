@@ -3719,7 +3719,7 @@ fn tool_spec(name: &str) -> Option<ToolSpec> {
         },
         "set_draft_stationery" => ToolSpec {
             name: "set_draft_stationery",
-            description: "切换当前草稿信纸；协议已保留但本阶段不向模型开放。",
+            description: "切换当前草稿信纸；仅邮件生成和自动模式可用。",
             parameters: json!({
                 "type": "object",
                 "properties": {
