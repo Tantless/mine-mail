@@ -11,6 +11,11 @@ use tauri::{
 };
 use tauri_plugin_updater::{Error as UpdaterError, UpdaterExt};
 
+use crate::{
+    diagnostics::{self, Fields as DiagnosticFields},
+    storage::StorageRuntime,
+};
+
 const MAX_UPDATE_IDENTIFIER_BYTES: usize = 64;
 
 fn safe_update_metadata_error(_error: UpdaterError) -> String {
@@ -35,6 +40,7 @@ fn safe_update_install_error(_error: UpdaterError) -> String {
 #[derive(Clone, Default)]
 pub(crate) struct AppUpdateRuntime {
     active: Arc<Mutex<Option<ActiveUpdate>>>,
+    completed_version: Arc<Mutex<Option<String>>>,
 }
 
 struct ActiveUpdate {
@@ -149,9 +155,11 @@ pub(crate) async fn start_app_update(
     if active.is_some() {
         return Err("已有 Mine Mail 更新正在下载。".to_owned());
     }
+    *runtime.completed_version.lock().await = None;
 
     let shared_runtime = runtime.inner().clone();
     let task_session_id = session_id.clone();
+    let task_expected_version = expected_version.clone();
     let task_channel = on_progress.clone();
     let installing = Arc::new(AtomicBool::new(false));
     let task_installing = installing.clone();
@@ -167,6 +175,7 @@ pub(crate) async fn start_app_update(
 
         match result {
             Ok(()) => {
+                *shared_runtime.completed_version.lock().await = Some(task_expected_version);
                 let _ = task_channel.send(AppUpdateEvent::Completed);
             }
             Err(message) => {
@@ -182,6 +191,37 @@ pub(crate) async fn start_app_update(
         task,
     });
     Ok(())
+}
+
+#[tauri::command]
+pub(crate) async fn relaunch_after_app_update(
+    app: AppHandle,
+    runtime: State<'_, AppUpdateRuntime>,
+    storage: State<'_, StorageRuntime>,
+    expected_version: String,
+) -> Result<(), String> {
+    validate_version(&expected_version)?;
+    let mut completed_version = runtime.completed_version.lock().await;
+    if !completed_update_matches(completed_version.as_deref(), &expected_version) {
+        return Err("Mine Mail update relaunch is not ready.".to_owned());
+    }
+
+    storage.prepare_app_update_relaunch(&expected_version)?;
+    *completed_version = None;
+    drop(completed_version);
+
+    diagnostics::info(
+        "app_update_relaunch_requested",
+        DiagnosticFields::default()
+            .operation("app_update_relaunch")
+            .outcome("foreground"),
+    );
+    app.request_restart();
+    Ok(())
+}
+
+fn completed_update_matches(completed_version: Option<&str>, expected_version: &str) -> bool {
+    completed_version == Some(expected_version)
 }
 
 #[tauri::command]
@@ -217,6 +257,13 @@ mod tests {
         assert!(validate_version("1.2.3-beta.1+desktop").is_ok());
         assert!(validate_version("https://example.com/update").is_err());
         assert!(validate_version(&"1".repeat(65)).is_err());
+    }
+
+    #[test]
+    fn foreground_relaunch_requires_the_exact_completed_update() {
+        assert!(completed_update_matches(Some("1.4.0"), "1.4.0"));
+        assert!(!completed_update_matches(Some("1.3.2"), "1.4.0"));
+        assert!(!completed_update_matches(None, "1.4.0"));
     }
 
     #[test]

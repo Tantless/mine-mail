@@ -2834,11 +2834,17 @@ fn initialize_state(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Erro
     diagnostics::install_panic_hook();
     diagnostics::cleanup_on_startup(app.handle());
     let background_launch = is_background_launch(std::env::args());
+    let storage = StorageRuntime::initialize(app.handle());
+    let app_update_relaunch = storage
+        .runtime
+        .consume_app_update_relaunch(env!("CARGO_PKG_VERSION"));
     diagnostics::info(
         "app_starting",
         DiagnosticFields::default()
             .runtime_metadata()
-            .mode(if background_launch {
+            .mode(if app_update_relaunch {
+                "update_relaunch"
+            } else if background_launch {
                 "background"
             } else {
                 "foreground"
@@ -2852,7 +2858,6 @@ fn initialize_state(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Erro
                 .error(DiagnosticErrorKind::Runtime),
         );
     }
-    let storage = StorageRuntime::initialize(app.handle());
     let app_data = storage.runtime_data_root.clone();
     let path_error = storage.startup_error;
     let path_degraded = path_error.is_some();
@@ -2932,6 +2937,7 @@ fn initialize_state(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Erro
 
     let (show_window, request_startup_sync) = startup_actions(
         background_launch,
+        app_update_relaunch,
         tray_available,
         local_backend_ready,
         startup_degraded,
@@ -2990,12 +2996,14 @@ fn is_background_launch(args: impl IntoIterator<Item = String>) -> bool {
 
 fn startup_actions(
     background_launch: bool,
+    app_update_relaunch: bool,
     tray_available: bool,
     local_backend_ready: bool,
     startup_degraded: bool,
 ) -> (bool, bool) {
     let request_startup_sync = local_backend_ready && !startup_degraded;
-    let show_window = !(background_launch && tray_available && request_startup_sync);
+    let show_window =
+        app_update_relaunch || !(background_launch && tray_available && request_startup_sync);
     (show_window, request_startup_sync)
 }
 
@@ -3121,6 +3129,7 @@ pub fn run() {
             delete_profile_avatar,
             app_update::start_app_update,
             app_update::cancel_app_update,
+            app_update::relaunch_after_app_update,
             complete_exit,
             cancel_exit,
         ])
@@ -3464,10 +3473,27 @@ mod tests {
 
     #[test]
     fn foreground_startup_shows_once_and_requests_one_explicit_sync() {
-        assert_eq!(startup_actions(false, true, true, false), (true, true));
-        assert_eq!(startup_actions(false, false, true, false), (true, true));
-        assert_eq!(startup_actions(true, true, true, false), (false, true));
-        assert_eq!(startup_actions(true, true, true, true), (true, false));
+        assert_eq!(
+            startup_actions(false, false, true, true, false),
+            (true, true)
+        );
+        assert_eq!(
+            startup_actions(false, false, false, true, false),
+            (true, true)
+        );
+        assert_eq!(
+            startup_actions(true, false, true, true, false),
+            (false, true)
+        );
+        assert_eq!(
+            startup_actions(true, false, true, true, true),
+            (true, false)
+        );
+    }
+
+    #[test]
+    fn app_update_relaunch_overrides_an_inherited_background_launch() {
+        assert_eq!(startup_actions(true, true, true, true, false), (true, true));
     }
 
     #[test]

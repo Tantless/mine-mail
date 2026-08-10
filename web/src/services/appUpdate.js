@@ -1,6 +1,5 @@
 import { getVersion } from "@tauri-apps/api/app";
 import { Channel, invoke } from "@tauri-apps/api/core";
-import { relaunch } from "@tauri-apps/plugin-process";
 import { check } from "@tauri-apps/plugin-updater";
 import tauriConfig from "../../src-tauri/tauri.conf.json";
 
@@ -15,6 +14,10 @@ let updateSessionSequence = 0;
 function nextUpdateSessionId() {
   updateSessionSequence += 1;
   return `update-${Date.now().toString(36)}-${updateSessionSequence.toString(36)}`;
+}
+
+async function relaunchAfterUpdate(expectedVersion, invokeCommand = invoke) {
+  await invokeCommand("relaunch_after_app_update", { expectedVersion });
 }
 
 function updateCancelledError() {
@@ -284,7 +287,7 @@ export const appUpdateApi = {
         onProgress,
       });
       await completion;
-      await relaunch();
+      await relaunchAfterUpdate(candidate.version);
     } finally {
       if (activeInstallSession?.sessionId === sessionId) {
         activeInstallSession = null;
@@ -301,4 +304,4 @@ export const appUpdateApi = {
   },
 };
 
-export const __testing = { rawUpdateError, releaseNotes };
+export const __testing = { rawUpdateError, releaseNotes, relaunchAfterUpdate };

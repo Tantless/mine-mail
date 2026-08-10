@@ -24,6 +24,7 @@ const STORAGE_SCHEMA_VERSION: u8 = 1;
 const STORAGE_LOCATOR_FILE: &str = "storage-location.json";
 const STORAGE_MIGRATION_FILE: &str = "storage-migration.json";
 const STORAGE_MIGRATION_RESULT_FILE: &str = "storage-migration-result.json";
+const APP_UPDATE_RELAUNCH_FILE: &str = "app-update-relaunch.json";
 const DATA_ROOT_MARKER_FILE: &str = ".mine-mail-data.json";
 const INSTALL_DATA_DIRECTORY_NAME: &str = "Data";
 const WEBVIEW_DATA_DIRECTORY_NAME: &str = "EBWebView";
@@ -60,6 +61,12 @@ struct StoredMigrationResult {
     status: MigrationResultStatus,
     moved_bytes: u64,
     message: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct AppUpdateRelaunchRequest {
+    schema_version: u8,
+    expected_version: String,
 }
 
 struct MigrationExecution {
@@ -332,6 +339,29 @@ impl StorageRuntime {
             categories,
             migration_notice: self.migration_notice.clone(),
         })
+    }
+
+    pub(crate) fn prepare_app_update_relaunch(&self, expected_version: &str) -> Result<(), String> {
+        write_json_atomically(
+            &self.bootstrap_dir.join(APP_UPDATE_RELAUNCH_FILE),
+            &AppUpdateRelaunchRequest {
+                schema_version: STORAGE_SCHEMA_VERSION,
+                expected_version: expected_version.to_owned(),
+            },
+        )
+        .map_err(|_| {
+            diagnostics::error(
+                "app_update_relaunch_marker_write_failed",
+                DiagnosticFields::default()
+                    .operation("app_update_relaunch")
+                    .error(DiagnosticErrorKind::Io),
+            );
+            "Mine Mail could not prepare the update relaunch.".to_owned()
+        })
+    }
+
+    pub(crate) fn consume_app_update_relaunch(&self, current_version: &str) -> bool {
+        consume_app_update_relaunch(&self.bootstrap_dir, current_version)
     }
 
     pub(crate) fn prepare_migration(
@@ -1176,6 +1206,48 @@ fn read_data_root_marker(path: &Path) -> io::Result<DataRootMarker> {
     read_json(&path.join(DATA_ROOT_MARKER_FILE))
 }
 
+fn consume_app_update_relaunch(bootstrap_dir: &Path, current_version: &str) -> bool {
+    let path = bootstrap_dir.join(APP_UPDATE_RELAUNCH_FILE);
+    let request = match read_json::<AppUpdateRelaunchRequest>(&path) {
+        Ok(request) => request,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return false,
+        Err(_) => {
+            diagnostics::warn(
+                "app_update_relaunch_marker_read_failed",
+                DiagnosticFields::default()
+                    .operation("app_update_relaunch")
+                    .error(DiagnosticErrorKind::Io),
+            );
+            remove_app_update_relaunch_marker(&path);
+            return false;
+        }
+    };
+
+    remove_app_update_relaunch_marker(&path);
+    let requested = request.schema_version == STORAGE_SCHEMA_VERSION
+        && request.expected_version == current_version;
+    diagnostics::info(
+        "app_update_relaunch_marker_consumed",
+        DiagnosticFields::default()
+            .operation("app_update_relaunch")
+            .outcome(if requested { "foreground" } else { "ignored" }),
+    );
+    requested
+}
+
+fn remove_app_update_relaunch_marker(path: &Path) {
+    match fs::remove_file(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(_) => diagnostics::warn(
+            "app_update_relaunch_marker_cleanup_failed",
+            DiagnosticFields::default()
+                .operation("app_update_relaunch")
+                .error(DiagnosticErrorKind::Io),
+        ),
+    }
+}
+
 fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> io::Result<T> {
     let bytes = fs::read(path)?;
     serde_json::from_slice(&bytes).map_err(io::Error::other)
@@ -1339,6 +1411,48 @@ fn windows_path_starts_with(path: &Path, prefix: &Path) -> bool {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn app_update_relaunch_marker_is_version_bound_and_one_shot() {
+        let directory = tempdir().expect("temporary directory");
+        let bootstrap = directory.path();
+        let marker = bootstrap.join(APP_UPDATE_RELAUNCH_FILE);
+
+        write_json_atomically(
+            &marker,
+            &AppUpdateRelaunchRequest {
+                schema_version: STORAGE_SCHEMA_VERSION,
+                expected_version: "1.4.0".to_owned(),
+            },
+        )
+        .expect("foreground relaunch marker");
+
+        assert!(consume_app_update_relaunch(bootstrap, "1.4.0"));
+        assert!(!marker.exists());
+        assert!(!consume_app_update_relaunch(bootstrap, "1.4.0"));
+
+        write_json_atomically(
+            &marker,
+            &AppUpdateRelaunchRequest {
+                schema_version: STORAGE_SCHEMA_VERSION,
+                expected_version: "1.5.0".to_owned(),
+            },
+        )
+        .expect("mismatched relaunch marker");
+
+        assert!(!consume_app_update_relaunch(bootstrap, "1.4.0"));
+        assert!(!marker.exists());
+    }
+
+    #[test]
+    fn corrupt_app_update_relaunch_marker_is_removed_without_showing() {
+        let directory = tempdir().expect("temporary directory");
+        let marker = directory.path().join(APP_UPDATE_RELAUNCH_FILE);
+        fs::write(&marker, b"not-json").expect("corrupt marker");
+
+        assert!(!consume_app_update_relaunch(directory.path(), "1.4.0"));
+        assert!(!marker.exists());
+    }
 
     #[test]
     fn new_windows_install_prefers_a_writable_sibling_data_directory() {

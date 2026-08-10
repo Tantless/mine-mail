@@ -536,6 +536,9 @@ product decision changes.
 - The Tauri updater owns endpoint access, signature verification, installation,
   and relaunch. React presents only bounded metadata, progress, and the confirmed
   trigger.
+- A confirmed update relaunch is an explicit foreground launch. It opens the
+  main window even when the running process originally came from login autostart
+  with `--background`; that background argument remains limited to login startup.
 - A failed update preserves the installed version and local data and identifies
   the failed stage without exposing raw errors or unrestricted URLs.
 
