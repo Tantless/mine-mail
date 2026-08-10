@@ -159,6 +159,13 @@ describe("mailApi desktop IPC contract", () => {
           base_url: "https://api.deepseek.com",
           environment_variable: "DEEPSEEK_API_KEY",
           models: ["deepseek-v4-flash", "deepseek-v4-pro"],
+          configuration: {
+            base_url: "https://gateway.example.com/deepseek",
+            model_name: "deepseek-v4-pro",
+            use_environment_key: false,
+            has_stored_api_key: true,
+            has_environment_api_key: false,
+          },
         }],
       })
       .mockResolvedValueOnce({ models: ["deepseek-v4-pro"] })
@@ -193,6 +200,13 @@ describe("mailApi desktop IPC contract", () => {
       "deepseek-v4-flash",
       "deepseek-v4-pro",
     ]);
+    expect(loaded.presets[0].configuration).toEqual({
+      baseUrl: "https://gateway.example.com/deepseek",
+      modelName: "deepseek-v4-pro",
+      useEnvironmentKey: false,
+      hasStoredApiKey: true,
+      hasEnvironmentApiKey: false,
+    });
     expect(loaded.translationLanguages).toEqual([
       { value: "zh-Hans", label: "中文（简体）" },
       { value: "en", label: "English" },

@@ -152,6 +152,109 @@ describe("AgentSettings", () => {
     expect(screen.getByLabelText("API_KEY").disabled).toBe(false);
   });
 
+  it("restores and activates each provider's saved configuration when switching", async () => {
+    const user = userEvent.setup();
+    const rememberedPresets = presets.map((preset) => {
+      if (preset.id === "deepseek") {
+        return {
+          ...preset,
+          configuration: {
+            baseUrl: "https://gateway.example.com/deepseek",
+            modelName: "deepseek-v4-pro",
+            useEnvironmentKey: true,
+            hasStoredApiKey: false,
+            hasEnvironmentApiKey: true,
+          },
+        };
+      }
+      if (preset.id === "custom") {
+        return {
+          ...preset,
+          configuration: {
+            baseUrl: "http://localhost:11434/v1",
+            modelName: "local-mail-model",
+            useEnvironmentKey: false,
+            hasStoredApiKey: true,
+            hasEnvironmentApiKey: false,
+          },
+        };
+      }
+      return preset;
+    });
+    const api = client({
+      getAiConfig: vi.fn().mockResolvedValue(
+        configuration({ presets: rememberedPresets }),
+      ),
+      saveAiConfig: vi.fn().mockImplementation(async (request) =>
+        configuration({
+          ...request,
+          hasStoredApiKey: request.providerId === "custom",
+          hasEnvironmentApiKey: request.providerId === "deepseek",
+          environmentVariable:
+            rememberedPresets.find((preset) => preset.id === request.providerId)
+              ?.environmentVariable || "AI_API_KEY",
+          presets: rememberedPresets,
+        }),
+      ),
+    });
+    render(<AgentSettings client={api} />);
+    await expandModelConfiguration(user);
+
+    await user.click(await screen.findByRole("button", { name: "自定义" }));
+    await waitFor(() =>
+      expect(api.saveAiConfig).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          providerId: "custom",
+          baseUrl: "http://localhost:11434/v1",
+          modelName: "local-mail-model",
+          apiKey: "",
+        }),
+      ),
+    );
+    expect(screen.getByLabelText("BASE_URL").value).toBe(
+      "http://localhost:11434/v1",
+    );
+    expect(screen.getByLabelText("MODEL_NAME").value).toBe("local-mail-model");
+    expect(screen.getByLabelText("API_KEY").value).toBe("••••••••••••");
+
+    await user.click(screen.getByRole("button", { name: "DeepSeek" }));
+    await waitFor(() =>
+      expect(api.saveAiConfig).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          providerId: "deepseek",
+          baseUrl: "https://gateway.example.com/deepseek",
+          modelName: "deepseek-v4-pro",
+          useEnvironmentKey: true,
+        }),
+      ),
+    );
+    expect(screen.getByLabelText("BASE_URL").value).toBe(
+      "https://gateway.example.com/deepseek",
+    );
+    expect(
+      screen.getByRole("checkbox", { name: "从系统环境变量获取" }).checked,
+    ).toBe(true);
+  });
+
+  it("keeps incomplete custom connection fields while visiting another provider", async () => {
+    const user = userEvent.setup();
+    render(<AgentSettings client={client()} />);
+    await expandModelConfiguration(user);
+
+    await user.click(await screen.findByRole("button", { name: "自定义" }));
+    const baseUrl = screen.getByLabelText("BASE_URL");
+    const modelName = screen.getByLabelText("MODEL_NAME");
+    await user.type(baseUrl, "http://localhost:11434/v1");
+    await user.type(modelName, "draft-local-model");
+
+    await user.click(screen.getByRole("button", { name: "Kimi" }));
+    expect(baseUrl.value).toBe("https://api.moonshot.cn/v1");
+    await user.click(screen.getByRole("button", { name: "自定义" }));
+
+    expect(baseUrl.value).toBe("http://localhost:11434/v1");
+    expect(modelName.value).toBe("draft-local-model");
+  });
+
   it("offers preset models immediately and replaces them after retrieval", async () => {
     const user = userEvent.setup();
     const api = client({

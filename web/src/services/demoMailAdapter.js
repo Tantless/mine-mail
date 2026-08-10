@@ -536,29 +536,43 @@ function createDemoActions(
     },
 
     saveAiConfig(request) {
-      const preset = demoAiPresets.find(
+      const preset = state.aiConfig.presets.find(
         (candidate) => candidate.id === request.providerId,
       );
       if (!preset) throw new Error("AI 供应商配置无效");
       if (!request.baseUrl?.trim()) throw new Error("请输入 BASE_URL");
       if (!request.modelName?.trim()) throw new Error("请输入 MODEL_NAME");
-      if (!request.useEnvironmentKey && !request.apiKey?.trim()) {
+      if (
+        !request.useEnvironmentKey
+        && !request.apiKey?.trim()
+        && !preset.configuration?.hasStoredApiKey
+      ) {
         throw new Error("请输入 API Key，或改为从系统环境变量读取");
       }
-      state.aiConfig = {
-        ...state.aiConfig,
-        providerId: request.providerId,
+      const providerConfiguration = {
         baseUrl: request.baseUrl.trim(),
         modelName: request.modelName.trim(),
         useEnvironmentKey: Boolean(request.useEnvironmentKey),
+        hasStoredApiKey:
+          Boolean(preset.configuration?.hasStoredApiKey)
+          || Boolean(request.apiKey?.trim()),
+        hasEnvironmentApiKey: false,
+      };
+      state.aiConfig = {
+        ...state.aiConfig,
+        providerId: request.providerId,
+        ...providerConfiguration,
         translationLanguage: demoAiTranslationLanguages.some(
           (language) => language.value === request.translationLanguage,
         )
           ? request.translationLanguage
           : "zh-Hans",
-        hasStoredApiKey:
-          state.aiConfig.hasStoredApiKey || Boolean(request.apiKey?.trim()),
         environmentVariable: preset.environmentVariable,
+        presets: state.aiConfig.presets.map((candidate) =>
+          candidate.id === request.providerId
+            ? { ...candidate, configuration: providerConfiguration }
+            : candidate,
+        ),
       };
       return structuredClone(state.aiConfig);
     },

@@ -269,6 +269,17 @@ pub(crate) struct AiProviderPresetDto {
     pub base_url: String,
     pub environment_variable: String,
     pub models: Vec<String>,
+    pub configuration: Option<AiProviderConfigurationDto>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AiProviderConfigurationDto {
+    pub base_url: String,
+    pub model_name: String,
+    pub use_environment_key: bool,
+    pub has_stored_api_key: bool,
+    pub has_environment_api_key: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -717,7 +728,8 @@ impl AiRuntime {
             .map_err(ai_store_error)?
             .unwrap_or_else(default_config);
         let provider_models = store.load_provider_models().map_err(ai_store_error)?;
-        config_dto(&config, &provider_models)
+        let provider_configs = store.load_provider_configs().map_err(ai_store_error)?;
+        config_dto(&config, &provider_models, &provider_configs)
     }
 
     pub(crate) fn save_config(
@@ -787,7 +799,11 @@ impl AiRuntime {
             .store()?
             .load_provider_models()
             .map_err(ai_store_error)?;
-        config_dto(&config, &provider_models)
+        let provider_configs = self
+            .store()?
+            .load_provider_configs()
+            .map_err(ai_store_error)?;
+        config_dto(&config, &provider_models, &provider_configs)
     }
 
     pub(crate) fn set_translation_language(
@@ -810,7 +826,8 @@ impl AiRuntime {
                 .outcome("saved"),
         );
         let provider_models = store.load_provider_models().map_err(ai_store_error)?;
-        config_dto(&config, &provider_models)
+        let provider_configs = store.load_provider_configs().map_err(ai_store_error)?;
+        config_dto(&config, &provider_models, &provider_configs)
     }
 
     pub(crate) async fn list_models(
@@ -2747,23 +2764,11 @@ fn default_config() -> StoredAiConfig {
 fn config_dto(
     config: &StoredAiConfig,
     provider_models: &HashMap<String, Vec<String>>,
+    provider_configs: &HashMap<String, StoredAiConfig>,
 ) -> Result<AiConfigDto, String> {
     let preset =
         provider_preset(&config.provider_id).ok_or_else(|| "AI 供应商配置无效。".to_owned())?;
-    let has_stored_api_key =
-        match ai_keyring_entry(preset.id).and_then(|entry| read_ai_credential(&entry)) {
-            Ok(credential) => credential.is_some(),
-            Err(_) => {
-                diagnostics::warn(
-                    "ai_credential_status_unavailable",
-                    DiagnosticFields::default()
-                        .operation("ai_config")
-                        .provider(preset.id)
-                        .error(DiagnosticErrorKind::Config),
-                );
-                false
-            }
-        };
+    let has_stored_api_key = has_stored_ai_credential(preset);
     let has_environment_api_key = environment_api_key(preset).is_some();
     Ok(AiConfigDto {
         provider_id: config.provider_id.clone(),
@@ -2795,9 +2800,34 @@ fn config_dto(
                         .map(|model| (*model).to_owned())
                         .collect()
                 }),
+                configuration: provider_configs.get(preset.id).map(|config| {
+                    AiProviderConfigurationDto {
+                        base_url: config.base_url.clone(),
+                        model_name: config.model_name.clone(),
+                        use_environment_key: config.use_environment_key,
+                        has_stored_api_key: has_stored_ai_credential(*preset),
+                        has_environment_api_key: environment_api_key(*preset).is_some(),
+                    }
+                }),
             })
             .collect(),
     })
+}
+
+fn has_stored_ai_credential(preset: ProviderPreset) -> bool {
+    match ai_keyring_entry(preset.id).and_then(|entry| read_ai_credential(&entry)) {
+        Ok(credential) => credential.is_some(),
+        Err(_) => {
+            diagnostics::warn(
+                "ai_credential_status_unavailable",
+                DiagnosticFields::default()
+                    .operation("ai_config")
+                    .provider(preset.id)
+                    .error(DiagnosticErrorKind::Config),
+            );
+            false
+        }
+    }
 }
 
 fn validate_stored_config(
@@ -4617,6 +4647,13 @@ impl AiStore {
                  translation_language TEXT NOT NULL DEFAULT 'zh-Hans',
                  updated_at_ms INTEGER NOT NULL
              );
+             CREATE TABLE IF NOT EXISTS ai_provider_configs (
+                 provider_id TEXT PRIMARY KEY NOT NULL,
+                 base_url TEXT NOT NULL,
+                 model_name TEXT NOT NULL,
+                 use_environment_key INTEGER NOT NULL CHECK (use_environment_key IN (0, 1)),
+                 updated_at_ms INTEGER NOT NULL
+             );
              CREATE TABLE IF NOT EXISTS ai_provider_models (
                  provider_id TEXT PRIMARY KEY NOT NULL,
                  models_json TEXT NOT NULL,
@@ -4628,6 +4665,16 @@ impl AiStore {
              );",
         )?;
         ensure_ai_translation_language_column(&connection)?;
+        connection.execute(
+            "INSERT INTO ai_provider_configs (
+                 provider_id, base_url, model_name, use_environment_key, updated_at_ms
+             )
+             SELECT provider_id, base_url, model_name, use_environment_key, updated_at_ms
+             FROM ai_config
+             WHERE base_url <> '' AND model_name <> ''
+             ON CONFLICT(provider_id) DO NOTHING",
+            [],
+        )?;
         ensure_ai_message_columns(&connection)?;
         connection.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_ai_messages_request
@@ -4669,7 +4716,7 @@ impl AiStore {
              );
              CREATE INDEX IF NOT EXISTS idx_ai_turn_events_expiry
                  ON ai_turn_events(expires_at_ms);
-             PRAGMA user_version = 5;",
+             PRAGMA user_version = 6;",
         )?;
         store.cleanup_expired_rich_state_if_due(&connection)?;
         Ok(store)
@@ -4763,8 +4810,9 @@ impl AiStore {
     }
 
     fn save_config(&self, config: &StoredAiConfig) -> rusqlite::Result<()> {
-        let connection = self.connection()?;
-        connection.execute(
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction()?;
+        transaction.execute(
             "INSERT INTO ai_config (
                  singleton, provider_id, base_url, model_name, use_environment_key,
                  translation_language, updated_at_ms
@@ -4785,7 +4833,52 @@ impl AiStore {
                 now_ms() as i64,
             ],
         )?;
+        if !config.base_url.is_empty() && !config.model_name.is_empty() {
+            transaction.execute(
+                "INSERT INTO ai_provider_configs (
+                     provider_id, base_url, model_name, use_environment_key, updated_at_ms
+                 ) VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(provider_id) DO UPDATE SET
+                     base_url = excluded.base_url,
+                     model_name = excluded.model_name,
+                     use_environment_key = excluded.use_environment_key,
+                     updated_at_ms = excluded.updated_at_ms",
+                params![
+                    config.provider_id,
+                    config.base_url,
+                    config.model_name,
+                    i64::from(config.use_environment_key),
+                    now_ms() as i64,
+                ],
+            )?;
+        }
+        transaction.commit()?;
         Ok(())
+    }
+
+    fn load_provider_configs(&self) -> rusqlite::Result<HashMap<String, StoredAiConfig>> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT provider_id, base_url, model_name, use_environment_key
+             FROM ai_provider_configs",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok(StoredAiConfig {
+                provider_id: row.get(0)?,
+                base_url: row.get(1)?,
+                model_name: row.get(2)?,
+                use_environment_key: row.get::<_, i64>(3)? != 0,
+                translation_language: default_translation_language(),
+            })
+        })?;
+        let mut provider_configs = HashMap::new();
+        for row in rows {
+            let config = row?;
+            if provider_preset(&config.provider_id).is_some() {
+                provider_configs.insert(config.provider_id.clone(), config);
+            }
+        }
+        Ok(provider_configs)
     }
 
     fn load_provider_models(&self) -> rusqlite::Result<HashMap<String, Vec<String>>> {
@@ -6010,21 +6103,69 @@ mod tests {
             translation_language: "ja".to_owned(),
         };
         store.save_config(&config).expect("save config");
-        assert_eq!(store.load_config().expect("load config"), Some(config));
+        assert_eq!(
+            store.load_config().expect("load config"),
+            Some(config.clone())
+        );
+        let provider_configs = store
+            .load_provider_configs()
+            .expect("load provider configs");
+        let remembered = provider_configs
+            .get("openrouter")
+            .expect("remembered openrouter config");
+        assert_eq!(remembered.provider_id, config.provider_id);
+        assert_eq!(remembered.base_url, config.base_url);
+        assert_eq!(remembered.model_name, config.model_name);
+        assert_eq!(remembered.use_environment_key, config.use_environment_key);
         let connection = store.connection().expect("connection");
-        let columns = connection
-            .prepare("PRAGMA table_info(ai_config)")
-            .expect("columns")
-            .query_map([], |row| row.get::<_, String>(1))
-            .expect("query")
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .expect("collect");
-        assert!(!columns.iter().any(|column| {
-            matches!(
-                column.as_str(),
-                "api_key" | "authorization" | "credential" | "secret" | "token"
-            )
-        }));
+        for table in ["ai_config", "ai_provider_configs"] {
+            let columns = connection
+                .prepare(&format!("PRAGMA table_info({table})"))
+                .expect("columns")
+                .query_map([], |row| row.get::<_, String>(1))
+                .expect("query")
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .expect("collect");
+            assert!(!columns.iter().any(|column| {
+                matches!(
+                    column.as_str(),
+                    "api_key" | "authorization" | "credential" | "secret" | "token"
+                )
+            }));
+        }
+    }
+
+    #[test]
+    fn ai_store_remembers_configuration_for_each_provider() {
+        let directory = tempdir().expect("tempdir");
+        let store = AiStore::open(directory.path().join("ai.sqlite3")).expect("store");
+        let deepseek = StoredAiConfig {
+            provider_id: "deepseek".to_owned(),
+            base_url: "https://gateway.example.com/deepseek".to_owned(),
+            model_name: "deepseek-v4-pro".to_owned(),
+            use_environment_key: true,
+            translation_language: "zh-Hans".to_owned(),
+        };
+        let custom = StoredAiConfig {
+            provider_id: "custom".to_owned(),
+            base_url: "http://localhost:11434/v1".to_owned(),
+            model_name: "local-mail-model".to_owned(),
+            use_environment_key: false,
+            translation_language: "zh-Hans".to_owned(),
+        };
+
+        store.save_config(&deepseek).expect("save deepseek");
+        store.save_config(&custom).expect("save custom");
+
+        assert_eq!(
+            store.load_config().expect("load active"),
+            Some(custom.clone())
+        );
+        let provider_configs = store
+            .load_provider_configs()
+            .expect("load remembered configs");
+        assert_eq!(provider_configs.get("deepseek"), Some(&deepseek));
+        assert_eq!(provider_configs.get("custom"), Some(&custom));
     }
 
     #[test]
@@ -6091,6 +6232,13 @@ mod tests {
             .expect("load migrated config")
             .expect("stored config");
         assert_eq!(config.translation_language, "zh-Hans");
+        assert_eq!(
+            store
+                .load_provider_configs()
+                .expect("load migrated provider configs")
+                .get("deepseek"),
+            Some(&config)
+        );
     }
 
     #[test]

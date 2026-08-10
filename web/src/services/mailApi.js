@@ -455,6 +455,33 @@ function normalizeAiConfig(config = {}) {
           models: Array.isArray(preset.models)
             ? preset.models.filter((model) => typeof model === "string")
             : [],
+          configuration: preset.configuration
+            ? {
+                baseUrl:
+                  preset.configuration.baseUrl
+                  ?? preset.configuration.base_url
+                  ?? "",
+                modelName:
+                  preset.configuration.modelName
+                  ?? preset.configuration.model_name
+                  ?? "",
+                useEnvironmentKey: Boolean(
+                  preset.configuration.useEnvironmentKey
+                  ?? preset.configuration.use_environment_key
+                  ?? false,
+                ),
+                hasStoredApiKey: Boolean(
+                  preset.configuration.hasStoredApiKey
+                  ?? preset.configuration.has_stored_api_key
+                  ?? false,
+                ),
+                hasEnvironmentApiKey: Boolean(
+                  preset.configuration.hasEnvironmentApiKey
+                  ?? preset.configuration.has_environment_api_key
+                  ?? false,
+                ),
+              }
+            : null,
         }))
       : [],
   };

@@ -95,6 +95,31 @@ function canSaveConfiguration(form) {
   );
 }
 
+function providerFields(form) {
+  return {
+    baseUrl: form.baseUrl,
+    modelName: form.modelName,
+    useEnvironmentKey: form.useEnvironmentKey,
+    hasStoredApiKey: form.hasStoredApiKey,
+    hasEnvironmentApiKey: form.hasEnvironmentApiKey,
+  };
+}
+
+function providerForm(current, preset, remembered = null) {
+  const configuration = remembered || preset.configuration;
+  return {
+    ...current,
+    providerId: preset.id,
+    baseUrl: configuration?.baseUrl ?? preset.baseUrl,
+    modelName: configuration?.modelName ?? preset.models?.[0] ?? "",
+    apiKey: "",
+    useEnvironmentKey: configuration?.useEnvironmentKey ?? false,
+    environmentVariable: preset.environmentVariable,
+    hasStoredApiKey: configuration?.hasStoredApiKey ?? false,
+    hasEnvironmentApiKey: configuration?.hasEnvironmentApiKey ?? false,
+  };
+}
+
 function statusMessage(error, fallback) {
   return userFacingErrorMessage(error, fallback);
 }
@@ -119,6 +144,7 @@ function AgentSettingsContent({
   const editRevisionRef = useRef(0);
   const savedRevisionRef = useRef(0);
   const blockedAutomaticRevisionRef = useRef(null);
+  const providerDraftsRef = useRef({});
   const helpCloseRef = useRef(null);
   const modelMenuRef = useRef(null);
   const modelMenuLayout = useBoundedDropdown({
@@ -149,6 +175,7 @@ function AgentSettingsContent({
         editRevisionRef.current = 0;
         savedRevisionRef.current = 0;
         blockedAutomaticRevisionRef.current = null;
+        providerDraftsRef.current = {};
         setEditRevision(0);
         setLoadState("ready");
       })
@@ -181,7 +208,7 @@ function AgentSettingsContent({
     [form.presets, form.providerId],
   );
   const models = selectedPreset?.models || [];
-  const busy = ["saving", "models", "testing"].includes(actionState);
+  const busy = ["saving", "switching", "models", "testing"].includes(actionState);
 
   const resetModelResults = () => {
     setModelMenuOpen(false);
@@ -200,22 +227,69 @@ function AgentSettingsContent({
     if (resetModels) resetModelResults();
   };
 
-  const chooseProvider = (preset) => {
-    setEditingStoredApiKey(false);
-    setForm((current) => ({
-      ...current,
-      providerId: preset.id,
-      baseUrl: preset.baseUrl,
-      modelName: preset.models?.[0] || "",
-      apiKey: "",
-      useEnvironmentKey: false,
-      environmentVariable: preset.environmentVariable,
-      hasStoredApiKey: false,
-      hasEnvironmentApiKey: false,
-    }));
-    markConfigurationEdited();
+  const chooseProvider = async (preset) => {
+    if (busy || preset.id === form.providerId) return;
+
+    setActionState("switching");
     setFeedback(null);
     resetModelResults();
+    let phase = "current";
+
+    try {
+      let source = form;
+      if (
+        editRevisionRef.current > savedRevisionRef.current
+        && canSaveConfiguration(form)
+      ) {
+        source = normalizeConfiguration(
+          await client.saveAiConfig(configurationRequest(form)),
+        );
+        savedRevisionRef.current = editRevisionRef.current;
+        delete providerDraftsRef.current[form.providerId];
+      } else if (editRevisionRef.current > savedRevisionRef.current) {
+        providerDraftsRef.current[form.providerId] = providerFields(form);
+      }
+
+      const currentPreset = source.presets.find(
+        (candidate) => candidate.id === preset.id,
+      ) || preset;
+      const next = providerForm(
+        source,
+        currentPreset,
+        providerDraftsRef.current[preset.id],
+      );
+      setEditingStoredApiKey(false);
+      setForm(next);
+      editRevisionRef.current += 1;
+      savedRevisionRef.current = editRevisionRef.current;
+      blockedAutomaticRevisionRef.current = null;
+      setEditRevision(editRevisionRef.current);
+
+      if (currentPreset.configuration && canSaveConfiguration(next)) {
+        phase = "target";
+        const activated = normalizeConfiguration(
+          await client.saveAiConfig(configurationRequest(next)),
+        );
+        delete providerDraftsRef.current[preset.id];
+        setForm(activated);
+        setFeedback({
+          tone: "success",
+          text: `已切换至 ${currentPreset.label}。`,
+        });
+      }
+    } catch (error) {
+      setFeedback({
+        tone: "danger",
+        text: statusMessage(
+          error,
+          phase === "current"
+            ? "当前渠道配置保存失败，请重试后再切换。"
+            : "渠道切换失败，请检查配置后重试。",
+        ),
+      });
+    } finally {
+      setActionState("idle");
+    }
   };
 
   const retrieveModels = async () => {
@@ -289,6 +363,7 @@ function AgentSettingsContent({
     );
     try {
       const saved = await client.saveAiConfig(request);
+      delete providerDraftsRef.current[saved.providerId ?? form.providerId];
       savedRevisionRef.current = Math.max(savedRevisionRef.current, revision);
       blockedAutomaticRevisionRef.current = null;
       if (editRevisionRef.current === revision) {

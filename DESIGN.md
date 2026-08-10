@@ -261,10 +261,12 @@ All app-owned color and material decisions flow through custom properties in
 - **Agent 配置** is its own category between feature preferences and About. Its
   **模型配置** card is a compact accordion, collapsed by default, and keeps
   provider presets above the editable connection fields. Selecting a preset
-  fills `BASE_URL` without hiding or locking the field. A fresh, unconfigured
-  card selects **自定义** with empty connection fields; selecting any preset
-  keeps the environment-variable option off until the user explicitly enables
-  it. Persisted configurations retain their saved provider and key-source choice.
+  restores that provider's last saved connection fields and activates it; a
+  provider without saved configuration starts from its preset `BASE_URL` and
+  default model without hiding or locking either field. A fresh, unconfigured
+  card selects **自定义** with empty connection fields. Each provider remembers
+  its own address, model, and key-source choice so switching providers never
+  clears another provider's configuration.
 - `API_KEY` is a masked field with an adjacent **从系统环境变量获取** option.
   A successfully stored manual key remains visible as a fixed non-secret mask;
   focusing the field prepares it for replacement, and leaving it empty restores
