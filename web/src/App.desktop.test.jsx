@@ -1761,6 +1761,57 @@ describe("Mine Mail desktop state bridge", () => {
     ).toBeNull();
   });
 
+  it("keeps the initial Inbox loading motion visible after returning from settings", async () => {
+    desktop.fixtures.inboxPageSource.mockResolvedValue([]);
+    const user = userEvent.setup();
+    render(<App />);
+
+    await waitFor(() =>
+      expect(desktop.listeners.has("mail:inbox-updated")).toBe(true),
+    );
+    expect(screen.getByText("正在同步收件箱…")).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: "设置" }));
+    expect(await screen.findByRole("region", { name: "设置" })).toBeTruthy();
+    const inboxPageCalls = desktop.mailApi.listMailboxPage.mock.calls.length;
+
+    await user.click(screen.getByRole("button", { name: "收件箱" }));
+    await waitFor(() =>
+      expect(desktop.mailApi.listMailboxPage.mock.calls.length).toBeGreaterThan(
+        inboxPageCalls,
+      ),
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const loadingFeedback = screen
+      .getByText("正在同步收件箱…")
+      .closest(".mail-sync-feedback");
+    expect(loadingFeedback?.dataset.state).toBe("syncing");
+    expect(loadingFeedback?.querySelector("svg")).toBeTruthy();
+    expect(
+      screen
+        .getByRole("region", { name: "收件箱邮件列表" })
+        .querySelector(".message-list")
+        ?.getAttribute("aria-busy"),
+    ).toBe("true");
+
+    await act(async () => {
+      desktop.listeners.get("mail:inbox-updated")?.({
+        payload: {
+          account_id: "desktop-account",
+          completed: 0,
+          total: 0,
+          is_complete: true,
+        },
+      });
+    });
+    await waitFor(() =>
+      expect(screen.queryByText("正在同步收件箱…")).toBeNull(),
+    );
+  });
+
   it("keeps scheduled synchronization failures silent but reports an explicit tray refresh", async () => {
     render(<App />);
     await waitFor(() =>

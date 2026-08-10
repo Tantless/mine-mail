@@ -814,6 +814,7 @@ export function App() {
   const exitFlushRef = useRef(null);
   const networkActionsAvailableRef = useRef(false);
   const draftsRef = useRef([]);
+  const mailboxLoadStatesRef = useRef(mailboxLoadStates);
   const selectionRequestRef = useRef(0);
   const selectedMessageIdRef = useRef(null);
   const readerOpenRef = useRef(false);
@@ -892,6 +893,7 @@ export function App() {
   networkActionsAvailableRef.current = networkActionsAvailable;
   accountStatusRef.current = accountStatus;
   draftsRef.current = drafts;
+  mailboxLoadStatesRef.current = mailboxLoadStates;
   activeAccountIdRef.current = activeAccountId;
   activeFolderRef.current = activeFolder;
   selectedContactEmailRef.current = selectedContactEmail;
@@ -5607,9 +5609,12 @@ export function App() {
     clearSelection();
     setIsSidebarOpen(false);
     if (paginatedMailboxRoles.includes(folder) && targetAccountId) {
+      const preserveSyncing =
+        mailboxLoadStatesRef.current[folder]?.phase === "syncing";
       void loadMailboxRolePage({
         accountId: targetAccountId,
         role: folder,
+        preserveSyncing,
       }).catch(() => {});
       if (
         ["archive", "trash"].includes(folder) &&
