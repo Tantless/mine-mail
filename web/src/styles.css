@@ -176,6 +176,26 @@
   --compose-control-surface: color-mix(in srgb, var(--color-control) 48%, transparent);
   --compose-control-hover: color-mix(in srgb, var(--color-hover) 64%, transparent);
   --compose-divider: color-mix(in srgb, var(--color-divider) 72%, transparent);
+  --compose-proposal-glass: color-mix(
+    in srgb,
+    var(--color-primary) 9%,
+    color-mix(in srgb, var(--color-panel) 58%, transparent)
+  );
+  --compose-proposal-header-glass: color-mix(
+    in srgb,
+    var(--color-primary) 11%,
+    color-mix(in srgb, var(--color-panel) 48%, transparent)
+  );
+  --compose-proposal-edge: color-mix(
+    in srgb,
+    var(--color-primary) 24%,
+    var(--surface-edge)
+  );
+  --compose-proposal-shadow-color: color-mix(
+    in srgb,
+    var(--color-primary) 24%,
+    rgba(11, 20, 29, 0.32)
+  );
   --compose-page-surface: #f8fafc;
   --compose-paper-surface: #fbfcfd;
   --compose-paper-rule: color-mix(in srgb, var(--color-primary) 18%, var(--color-divider));
@@ -6490,11 +6510,20 @@ html[data-surface="new-mail-notification"] #root {
 }
 
 .compose-ai-proposal {
+  position: relative;
+  isolation: isolate;
   overflow: hidden;
-  border: 1px solid color-mix(in srgb, var(--color-primary) 34%, var(--compose-divider));
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--color-primary) 7%, var(--compose-content-surface));
-  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--color-primary) 70%, transparent);
+  border: 1px solid var(--compose-proposal-edge);
+  border-radius: 11px;
+  background: var(--compose-proposal-glass);
+  box-shadow:
+    0 16px 34px color-mix(in srgb, var(--compose-proposal-shadow-color) 36%, transparent),
+    0 5px 12px color-mix(in srgb, var(--compose-proposal-shadow-color) 30%, transparent),
+    0 1px 3px color-mix(in srgb, var(--compose-proposal-shadow-color) 42%, transparent),
+    inset 0 1px 0 color-mix(in srgb, var(--surface-highlight) 86%, transparent),
+    inset 0 -1px 0 color-mix(in srgb, var(--color-primary) 10%, transparent);
+  -webkit-backdrop-filter: blur(18px) saturate(1.18) brightness(1.03);
+  backdrop-filter: blur(18px) saturate(1.18) brightness(1.03);
 }
 
 .compose-ai-proposal > header {
@@ -6505,6 +6534,7 @@ html[data-surface="new-mail-notification"] #root {
   gap: 8px;
   padding: 5px 6px 5px 11px;
   border-bottom: 1px solid color-mix(in srgb, var(--color-primary) 18%, var(--compose-divider));
+  background: var(--compose-proposal-header-glass);
 }
 
 .compose-ai-proposal > header strong {
@@ -6554,7 +6584,10 @@ html[data-surface="new-mail-notification"] #root {
 
 .compose-ai-proposal > pre {
   max-height: 180px;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: none;
+  touch-action: pan-y;
   margin: 0;
   padding: 10px 11px 7px;
   border: 0;
@@ -6563,6 +6596,8 @@ html[data-surface="new-mail-notification"] #root {
   font-family: inherit;
   font-size: 10px;
   line-height: 1.55;
+  overflow-wrap: anywhere;
+  word-break: break-word;
   white-space: pre-wrap;
 }
 

@@ -406,6 +406,11 @@ All app-owned color and material decisions flow through custom properties in
 - Agent write tools never replace live compose automatically. A completed
   assistant message may contain two read-only, primary-tinted proposal cards:
   one groups To, Cc, Bcc, and Subject; the other groups body and stationery.
+  These cards use theme-tinted frosted material, a restrained highlight edge,
+  and layered optical shadows so they read as actionable objects above the
+  conversation without becoming glowing decoration. Long body proposals wrap
+  within the card and use vertical, non-overscrolling navigation only; they never
+  expose a two-dimensional content canvas.
   Each changed group has one icon-only apply action. Applying immediately
   replaces only that group and turns the action into an undo for its stored
   pre-apply backup; neither action opens a confirmation. Old proposal cards stay
