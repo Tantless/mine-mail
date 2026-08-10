@@ -17,6 +17,9 @@ export function ThemedSelect({
   onValueChange,
   disabled = false,
   className = "",
+  placeholder = "请选择",
+  menuPlacement = "below",
+  preferredMaxHeight = 166,
 }) {
   const generatedId = useId();
   const listboxId = `${id || generatedId}-listbox`;
@@ -28,7 +31,8 @@ export function ThemedSelect({
   const menuLayout = useBoundedDropdown({
     open,
     anchorRef: rootRef,
-    preferredMaxHeight: 166,
+    placement: menuPlacement,
+    preferredMaxHeight,
   });
   const selected = useMemo(
     () => options.find((option) => String(option.value) === String(value)) || options[0],
@@ -140,7 +144,7 @@ export function ThemedSelect({
               : undefined
           }
         >
-          {selected?.label || "请选择"}
+          {selected?.label || placeholder}
         </span>
         <CaretDown className="themed-select__caret" size={15} weight="bold" aria-hidden="true" />
       </button>

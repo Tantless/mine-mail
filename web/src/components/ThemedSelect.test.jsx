@@ -155,4 +155,54 @@ describe("ThemedSelect", () => {
       expect(menu.style.maxHeight).toBe("143px");
     });
   });
+
+  it("uses the available space above for upward menus", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+      function getBoundingClientRect() {
+        if (this.matches?.(".themed-select")) {
+          return {
+            top: 260,
+            right: 260,
+            bottom: 300,
+            left: 60,
+            width: 200,
+            height: 40,
+            x: 60,
+            y: 260,
+            toJSON: () => ({}),
+          };
+        }
+        return {
+          top: 0,
+          right: 0,
+          bottom: 0,
+          left: 0,
+          width: 0,
+          height: 0,
+          x: 0,
+          y: 0,
+          toJSON: () => ({}),
+        };
+      },
+    );
+
+    render(
+      <ThemedSelect
+        label="AI 模型"
+        value={1}
+        options={options}
+        menuPlacement="above"
+        preferredMaxHeight={204}
+        onValueChange={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("combobox", { name: "AI 模型" }));
+    const menu = screen.getByRole("listbox", { name: "AI 模型" });
+
+    await waitFor(() => {
+      expect(menu.style.maxHeight).toBe("204px");
+    });
+  });
 });

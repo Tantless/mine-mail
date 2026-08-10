@@ -705,6 +705,60 @@ it("creates an AI session from the fixed composer and honors the selected mode",
   expect(generateUpdate(baseValue).body_text).toContain("下周交付时间");
 });
 
+it("routes an Agent turn through the model selected beside the mode", async () => {
+  vi.spyOn(mailApi, "refreshAiModelCatalog").mockResolvedValue({
+    models: [
+      {
+        providerInstanceId: "11111111-1111-4111-8111-111111111111",
+        providerName: "Work OpenAI",
+        providerId: "openai",
+        modelName: "gpt-5.6-terra",
+        isDefault: true,
+      },
+      {
+        providerInstanceId: "22222222-2222-4222-8222-222222222222",
+        providerName: "Backup Kimi",
+        providerId: "kimi",
+        modelName: "kimi-k2.5",
+        isDefault: false,
+      },
+    ],
+    successfulProviderCount: 2,
+    totalProviderCount: 3,
+  });
+  const runAiTurn = vi.spyOn(mailApi, "runAiTurn");
+  const user = userEvent.setup();
+  renderCompose();
+
+  await user.click(screen.getByRole("button", { name: "打开 AI 助理" }));
+  const assistant = screen.getByRole("complementary", { name: "AI 助理" });
+  const modelSelect = within(assistant).getByRole("combobox", {
+    name: "选择 AI 模型",
+  });
+  await waitFor(() => expect(modelSelect.disabled).toBe(false));
+  expect(modelSelect.textContent).toContain("gpt-5.6-terra · Work OpenAI");
+
+  await user.click(modelSelect);
+  await user.click(
+    within(assistant).getByRole("option", {
+      name: "kimi-k2.5 · Backup Kimi",
+    }),
+  );
+  const input = within(assistant).getByRole("textbox", {
+    name: "向 AI 助理发送消息",
+  });
+  await user.type(input, "检查语气{Enter}");
+
+  await waitFor(() => expect(runAiTurn).toHaveBeenCalled());
+  expect(runAiTurn).toHaveBeenCalledWith(
+    expect.objectContaining({
+      provider_instance_id: "22222222-2222-4222-8222-222222222222",
+      model_name: "kimi-k2.5",
+    }),
+    expect.any(Function),
+  );
+});
+
 it("keeps a streamed Markdown turn alive while the AI sidebar is collapsed", async () => {
   let emit;
   let finish;

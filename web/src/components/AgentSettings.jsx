@@ -1,17 +1,24 @@
-import { Component, useEffect, useMemo, useRef, useState } from "react";
+import { Component, useMemo, useRef, useState, useEffect } from "react";
 import {
+  ArrowLeft,
   CaretDown,
-  CheckCircle,
+  Check,
+  DotsSixVertical,
   MagnifyingGlass,
+  PencilSimple,
+  Plus,
+  Pulse,
   Question,
   SpinnerGap,
+  Trash,
   X,
 } from "@phosphor-icons/react";
 import { mailApi } from "../services/mailApi.js";
-import { useBoundedDropdown } from "../hooks/useBoundedDropdown.js";
 import { userFacingErrorMessage } from "../utils/userFacingError.js";
+import { ConsequentialConfirmDialog } from "./ConsequentialConfirmDialog.jsx";
 import { useConfirmDialogFocus } from "./ConfirmDialogPrimitives.jsx";
 import { IconButton } from "./IconButton.jsx";
+import { ProfileAvatar } from "./ProfileAvatar.jsx";
 import { ThemedSelect } from "./ThemedSelect.jsx";
 
 const fallbackTranslationLanguages = Object.freeze([
@@ -29,96 +36,104 @@ const fallbackTranslationLanguages = Object.freeze([
   { value: "ar", label: "العربية" },
 ]);
 
-const initialConfiguration = Object.freeze({
-  providerId: "custom",
-  protocolId: "auto",
-  resolvedProtocolId: "openai_chat_completions",
-  baseUrl: "",
-  modelName: "",
-  apiKey: "",
-  useEnvironmentKey: false,
-  hasStoredApiKey: false,
-  hasEnvironmentApiKey: false,
-  environmentVariable: "AI_API_KEY",
-  presets: [],
-  translationLanguage: "zh-Hans",
-  translationLanguages: fallbackTranslationLanguages,
+const providerIconDomains = Object.freeze({
+  openai: "openai.com",
+  anthropic: "anthropic.com",
+  deepseek: "deepseek.com",
+  kimi: "moonshot.cn",
+  qwen: "qwen.ai",
+  mimo: "xiaomi.com",
+  minimax: "minimax.io",
+  modelscope: "modelscope.cn",
+  doubaoseed: "bytedance.com",
+  glm: "bigmodel.cn",
+  openrouter: "openrouter.ai",
 });
 
-const automaticSaveDelayMs = 600;
 const storedApiKeyMask = "••••••••••••";
 
-function normalizeConfiguration(config) {
-  const value = config && typeof config === "object" ? config : {};
+function emptyRegistry() {
   return {
-    ...initialConfiguration,
+    providers: [],
+    presets: [],
+    defaultProviderInstanceId: null,
+    translationLanguage: "zh-Hans",
+    translationLanguages: fallbackTranslationLanguages,
+  };
+}
+
+function normalizeRegistry(registry) {
+  const value = registry && typeof registry === "object" ? registry : {};
+  return {
+    ...emptyRegistry(),
     ...value,
-    apiKey: "",
+    providers: Array.isArray(value.providers) ? value.providers : [],
     presets: Array.isArray(value.presets) ? value.presets : [],
-    translationLanguages: Array.isArray(value.translationLanguages)
-      && value.translationLanguages.length
-      ? value.translationLanguages
-      : fallbackTranslationLanguages,
+    translationLanguages:
+      Array.isArray(value.translationLanguages) && value.translationLanguages.length
+        ? value.translationLanguages
+        : fallbackTranslationLanguages,
   };
 }
 
-function configurationRequest(form) {
-  return {
-    providerId: form.providerId,
-    protocolId: form.protocolId,
-    baseUrl: form.baseUrl.trim(),
-    modelName: form.modelName.trim(),
-    useEnvironmentKey: form.useEnvironmentKey,
-    translationLanguage: form.translationLanguage,
-    apiKey: form.useEnvironmentKey ? "" : form.apiKey,
-  };
+function legacyRegistry(config) {
+  const provider = config?.baseUrl && config?.modelName
+    ? {
+        id: `legacy-${config.providerId}`,
+        providerId: config.providerId,
+        providerLabel:
+          config.presets?.find((preset) => preset.id === config.providerId)?.label
+          || "自定义",
+        name:
+          config.presets?.find((preset) => preset.id === config.providerId)?.label
+          || "默认渠道",
+        protocolId: config.protocolId,
+        resolvedProtocolId: config.resolvedProtocolId,
+        protocolLabel:
+          config.presets
+            ?.find((preset) => preset.id === config.providerId)
+            ?.protocols?.find((protocol) => protocol.id === config.resolvedProtocolId)
+            ?.label || "OpenAI Chat Completions",
+        baseUrl: config.baseUrl,
+        modelName: config.modelName,
+        useEnvironmentKey: config.useEnvironmentKey,
+        hasStoredApiKey: config.hasStoredApiKey,
+        hasEnvironmentApiKey: config.hasEnvironmentApiKey,
+        environmentVariable: config.environmentVariable,
+        models:
+          config.presets?.find((preset) => preset.id === config.providerId)?.models || [],
+        sortOrder: 0,
+        isDefault: true,
+        status: "untested",
+        latencyMs: null,
+      }
+    : null;
+  return normalizeRegistry({
+    providers: provider ? [provider] : [],
+    presets: config?.presets || [],
+    defaultProviderInstanceId: provider?.id || null,
+    translationLanguage: config?.translationLanguage || "zh-Hans",
+    translationLanguages: config?.translationLanguages || fallbackTranslationLanguages,
+  });
 }
 
-function canSaveConfiguration(form) {
-  if (
-    !form.providerId?.trim()
-    || !form.baseUrl?.trim()
-    || !form.modelName?.trim()
-    || !form.translationLanguage?.trim()
-  ) {
-    return false;
-  }
-
+function providerDomain(providerId, baseUrl = "") {
+  if (providerIconDomains[providerId]) return providerIconDomains[providerId];
   try {
-    const url = new URL(form.baseUrl.trim());
-    if (url.protocol !== "https:" && url.protocol !== "http:") return false;
+    return new URL(baseUrl).hostname || "provider.local";
   } catch {
-    return false;
+    return "provider.local";
   }
+}
 
-  return Boolean(
-    form.useEnvironmentKey
-    || form.hasStoredApiKey
-    || form.apiKey?.trim(),
+function ProviderMark({ providerId, baseUrl, label, className = "" }) {
+  return (
+    <ProfileAvatar
+      className={`agent-provider-mark ${className}`.trim()}
+      email={`agent@${providerDomain(providerId, baseUrl)}`}
+      label={label}
+    />
   );
-}
-
-function providerFields(form) {
-  return {
-    protocolId: form.protocolId,
-    resolvedProtocolId: form.resolvedProtocolId,
-    baseUrl: form.baseUrl,
-    modelName: form.modelName,
-    useEnvironmentKey: form.useEnvironmentKey,
-    hasStoredApiKey: form.hasStoredApiKey,
-    hasEnvironmentApiKey: form.hasEnvironmentApiKey,
-  };
-}
-
-function resolvedProtocolId(preset, protocolId) {
-  if (!preset) return "openai_chat_completions";
-  return protocolId === "auto"
-    ? preset.recommendedProtocolId
-    : protocolId;
-}
-
-function providerDraftKey(providerId, protocolId, preset) {
-  return `${providerId}:${resolvedProtocolId(preset, protocolId)}`;
 }
 
 function protocolOptions(preset) {
@@ -129,7 +144,7 @@ function protocolOptions(preset) {
   return [
     {
       value: "auto",
-      label: `自动（推荐：${recommended?.label || "供应商默认"}）`,
+      label: `自动（推荐：${recommended?.label || "渠道默认"}）`,
     },
     ...(preset.protocols || []).map((protocol) => ({
       value: protocol.id,
@@ -140,34 +155,52 @@ function protocolOptions(preset) {
   ];
 }
 
-function providerForm(current, preset, remembered = null) {
-  const protocolId = preset.protocolId ?? remembered?.protocolId ?? "auto";
-  const resolved = resolvedProtocolId(preset, protocolId);
-  const protocol = preset.protocols?.find((candidate) => candidate.id === resolved);
-  const configuration = remembered
-    || preset.configurations?.find((candidate) => candidate.protocolId === resolved)
-    || preset.configuration;
+function providerForm(preset, provider = null) {
+  const protocolId = provider?.protocolId || "auto";
+  const resolvedProtocolId = protocolId === "auto"
+    ? preset.recommendedProtocolId
+    : protocolId;
+  const protocol = preset.protocols?.find(
+    (candidate) => candidate.id === resolvedProtocolId,
+  );
   return {
-    ...current,
+    id: provider?.id || null,
     providerId: preset.id,
+    name: provider?.name || preset.label,
     protocolId,
-    resolvedProtocolId: resolved,
-    baseUrl: configuration?.baseUrl ?? protocol?.baseUrl ?? preset.baseUrl,
+    baseUrl: provider?.baseUrl || protocol?.baseUrl || preset.baseUrl || "",
     modelName:
-      configuration?.modelName
-      ?? protocol?.models?.[0]
-      ?? preset.models?.[0]
-      ?? "",
+      provider?.modelName || protocol?.models?.[0] || preset.models?.[0] || "",
     apiKey: "",
-    useEnvironmentKey: configuration?.useEnvironmentKey ?? false,
-    environmentVariable: preset.environmentVariable,
-    hasStoredApiKey: configuration?.hasStoredApiKey ?? false,
-    hasEnvironmentApiKey: configuration?.hasEnvironmentApiKey ?? false,
+    useEnvironmentKey: provider?.useEnvironmentKey || false,
+    hasStoredApiKey: provider?.hasStoredApiKey || false,
+    hasEnvironmentApiKey: provider?.hasEnvironmentApiKey || false,
+    environmentVariable: preset.environmentVariable || "AI_API_KEY",
+    models: provider?.models || [],
   };
 }
 
-function statusMessage(error, fallback) {
-  return userFacingErrorMessage(error, fallback);
+function canSaveProvider(form) {
+  if (!form?.name?.trim() || !form?.baseUrl?.trim()) return false;
+  try {
+    const url = new URL(form.baseUrl.trim());
+    if (url.protocol !== "https:" && url.protocol !== "http:") return false;
+  } catch {
+    return false;
+  }
+  return Boolean(
+    form.useEnvironmentKey || form.hasStoredApiKey || form.apiKey?.trim(),
+  );
+}
+
+function statusCopy(provider) {
+  if (provider.status === "available") {
+    return provider.latencyMs === null
+      ? `可用 · ${provider.models.length} 个模型`
+      : `可用 · ${provider.latencyMs} ms · ${provider.models.length} 个模型`;
+  }
+  if (provider.status === "unavailable") return "连接不可用，请检查此渠道";
+  return "尚未测试连接";
 }
 
 function AgentSettingsContent({
@@ -178,393 +211,687 @@ function AgentSettingsContent({
 }) {
   const [expanded, setExpanded] = useState(false);
   const [loadState, setLoadState] = useState("loading");
-  const [form, setForm] = useState(initialConfiguration);
-  const [modelMenuOpen, setModelMenuOpen] = useState(false);
+  const [registry, setRegistry] = useState(emptyRegistry);
+  const [view, setView] = useState("list");
+  const [presetSearch, setPresetSearch] = useState("");
+  const [form, setForm] = useState(null);
+  const [editingStoredApiKey, setEditingStoredApiKey] = useState(false);
   const [actionState, setActionState] = useState("idle");
-  const [feedback, setFeedback] = useState(null);
+  const [flowFeedback, setFlowFeedback] = useState(null);
+  const [providerErrors, setProviderErrors] = useState({});
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deleteError, setDeleteError] = useState(null);
+  const [draggingId, setDraggingId] = useState(null);
   const [translationState, setTranslationState] = useState("idle");
   const [translationFeedback, setTranslationFeedback] = useState(null);
-  const [editRevision, setEditRevision] = useState(0);
   const [helpOpen, setHelpOpen] = useState(false);
-  const [editingStoredApiKey, setEditingStoredApiKey] = useState(false);
-  const editRevisionRef = useRef(0);
-  const savedRevisionRef = useRef(0);
-  const blockedAutomaticRevisionRef = useRef(null);
-  const providerDraftsRef = useRef({});
   const helpCloseRef = useRef(null);
-  const modelMenuRef = useRef(null);
-  const modelMenuLayout = useBoundedDropdown({
-    open: modelMenuOpen,
-    anchorRef: modelMenuRef,
-    preferredMaxHeight: 166,
-  });
   const helpFocus = useConfirmDialogFocus({
     open: helpOpen,
     initialFocusRef: helpCloseRef,
     onCancel: () => setHelpOpen(false),
   });
 
+  const loadRegistry = async () => {
+    if (typeof client?.getAiProviderRegistry === "function") {
+      return normalizeRegistry(await client.getAiProviderRegistry());
+    }
+    if (typeof client?.getAiConfig === "function") {
+      return legacyRegistry(await client.getAiConfig());
+    }
+    throw new Error("AI provider registry client is unavailable");
+  };
+
   useEffect(() => {
     let cancelled = false;
     setLoadState("loading");
-    Promise.resolve()
-      .then(() => {
-        if (typeof client?.getAiConfig !== "function") {
-          throw new Error("AI configuration client is unavailable");
-        }
-        return client.getAiConfig();
-      })
-      .then((config) => {
+    loadRegistry()
+      .then((next) => {
         if (cancelled) return;
-        setForm(normalizeConfiguration(config));
-        setEditingStoredApiKey(false);
-        editRevisionRef.current = 0;
-        savedRevisionRef.current = 0;
-        blockedAutomaticRevisionRef.current = null;
-        providerDraftsRef.current = {};
-        setEditRevision(0);
+        setRegistry(next);
         setLoadState("ready");
       })
-      .catch((error) => {
-        if (cancelled) return;
-        setFeedback({
-          tone: "danger",
-          text: statusMessage(error, "AI 配置读取失败，请重试。"),
-        });
-        setLoadState("error");
+      .catch(() => {
+        if (!cancelled) setLoadState("error");
       });
     return () => {
       cancelled = true;
     };
   }, [client]);
 
-  useEffect(() => {
-    if (!modelMenuOpen) return undefined;
-    const closeOnOutsidePointer = (event) => {
-      if (!modelMenuRef.current?.contains(event.target)) {
-        setModelMenuOpen(false);
-      }
-    };
-    document.addEventListener("pointerdown", closeOnOutsidePointer);
-    return () => document.removeEventListener("pointerdown", closeOnOutsidePointer);
-  }, [modelMenuOpen]);
-
+  const defaultProvider = registry.providers.find((provider) => provider.isDefault);
   const selectedPreset = useMemo(
-    () => form.presets.find((preset) => preset.id === form.providerId),
-    [form.presets, form.providerId],
+    () => registry.presets.find((preset) => preset.id === form?.providerId) || null,
+    [form?.providerId, registry.presets],
   );
-  const selectedProtocol = useMemo(
-    () => selectedPreset?.protocols?.find(
-      (protocol) => protocol.id === form.resolvedProtocolId,
-    ),
-    [form.resolvedProtocolId, selectedPreset],
-  );
-  const models = selectedProtocol?.models || selectedPreset?.models || [];
-  const availableProtocolOptions = useMemo(
-    () => protocolOptions(selectedPreset),
-    [selectedPreset],
-  );
-  const busy = ["saving", "switching", "models", "testing"].includes(actionState);
+  const filteredPresets = useMemo(() => {
+    const query = presetSearch.trim().toLocaleLowerCase();
+    if (!query) return registry.presets;
+    return registry.presets.filter((preset) =>
+      `${preset.label} ${preset.id}`.toLocaleLowerCase().includes(query));
+  }, [presetSearch, registry.presets]);
+  const busy = actionState !== "idle";
 
-  const resetModelResults = () => {
-    setModelMenuOpen(false);
+  const openAddFlow = () => {
+    setPresetSearch("");
+    setForm(null);
+    setFlowFeedback(null);
+    setView("presets");
   };
 
-  const markConfigurationEdited = () => {
-    editRevisionRef.current += 1;
-    blockedAutomaticRevisionRef.current = null;
-    setEditRevision(editRevisionRef.current);
-  };
-
-  const updateField = (field, value, { resetModels = false } = {}) => {
-    setForm((current) => ({ ...current, [field]: value }));
-    markConfigurationEdited();
-    setFeedback(null);
-    if (resetModels) resetModelResults();
-  };
-
-  const chooseProvider = async (preset) => {
-    if (busy || preset.id === form.providerId) return;
-
-    setActionState("switching");
-    setFeedback(null);
-    resetModelResults();
-    let phase = "current";
-
-    try {
-      let source = form;
-      if (
-        editRevisionRef.current > savedRevisionRef.current
-        && canSaveConfiguration(form)
-      ) {
-        source = normalizeConfiguration(
-          await client.saveAiConfig(configurationRequest(form)),
-        );
-        savedRevisionRef.current = editRevisionRef.current;
-        delete providerDraftsRef.current[
-          providerDraftKey(form.providerId, form.protocolId, selectedPreset)
-        ];
-      } else if (editRevisionRef.current > savedRevisionRef.current) {
-        providerDraftsRef.current[
-          providerDraftKey(form.providerId, form.protocolId, selectedPreset)
-        ] = providerFields(form);
-      }
-
-      const currentPreset = source.presets.find(
-        (candidate) => candidate.id === preset.id,
-      ) || preset;
-      const next = providerForm(
-        source,
-        currentPreset,
-        providerDraftsRef.current[
-          providerDraftKey(
-            preset.id,
-            currentPreset.protocolId ?? "auto",
-            currentPreset,
-          )
-        ],
-      );
-      setEditingStoredApiKey(false);
-      setForm(next);
-      editRevisionRef.current += 1;
-      savedRevisionRef.current = editRevisionRef.current;
-      blockedAutomaticRevisionRef.current = null;
-      setEditRevision(editRevisionRef.current);
-
-      if (currentPreset.configuration && canSaveConfiguration(next)) {
-        phase = "target";
-        const activated = normalizeConfiguration(
-          await client.saveAiConfig(configurationRequest(next)),
-        );
-        delete providerDraftsRef.current[
-          providerDraftKey(preset.id, next.protocolId, currentPreset)
-        ];
-        setForm(activated);
-        setFeedback({
-          tone: "success",
-          text: `已切换至 ${currentPreset.label}。`,
-        });
-      }
-    } catch (error) {
-      setFeedback({
-        tone: "danger",
-        text: statusMessage(
-          error,
-          phase === "current"
-            ? "当前渠道配置保存失败，请重试后再切换。"
-            : "渠道切换失败，请检查配置后重试。",
-        ),
-      });
-    } finally {
-      setActionState("idle");
-    }
-  };
-
-  const chooseProtocol = (protocolId) => {
-    if (busy || protocolId === form.protocolId || !selectedPreset) return;
-    const currentKey = providerDraftKey(
-      form.providerId,
-      form.protocolId,
-      selectedPreset,
+  const openEditFlow = (provider) => {
+    const preset = registry.presets.find(
+      (candidate) => candidate.id === provider.providerId,
     );
-    if (editRevisionRef.current > savedRevisionRef.current) {
-      providerDraftsRef.current[currentKey] = providerFields(form);
-    }
-    const targetKey = providerDraftKey(
-      form.providerId,
-      protocolId,
-      selectedPreset,
-    );
-    const next = providerForm(
-      form,
-      { ...selectedPreset, protocolId },
-      providerDraftsRef.current[targetKey],
-    );
-    setForm(next);
+    if (!preset) return;
+    setForm(providerForm(preset, provider));
     setEditingStoredApiKey(false);
-    resetModelResults();
-    markConfigurationEdited();
-    setFeedback(null);
+    setFlowFeedback(null);
+    setView("edit");
   };
 
-  const retrieveModels = async () => {
-    setActionState("models");
-    setFeedback(null);
-    setModelMenuOpen(false);
-    try {
-      const availableModels = await client.listAiModels(configurationRequest(form));
-      setForm((current) => ({
-        ...current,
-        modelName: current.modelName || availableModels[0] || "",
-        presets: current.presets.map((preset) =>
-          preset.id === current.providerId
-            ? {
-                ...preset,
-                models: availableModels,
-                protocols: (preset.protocols || []).map((protocol) =>
-                  protocol.id === current.resolvedProtocolId
-                    ? { ...protocol, models: availableModels }
-                    : protocol,
-                ),
-              }
-            : preset,
-        ),
-      }));
-      markConfigurationEdited();
-      setModelMenuOpen(true);
-      setFeedback({
-        tone: "success",
-        text: `已检索到 ${availableModels.length} 个可用模型。`,
-      });
-    } catch (error) {
-      setModelMenuOpen(false);
-      setFeedback({
+  const choosePreset = (preset) => {
+    setForm(providerForm(preset));
+    setEditingStoredApiKey(false);
+    setFlowFeedback(null);
+    setView("edit");
+  };
+
+  const saveProvider = async ({ testAfter = false } = {}) => {
+    if (!canSaveProvider(form)) {
+      setFlowFeedback({
         tone: "danger",
-        text: statusMessage(error, "可用模型检索失败，请检查配置。"),
+        text: "请完整填写渠道名称、地址和 API Key。",
       });
-    } finally {
-      setActionState("idle");
-    }
-  };
-
-  const testConnection = async () => {
-    setActionState("testing");
-    setFeedback(null);
-    try {
-      const result = await client.testAiConnection(configurationRequest(form));
-      setFeedback({
-        tone: "success",
-        text: `连接成功 · ${result.latencyMs} ms`,
-      });
-    } catch (error) {
-      setFeedback({
-        tone: "danger",
-        text: statusMessage(error, "连接测试失败，请检查配置。"),
-      });
-    } finally {
-      setActionState("idle");
-    }
-  };
-
-  const saveConfiguration = async ({ automatic = false, revision = editRevision } = {}) => {
-    if (!canSaveConfiguration(form)) {
-      if (!automatic) {
-        setFeedback({
-          tone: "danger",
-          text: "请先完整填写模型地址、API Key 和模型名称。",
-        });
-      }
       return;
     }
-
-    const request = configurationRequest(form);
-    setActionState("saving");
-    setFeedback(
-      automatic
-        ? { tone: "neutral", text: "正在自动保存配置…" }
-        : null,
-    );
+    if (typeof client?.saveAiProviderInstance !== "function") {
+      setFlowFeedback({ tone: "danger", text: "当前客户端不支持多渠道配置。" });
+      return;
+    }
+    setActionState(testAfter ? "saving-for-test" : "saving");
+    setFlowFeedback(null);
     try {
-      const saved = await client.saveAiConfig(request);
-      const savedPreset = saved.presets?.find(
-        (preset) => preset.id === (saved.providerId ?? form.providerId),
+      let next = normalizeRegistry(await client.saveAiProviderInstance(form));
+      const saved = next.providers.find(
+        (provider) => provider.id === form.id,
+      ) || next.providers.find(
+        (provider) => provider.name === form.name.trim()
+          && provider.providerId === form.providerId,
       );
-      delete providerDraftsRef.current[
-        providerDraftKey(
-          saved.providerId ?? form.providerId,
-          saved.protocolId ?? form.protocolId,
-          savedPreset ?? selectedPreset,
-        )
-      ];
-      savedRevisionRef.current = Math.max(savedRevisionRef.current, revision);
-      blockedAutomaticRevisionRef.current = null;
-      if (editRevisionRef.current === revision) {
-        setForm(normalizeConfiguration(saved));
-        setEditingStoredApiKey(false);
-        setFeedback({
-          tone: "success",
-          text: automatic ? "配置已自动保存。" : "模型配置已保存。",
-        });
+      if (testAfter && saved) {
+        setActionState("testing");
+        try {
+          await client.testAiProviderInstance(saved.id);
+          next = await loadRegistry();
+        } catch (error) {
+          next = await loadRegistry().catch(() => next);
+          setProviderErrors((current) => ({
+            ...current,
+            [saved.id]: userFacingErrorMessage(
+              error,
+              "连接失败，请编辑并检查该渠道。",
+            ),
+          }));
+        }
       }
+      setRegistry(next);
+      setView("list");
+      setForm(null);
+      setFlowFeedback(null);
     } catch (error) {
-      blockedAutomaticRevisionRef.current = revision;
-      setFeedback({
+      setFlowFeedback({
         tone: "danger",
-        text: statusMessage(
-          error,
-          automatic
-            ? "配置自动保存失败，可修改后重试或点击保存配置。"
-            : "模型配置保存失败，请检查后重试。",
-        ),
+        text: userFacingErrorMessage(error, "渠道配置保存失败，请检查后重试。"),
       });
     } finally {
       setActionState("idle");
+    }
+  };
+
+  const testProvider = async (provider) => {
+    if (typeof client?.testAiProviderInstance !== "function") return;
+    setActionState(`testing:${provider.id}`);
+    setProviderErrors((current) => ({ ...current, [provider.id]: null }));
+    try {
+      await client.testAiProviderInstance(provider.id);
+      setRegistry(await loadRegistry());
+    } catch (error) {
+      setRegistry(await loadRegistry().catch(() => registry));
+      setProviderErrors((current) => ({
+        ...current,
+        [provider.id]: userFacingErrorMessage(
+          error,
+          "连接失败，请编辑并检查该渠道。",
+        ),
+      }));
+    } finally {
+      setActionState("idle");
+    }
+  };
+
+  const setDefaultProvider = async (provider) => {
+    if (provider.isDefault || typeof client?.setDefaultAiProvider !== "function") return;
+    setActionState(`default:${provider.id}`);
+    setProviderErrors((current) => ({ ...current, [provider.id]: null }));
+    try {
+      setRegistry(normalizeRegistry(await client.setDefaultAiProvider(provider.id)));
+    } catch (error) {
+      setProviderErrors((current) => ({
+        ...current,
+        [provider.id]: userFacingErrorMessage(
+          error,
+          "默认模型设置失败，请检查该渠道。",
+        ),
+      }));
+    } finally {
+      setActionState("idle");
+    }
+  };
+
+  const confirmDelete = async () => {
+    if (!deleteTarget || typeof client?.deleteAiProviderInstance !== "function") return;
+    setActionState(`deleting:${deleteTarget.id}`);
+    setDeleteError(null);
+    try {
+      setRegistry(
+        normalizeRegistry(await client.deleteAiProviderInstance(deleteTarget.id)),
+      );
+      setDeleteTarget(null);
+    } catch (error) {
+      setDeleteError(error);
+    } finally {
+      setActionState("idle");
+    }
+  };
+
+  const moveProvider = async (draggedId, targetId) => {
+    if (!draggedId || draggedId === targetId) return;
+    const providers = [...registry.providers];
+    const from = providers.findIndex((provider) => provider.id === draggedId);
+    const to = providers.findIndex((provider) => provider.id === targetId);
+    if (from < 0 || to < 0) return;
+    const [dragged] = providers.splice(from, 1);
+    providers.splice(to, 0, dragged);
+    const optimistic = providers.map((provider, index) => ({
+      ...provider,
+      sortOrder: index,
+    }));
+    setRegistry((current) => ({ ...current, providers: optimistic }));
+    setDraggingId(null);
+    try {
+      if (typeof client?.reorderAiProviderInstances !== "function") {
+        throw new Error("当前客户端不支持渠道排序");
+      }
+      setRegistry(
+        normalizeRegistry(
+          await client.reorderAiProviderInstances(
+            optimistic.map((provider) => provider.id),
+          ),
+        ),
+      );
+    } catch (error) {
+      setRegistry((current) => ({ ...current, providers: registry.providers }));
+      setProviderErrors((current) => ({
+        ...current,
+        [draggedId]: userFacingErrorMessage(error, "渠道排序保存失败，请重试。"),
+      }));
     }
   };
 
   const updateTranslationLanguage = async (languageId) => {
-    if (languageId === form.translationLanguage || translationState === "saving") {
-      return;
-    }
-
-    const previousLanguage = form.translationLanguage;
-    setForm((current) => ({ ...current, translationLanguage: languageId }));
+    if (
+      languageId === registry.translationLanguage
+      || translationState === "saving"
+    ) return;
+    const previous = registry.translationLanguage;
+    setRegistry((current) => ({ ...current, translationLanguage: languageId }));
     setTranslationState("saving");
     setTranslationFeedback({ tone: "neutral", text: "正在保存翻译语言…" });
     try {
-      if (typeof client?.setAiTranslationLanguage !== "function") {
-        throw new Error("AI translation language client is unavailable");
-      }
-      const saved = normalizeConfiguration(
-        await client.setAiTranslationLanguage(languageId),
-      );
-      setForm((current) => ({
+      const saved = await client.setAiTranslationLanguage(languageId);
+      setRegistry((current) => ({
         ...current,
         translationLanguage: saved.translationLanguage,
-        translationLanguages: saved.translationLanguages,
+        translationLanguages:
+          saved.translationLanguages?.length
+            ? saved.translationLanguages
+            : current.translationLanguages,
       }));
       setTranslationFeedback({ tone: "success", text: "翻译语言已保存。" });
     } catch (error) {
-      setForm((current) => ({
+      setRegistry((current) => ({
         ...current,
         translationLanguage:
-          current.translationLanguage === languageId
-            ? previousLanguage
-            : current.translationLanguage,
+          current.translationLanguage === languageId ? previous : current.translationLanguage,
       }));
       setTranslationFeedback({
         tone: "danger",
-        text: statusMessage(error, "翻译语言保存失败，请重试。"),
+        text: userFacingErrorMessage(error, "翻译语言保存失败，请重试。"),
       });
     } finally {
       setTranslationState("idle");
     }
   };
 
-  useEffect(() => {
-    if (
-      loadState !== "ready"
-      || actionState !== "idle"
-      || editRevision <= savedRevisionRef.current
-      || blockedAutomaticRevisionRef.current === editRevision
-      || !canSaveConfiguration(form)
-    ) {
-      return undefined;
-    }
+  const renderProviderList = () => (
+    <>
+      <div className="agent-provider-toolbar">
+        <span>
+          <strong>{registry.providers.length} 个渠道</strong>
+          <small>拖动调整同名模型的渠道优先级。</small>
+        </span>
+        <IconButton
+          className="agent-provider-add"
+          label="添加 AI 渠道"
+          onClick={openAddFlow}
+        >
+          <Plus size={18} weight="bold" />
+        </IconButton>
+      </div>
 
-    const timer = window.setTimeout(() => {
-      void saveConfiguration({ automatic: true, revision: editRevision });
-    }, automaticSaveDelayMs);
-    return () => window.clearTimeout(timer);
-  }, [actionState, editRevision, form, loadState]);
+      {registry.providers.length ? (
+        <div className="agent-provider-list" role="list" aria-label="已配置 AI 渠道">
+          {registry.providers.map((provider) => (
+            <article
+              key={provider.id}
+              className="agent-provider-row"
+              data-default={provider.isDefault || undefined}
+              data-status={provider.status}
+              data-dragging={draggingId === provider.id || undefined}
+              role="listitem"
+              draggable={!busy}
+              onDragStart={(event) => {
+                setDraggingId(provider.id);
+                event.dataTransfer.effectAllowed = "move";
+                event.dataTransfer.setData("text/plain", provider.id);
+              }}
+              onDragEnd={() => setDraggingId(null)}
+              onDragOver={(event) => {
+                if (draggingId && draggingId !== provider.id) {
+                  event.preventDefault();
+                  event.dataTransfer.dropEffect = "move";
+                }
+              }}
+              onDrop={(event) => {
+                event.preventDefault();
+                void moveProvider(
+                  event.dataTransfer.getData("text/plain") || draggingId,
+                  provider.id,
+                );
+              }}
+            >
+              <span className="agent-provider-drag" aria-hidden="true">
+                <DotsSixVertical size={18} weight="bold" />
+              </span>
+              <ProviderMark
+                providerId={provider.providerId}
+                baseUrl={provider.baseUrl}
+                label={provider.providerLabel}
+              />
+              <span className="agent-provider-main">
+                <span className="agent-provider-title">
+                  <strong>{provider.name}</strong>
+                  <small>{provider.providerLabel}</small>
+                  {provider.isDefault ? (
+                    <span className="agent-provider-default-badge">
+                      <Check size={12} weight="bold" />
+                      使用中
+                    </span>
+                  ) : null}
+                </span>
+                <span className="agent-provider-url" title={provider.baseUrl}>
+                  {provider.baseUrl}
+                </span>
+                <span className="agent-provider-meta">
+                  <small>{provider.protocolLabel}</small>
+                  <small data-status={provider.status}>{statusCopy(provider)}</small>
+                  {provider.modelName ? <small>首选：{provider.modelName}</small> : null}
+                </span>
+                {providerErrors[provider.id] ? (
+                  <small className="agent-provider-inline-error" role="alert">
+                    {providerErrors[provider.id]}
+                  </small>
+                ) : null}
+              </span>
+              <span className="agent-provider-actions">
+                {!provider.isDefault ? (
+                  <button
+                    type="button"
+                    className="agent-provider-use"
+                    disabled={busy || !provider.modelName}
+                    onClick={() => void setDefaultProvider(provider)}
+                  >
+                    {actionState === `default:${provider.id}` ? (
+                      <SpinnerGap size={14} className="spin" />
+                    ) : null}
+                    设为默认
+                  </button>
+                ) : null}
+                <IconButton
+                  label={`测试 ${provider.name} 并刷新模型`}
+                  disabled={busy}
+                  onClick={() => void testProvider(provider)}
+                >
+                  {actionState === `testing:${provider.id}` ? (
+                    <SpinnerGap size={17} className="spin" />
+                  ) : (
+                    <Pulse size={17} />
+                  )}
+                </IconButton>
+                <IconButton
+                  label={`编辑 ${provider.name}`}
+                  disabled={busy}
+                  onClick={() => openEditFlow(provider)}
+                >
+                  <PencilSimple size={17} />
+                </IconButton>
+                <IconButton
+                  label={`删除 ${provider.name}`}
+                  tone="danger"
+                  disabled={busy}
+                  onClick={() => {
+                    setDeleteError(null);
+                    setDeleteTarget(provider);
+                  }}
+                >
+                  <Trash size={17} />
+                </IconButton>
+              </span>
+            </article>
+          ))}
+        </div>
+      ) : (
+        <div className="agent-provider-empty">
+          <ProviderMark providerId="custom" label="AI 渠道" />
+          <span>
+            <strong>还没有配置 AI 渠道</strong>
+            <small>添加一个服务后即可测试连接并获取模型。</small>
+          </span>
+          <button type="button" className="send-button" onClick={openAddFlow}>
+            <Plus size={16} weight="bold" />
+            添加渠道
+          </button>
+        </div>
+      )}
+    </>
+  );
 
+  const renderPresetPicker = () => (
+    <section className="agent-provider-flow" aria-labelledby="agent-provider-picker-title">
+      <header className="agent-provider-flow__heading">
+        <IconButton label="返回渠道列表" onClick={() => setView("list")}>
+          <ArrowLeft size={18} />
+        </IconButton>
+        <span>
+          <strong id="agent-provider-picker-title">添加新渠道</strong>
+          <small>选择预设后填写 API Key 与连接信息。</small>
+        </span>
+      </header>
+      <label className="agent-provider-search">
+        <MagnifyingGlass size={16} aria-hidden="true" />
+        <input
+          value={presetSearch}
+          autoFocus
+          placeholder="搜索渠道"
+          onChange={(event) => setPresetSearch(event.target.value)}
+        />
+      </label>
+      <div className="agent-provider-preset-grid" role="list" aria-label="可添加渠道">
+        {filteredPresets.map((preset) => (
+          <button
+            key={preset.id}
+            type="button"
+            role="listitem"
+            aria-label={preset.label}
+            onClick={() => choosePreset(preset)}
+          >
+            <ProviderMark
+              providerId={preset.id}
+              baseUrl={preset.baseUrl}
+              label={preset.label}
+            />
+            <span>{preset.label}</span>
+          </button>
+        ))}
+      </div>
+    </section>
+  );
+
+  const renderProviderEditor = () => {
+    if (!form || !selectedPreset) return null;
+    const options = protocolOptions(selectedPreset);
+    return (
+      <section className="agent-provider-flow" aria-labelledby="agent-provider-editor-title">
+        <header className="agent-provider-flow__heading">
+          <IconButton
+            label={form.id ? "返回渠道列表" : "返回选择渠道"}
+            disabled={busy}
+            onClick={() => setView(form.id ? "list" : "presets")}
+          >
+            <ArrowLeft size={18} />
+          </IconButton>
+          <ProviderMark
+            providerId={selectedPreset.id}
+            baseUrl={form.baseUrl}
+            label={selectedPreset.label}
+          />
+          <span>
+            <strong id="agent-provider-editor-title">
+              {form.id ? `编辑 ${form.name}` : `添加 ${selectedPreset.label}`}
+            </strong>
+            <small>凭据保存后只由 Rust 与系统凭据库读取。</small>
+          </span>
+        </header>
+
+        <div className="agent-provider-editor-fields">
+          <label className="settings-field">
+            <span>渠道名称</span>
+            <span className="settings-input-shell settings-input-shell--text">
+              <input
+                value={form.name}
+                disabled={busy}
+                placeholder="例如：工作用 OpenAI"
+                onChange={(event) =>
+                  setForm((current) => ({ ...current, name: event.target.value }))
+                }
+              />
+            </span>
+          </label>
+
+          <div className="settings-field">
+            <label htmlFor="agent-provider-protocol">API 协议</label>
+            <ThemedSelect
+              id="agent-provider-protocol"
+              label="API 协议"
+              value={form.protocolId}
+              options={options}
+              disabled={busy || !options.length}
+              onValueChange={(protocolId) => {
+                const resolved = protocolId === "auto"
+                  ? selectedPreset.recommendedProtocolId
+                  : protocolId;
+                const protocol = selectedPreset.protocols?.find(
+                  (candidate) => candidate.id === resolved,
+                );
+                setForm((current) => ({
+                  ...current,
+                  protocolId,
+                  baseUrl: protocol?.baseUrl || current.baseUrl,
+                }));
+              }}
+            />
+          </div>
+
+          <label className="settings-field agent-provider-editor-wide">
+            <span>BASE_URL</span>
+            <span className="settings-input-shell settings-input-shell--text">
+              <input
+                value={form.baseUrl}
+                disabled={busy}
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck="false"
+                placeholder="https://api.example.com/v1"
+                onChange={(event) =>
+                  setForm((current) => ({ ...current, baseUrl: event.target.value }))
+                }
+              />
+            </span>
+          </label>
+
+          <label className="settings-field agent-provider-editor-wide">
+            <span>API_KEY</span>
+            <span className="settings-input-shell settings-input-shell--text">
+              <input
+                type="password"
+                value={
+                  form.apiKey
+                  || (!form.useEnvironmentKey
+                    && form.hasStoredApiKey
+                    && !editingStoredApiKey
+                    ? storedApiKeyMask
+                    : "")
+                }
+                disabled={busy || form.useEnvironmentKey}
+                autoCapitalize="none"
+                autoComplete="off"
+                spellCheck="false"
+                placeholder={
+                  form.useEnvironmentKey
+                    ? `使用 ${form.environmentVariable}`
+                    : "输入渠道 API Key"
+                }
+                onFocus={() => {
+                  if (form.hasStoredApiKey && !form.apiKey) {
+                    setEditingStoredApiKey(true);
+                  }
+                }}
+                onBlur={() => {
+                  if (form.hasStoredApiKey && !form.apiKey) {
+                    setEditingStoredApiKey(false);
+                  }
+                }}
+                onChange={(event) => {
+                  setEditingStoredApiKey(true);
+                  setForm((current) => ({ ...current, apiKey: event.target.value }));
+                }}
+              />
+            </span>
+          </label>
+
+          <div className="agent-environment-option agent-provider-editor-wide">
+            <input
+              id="agent-provider-use-environment-key"
+              type="checkbox"
+              checked={form.useEnvironmentKey}
+              disabled={busy}
+              onChange={(event) => {
+                if (event.target.checked) setEditingStoredApiKey(false);
+                setForm((current) => ({
+                  ...current,
+                  useEnvironmentKey: event.target.checked,
+                  apiKey: event.target.checked ? "" : current.apiKey,
+                }));
+              }}
+            />
+            <label htmlFor="agent-provider-use-environment-key">
+              从系统环境变量获取
+            </label>
+            <button
+              type="button"
+              className="settings-help__button"
+              aria-label="查看各渠道 API Key 环境变量名称"
+              onClick={() => setHelpOpen(true)}
+            >
+              <Question size={13} weight="bold" />
+            </button>
+            {form.useEnvironmentKey ? (
+              <small data-available={form.hasEnvironmentApiKey || undefined}>
+                {form.environmentVariable}
+              </small>
+            ) : null}
+          </div>
+
+          <label className="settings-field agent-provider-editor-wide">
+            <span>首选模型</span>
+            <span className="settings-input-shell settings-input-shell--text">
+              <input
+                value={form.modelName}
+                disabled={busy}
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck="false"
+                placeholder="测试连接后可自动选择"
+                onChange={(event) =>
+                  setForm((current) => ({ ...current, modelName: event.target.value }))
+                }
+              />
+            </span>
+            {form.models.length ? (
+              <span className="agent-provider-model-suggestions">
+                {form.models.slice(0, 8).map((model) => (
+                  <button
+                    key={model}
+                    type="button"
+                    data-selected={model === form.modelName || undefined}
+                    onClick={() =>
+                      setForm((current) => ({ ...current, modelName: model }))
+                    }
+                  >
+                    {model}
+                  </button>
+                ))}
+              </span>
+            ) : (
+              <small>测试连接会检索可用模型；也可以先手动填写。</small>
+            )}
+          </label>
+        </div>
+
+        <footer className="agent-provider-flow__actions">
+          <span
+            className="agent-config-feedback"
+            data-tone={flowFeedback?.tone}
+            role={flowFeedback?.tone === "danger" ? "alert" : "status"}
+          >
+            {flowFeedback?.text || " "}
+          </span>
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={busy || !canSaveProvider(form)}
+            onClick={() => void saveProvider({ testAfter: true })}
+          >
+            {actionState === "saving-for-test" || actionState === "testing" ? (
+              <SpinnerGap size={15} className="spin" />
+            ) : (
+              <Pulse size={15} />
+            )}
+            保存并测试
+          </button>
+          <button
+            type="button"
+            className="send-button"
+            disabled={busy || !canSaveProvider(form)}
+            onClick={() => void saveProvider()}
+          >
+            {actionState === "saving" ? <SpinnerGap size={15} className="spin" /> : null}
+            保存渠道
+          </button>
+        </footer>
+      </section>
+    );
+  };
+
+  const inFlow = view !== "list";
   return (
     <section className="settings-page agent-settings" aria-labelledby="settings-agent-title">
       <header className="settings-page__heading">
         <span>
           <p className="eyebrow">AGENT</p>
           <h3 id="settings-agent-title">Agent 配置</h3>
-          <p>配置写信助理与邮件翻译使用的模型服务。API Key 由系统凭据库保管。</p>
+          <p>管理写信助理、正文优化与邮件翻译使用的模型渠道。</p>
         </span>
       </header>
 
@@ -583,7 +910,9 @@ function AgentSettingsContent({
                 ? "正在读取配置…"
                 : loadState === "error"
                   ? "配置读取失败"
-                  : selectedPreset?.label || "选择模型供应商"}
+                  : defaultProvider
+                    ? `${defaultProvider.name} · ${defaultProvider.modelName}`
+                    : `${registry.providers.length} 个渠道 · 尚未设置默认模型`}
             </small>
           </span>
           <CaretDown size={17} aria-hidden="true" />
@@ -596,300 +925,110 @@ function AgentSettingsContent({
                 <SpinnerGap size={16} className="spin" />
                 正在读取模型配置…
               </p>
+            ) : loadState === "error" ? (
+              <div className="agent-config-failure" role="alert">
+                <span>
+                  <strong>模型配置暂时无法读取</strong>
+                  <small>其他设置仍可继续使用。</small>
+                </span>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => {
+                    setLoadState("loading");
+                    loadRegistry()
+                      .then((next) => {
+                        setRegistry(next);
+                        setLoadState("ready");
+                      })
+                      .catch(() => setLoadState("error"));
+                  }}
+                >
+                  重新加载
+                </button>
+              </div>
+            ) : view === "presets" ? (
+              renderPresetPicker()
+            ) : view === "edit" ? (
+              renderProviderEditor()
             ) : (
-              <>
-                <fieldset className="agent-provider-presets" disabled={busy}>
-                  <legend>预设供应商</legend>
-                  <div>
-                    {form.presets.map((preset) => (
-                      <button
-                        key={preset.id}
-                        type="button"
-                        data-selected={preset.id === form.providerId}
-                        onClick={() => chooseProvider(preset)}
-                      >
-                        {preset.label}
-                      </button>
-                    ))}
-                  </div>
-                </fieldset>
-
-                <div className="agent-config-fields">
-                  <div className="settings-field agent-protocol-field">
-                    <label htmlFor="agent-api-protocol">API 协议</label>
-                    <ThemedSelect
-                      id="agent-api-protocol"
-                      label="API 协议"
-                      value={form.protocolId}
-                      options={availableProtocolOptions}
-                      disabled={busy || availableProtocolOptions.length === 0}
-                      onValueChange={chooseProtocol}
-                    />
-                    <small>
-                      自动会跟随当前供应商的推荐协议；切换协议后会分别保留地址、模型和检索结果。
-                    </small>
-                  </div>
-
-                  <label className="settings-field">
-                    <span>BASE_URL</span>
-                    <span className="settings-input-shell settings-input-shell--text">
-                      <input
-                        value={form.baseUrl}
-                        disabled={busy}
-                        autoCapitalize="none"
-                        autoCorrect="off"
-                        spellCheck="false"
-                        placeholder="https://api.example.com/v1"
-                        onChange={(event) =>
-                          updateField("baseUrl", event.target.value, {
-                            resetModels: true,
-                          })
-                        }
-                      />
-                    </span>
-                  </label>
-
-                  <label className="settings-field">
-                    <span>API_KEY</span>
-                    <span className="settings-input-shell settings-input-shell--text">
-                      <input
-                        type="password"
-                        value={
-                          form.apiKey
-                          || (!form.useEnvironmentKey
-                            && form.hasStoredApiKey
-                            && !editingStoredApiKey
-                            ? storedApiKeyMask
-                            : "")
-                        }
-                        disabled={busy || form.useEnvironmentKey}
-                        autoCapitalize="none"
-                        autoComplete="off"
-                        spellCheck="false"
-                        placeholder={
-                          form.useEnvironmentKey
-                            ? `使用 ${form.environmentVariable}`
-                            : "输入供应商 API Key"
-                        }
-                        onFocus={() => {
-                          if (form.hasStoredApiKey && !form.apiKey) {
-                            setEditingStoredApiKey(true);
-                          }
-                        }}
-                        onBlur={() => {
-                          if (form.hasStoredApiKey && !form.apiKey) {
-                            setEditingStoredApiKey(false);
-                          }
-                        }}
-                        onChange={(event) => {
-                          setEditingStoredApiKey(true);
-                          updateField("apiKey", event.target.value, {
-                            resetModels: true,
-                          });
-                        }}
-                      />
-                    </span>
-                  </label>
-
-                  <div className="agent-environment-option">
-                    <input
-                      id="agent-use-environment-key"
-                      type="checkbox"
-                      checked={form.useEnvironmentKey}
-                      disabled={busy}
-                      onChange={(event) => {
-                        if (event.target.checked) {
-                          setEditingStoredApiKey(false);
-                        }
-                        setForm((current) => ({
-                          ...current,
-                          useEnvironmentKey: event.target.checked,
-                          apiKey: event.target.checked ? "" : current.apiKey,
-                        }));
-                        markConfigurationEdited();
-                        setFeedback(null);
-                        resetModelResults();
-                      }}
-                    />
-                    <label htmlFor="agent-use-environment-key">从系统环境变量获取</label>
-                    <button
-                      type="button"
-                      className="settings-help__button"
-                      aria-label="查看各供应商 API Key 环境变量名称"
-                      aria-haspopup="dialog"
-                      aria-expanded={helpOpen}
-                      onClick={(event) => {
-                        event.preventDefault();
-                        setHelpOpen(true);
-                      }}
-                    >
-                      <Question size={13} weight="bold" />
-                    </button>
-                    {form.useEnvironmentKey ? (
-                      <small data-available={form.hasEnvironmentApiKey || undefined}>
-                        {form.hasEnvironmentApiKey ? "获取成功" : "保存后需重启应用以读取"}
-                      </small>
-                    ) : null}
-                  </div>
-
-                  <div className="settings-field">
-                    <label htmlFor="agent-model-name">MODEL_NAME</label>
-                    <span className="agent-model-control" ref={modelMenuRef}>
-                      <span className="settings-input-shell settings-input-shell--text">
-                        <input
-                          id="agent-model-name"
-                          role="combobox"
-                          aria-autocomplete="list"
-                          aria-expanded={modelMenuOpen}
-                          aria-controls={models.length ? "agent-model-options" : undefined}
-                          value={form.modelName}
-                          disabled={busy}
-                          autoCapitalize="none"
-                          autoCorrect="off"
-                          spellCheck="false"
-                          placeholder="输入或检索模型名称"
-                          onChange={(event) =>
-                            updateField("modelName", event.target.value)
-                          }
-                        />
-                      </span>
-                      <IconButton
-                        className="agent-model-control__toggle"
-                        label="展开可用模型"
-                        disabled={busy || models.length === 0}
-                        onClick={() => setModelMenuOpen((current) => !current)}
-                      >
-                        <CaretDown size={15} />
-                      </IconButton>
-                      <button
-                        type="button"
-                        className="agent-model-control__search"
-                        disabled={busy || !form.baseUrl.trim()}
-                        onClick={() => void retrieveModels()}
-                      >
-                        {actionState === "models" ? (
-                          <SpinnerGap size={15} className="spin" />
-                        ) : (
-                          <MagnifyingGlass size={15} />
-                        )}
-                        检索可用模型
-                      </button>
-                      {modelMenuOpen && models.length ? (
-                        <div
-                          id="agent-model-options"
-                          className="agent-model-options vertical-scroll-surface"
-                          role="listbox"
-                          aria-label="可用模型"
-                          style={{ maxHeight: `${modelMenuLayout.maxHeight}px` }}
-                        >
-                          {models.map((model) => (
-                            <button
-                              key={model}
-                              type="button"
-                              role="option"
-                              aria-selected={model === form.modelName}
-                              onClick={() => {
-                                updateField("modelName", model);
-                                setModelMenuOpen(false);
-                              }}
-                            >
-                              <span>{model}</span>
-                              {model === form.modelName ? <CheckCircle size={15} weight="fill" /> : null}
-                            </button>
-                          ))}
-                        </div>
-                      ) : null}
-                    </span>
-                    <small>可直接选择预设模型；检索成功后会更新并保存当前供应商的列表。</small>
-                  </div>
-
-                </div>
-
-                <div className="agent-config-actions">
-                  <span
-                    className="agent-config-feedback"
-                    data-tone={feedback?.tone}
-                    role={feedback?.tone === "danger" ? "alert" : "status"}
-                    aria-live="polite"
-                  >
-                    {feedback?.text || " "}
-                  </span>
-                  <button
-                    type="button"
-                    className="secondary-button"
-                    disabled={busy || !form.modelName.trim()}
-                    onClick={() => void testConnection()}
-                  >
-                    {actionState === "testing" ? <SpinnerGap size={15} className="spin" /> : null}
-                    测试连接
-                  </button>
-                  <button
-                    type="button"
-                    className="send-button"
-                    disabled={
-                      busy
-                      || loadState !== "ready"
-                      || !canSaveConfiguration(form)
-                    }
-                    onClick={() => void saveConfiguration()}
-                  >
-                    {actionState === "saving" ? <SpinnerGap size={15} className="spin" /> : null}
-                    保存配置
-                  </button>
-                </div>
-              </>
+              renderProviderList()
             )}
           </div>
         ) : null}
       </section>
 
-      <section
-        className="settings-preference-card agent-preference-card"
-        aria-label="AI 翻译语言设置"
-      >
-        <div className="settings-preference-row agent-translation-language">
-          <span>
-            <strong>AI 翻译语言</strong>
-            <small
-              className="agent-preference-feedback"
-              data-tone={translationFeedback?.tone}
-              role={translationFeedback?.tone === "danger" ? "alert" : "status"}
-              aria-live="polite"
-            >
-              {translationFeedback?.text || "选择阅读邮件时 AI 默认翻译成的语言。"}
-            </small>
-          </span>
-          <ThemedSelect
-            id="agent-translation-language"
-            label="AI 翻译语言"
-            value={form.translationLanguage}
-            options={form.translationLanguages}
-            disabled={loadState !== "ready" || translationState === "saving"}
-            onValueChange={(value) => void updateTranslationLanguage(value)}
-          />
-        </div>
-      </section>
+      {!inFlow ? (
+        <>
+          <section
+            className="settings-preference-card agent-preference-card"
+            aria-label="AI 翻译语言设置"
+          >
+            <div className="settings-preference-row agent-translation-language">
+              <span>
+                <strong>AI 翻译语言</strong>
+                <small
+                  className="agent-preference-feedback"
+                  data-tone={translationFeedback?.tone}
+                  role={translationFeedback?.tone === "danger" ? "alert" : "status"}
+                >
+                  {translationFeedback?.text || "选择阅读邮件时 AI 默认翻译成的语言。"}
+                </small>
+              </span>
+              <ThemedSelect
+                id="agent-translation-language"
+                label="AI 翻译语言"
+                value={registry.translationLanguage}
+                options={registry.translationLanguages}
+                disabled={loadState !== "ready" || translationState === "saving"}
+                onValueChange={(value) => void updateTranslationLanguage(value)}
+              />
+            </div>
+          </section>
 
-      <section
-        className="settings-preference-card agent-preference-card"
-        aria-label="AI 助理默认状态"
-      >
-        <label className="settings-preference-row settings-preference-row--toggle agent-assistant-default">
-          <span>
-            <strong>默认开启 AI 助理</strong>
-            <small>打开写信界面时自动展开右侧助理。</small>
-          </span>
-          <input
-            type="checkbox"
-            checked={Boolean(defaultAiAssistantOpen)}
-            onChange={(event) =>
-              onDefaultAiAssistantOpenChange(event.target.checked)
-            }
-          />
-        </label>
-      </section>
+          <section
+            className="settings-preference-card agent-preference-card"
+            aria-label="AI 助理默认状态"
+          >
+            <label className="settings-preference-row settings-preference-row--toggle agent-assistant-default">
+              <span>
+                <strong>默认开启 AI 助理</strong>
+                <small>打开写信界面时自动展开右侧助理。</small>
+              </span>
+              <input
+                type="checkbox"
+                checked={Boolean(defaultAiAssistantOpen)}
+                onChange={(event) =>
+                  onDefaultAiAssistantOpenChange(event.target.checked)
+                }
+              />
+            </label>
+          </section>
 
-      {children}
+          {children}
+        </>
+      ) : null}
+
+      <ConsequentialConfirmDialog
+        open={Boolean(deleteTarget)}
+        title="删除 AI 渠道？"
+        description={
+          deleteTarget?.isDefault
+            ? `“${deleteTarget?.name}”正在作为默认模型。删除后默认项会清空，但其他渠道不受影响。`
+            : `将删除“${deleteTarget?.name}”的配置、模型记录和系统凭据。`
+        }
+        icon={<Trash size={22} weight="duotone" />}
+        tone="danger"
+        confirmLabel="删除渠道"
+        pendingLabel="正在删除渠道…"
+        isPending={actionState.startsWith("deleting:")}
+        errorMessage={deleteError}
+        onCancel={() => {
+          setDeleteTarget(null);
+          setDeleteError(null);
+        }}
+        onConfirm={() => void confirmDelete()}
+      />
 
       {helpOpen ? (
         <div className="confirm-layer" onPointerDown={helpFocus.onBackdropPointerDown}>
@@ -913,10 +1052,10 @@ function AgentSettingsContent({
             </header>
             <h2 id="agent-environment-title">API Key 环境变量</h2>
             <p id="agent-environment-description">
-              在系统中设置对应变量后重启 Mine Mail。启用此选项时，输入框中的密钥不会被使用。
+              设置变量后重启 Mine Mail。启用环境变量时，表单中的密钥不会被使用。
             </p>
             <dl className="agent-environment-list vertical-scroll-surface">
-              {form.presets.map((preset) => (
+              {registry.presets.map((preset) => (
                 <div key={preset.id}>
                   <dt>{preset.label}</dt>
                   <dd><code>{preset.environmentVariable}</code></dd>
@@ -961,7 +1100,7 @@ class AgentSettingsErrorBoundary extends Component {
           <span>
             <p className="eyebrow">AGENT</p>
             <h3 id="settings-agent-error-title">Agent 配置</h3>
-            <p>配置写信助理与邮件翻译使用的模型服务。</p>
+            <p>管理写信助理与邮件翻译使用的模型服务。</p>
           </span>
         </header>
         <section className="agent-config-card agent-config-failure" role="alert">

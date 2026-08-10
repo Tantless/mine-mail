@@ -316,18 +316,25 @@ product decision changes.
   consumes it. After a successful save, React shows only a fixed non-secret mask
   derived from `has_stored_api_key`; Rust never returns a key to React, and the
   browser demo remains offline and deterministic.
-- Agent configuration supports custom services plus presets for DeepSeek, Kimi,
+- Agent configuration supports any number of local Provider instances. Multiple
+  instances may share one preset while keeping independent stable IDs, names,
+  protocols, base URLs, preferred models, credential sources, discovery caches,
+  ordering, and health state. Presets cover custom services, DeepSeek, Kimi,
   OpenAI, Anthropic, Qwen, Xiaomi MiMo, MiniMax, ModelScope, Doubao Seed, GLM,
   and OpenRouter. Every preset exposes only the protocols implemented by both
   that service and Mine Mail: OpenAI Responses, OpenAI Chat Completions, and/or
-  Anthropic Messages. **自动** normally resolves to the preset recommendation;
-  reader translation may choose another already configured protocol for the same
-  Provider and model before a request when a fresh tested capability profile is
-  strictly better. An explicit selection remains explicit. Mine Mail never
-  retries a failed request through another protocol because that could duplicate
-  billed work or tool effects. An unconfigured installation starts on **自定义** with empty service
-  and model fields, and does not opt into reading an API Key from the environment.
-  Existing provider configurations migrate to their previous wire protocol.
+  Anthropic Messages. **自动** resolves to that instance's preset recommendation;
+  an explicit protocol remains explicit. Mine Mail never retries a failed request
+  through another protocol or Provider because that could duplicate billed work
+  or tool effects. A fresh installation has an empty Provider list and does not
+  opt into reading an API Key from the environment.
+- Exactly zero or one Provider instance is the default route. The default binds
+  one exact instance, protocol, and preferred model, powers reader translation
+  and standalone compose optimization, and initializes a newly opened compose
+  assistant. Choosing another model in compose overrides only that compose
+  assistant. Deleting the default clears it rather than silently choosing a
+  replacement. The legacy active Provider becomes one ordered instance and its
+  selected model becomes the default during migration.
 - The same configured Provider powers reader translation. **AI 翻译语言** is a
   persisted reading preference, defaults to Simplified Chinese, and offers
   common languages under their native display names. It supplies the initial
@@ -360,27 +367,31 @@ product decision changes.
   larger unit remains intact. A failed or timed-out
   unit retains its original text while other valid units remain usable; the reader
   still updates only after Rust validates and merges the available results.
-- Valid Agent configuration edits persist automatically after a short quiet
-  period. Incomplete transient input remains local and does not produce repeated
-  failures. The manual save action remains available for immediate persistence
-  and explicit retry after an automatic-save failure. Selecting an already
-  configured Provider restores and activates that Provider in one action.
-- Rust persists the active provider, its selected protocol, and translation
-  language. Each provider/protocol pair has independent base URL, model name,
-  environment-key preference, and discovered-model list in the AI SQLite store;
-  the Provider API Key remains Provider-scoped in the OS credential store. Each
-  preset also provides an immediately selectable built-in model list. A
-  successful model-discovery request replaces only the current pair's stored
-  list across restarts. Environment-key mode ignores any form value and reads
-  the preset's documented variable after application startup.
+- Provider add/edit is an embedded Settings child flow with local **保存渠道**
+  and **保存并测试** actions. Incomplete input remains local. Rust persists
+  non-secret instance data in the AI SQLite store, while a manual API Key is
+  scoped by stable Provider-instance ID in the OS credential store. Environment-
+  key mode ignores any form value and reads the preset's documented variable
+  after application startup. React receives only a fixed non-secret credential
+  mask state.
+- Provider order is persisted and resolves duplicate exact model names in the
+  compose catalog: the highest successfully refreshed instance wins. Opening
+  compose requests model lists from every configured instance independently and
+  in parallel. The catalog contains only structurally valid models returned in
+  that refresh; an unavailable, expired, or revoked instance contributes zero
+  models, records only instance-local status, and never blocks another instance
+  or emits a global error. A turn binds its resolved instance and model before
+  starting and never fails over after an error.
 - Provider base URLs must use HTTPS, except loopback-only HTTP for local
   development, and cannot contain embedded credentials, query parameters, or
   fragments. Model discovery and connection tests run in Rust with bounded
-  responses and privacy-safe logs. A connection test performs one minimal model
-  request, reports that request's Rust-observed latency, and then performs a
+  responses and privacy-safe logs. An explicit instance test first refreshes the
+  model list, then performs one minimal request with the preferred model or first
+  returned model, reports that request's Rust-observed latency, and performs a
   best-effort structured-output capability probe whose failure does not turn a
   successful connection test into a failure. Capability profiles are scoped by
-  Provider, protocol, base URL, and model, cached for seven days, and combine
+  Provider instance configuration, protocol, base URL, and model, cached for
+  seven days, and combine
   presets with tested and runtime-observed support for structured output,
   streaming, and reasoning controls. They never contain credentials or mail
   content. A model list alone does not prove those capabilities.

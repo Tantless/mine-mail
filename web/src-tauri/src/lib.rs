@@ -33,10 +33,12 @@ use account::{
     RemoveAccountRequest, RemoveAccountResultDto,
 };
 use ai::{
-    AiConfigDto, AiConnectionTestDto, AiContact, AiExecutionContext, AiModelListDto, AiRuntime,
-    AiSessionDto, AiSessionListItemDto, AiTranslationRequest, AiTranslationResultDto, AiTurnEvent,
-    AiTurnRequest, AiTurnResultDto, CheckAiConnectionRequest, ResolveAiProposalRequest,
-    ResolveAiProposalResultDto, SaveAiConfigRequest, record_patch_outcome,
+    AiConfigDto, AiConnectionTestDto, AiContact, AiExecutionContext, AiModelCatalogDto,
+    AiModelListDto, AiProviderRegistryDto, AiProviderTestResultDto, AiRuntime, AiSessionDto,
+    AiSessionListItemDto, AiTranslationRequest, AiTranslationResultDto, AiTurnEvent, AiTurnRequest,
+    AiTurnResultDto, CheckAiConnectionRequest, ReorderAiProviderInstancesRequest,
+    ResolveAiProposalRequest, ResolveAiProposalResultDto, SaveAiConfigRequest,
+    SaveAiProviderInstanceRequest, record_patch_outcome,
 };
 use contacts::{ContactDirectoryDto, ContactRuntime};
 use desktop::{
@@ -1274,6 +1276,63 @@ fn get_ai_config(ai: State<'_, AiRuntime>) -> CommandResult<AiConfigDto> {
 }
 
 #[tauri::command]
+fn get_ai_provider_registry(ai: State<'_, AiRuntime>) -> CommandResult<AiProviderRegistryDto> {
+    diagnostics::command(
+        "get_ai_provider_registry",
+        DiagnosticFields::default(),
+        || ai.get_provider_registry(),
+    )
+}
+
+#[tauri::command]
+fn save_ai_provider_instance(
+    ai: State<'_, AiRuntime>,
+    request: SaveAiProviderInstanceRequest,
+) -> CommandResult<AiProviderRegistryDto> {
+    diagnostics::command(
+        "save_ai_provider_instance",
+        DiagnosticFields::default(),
+        || ai.save_provider_instance(request),
+    )
+}
+
+#[tauri::command]
+fn delete_ai_provider_instance(
+    ai: State<'_, AiRuntime>,
+    provider_instance_id: String,
+) -> CommandResult<AiProviderRegistryDto> {
+    diagnostics::command(
+        "delete_ai_provider_instance",
+        DiagnosticFields::default(),
+        || ai.delete_provider_instance(&provider_instance_id),
+    )
+}
+
+#[tauri::command]
+fn reorder_ai_provider_instances(
+    ai: State<'_, AiRuntime>,
+    request: ReorderAiProviderInstancesRequest,
+) -> CommandResult<AiProviderRegistryDto> {
+    diagnostics::command(
+        "reorder_ai_provider_instances",
+        DiagnosticFields::default(),
+        || ai.reorder_provider_instances(request),
+    )
+}
+
+#[tauri::command]
+fn set_default_ai_provider(
+    ai: State<'_, AiRuntime>,
+    provider_instance_id: String,
+) -> CommandResult<AiProviderRegistryDto> {
+    diagnostics::command(
+        "set_default_ai_provider",
+        DiagnosticFields::default(),
+        || ai.set_default_provider_instance(&provider_instance_id),
+    )
+}
+
+#[tauri::command]
 fn save_ai_config(
     ai: State<'_, AiRuntime>,
     request: SaveAiConfigRequest,
@@ -1314,6 +1373,34 @@ async fn test_ai_connection(
     diagnostics::command_async("test_ai_connection", DiagnosticFields::default(), async {
         ai.inner().clone().test_connection(request).await
     })
+    .await
+}
+
+#[tauri::command]
+async fn test_ai_provider_instance(
+    ai: State<'_, AiRuntime>,
+    provider_instance_id: String,
+) -> CommandResult<AiProviderTestResultDto> {
+    diagnostics::command_async(
+        "test_ai_provider_instance",
+        DiagnosticFields::default(),
+        async {
+            ai.inner()
+                .clone()
+                .test_provider_instance(&provider_instance_id)
+                .await
+        },
+    )
+    .await
+}
+
+#[tauri::command]
+async fn refresh_ai_model_catalog(ai: State<'_, AiRuntime>) -> CommandResult<AiModelCatalogDto> {
+    diagnostics::command_async(
+        "refresh_ai_model_catalog",
+        DiagnosticFields::default(),
+        async { ai.inner().clone().refresh_model_catalog().await },
+    )
     .await
 }
 
@@ -3070,10 +3157,17 @@ pub fn run() {
             list_ai_sessions,
             get_ai_session,
             get_ai_config,
+            get_ai_provider_registry,
+            save_ai_provider_instance,
+            delete_ai_provider_instance,
+            reorder_ai_provider_instances,
+            set_default_ai_provider,
             save_ai_config,
             set_ai_translation_language,
             list_ai_models,
             test_ai_connection,
+            test_ai_provider_instance,
+            refresh_ai_model_catalog,
             translate_mail_content,
             run_ai_turn,
             cancel_ai_turn,

@@ -88,6 +88,33 @@ describe("compose AI conversation header", () => {
   });
 });
 
+describe("compose AI mode and model selector alignment", () => {
+  it("keeps the model trigger on the same adaptive flat capsule as mode", () => {
+    const sharedTrigger = declarationsFor(
+      "\\.compose-ai-mode-select \\.themed-select__trigger,\\s*\\.compose-ai-model-select \\.themed-select__trigger",
+    );
+
+    expect(sharedTrigger).toMatch(/width:\s*max-content/);
+    expect(sharedTrigger).toMatch(/border-radius:\s*999px/);
+    expect(sharedTrigger).toMatch(/background:\s*transparent/);
+    expect(sharedTrigger).toMatch(/box-shadow:\s*none/);
+  });
+
+  it("lets the upward model menu grow slightly right and scrolls long rows", () => {
+    const modelMenu = declarationsFor(
+      "\\.compose-ai-model-select \\.themed-select__menu",
+    );
+
+    expect(modelMenu).toMatch(/left:\s*0/);
+    expect(modelMenu).toMatch(/width:\s*calc\(100% \+ 40px\)/);
+    expect(modelMenu).toMatch(/max-width:\s*calc\(100% \+ 40px\)/);
+    expect(modelMenu).toMatch(/overflow-x:\s*auto/);
+    expect(
+      declarationsFor("\\.compose-ai-model-select \\.themed-select__option"),
+    ).toMatch(/width:\s*max-content[\s\S]*min-width:\s*100%/);
+  });
+});
+
 describe("isolated mail sizing contract", () => {
   it("uses the placeholder height only until the measured document is ready", () => {
     expect(declarationsFor("\\.html-message__document")).toMatch(
@@ -536,6 +563,32 @@ describe("storage composition styling", () => {
     expect(styles).not.toContain(".settings-storage-legend");
     expect(styles).not.toContain(".settings-storage-usage__row");
     expect(styles).not.toContain("settings-storage-usage__row progress");
+  });
+});
+
+describe("Agent Provider mark and search focus policy", () => {
+  it("centers Provider marks without forcing avatar tiles", () => {
+    const providerMark = declarationsFor(
+      "\\.agent-provider-mark\\.profile-avatar",
+    );
+
+    expect(providerMark).toMatch(/display:\s*grid/);
+    expect(providerMark).toMatch(/place-items:\s*center/);
+    expect(providerMark).toMatch(/border:\s*0/);
+    expect(providerMark).toMatch(/background:\s*transparent !important/);
+    expect(providerMark).toMatch(/box-shadow:\s*none/);
+  });
+
+  it("uses one restrained neutral focus treatment for Provider search", () => {
+    const searchFocus = declarationsFor(
+      "\\.agent-provider-search:focus-within",
+    );
+
+    expect(searchFocus).not.toMatch(/--focus-ring/);
+    expect(searchFocus).toMatch(/var\(--color-text-muted\)/);
+    expect(
+      declarationsFor("\\.agent-provider-search input:focus-visible"),
+    ).toMatch(/box-shadow:\s*none/);
   });
 });
 

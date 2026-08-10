@@ -28,11 +28,25 @@ function minimizedComposeTop() {
 export function boundedDropdownLayout(
   anchorRect,
   {
+    placement = "below",
     preferredMaxHeight,
     viewportHeight,
     obstructionTop = null,
   },
 ) {
+  if (placement === "above") {
+    const roomAbove = Math.max(
+      0,
+      anchorRect.top - viewportEdgeInset - dropdownGap,
+    );
+    return {
+      maxHeight: Math.max(
+        0,
+        Math.floor(Math.min(preferredMaxHeight, roomAbove)),
+      ),
+    };
+  }
+
   const viewportBottom = Math.max(viewportEdgeInset, viewportHeight - viewportEdgeInset);
   const lowerBoundary = Math.min(
     viewportBottom,
@@ -48,6 +62,7 @@ export function boundedDropdownLayout(
 export function useBoundedDropdown({
   open,
   anchorRef,
+  placement = "below",
   preferredMaxHeight,
 }) {
   const [layout, setLayout] = useState(() => ({
@@ -59,6 +74,7 @@ export function useBoundedDropdown({
 
     const updateLayout = () => {
       const next = boundedDropdownLayout(anchorRef.current.getBoundingClientRect(), {
+        placement,
         preferredMaxHeight,
         viewportHeight: window.innerHeight,
         obstructionTop: minimizedComposeTop(),
@@ -90,7 +106,7 @@ export function useBoundedDropdown({
       panels.forEach((panel) => panel.removeEventListener("transitionend", updateLayout));
       resizeObserver?.disconnect();
     };
-  }, [anchorRef, open, preferredMaxHeight]);
+  }, [anchorRef, open, placement, preferredMaxHeight]);
 
   return layout;
 }

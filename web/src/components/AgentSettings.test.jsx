@@ -10,7 +10,6 @@ const presets = [
     baseUrl: "",
     environmentVariable: "AI_API_KEY",
     models: [],
-    protocolId: "auto",
     recommendedProtocolId: "openai_chat_completions",
     protocols: [{
       id: "openai_chat_completions",
@@ -19,24 +18,30 @@ const presets = [
       recommended: true,
       models: [],
     }],
-    configurations: [],
   },
   {
-    id: "deepseek",
-    label: "DeepSeek",
-    baseUrl: "https://api.deepseek.com",
-    environmentVariable: "DEEPSEEK_API_KEY",
-    models: ["deepseek-v4-flash", "deepseek-v4-pro"],
-    protocolId: "auto",
-    recommendedProtocolId: "openai_chat_completions",
-    protocols: [{
-      id: "openai_chat_completions",
-      label: "OpenAI Chat Completions",
-      baseUrl: "https://api.deepseek.com",
-      recommended: true,
-      models: ["deepseek-v4-flash", "deepseek-v4-pro"],
-    }],
-    configurations: [],
+    id: "openai",
+    label: "OpenAI",
+    baseUrl: "https://api.openai.com/v1",
+    environmentVariable: "OPENAI_API_KEY",
+    models: ["gpt-5.6-terra", "gpt-5.6-sol"],
+    recommendedProtocolId: "openai_responses",
+    protocols: [
+      {
+        id: "openai_responses",
+        label: "OpenAI Responses",
+        baseUrl: "https://api.openai.com/v1",
+        recommended: true,
+        models: ["gpt-5.6-terra", "gpt-5.6-sol"],
+      },
+      {
+        id: "openai_chat_completions",
+        label: "OpenAI Chat Completions",
+        baseUrl: "https://api.openai.com/v1",
+        recommended: false,
+        models: ["gpt-5.6-terra"],
+      },
+    ],
   },
   {
     id: "kimi",
@@ -44,7 +49,6 @@ const presets = [
     baseUrl: "https://api.moonshot.cn/v1",
     environmentVariable: "MOONSHOT_API_KEY",
     models: ["kimi-k2.6", "kimi-k3"],
-    protocolId: "auto",
     recommendedProtocolId: "openai_chat_completions",
     protocols: [{
       id: "openai_chat_completions",
@@ -53,55 +57,70 @@ const presets = [
       recommended: true,
       models: ["kimi-k2.6", "kimi-k3"],
     }],
-    configurations: [],
   },
 ];
 
-function configuration(overrides = {}) {
+function configuredProvider(overrides = {}) {
   return {
-    providerId: "deepseek",
+    id: "11111111-1111-4111-8111-111111111111",
+    providerId: "openai",
+    providerLabel: "OpenAI",
+    name: "Work OpenAI",
     protocolId: "auto",
-    resolvedProtocolId: "openai_chat_completions",
-    baseUrl: "https://api.deepseek.com",
-    modelName: "deepseek-v4-pro",
+    resolvedProtocolId: "openai_responses",
+    protocolLabel: "OpenAI Responses",
+    baseUrl: "https://api.openai.com/v1",
+    modelName: "gpt-5.6-terra",
     useEnvironmentKey: false,
     hasStoredApiKey: true,
     hasEnvironmentApiKey: false,
-    environmentVariable: "DEEPSEEK_API_KEY",
+    environmentVariable: "OPENAI_API_KEY",
+    models: ["gpt-5.6-terra", "gpt-5.6-sol"],
+    sortOrder: 0,
+    isDefault: true,
+    status: "available",
+    latencyMs: 86,
+    checkedAtMs: 1,
+    ...overrides,
+  };
+}
+
+function registry(overrides = {}) {
+  return {
+    providers: [configuredProvider()],
     presets,
+    defaultProviderInstanceId: "11111111-1111-4111-8111-111111111111",
     translationLanguage: "zh-Hans",
     translationLanguages: [
       { value: "zh-Hans", label: "中文（简体）" },
-      { value: "zh-Hant", label: "中文（繁體）" },
       { value: "en", label: "English" },
       { value: "ja", label: "日本語" },
-      { value: "ru", label: "Русский" },
-      { value: "es", label: "Español" },
-      { value: "fr", label: "Français" },
     ],
     ...overrides,
   };
 }
 
 function client(overrides = {}) {
+  const current = registry();
   return {
-    getAiConfig: vi.fn().mockResolvedValue(configuration()),
-    saveAiConfig: vi.fn().mockImplementation(async (request) =>
-      configuration({
-        ...request,
-        hasStoredApiKey: true,
-        environmentVariable:
-          presets.find((preset) => preset.id === request.providerId)
-            ?.environmentVariable || "AI_API_KEY",
+    getAiProviderRegistry: vi.fn().mockResolvedValue(current),
+    saveAiProviderInstance: vi.fn().mockResolvedValue(current),
+    testAiProviderInstance: vi.fn().mockResolvedValue({
+      provider: configuredProvider(),
+      modelCount: 2,
+    }),
+    setDefaultAiProvider: vi.fn().mockResolvedValue(current),
+    deleteAiProviderInstance: vi.fn().mockResolvedValue(
+      registry({
+        providers: [],
+        defaultProviderInstanceId: null,
       }),
     ),
-    setAiTranslationLanguage: vi.fn().mockImplementation(async (languageId) =>
-      configuration({ translationLanguage: languageId }),
-    ),
-    listAiModels: vi
-      .fn()
-      .mockResolvedValue(["deepseek-v4-flash", "deepseek-v4-pro"]),
-    testAiConnection: vi.fn().mockResolvedValue({ latencyMs: 86 }),
+    reorderAiProviderInstances: vi.fn().mockResolvedValue(current),
+    setAiTranslationLanguage: vi.fn().mockImplementation(async (languageId) => ({
+      translationLanguage: languageId,
+      translationLanguages: current.translationLanguages,
+    })),
     ...overrides,
   };
 }
@@ -117,442 +136,127 @@ async function expandModelConfiguration(user) {
 describe("AgentSettings", () => {
   afterEach(() => cleanup());
 
-  it("keeps model configuration collapsed while exposing separate AI preferences", async () => {
+  it("keeps the provider manager collapsed and shows the default route summary", async () => {
     render(<AgentSettings client={client()} />);
 
     const disclosure = await screen.findByRole("button", { name: /模型配置/ });
     expect(disclosure.getAttribute("aria-expanded")).toBe("false");
-    expect(screen.queryByLabelText("BASE_URL")).toBeNull();
-    const translationLanguage = screen.getByRole("combobox", {
-      name: "AI 翻译语言",
-    });
-    const assistantDefault = screen.getByRole("checkbox", {
-      name: /默认开启 AI 助理/,
-    });
-    const translationCard = translationLanguage.closest(".settings-preference-card");
-    const assistantCard = assistantDefault.closest(".settings-preference-card");
-    expect(translationCard).toBeTruthy();
-    expect(assistantCard).toBeTruthy();
-    expect(translationCard).not.toBe(assistantCard);
+    expect(disclosure.textContent).toContain("Work OpenAI · gpt-5.6-terra");
+    expect(screen.getByRole("combobox", { name: "AI 翻译语言" })).toBeTruthy();
+    expect(screen.getByRole("checkbox", { name: /默认开启 AI 助理/ })).toBeTruthy();
   });
 
-  it("shows an unconfigured custom provider with manual API Key entry", async () => {
-    const user = userEvent.setup();
-    const api = client({
-      getAiConfig: vi.fn().mockResolvedValue(
-        configuration({
-          providerId: "custom",
-          baseUrl: "",
-          modelName: "",
-          useEnvironmentKey: false,
-          hasStoredApiKey: false,
-          environmentVariable: "AI_API_KEY",
-        }),
-      ),
-    });
-    render(<AgentSettings client={api} />);
-    await expandModelConfiguration(user);
-
-    const customProvider = await screen.findByRole("button", { name: "自定义" });
-    expect(customProvider.getAttribute("data-selected")).toBe("true");
-    expect(screen.getByLabelText("BASE_URL").value).toBe("");
-    expect(screen.getByLabelText("MODEL_NAME").value).toBe("");
-    expect(screen.getByLabelText("API_KEY").disabled).toBe(false);
-    expect(
-      screen.getByRole("checkbox", { name: "从系统环境变量获取" }).checked,
-    ).toBe(false);
-  });
-
-  it("turns off environment-key mode when choosing another provider", async () => {
-    const user = userEvent.setup();
-    const api = client({
-      getAiConfig: vi.fn().mockResolvedValue(
-        configuration({
-          useEnvironmentKey: true,
-          hasEnvironmentApiKey: true,
-        }),
-      ),
-    });
-    render(<AgentSettings client={api} />);
-    await expandModelConfiguration(user);
-
-    await user.click(await screen.findByRole("button", { name: "Kimi" }));
-
-    expect(
-      screen.getByRole("checkbox", { name: "从系统环境变量获取" }).checked,
-    ).toBe(false);
-    expect(screen.getByLabelText("API_KEY").disabled).toBe(false);
-  });
-
-  it("restores and activates each provider's saved configuration when switching", async () => {
-    const user = userEvent.setup();
-    const rememberedPresets = presets.map((preset) => {
-      if (preset.id === "deepseek") {
-        return {
-          ...preset,
-          configuration: {
-            baseUrl: "https://gateway.example.com/deepseek",
-            modelName: "deepseek-v4-pro",
-            useEnvironmentKey: true,
-            hasStoredApiKey: false,
-            hasEnvironmentApiKey: true,
-          },
-        };
-      }
-      if (preset.id === "custom") {
-        return {
-          ...preset,
-          configuration: {
-            baseUrl: "http://localhost:11434/v1",
-            modelName: "local-mail-model",
-            useEnvironmentKey: false,
-            hasStoredApiKey: true,
-            hasEnvironmentApiKey: false,
-          },
-        };
-      }
-      return preset;
-    });
-    const api = client({
-      getAiConfig: vi.fn().mockResolvedValue(
-        configuration({ presets: rememberedPresets }),
-      ),
-      saveAiConfig: vi.fn().mockImplementation(async (request) =>
-        configuration({
-          ...request,
-          hasStoredApiKey: request.providerId === "custom",
-          hasEnvironmentApiKey: request.providerId === "deepseek",
-          environmentVariable:
-            rememberedPresets.find((preset) => preset.id === request.providerId)
-              ?.environmentVariable || "AI_API_KEY",
-          presets: rememberedPresets,
-        }),
-      ),
-    });
-    render(<AgentSettings client={api} />);
-    await expandModelConfiguration(user);
-
-    await user.click(await screen.findByRole("button", { name: "自定义" }));
-    await waitFor(() =>
-      expect(api.saveAiConfig).toHaveBeenLastCalledWith(
-        expect.objectContaining({
-          providerId: "custom",
-          baseUrl: "http://localhost:11434/v1",
-          modelName: "local-mail-model",
-          apiKey: "",
-        }),
-      ),
-    );
-    expect(screen.getByLabelText("BASE_URL").value).toBe(
-      "http://localhost:11434/v1",
-    );
-    expect(screen.getByLabelText("MODEL_NAME").value).toBe("local-mail-model");
-    expect(screen.getByLabelText("API_KEY").value).toBe("••••••••••••");
-
-    await user.click(screen.getByRole("button", { name: "DeepSeek" }));
-    await waitFor(() =>
-      expect(api.saveAiConfig).toHaveBeenLastCalledWith(
-        expect.objectContaining({
-          providerId: "deepseek",
-          baseUrl: "https://gateway.example.com/deepseek",
-          modelName: "deepseek-v4-pro",
-          useEnvironmentKey: true,
-        }),
-      ),
-    );
-    expect(screen.getByLabelText("BASE_URL").value).toBe(
-      "https://gateway.example.com/deepseek",
-    );
-    expect(
-      screen.getByRole("checkbox", { name: "从系统环境变量获取" }).checked,
-    ).toBe(true);
-  });
-
-  it("keeps incomplete custom connection fields while visiting another provider", async () => {
+  it("renders ordered provider details, the active badge, latency, and row actions", async () => {
     const user = userEvent.setup();
     render(<AgentSettings client={client()} />);
     await expandModelConfiguration(user);
 
-    await user.click(await screen.findByRole("button", { name: "自定义" }));
-    const baseUrl = screen.getByLabelText("BASE_URL");
-    const modelName = screen.getByLabelText("MODEL_NAME");
-    await user.type(baseUrl, "http://localhost:11434/v1");
-    await user.type(modelName, "draft-local-model");
-
-    await user.click(screen.getByRole("button", { name: "Kimi" }));
-    expect(baseUrl.value).toBe("https://api.moonshot.cn/v1");
-    await user.click(screen.getByRole("button", { name: "自定义" }));
-
-    expect(baseUrl.value).toBe("http://localhost:11434/v1");
-    expect(modelName.value).toBe("draft-local-model");
+    const list = await screen.findByRole("list", { name: "已配置 AI 渠道" });
+    expect(within(list).getByText("Work OpenAI")).toBeTruthy();
+    expect(within(list).getByText("使用中")).toBeTruthy();
+    expect(within(list).getByText(/86 ms · 2 个模型/)).toBeTruthy();
+    expect(within(list).getByRole("button", { name: /测试 Work OpenAI/ })).toBeTruthy();
+    expect(within(list).getByRole("button", { name: "编辑 Work OpenAI" })).toBeTruthy();
+    expect(within(list).getByRole("button", { name: "删除 Work OpenAI" })).toBeTruthy();
   });
 
-  it("offers preset models immediately and replaces them after retrieval", async () => {
-    const user = userEvent.setup();
-    const api = client({
-      listAiModels: vi.fn().mockResolvedValue(["kimi-k2.7", "kimi-k3"]),
-    });
-    render(<AgentSettings client={api} />);
-    await expandModelConfiguration(user);
-
-    await screen.findByRole("button", { name: "Kimi" });
-    await user.click(screen.getByRole("button", { name: "Kimi" }));
-    expect(screen.getByLabelText("BASE_URL").value).toBe(
-      "https://api.moonshot.cn/v1",
-    );
-    expect(screen.getByLabelText("MODEL_NAME").value).toBe("kimi-k2.6");
-    const modelToggle = screen.getByRole("button", { name: "展开可用模型" });
-    expect(modelToggle.disabled).toBe(false);
-    await user.click(modelToggle);
-    const presetOptions = await screen.findByRole("listbox", { name: "可用模型" });
-    expect(within(presetOptions).getByRole("option", { name: "kimi-k3" })).toBeTruthy();
-    await user.click(within(presetOptions).getByRole("option", { name: "kimi-k3" }));
-
-    await user.type(screen.getByLabelText("API_KEY"), "secret-for-test");
-    await user.click(screen.getByRole("button", { name: "检索可用模型" }));
-
-    const options = await screen.findByRole("listbox", { name: "可用模型" });
-    expect(api.listAiModels).toHaveBeenCalledWith(
-      expect.objectContaining({
-        providerId: "kimi",
-        baseUrl: "https://api.moonshot.cn/v1",
-        apiKey: "secret-for-test",
-      }),
-    );
-    expect(within(options).queryByRole("option", { name: "kimi-k2.6" })).toBeNull();
-    await user.click(within(options).getByRole("option", { name: "kimi-k2.7" }));
-    expect(screen.getByLabelText("MODEL_NAME").value).toBe("kimi-k2.7");
-  });
-
-  it("switches API protocols and restores protocol-specific connection fields", async () => {
-    const user = userEvent.setup();
-    const protocolPresets = presets.map((preset) =>
-      preset.id === "deepseek"
-        ? {
-            ...preset,
-            protocols: [
-              ...preset.protocols,
-              {
-                id: "openai_responses",
-                label: "OpenAI Responses",
-                baseUrl: "https://responses.example.com/v1",
-                recommended: false,
-                models: ["responses-mail-model"],
-              },
-            ],
-            configurations: [
-              {
-                protocolId: "openai_chat_completions",
-                baseUrl: "https://api.deepseek.com",
-                modelName: "deepseek-v4-pro",
-                useEnvironmentKey: false,
-                hasStoredApiKey: true,
-                hasEnvironmentApiKey: false,
-              },
-              {
-                protocolId: "openai_responses",
-                baseUrl: "https://responses.example.com/v1",
-                modelName: "responses-mail-model",
-                useEnvironmentKey: false,
-                hasStoredApiKey: true,
-                hasEnvironmentApiKey: false,
-              },
-            ],
-          }
-        : preset,
-    );
-    const api = client({
-      getAiConfig: vi.fn().mockResolvedValue(
-        configuration({ presets: protocolPresets }),
-      ),
-    });
-    render(<AgentSettings client={api} />);
-    await expandModelConfiguration(user);
-
-    const protocol = screen.getByRole("combobox", { name: "API 协议" });
-    expect(protocol.textContent).toContain("自动（推荐：OpenAI Chat Completions）");
-    await user.click(protocol);
-    await user.click(screen.getByRole("option", { name: "OpenAI Responses" }));
-
-    expect(screen.getByLabelText("BASE_URL").value).toBe(
-      "https://responses.example.com/v1",
-    );
-    expect(screen.getByLabelText("MODEL_NAME").value).toBe("responses-mail-model");
-    await waitFor(
-      () => expect(api.saveAiConfig).toHaveBeenCalledWith(
-        expect.objectContaining({
-          protocolId: "openai_responses",
-          baseUrl: "https://responses.example.com/v1",
-          modelName: "responses-mail-model",
-        }),
-      ),
-      { timeout: 1800 },
-    );
-  });
-
-  it("ignores the key field in environment mode and reports test latency", async () => {
-    const user = userEvent.setup();
-    const api = client({
-      getAiConfig: vi
-        .fn()
-        .mockResolvedValue(configuration({ hasEnvironmentApiKey: true })),
-    });
-    render(<AgentSettings client={api} />);
-    await expandModelConfiguration(user);
-
-    const environmentOption = await screen.findByRole("checkbox", {
-      name: "从系统环境变量获取",
-    });
-    const keyInput = screen.getByLabelText("API_KEY");
-    await user.type(keyInput, "temporary-key");
-    await user.click(environmentOption);
-    expect(screen.getByText("获取成功")).toBeTruthy();
-    expect(keyInput.disabled).toBe(true);
-    expect(keyInput.value).toBe("");
-
-    await user.click(screen.getByRole("button", { name: "测试连接" }));
-    expect(await screen.findByText("连接成功 · 86 ms")).toBeTruthy();
-    expect(api.testAiConnection).toHaveBeenCalledWith(
-      expect.objectContaining({ useEnvironmentKey: true, apiKey: "" }),
-    );
-
-    await user.click(
-      screen.getByRole("button", {
-        name: "查看各供应商 API Key 环境变量名称",
-      }),
-    );
-    const dialog = screen.getByRole("dialog", { name: "API Key 环境变量" });
-    expect(within(dialog).getByText("MOONSHOT_API_KEY")).toBeTruthy();
-  });
-
-  it("replaces the transient key with a non-secret mask after saving", async () => {
+  it("adds another instance through the searchable preset and detail flow", async () => {
     const user = userEvent.setup();
     const api = client();
     render(<AgentSettings client={api} />);
     await expandModelConfiguration(user);
 
-    const keyInput = await screen.findByLabelText("API_KEY");
-    expect(keyInput.value).toBe("••••••••••••");
-    await user.type(keyInput, "new-secret");
-    await user.click(screen.getByRole("button", { name: "保存配置" }));
+    await user.click(screen.getByRole("button", { name: "添加 AI 渠道" }));
+    await user.type(screen.getByPlaceholderText("搜索渠道"), "Kimi");
+    await user.click(screen.getByRole("listitem", { name: /Kimi/ }));
 
-    await waitFor(() => expect(api.saveAiConfig).toHaveBeenCalled());
-    expect(api.saveAiConfig).toHaveBeenCalledWith(
-      expect.objectContaining({ apiKey: "new-secret" }),
-    );
-    expect(keyInput.value).toBe("••••••••••••");
-    expect(await screen.findByText("模型配置已保存。")).toBeTruthy();
+    const name = screen.getByLabelText("渠道名称");
+    await user.clear(name);
+    await user.type(name, "Kimi Backup");
+    await user.type(screen.getByLabelText("API_KEY"), "demo-key");
+    await user.click(screen.getByRole("button", { name: "保存渠道" }));
 
-    await user.click(keyInput);
-    expect(keyInput.value).toBe("");
-    await user.tab();
-    expect(keyInput.value).toBe("••••••••••••");
-  });
-
-  it("saves the selected AI reading language using its native label", async () => {
-    const user = userEvent.setup();
-    const api = client();
-    render(<AgentSettings client={api} />);
-
-    const language = await screen.findByRole("combobox", {
-      name: "AI 翻译语言",
+    await waitFor(() => expect(api.saveAiProviderInstance).toHaveBeenCalledTimes(1));
+    expect(api.saveAiProviderInstance.mock.calls[0][0]).toMatchObject({
+      id: null,
+      providerId: "kimi",
+      name: "Kimi Backup",
+      baseUrl: "https://api.moonshot.cn/v1",
+      apiKey: "demo-key",
     });
-    expect(language.textContent).toContain("中文（简体）");
-    await user.click(language);
-    await user.click(screen.getByRole("option", { name: "日本語" }));
-
-    await waitFor(() =>
-      expect(api.setAiTranslationLanguage).toHaveBeenCalledWith("ja"),
-    );
-    expect(api.saveAiConfig).not.toHaveBeenCalled();
-    expect(await screen.findByText("翻译语言已保存。")).toBeTruthy();
   });
 
-  it("shows the compose assistant default as an enabled capsule preference", async () => {
+  it("saves before an explicit test and keeps a failed test inside its provider row", async () => {
     const user = userEvent.setup();
-    const onDefaultAiAssistantOpenChange = vi.fn();
-    render(
-      <AgentSettings
-        client={client()}
-        defaultAiAssistantOpen
-        onDefaultAiAssistantOpenChange={onDefaultAiAssistantOpenChange}
-      />,
-    );
-
-    const preference = await screen.findByRole("checkbox", {
-      name: /默认开启 AI 助理/,
+    const api = client({
+      testAiProviderInstance: vi.fn().mockRejectedValue(new Error("API Key 已失效")),
     });
-    expect(preference.checked).toBe(true);
-    await user.click(preference);
-    expect(onDefaultAiAssistantOpenChange).toHaveBeenCalledWith(false);
-  });
-
-  it("automatically saves valid edits while retaining the manual save action", async () => {
-    const user = userEvent.setup();
-    const api = client();
     render(<AgentSettings client={api} />);
     await expandModelConfiguration(user);
 
-    const modelName = await screen.findByLabelText("MODEL_NAME");
-    expect(api.saveAiConfig).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: /测试 Work OpenAI/ }));
 
-    await user.clear(modelName);
-    await user.type(modelName, "deepseek-v4-flash");
-
-    await waitFor(
-      () =>
-        expect(api.saveAiConfig).toHaveBeenCalledWith(
-          expect.objectContaining({ modelName: "deepseek-v4-flash" }),
-        ),
-      { timeout: 1800 },
-    );
-    expect(await screen.findByText("配置已自动保存。")).toBeTruthy();
-
-    const manualSave = screen.getByRole("button", { name: "保存配置" });
-    expect(manualSave).toBeTruthy();
-    await user.click(manualSave);
-    await waitFor(() => expect(api.saveAiConfig).toHaveBeenCalledTimes(2));
-  });
-
-  it("keeps the settings page visible when configuration loading throws synchronously", async () => {
-    const user = userEvent.setup();
-    const api = client({
-      getAiConfig: vi.fn(() => {
-        throw new Error("desktop bridge is not ready");
-      }),
-    });
-
-    render(<AgentSettings client={api} />);
-    const disclosure = await screen.findByRole("button", { name: /模型配置/ });
-    await waitFor(() => expect(disclosure.textContent).toContain("配置读取失败"));
-    await user.click(disclosure);
-
-    expect(
-      await screen.findByText(/AI 配置读取失败，请重试/),
-    ).toBeTruthy();
+    expect(await screen.findByText("API Key 已失效")).toBeTruthy();
+    expect(screen.getByText("API Key 已失效").closest(".agent-provider-row")).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Agent 配置" })).toBeTruthy();
   });
 
-  it("contains unexpected render failures inside the Agent settings page", async () => {
-    const brokenPresets = new Proxy([], {
-      get(target, property, receiver) {
-        if (property === "find") throw new Error("unexpected render failure");
-        return Reflect.get(target, property, receiver);
-      },
-    });
+  it("returns to the saved provider row when save-and-test finds an expired channel", async () => {
+    const user = userEvent.setup();
     const api = client({
-      getAiConfig: vi.fn().mockResolvedValue(
-        configuration({
-          presets: brokenPresets,
-        }),
-      ),
+      testAiProviderInstance: vi.fn().mockRejectedValue(new Error("渠道凭据已过期")),
     });
+    render(<AgentSettings client={api} />);
+    await expandModelConfiguration(user);
+    await user.click(screen.getByRole("button", { name: "编辑 Work OpenAI" }));
+    await user.click(screen.getByRole("button", { name: "保存并测试" }));
 
+    await waitFor(() => expect(api.saveAiProviderInstance).toHaveBeenCalledTimes(1));
+    expect(api.testAiProviderInstance).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+    );
+    const error = await screen.findByText("渠道凭据已过期");
+    expect(error.closest(".agent-provider-row")).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: /编辑 Work OpenAI/ })).toBeNull();
+  });
+
+  it("edits a provider without reading the stored key back into React", async () => {
+    const user = userEvent.setup();
+    render(<AgentSettings client={client()} />);
+    await expandModelConfiguration(user);
+    await user.click(screen.getByRole("button", { name: "编辑 Work OpenAI" }));
+
+    const key = screen.getByLabelText("API_KEY");
+    expect(key.value).toBe("••••••••••••");
+    await user.click(key);
+    expect(key.value).toBe("");
+    expect(screen.getByRole("button", { name: "保存并测试" })).toBeTruthy();
+  });
+
+  it("requires the shared confirmation before deleting a default provider", async () => {
+    const user = userEvent.setup();
+    const api = client();
+    render(<AgentSettings client={api} />);
+    await expandModelConfiguration(user);
+    await user.click(screen.getByRole("button", { name: "删除 Work OpenAI" }));
+
+    const dialog = screen.getByRole("alertdialog", { name: "删除 AI 渠道？" });
+    expect(within(dialog).getByText(/默认项会清空/)).toBeTruthy();
+    await user.click(within(dialog).getByRole("button", { name: "删除渠道" }));
+    await waitFor(() =>
+      expect(api.deleteAiProviderInstance).toHaveBeenCalledWith(
+        "11111111-1111-4111-8111-111111111111",
+      ));
+  });
+
+  it("saves the translation preference independently of provider management", async () => {
+    const user = userEvent.setup();
+    const api = client();
     render(<AgentSettings client={api} />);
 
-    expect(
-      await screen.findByText("Agent 配置暂时无法显示"),
-    ).toBeTruthy();
-    expect(screen.getByRole("button", { name: "重新加载" })).toBeTruthy();
+    await user.click(await screen.findByRole("combobox", { name: "AI 翻译语言" }));
+    await user.click(screen.getByRole("option", { name: "日本語" }));
+    await waitFor(() =>
+      expect(api.setAiTranslationLanguage).toHaveBeenCalledWith("ja"));
   });
 });

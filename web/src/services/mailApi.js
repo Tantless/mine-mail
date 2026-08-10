@@ -74,6 +74,11 @@ async function callDemo(method, ...args) {
 
 const commandFailureMessages = Object.freeze({
   get_ai_config: "AI 配置读取没有完成",
+  get_ai_provider_registry: "AI 渠道配置读取没有完成",
+  save_ai_provider_instance: "AI 渠道保存没有完成",
+  delete_ai_provider_instance: "AI 渠道删除没有完成",
+  reorder_ai_provider_instances: "AI 渠道排序保存没有完成",
+  set_default_ai_provider: "默认 AI 模型设置没有完成",
   get_ai_session: "AI 会话读取没有完成",
   add_draft_attachments: "添加附件没有完成",
   archive_message: "归档邮件没有完成",
@@ -121,6 +126,8 @@ const commandFailureMessages = Object.freeze({
   set_message_starred_by_id: "星标状态保存没有完成",
   switch_account: "邮箱账户切换没有完成",
   test_ai_connection: "AI 连接测试没有完成",
+  test_ai_provider_instance: "AI 渠道连接测试没有完成",
+  refresh_ai_model_catalog: "可用模型刷新没有完成",
   translate_mail_content: "AI 翻译没有完成",
   sync_all: "邮箱同步没有完成",
   sync_drafts: "草稿同步没有完成",
@@ -513,6 +520,98 @@ function normalizeAiConfig(config = {}) {
   };
 }
 
+function normalizeAiProviderInstance(provider = {}) {
+  return {
+    id: provider.id || "",
+    providerId: provider.providerId ?? provider.provider_id ?? "custom",
+    providerLabel:
+      provider.providerLabel ?? provider.provider_label ?? "自定义",
+    name: provider.name || "未命名渠道",
+    protocolId: provider.protocolId ?? provider.protocol_id ?? "auto",
+    resolvedProtocolId:
+      provider.resolvedProtocolId
+      ?? provider.resolved_protocol_id
+      ?? "openai_chat_completions",
+    protocolLabel:
+      provider.protocolLabel
+      ?? provider.protocol_label
+      ?? "OpenAI Chat Completions",
+    baseUrl: provider.baseUrl ?? provider.base_url ?? "",
+    modelName: provider.modelName ?? provider.model_name ?? "",
+    useEnvironmentKey: Boolean(
+      provider.useEnvironmentKey ?? provider.use_environment_key ?? false,
+    ),
+    hasStoredApiKey: Boolean(
+      provider.hasStoredApiKey ?? provider.has_stored_api_key ?? false,
+    ),
+    hasEnvironmentApiKey: Boolean(
+      provider.hasEnvironmentApiKey
+      ?? provider.has_environment_api_key
+      ?? false,
+    ),
+    environmentVariable:
+      provider.environmentVariable
+      ?? provider.environment_variable
+      ?? "AI_API_KEY",
+    models: Array.isArray(provider.models)
+      ? provider.models.filter((model) => typeof model === "string")
+      : [],
+    sortOrder: Number(provider.sortOrder ?? provider.sort_order ?? 0),
+    isDefault: Boolean(provider.isDefault ?? provider.is_default ?? false),
+    status: provider.status || "untested",
+    latencyMs: Number.isFinite(
+      Number(provider.latencyMs ?? provider.latency_ms),
+    )
+      ? Number(provider.latencyMs ?? provider.latency_ms)
+      : null,
+    checkedAtMs: Number.isFinite(
+      Number(provider.checkedAtMs ?? provider.checked_at_ms),
+    )
+      ? Number(provider.checkedAtMs ?? provider.checked_at_ms)
+      : null,
+  };
+}
+
+function normalizeAiProviderRegistry(registry = {}) {
+  const normalizedConfig = normalizeAiConfig(registry);
+  return {
+    providers: Array.isArray(registry.providers)
+      ? registry.providers.map(normalizeAiProviderInstance)
+      : [],
+    presets: normalizedConfig.presets,
+    defaultProviderInstanceId:
+      registry.defaultProviderInstanceId
+      ?? registry.default_provider_instance_id
+      ?? null,
+    translationLanguage: normalizedConfig.translationLanguage,
+    translationLanguages: normalizedConfig.translationLanguages,
+  };
+}
+
+function normalizeAiModelCatalog(catalog = {}) {
+  return {
+    models: Array.isArray(catalog.models)
+      ? catalog.models.map((model) => ({
+          providerInstanceId:
+            model.providerInstanceId ?? model.provider_instance_id ?? "",
+          providerId: model.providerId ?? model.provider_id ?? "custom",
+          providerName:
+            model.providerName ?? model.provider_name ?? "未命名渠道",
+          modelName: model.modelName ?? model.model_name ?? "",
+          isDefault: Boolean(model.isDefault ?? model.is_default ?? false),
+        })).filter((model) => model.providerInstanceId && model.modelName)
+      : [],
+    successfulProviderCount: Number(
+      catalog.successfulProviderCount
+      ?? catalog.successful_provider_count
+      ?? 0,
+    ),
+    totalProviderCount: Number(
+      catalog.totalProviderCount ?? catalog.total_provider_count ?? 0,
+    ),
+  };
+}
+
 function aiConnectionRequest(config) {
   return {
     providerId: config.providerId,
@@ -538,6 +637,75 @@ export const mailApi = {
       return normalizeAiConfig(await desktopInvoke("get_ai_config"));
     }
     return normalizeAiConfig(await callDemo("getAiConfig"));
+  },
+
+  async getAiProviderRegistry() {
+    const response = isTauri
+      ? await desktopInvoke("get_ai_provider_registry")
+      : await callDemo("getAiProviderRegistry");
+    return normalizeAiProviderRegistry(response);
+  },
+
+  async saveAiProviderInstance(provider) {
+    const request = {
+      id: provider.id || null,
+      providerId: provider.providerId,
+      name: provider.name,
+      protocolId: provider.protocolId || "auto",
+      baseUrl: provider.baseUrl,
+      modelName: provider.modelName || "",
+      useEnvironmentKey: Boolean(provider.useEnvironmentKey),
+      apiKey: provider.useEnvironmentKey ? null : provider.apiKey || null,
+    };
+    const response = isTauri
+      ? await desktopInvoke("save_ai_provider_instance", { request })
+      : await callDemo("saveAiProviderInstance", request);
+    return normalizeAiProviderRegistry(response);
+  },
+
+  async deleteAiProviderInstance(providerInstanceId) {
+    const response = isTauri
+      ? await desktopInvoke("delete_ai_provider_instance", {
+          providerInstanceId,
+        })
+      : await callDemo("deleteAiProviderInstance", providerInstanceId);
+    return normalizeAiProviderRegistry(response);
+  },
+
+  async reorderAiProviderInstances(ids) {
+    const request = { ids };
+    const response = isTauri
+      ? await desktopInvoke("reorder_ai_provider_instances", { request })
+      : await callDemo("reorderAiProviderInstances", request);
+    return normalizeAiProviderRegistry(response);
+  },
+
+  async setDefaultAiProvider(providerInstanceId) {
+    const response = isTauri
+      ? await desktopInvoke("set_default_ai_provider", {
+          providerInstanceId,
+        })
+      : await callDemo("setDefaultAiProvider", providerInstanceId);
+    return normalizeAiProviderRegistry(response);
+  },
+
+  async testAiProviderInstance(providerInstanceId) {
+    const response = isTauri
+      ? await desktopInvoke("test_ai_provider_instance", {
+          providerInstanceId,
+        })
+      : await callDemo("testAiProviderInstance", providerInstanceId);
+    return {
+      provider: normalizeAiProviderInstance(response?.provider),
+      modelCount: Number(response?.modelCount ?? response?.model_count ?? 0),
+    };
+  },
+
+  async refreshAiModelCatalog() {
+    const response = isTauri
+      ? await desktopInvoke("refresh_ai_model_catalog")
+      : await callDemo("refreshAiModelCatalog");
+    return normalizeAiModelCatalog(response);
   },
 
   async saveAiConfig(config) {

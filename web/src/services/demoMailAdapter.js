@@ -3,6 +3,7 @@ import { demoDrafts, demoMessages } from "../data/demoMail.js";
 const demoPageSizeMax = 100;
 const demoQueryCharsMax = 256;
 const demoAccountId = "demo-primary";
+const demoAiProviderId = "11111111-1111-4111-8111-111111111111";
 const demoPageRoles = new Set(["inbox", "sent", "archive", "trash"]);
 const demoStarredPageRoles = new Set(["inbox", "sent", "archive"]);
 const demoSyncRoles = new Set([
@@ -109,6 +110,35 @@ function createDemoState() {
       hasEnvironmentApiKey: false,
       environmentVariable: "AI_API_KEY",
       presets: structuredClone(demoAiPresets),
+      translationLanguage: "zh-Hans",
+      translationLanguages: structuredClone(demoAiTranslationLanguages),
+    },
+    aiProviderRegistry: {
+      providers: [
+        {
+          id: demoAiProviderId,
+          providerId: "openai",
+          providerLabel: "OpenAI",
+          name: "OpenAI Official",
+          protocolId: "auto",
+          resolvedProtocolId: "openai_responses",
+          protocolLabel: "OpenAI Responses",
+          baseUrl: "https://api.openai.com/v1",
+          modelName: "gpt-5.6-terra",
+          useEnvironmentKey: false,
+          hasStoredApiKey: true,
+          hasEnvironmentApiKey: false,
+          environmentVariable: "OPENAI_API_KEY",
+          models: ["gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"],
+          sortOrder: 0,
+          isDefault: true,
+          status: "available",
+          latencyMs: 128,
+          checkedAtMs: Date.now(),
+        },
+      ],
+      presets: structuredClone(demoAiPresets),
+      defaultProviderInstanceId: demoAiProviderId,
       translationLanguage: "zh-Hans",
       translationLanguages: structuredClone(demoAiTranslationLanguages),
     },
@@ -579,6 +609,164 @@ function createDemoActions(
       return structuredClone(state.aiConfig);
     },
 
+    getAiProviderRegistry() {
+      return structuredClone(state.aiProviderRegistry);
+    },
+
+    saveAiProviderInstance(request) {
+      const preset = state.aiProviderRegistry.presets.find(
+        (candidate) => candidate.id === request.providerId,
+      );
+      if (!preset) throw new Error("AI 供应商配置无效");
+      if (!request.name?.trim()) throw new Error("请输入渠道名称");
+      if (!request.baseUrl?.trim()) throw new Error("请输入 BASE_URL");
+      const existing = state.aiProviderRegistry.providers.find(
+        (provider) => provider.id === request.id,
+      );
+      if (
+        !request.useEnvironmentKey
+        && !request.apiKey?.trim()
+        && !existing?.hasStoredApiKey
+      ) {
+        throw new Error("请输入 API Key，或改为从系统环境变量读取");
+      }
+      const resolvedProtocolId = request.protocolId === "auto"
+        ? preset.recommendedProtocolId
+        : request.protocolId;
+      const protocol = preset.protocols.find(
+        (candidate) => candidate.id === resolvedProtocolId,
+      );
+      if (!protocol) throw new Error("AI 协议配置无效");
+      const id = existing?.id || crypto.randomUUID();
+      const provider = {
+        id,
+        providerId: preset.id,
+        providerLabel: preset.label,
+        name: request.name.trim(),
+        protocolId: request.protocolId || "auto",
+        resolvedProtocolId,
+        protocolLabel: protocol.label,
+        baseUrl: request.baseUrl.trim(),
+        modelName: request.modelName?.trim() || "",
+        useEnvironmentKey: Boolean(request.useEnvironmentKey),
+        hasStoredApiKey:
+          Boolean(existing?.hasStoredApiKey) || Boolean(request.apiKey?.trim()),
+        hasEnvironmentApiKey: false,
+        environmentVariable: preset.environmentVariable,
+        models: existing?.models || [],
+        sortOrder:
+          existing?.sortOrder ?? state.aiProviderRegistry.providers.length,
+        isDefault: Boolean(existing?.isDefault),
+        status: existing ? "untested" : "untested",
+        latencyMs: null,
+        checkedAtMs: null,
+      };
+      state.aiProviderRegistry.providers = [
+        ...state.aiProviderRegistry.providers.filter(
+          (candidate) => candidate.id !== id,
+        ),
+        provider,
+      ].sort((left, right) => left.sortOrder - right.sortOrder);
+      return structuredClone(state.aiProviderRegistry);
+    },
+
+    deleteAiProviderInstance(providerInstanceId) {
+      const existing = state.aiProviderRegistry.providers.find(
+        (provider) => provider.id === providerInstanceId,
+      );
+      if (!existing) throw new Error("要删除的 AI 渠道不存在");
+      state.aiProviderRegistry.providers = state.aiProviderRegistry.providers
+        .filter((provider) => provider.id !== providerInstanceId)
+        .map((provider, index) => ({ ...provider, sortOrder: index }));
+      if (state.aiProviderRegistry.defaultProviderInstanceId === providerInstanceId) {
+        state.aiProviderRegistry.defaultProviderInstanceId = null;
+      }
+      return structuredClone(state.aiProviderRegistry);
+    },
+
+    reorderAiProviderInstances(request) {
+      const byId = new Map(
+        state.aiProviderRegistry.providers.map((provider) => [provider.id, provider]),
+      );
+      if (request.ids.length !== byId.size || request.ids.some((id) => !byId.has(id))) {
+        throw new Error("AI 渠道排序已变化");
+      }
+      state.aiProviderRegistry.providers = request.ids.map((id, index) => ({
+        ...byId.get(id),
+        sortOrder: index,
+      }));
+      return structuredClone(state.aiProviderRegistry);
+    },
+
+    setDefaultAiProvider(providerInstanceId) {
+      const selected = state.aiProviderRegistry.providers.find(
+        (provider) => provider.id === providerInstanceId,
+      );
+      if (!selected?.modelName) throw new Error("请先为该渠道设置一个首选模型");
+      state.aiProviderRegistry.defaultProviderInstanceId = providerInstanceId;
+      state.aiProviderRegistry.providers = state.aiProviderRegistry.providers.map(
+        (provider) => ({
+          ...provider,
+          isDefault: provider.id === providerInstanceId,
+        }),
+      );
+      return structuredClone(state.aiProviderRegistry);
+    },
+
+    testAiProviderInstance(providerInstanceId) {
+      const provider = state.aiProviderRegistry.providers.find(
+        (candidate) => candidate.id === providerInstanceId,
+      );
+      if (!provider) throw new Error("要测试的 AI 渠道不存在");
+      const preset = state.aiProviderRegistry.presets.find(
+        (candidate) => candidate.id === provider.providerId,
+      );
+      const models = preset?.models?.length
+        ? preset.models
+        : ["demo-model-fast", "demo-model-pro"];
+      const next = {
+        ...provider,
+        models,
+        modelName: provider.modelName || models[0],
+        status: "available",
+        latencyMs: 128,
+        checkedAtMs: Date.now(),
+      };
+      state.aiProviderRegistry.providers = state.aiProviderRegistry.providers.map(
+        (candidate) => candidate.id === providerInstanceId ? next : candidate,
+      );
+      return { provider: structuredClone(next), modelCount: models.length };
+    },
+
+    refreshAiModelCatalog() {
+      const seen = new Set();
+      const models = [];
+      for (const provider of state.aiProviderRegistry.providers) {
+        const preset = state.aiProviderRegistry.presets.find(
+          (candidate) => candidate.id === provider.providerId,
+        );
+        const available = provider.models.length
+          ? provider.models
+          : preset?.models || [];
+        for (const modelName of available) {
+          if (seen.has(modelName)) continue;
+          seen.add(modelName);
+          models.push({
+            providerInstanceId: provider.id,
+            providerId: provider.providerId,
+            providerName: provider.name,
+            modelName,
+            isDefault: provider.isDefault && provider.modelName === modelName,
+          });
+        }
+      }
+      return {
+        models,
+        successfulProviderCount: state.aiProviderRegistry.providers.length,
+        totalProviderCount: state.aiProviderRegistry.providers.length,
+      };
+    },
+
     saveAiConfig(request) {
       const preset = state.aiConfig.presets.find(
         (candidate) => candidate.id === request.providerId,
@@ -647,6 +835,7 @@ function createDemoActions(
         throw new Error("请选择有效的 AI 翻译语言");
       }
       state.aiConfig.translationLanguage = languageId;
+      state.aiProviderRegistry.translationLanguage = languageId;
       return structuredClone(state.aiConfig);
     },
 

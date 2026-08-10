@@ -827,6 +827,13 @@ export function ComposeAiAssistant({
   const [activeRequest, setActiveRequest] = useState(null);
   const [errorMessage, setErrorMessage] = useState("");
   const [busyProposal, setBusyProposal] = useState(null);
+  const [modelCatalog, setModelCatalog] = useState({
+    models: [],
+    successfulProviderCount: 0,
+    totalProviderCount: 0,
+  });
+  const [modelCatalogState, setModelCatalogState] = useState("loading");
+  const [selectedModelValue, setSelectedModelValue] = useState("");
   const isSubmitting = Boolean(activeRequest);
   latestValueRef.current = value;
   const availableModeOptions = useMemo(
@@ -840,6 +847,19 @@ export function ComposeAiAssistant({
   const activeSession = useMemo(
     () => sessions.find((session) => session.id === activeSessionId) || null,
     [activeSessionId, sessions],
+  );
+  const modelOptions = useMemo(
+    () => modelCatalog.models.map((model) => ({
+      value: `${model.providerInstanceId}\u001f${model.modelName}`,
+      label: `${model.modelName} · ${model.providerName}`,
+    })),
+    [modelCatalog.models],
+  );
+  const selectedModel = useMemo(
+    () => modelCatalog.models.find(
+      (model) => `${model.providerInstanceId}\u001f${model.modelName}` === selectedModelValue,
+    ) || null,
+    [modelCatalog.models, selectedModelValue],
   );
 
   useEffect(() => {
@@ -860,6 +880,38 @@ export function ComposeAiAssistant({
       })
       .finally(() => {
         if (!cancelled) setIsLoadingSessions(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    setModelCatalogState("loading");
+    Promise.resolve()
+      .then(() => mailApi.refreshAiModelCatalog())
+      .then((catalog) => {
+        if (cancelled) return;
+        setModelCatalog(catalog);
+        const defaultModel = catalog.models.find((model) => model.isDefault);
+        const initial = defaultModel || catalog.models[0] || null;
+        setSelectedModelValue(
+          initial
+            ? `${initial.providerInstanceId}\u001f${initial.modelName}`
+            : "",
+        );
+        setModelCatalogState(catalog.models.length ? "ready" : "empty");
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setModelCatalog({
+          models: [],
+          successfulProviderCount: 0,
+          totalProviderCount: 0,
+        });
+        setSelectedModelValue("");
+        setModelCatalogState("empty");
       });
     return () => {
       cancelled = true;
@@ -911,7 +963,8 @@ export function ComposeAiAssistant({
       isSubmitting ||
       isLoadingSessions ||
       isLoadingActiveSession ||
-      !aiDraft
+      !aiDraft ||
+      !selectedModel
     ) return;
     setActiveRequest({ id: null });
     setErrorMessage("");
@@ -921,6 +974,8 @@ export function ComposeAiAssistant({
           mode,
           instruction: request,
           session_id: activeSession?.id || null,
+          provider_instance_id: selectedModel.providerInstanceId,
+          model_name: selectedModel.modelName,
           draft_revision: createAiDraftRevision(),
           draft: { ...aiDraft, compose: value },
         },
@@ -1248,7 +1303,31 @@ export function ComposeAiAssistant({
               !aiDraft
             }
             className="compose-ai-mode-select"
+            menuPlacement="above"
             onValueChange={setMode}
+          />
+          <ThemedSelect
+            id="compose-agent-model"
+            label="选择 AI 模型"
+            value={selectedModelValue}
+            options={modelOptions}
+            disabled={
+              disabled
+              || isSubmitting
+              || isLoadingSessions
+              || isLoadingActiveSession
+              || modelCatalogState !== "ready"
+              || !aiDraft
+            }
+            placeholder={
+              modelCatalogState === "loading"
+                ? "正在获取模型…"
+                : "没有可用模型"
+            }
+            className="compose-ai-model-select"
+            menuPlacement="above"
+            preferredMaxHeight={204}
+            onValueChange={setSelectedModelValue}
           />
           <IconButton
             className="compose-ai-send"
@@ -1258,6 +1337,7 @@ export function ComposeAiAssistant({
               isLoadingSessions ||
               isLoadingActiveSession ||
               (!isSubmitting && !input.trim()) ||
+              (!isSubmitting && !selectedModel) ||
               (isSubmitting && !activeRequest?.id) ||
               !aiDraft
             }

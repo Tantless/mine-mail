@@ -267,42 +267,37 @@ All app-owned color and material decisions flow through custom properties in
   platforms. Nearby helper copy explains that Windows presentation remains
   subject to system notification and do-not-disturb settings.
 - **Agent 配置** is its own category between feature preferences and About. Its
-  **模型配置** card is a compact accordion, collapsed by default, and keeps
-  provider presets above the editable connection fields. Selecting a preset
-  restores that provider's last saved connection fields and activates it; a
-  provider without saved configuration starts from its preset `BASE_URL` and
-  default model without hiding or locking either field. A fresh, unconfigured
-  card selects **自定义** with empty connection fields. Each provider remembers
-  its selected protocol, while each provider/protocol pair remembers its address,
-  model, key-source choice, and discovered models. Switching either dimension
-  never clears another saved combination.
-- **API 协议** is the first connection field, before `BASE_URL`. It uses the
-  shared `ThemedSelect` at the standard settings-control height. **自动** names
-  the current Provider recommendation in its label; the same recommended
-  concrete option carries one restrained **（推荐）** suffix. Unsupported
-  protocols are absent rather than disabled. Selecting a protocol restores its
-  saved fields or applies that protocol's preset address and model. The menu is
-  bounded like the other settings popovers and never uses a browser-native
-  focus ring. Testing, model discovery, automatic save, and manual save always
-  operate on the visibly selected protocol.
-- `API_KEY` is a masked field with an adjacent **从系统环境变量获取** option.
-  A successfully stored manual key remains visible as a fixed non-secret mask;
-  focusing the field prepares it for replacement, and leaving it empty restores
-  the mask without reading the real key back from Rust.
-  Enabling the option disables the field; its question action opens one
-  theme-owned dialog listing every preset's exact environment-variable name.
-  `MODEL_NAME` remains editable. Every named preset exposes a short, current
-  default model list immediately, ordered from faster/lighter choices toward
-  flagship choices; custom providers may begin empty. **检索可用模型** replaces
-  and persists that provider's choices after a successful request. Choices
-  appear in a bounded themed popover rather than a native select.
-- Valid model-configuration edits save automatically after a short quiet period
-  and expose compact nearby saving, success, or retryable failure feedback. The
-  local **保存配置** action remains as an immediate save and explicit retry;
-  **测试连接** reports measured latency on success. These actions stay inside the
-  accordion and do not introduce a global Settings footer. Successful Agent
-  configuration feedback uses the current theme accent rather than semantic
-  green so the compact saved state remains visually emphasized.
+  **模型配置** card is a compact accordion, collapsed by default. Expanding it
+  shows configured Provider instances rather than raw connection fields. Each
+  row contains a local brand mark, user-defined name, base URL, protocol,
+  preferred model, instance-local availability and measured latency, plus
+  **设为默认**、**测试连接**、编辑 and 删除 actions. The active default row uses
+  a restrained primary edge and **使用中** badge. An unavailable or expired row
+  owns its error copy; it never produces a page-wide failure or prevents another
+  row from working.
+- Provider rows use one drag handle and persist their order. That order resolves
+  duplicate model names in the compose model catalog. Dragging changes density
+  and opacity without introducing a second card style or decorative motion.
+  Deletion uses the shared consequential confirmation and clears, rather than
+  silently replacing, a deleted default.
+- The accordion's add icon opens an embedded child flow. The first step is a
+  searchable grid of preset Provider marks plus **自定义**; choosing one opens
+  the shared add/edit detail surface. A back action returns one level without
+  closing Settings. The detail surface contains the instance name, **API 协议**,
+  `BASE_URL`, masked `API_KEY`, environment-key choice, and editable preferred
+  model. **自动** names the preset recommendation, unsupported protocols are
+  absent, and a manual key is never read back into React. **保存并测试** persists
+  the instance, retrieves its model list, performs one minimal model request,
+  and reports Rust-observed latency. **保存渠道** persists without starting a
+  network test. These are local actions, not a global Settings footer.
+- Provider marks are bundled local assets or the existing deterministic local
+  fallback. Mine Mail never fetches a logo at runtime. Marks are optically
+  centered on a transparent field; do not force them into avatar tiles or add a
+  white backing plate. The preset search uses restrained neutral inset focus
+  feedback: neither its wrapper nor its input draws a primary outer ring.
+  Multiple instances may use the same preset and keep independent names,
+  addresses, credentials, preferred models, discovery results, and connection
+  state.
 - **AI 翻译语言** and **默认开启 AI 助理** live outside the model accordion as
   two separate, always-visible single-row preference cards. Translation uses
   `ThemedSelect`, defaults to Simplified Chinese, and presents every language in
@@ -380,7 +375,16 @@ All app-owned color and material decisions flow through custom properties in
 - The AI prompt indicates focus only on its rounded outer composer surface; the
   inner textarea never adds a second rectangular focus ring. Its mode trigger
   has no fixed width: the capsule follows the active label, with the caret placed
-  immediately after the text at a consistent gap.
+  immediately after the text at a consistent gap. A compact model selector sits
+  immediately to its right, uses the same transparent adaptive-width capsule,
+  and identifies both the exact model and resolved Provider. Its upward menu
+  anchors to the trigger's left edge and may extend modestly upward and to the
+  right within the prompt surface; long model rows scroll horizontally inside
+  the menu instead of escaping that surface. Opening compose refreshes every
+  configured Provider independently;
+  exact model results appear progressively and one failed Provider contributes
+  no choices without blocking another. Duplicate names use Provider row order,
+  while the configured exact default route is selected initially when available.
 - The assistant header centers its text title without a leading AI mark. Its
   left-side actions begin with collapse and then a settings icon; settings is an
   inert entry point until configuration content is implemented, and there is no

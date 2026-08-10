@@ -32,6 +32,7 @@ const MAX_BASE_URL_BYTES: usize = 2 * 1024;
 const MAX_API_KEY_BYTES: usize = 16 * 1024;
 const MAX_MODEL_NAME_BYTES: usize = 256;
 const MAX_MODEL_LIST_ITEMS: usize = 1_000;
+const MAX_PROVIDER_INSTANCE_NAME_BYTES: usize = 96;
 const MAX_INSTRUCTION_BYTES: usize = 16 * 1024;
 const MAX_BODY_TEXT_BYTES: usize = 512 * 1024;
 const MAX_BODY_HTML_BYTES: usize = 512 * 1024;
@@ -409,6 +410,97 @@ pub(crate) struct AiConfigDto {
     pub translation_languages: Vec<AiTranslationLanguageDto>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AiProviderInstanceDto {
+    pub id: String,
+    pub provider_id: String,
+    pub provider_label: String,
+    pub name: String,
+    pub protocol_id: String,
+    pub resolved_protocol_id: String,
+    pub protocol_label: String,
+    pub base_url: String,
+    pub model_name: String,
+    pub use_environment_key: bool,
+    pub has_stored_api_key: bool,
+    pub has_environment_api_key: bool,
+    pub environment_variable: String,
+    pub models: Vec<String>,
+    pub sort_order: i64,
+    pub is_default: bool,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checked_at_ms: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AiProviderRegistryDto {
+    pub providers: Vec<AiProviderInstanceDto>,
+    pub presets: Vec<AiProviderPresetDto>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_provider_instance_id: Option<String>,
+    pub translation_language: String,
+    pub translation_languages: Vec<AiTranslationLanguageDto>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SaveAiProviderInstanceRequest {
+    #[serde(default)]
+    pub id: Option<String>,
+    pub provider_id: String,
+    pub name: String,
+    #[serde(default = "default_protocol_selection")]
+    pub protocol_id: String,
+    pub base_url: String,
+    #[serde(default)]
+    pub model_name: String,
+    pub use_environment_key: bool,
+    #[serde(default)]
+    pub api_key: Option<String>,
+}
+
+impl Drop for SaveAiProviderInstanceRequest {
+    fn drop(&mut self) {
+        self.api_key.zeroize();
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ReorderAiProviderInstancesRequest {
+    pub ids: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AiProviderTestResultDto {
+    pub provider: AiProviderInstanceDto,
+    pub model_count: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AiRoutedModelDto {
+    pub provider_instance_id: String,
+    pub provider_id: String,
+    pub provider_name: String,
+    pub model_name: String,
+    pub is_default: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AiModelCatalogDto {
+    pub models: Vec<AiRoutedModelDto>,
+    pub successful_provider_count: usize,
+    pub total_provider_count: usize,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SaveAiConfigRequest {
@@ -470,6 +562,23 @@ struct StoredAiConfig {
     model_name: String,
     use_environment_key: bool,
     translation_language: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct StoredAiProviderInstance {
+    id: String,
+    provider_id: String,
+    name: String,
+    protocol_id: String,
+    base_url: String,
+    model_name: String,
+    use_environment_key: bool,
+    sort_order: i64,
+    is_default: bool,
+    status: String,
+    latency_ms: Option<u64>,
+    checked_at_ms: Option<u64>,
+    legacy_credential_provider_id: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
@@ -753,6 +862,10 @@ pub(crate) struct AiTurnRequest {
     pub instruction: String,
     #[serde(default)]
     pub session_id: Option<String>,
+    #[serde(default)]
+    pub provider_instance_id: Option<String>,
+    #[serde(default)]
+    pub model_name: Option<String>,
     pub draft_revision: String,
     pub draft: AiDraftSnapshot,
 }
@@ -1040,6 +1153,278 @@ impl AiRuntime {
         )
     }
 
+    pub(crate) fn get_provider_registry(&self) -> Result<AiProviderRegistryDto, String> {
+        let config = self.get_config()?;
+        let store = self.store()?;
+        let models = store
+            .load_provider_instance_models()
+            .map_err(ai_store_error)?;
+        let providers = store
+            .load_provider_instances()
+            .map_err(ai_store_error)?
+            .into_iter()
+            .map(|instance| provider_instance_dto(&instance, models.get(&instance.id)))
+            .collect::<Result<Vec<_>, _>>()?;
+        let default_provider_instance_id = providers
+            .iter()
+            .find(|provider| provider.is_default)
+            .map(|provider| provider.id.clone());
+        Ok(AiProviderRegistryDto {
+            providers,
+            presets: config.presets,
+            default_provider_instance_id,
+            translation_language: config.translation_language,
+            translation_languages: config.translation_languages,
+        })
+    }
+
+    pub(crate) fn save_provider_instance(
+        &self,
+        mut request: SaveAiProviderInstanceRequest,
+    ) -> Result<AiProviderRegistryDto, String> {
+        let provider_id = request.provider_id.trim();
+        let preset =
+            provider_preset(provider_id).ok_or_else(|| "AI 供应商配置无效。".to_owned())?;
+        let name = request.name.trim();
+        if name.is_empty()
+            || name.len() > MAX_PROVIDER_INSTANCE_NAME_BYTES
+            || name.chars().any(char::is_control)
+        {
+            return Err("渠道名称无效。".to_owned());
+        }
+        let config = validate_connection_config(
+            provider_id,
+            &request.protocol_id,
+            &request.base_url,
+            &request.model_name,
+            request.use_environment_key,
+            false,
+        )?;
+        let store = self.store()?;
+        let existing = match request.id.as_deref() {
+            Some(id) => {
+                validate_provider_instance_id(id)?;
+                Some(
+                    store
+                        .load_provider_instance(id)
+                        .map_err(ai_store_error)?
+                        .ok_or_else(|| "要编辑的 AI 渠道不存在。".to_owned())?,
+                )
+            }
+            None => None,
+        };
+        if existing
+            .as_ref()
+            .is_some_and(|instance| instance.is_default)
+            && config.model_name.is_empty()
+        {
+            return Err("默认 AI 渠道需要设置一个首选模型。".to_owned());
+        }
+        let id = existing
+            .as_ref()
+            .map(|instance| instance.id.clone())
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
+        let entry = ai_provider_instance_keyring_entry(&id)?;
+        let previous_key = read_ai_credential(&entry)?;
+        let supplied_key = request
+            .api_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        if !config.use_environment_key {
+            if let Some(api_key) = supplied_key {
+                validate_api_key(api_key)?;
+                entry
+                    .set_password(api_key)
+                    .map_err(|_| "无法把 API Key 保存到系统凭据库。".to_owned())?;
+            } else if previous_key.is_none()
+                && existing
+                    .as_ref()
+                    .and_then(|instance| instance.legacy_credential_provider_id.as_deref())
+                    .and_then(|legacy_id| ai_keyring_entry(legacy_id).ok())
+                    .and_then(|legacy_entry| read_ai_credential(&legacy_entry).ok().flatten())
+                    .is_none()
+            {
+                request.api_key.zeroize();
+                return Err("请输入 API Key，或改为从系统环境变量读取。".to_owned());
+            }
+        }
+
+        let reset_connectivity = existing.as_ref().is_none_or(|instance| {
+            instance.provider_id != config.provider_id
+                || instance.protocol_id != config.protocol_id
+                || instance.base_url != config.base_url
+                || instance.use_environment_key != config.use_environment_key
+                || supplied_key.is_some()
+        });
+        let instance = StoredAiProviderInstance {
+            id: id.clone(),
+            provider_id: config.provider_id,
+            name: name.to_owned(),
+            protocol_id: config.protocol_id,
+            base_url: config.base_url,
+            model_name: config.model_name,
+            use_environment_key: config.use_environment_key,
+            sort_order: existing
+                .as_ref()
+                .map(|instance| instance.sort_order)
+                .unwrap_or(store.next_provider_sort_order().map_err(ai_store_error)?),
+            is_default: existing
+                .as_ref()
+                .is_some_and(|instance| instance.is_default),
+            status: if reset_connectivity {
+                "untested".to_owned()
+            } else {
+                existing
+                    .as_ref()
+                    .map(|instance| instance.status.clone())
+                    .unwrap_or_else(|| "untested".to_owned())
+            },
+            latency_ms: (!reset_connectivity)
+                .then(|| existing.as_ref().and_then(|instance| instance.latency_ms))
+                .flatten(),
+            checked_at_ms: (!reset_connectivity)
+                .then(|| {
+                    existing
+                        .as_ref()
+                        .and_then(|instance| instance.checked_at_ms)
+                })
+                .flatten(),
+            legacy_credential_provider_id: existing
+                .as_ref()
+                .and_then(|instance| instance.legacy_credential_provider_id.clone()),
+        };
+        if let Err(error) = store.save_provider_instance(&instance, reset_connectivity) {
+            restore_ai_credential(&entry, previous_key.as_ref())?;
+            request.api_key.zeroize();
+            return Err(ai_store_error(error));
+        }
+        if instance.is_default {
+            store
+                .set_default_provider_instance(&instance.id)
+                .map_err(ai_store_error)?;
+        }
+        request.api_key.zeroize();
+        diagnostics::info(
+            "ai_provider_instance_saved",
+            DiagnosticFields::default()
+                .operation("ai_provider_instance")
+                .provider(preset.id)
+                .protocol(resolve_provider_protocol(preset, &instance.protocol_id)?.id())
+                .model(&instance.model_name)
+                .outcome(if existing.is_some() {
+                    "updated"
+                } else {
+                    "created"
+                }),
+        );
+        self.get_provider_registry()
+    }
+
+    pub(crate) fn delete_provider_instance(
+        &self,
+        id: &str,
+    ) -> Result<AiProviderRegistryDto, String> {
+        validate_provider_instance_id(id)?;
+        let store = self.store()?;
+        let instance = store
+            .load_provider_instance(id)
+            .map_err(ai_store_error)?
+            .ok_or_else(|| "要删除的 AI 渠道不存在。".to_owned())?;
+        let entry = ai_provider_instance_keyring_entry(id)?;
+        let previous_key = read_ai_credential(&entry)?;
+        let legacy_entry = instance
+            .legacy_credential_provider_id
+            .as_deref()
+            .map(ai_keyring_entry)
+            .transpose()?;
+        let previous_legacy_key = legacy_entry
+            .as_ref()
+            .map(read_ai_credential)
+            .transpose()?
+            .flatten();
+        if let Err(error) = entry.delete_credential()
+            && !matches!(error, keyring::Error::NoEntry)
+        {
+            return Err("无法从系统凭据库删除该渠道的 API Key。".to_owned());
+        }
+        if let Some(legacy_entry) = legacy_entry.as_ref()
+            && let Err(error) = legacy_entry.delete_credential()
+            && !matches!(error, keyring::Error::NoEntry)
+        {
+            restore_ai_credential(&entry, previous_key.as_ref())?;
+            return Err("无法从系统凭据库删除该渠道的 API Key。".to_owned());
+        }
+        match store.delete_provider_instance(id) {
+            Ok(true) => {}
+            Ok(false) => {
+                restore_ai_credential(&entry, previous_key.as_ref())?;
+                if let Some(legacy_entry) = legacy_entry.as_ref() {
+                    restore_ai_credential(legacy_entry, previous_legacy_key.as_ref())?;
+                }
+                return Err("要删除的 AI 渠道不存在。".to_owned());
+            }
+            Err(error) => {
+                restore_ai_credential(&entry, previous_key.as_ref())?;
+                if let Some(legacy_entry) = legacy_entry.as_ref() {
+                    restore_ai_credential(legacy_entry, previous_legacy_key.as_ref())?;
+                }
+                return Err(ai_store_error(error));
+            }
+        }
+        diagnostics::info(
+            "ai_provider_instance_deleted",
+            DiagnosticFields::default()
+                .operation("ai_provider_instance")
+                .provider(
+                    provider_preset(&instance.provider_id).map_or("custom", |preset| preset.id),
+                )
+                .outcome("deleted"),
+        );
+        self.get_provider_registry()
+    }
+
+    pub(crate) fn reorder_provider_instances(
+        &self,
+        request: ReorderAiProviderInstancesRequest,
+    ) -> Result<AiProviderRegistryDto, String> {
+        if request.ids.len() > 100 {
+            return Err("AI 渠道数量超出限制。".to_owned());
+        }
+        for id in &request.ids {
+            validate_provider_instance_id(id)?;
+        }
+        if !self
+            .store()?
+            .reorder_provider_instances(&request.ids)
+            .map_err(ai_store_error)?
+        {
+            return Err("AI 渠道排序已变化，请重新加载后再试。".to_owned());
+        }
+        self.get_provider_registry()
+    }
+
+    pub(crate) fn set_default_provider_instance(
+        &self,
+        id: &str,
+    ) -> Result<AiProviderRegistryDto, String> {
+        validate_provider_instance_id(id)?;
+        if !self
+            .store()?
+            .set_default_provider_instance(id)
+            .map_err(ai_store_error)?
+        {
+            return Err("请先为该渠道设置一个首选模型。".to_owned());
+        }
+        diagnostics::info(
+            "ai_default_provider_changed",
+            DiagnosticFields::default()
+                .operation("ai_provider_instance")
+                .outcome("selected"),
+        );
+        self.get_provider_registry()
+    }
+
     pub(crate) fn save_config(
         &self,
         mut request: SaveAiConfigRequest,
@@ -1214,6 +1599,168 @@ impl AiRuntime {
             *active_profile = profile;
         }
         Ok(AiConnectionTestDto { latency_ms })
+    }
+
+    pub(crate) async fn test_provider_instance(
+        &self,
+        id: &str,
+    ) -> Result<AiProviderTestResultDto, String> {
+        validate_provider_instance_id(id)?;
+        let store = self.store()?;
+        let mut instance = store
+            .load_provider_instance(id)
+            .map_err(ai_store_error)?
+            .ok_or_else(|| "要测试的 AI 渠道不存在。".to_owned())?;
+        let provider = match AiProvider::from_provider_instance(&instance, Some("")) {
+            Ok(provider) => provider,
+            Err(error) => {
+                let _ = store.update_provider_instance_test_state(id, "unavailable", None);
+                return Err(error);
+            }
+        };
+        let models = match provider.list_models().await {
+            Ok(models) => models,
+            Err(error) => {
+                let _ = store.update_provider_instance_test_state(id, "unavailable", None);
+                return Err(error);
+            }
+        };
+        store
+            .save_provider_instance_models(id, &models)
+            .map_err(ai_store_error)?;
+        let test_model = if instance.model_name.trim().is_empty() {
+            models
+                .first()
+                .cloned()
+                .ok_or_else(|| "该渠道没有返回可测试的模型。".to_owned())?
+        } else {
+            instance.model_name.clone()
+        };
+        let provider = AiProvider::from_provider_instance(&instance, Some(&test_model))?;
+        let latency_ms = match provider.test_connection().await {
+            Ok(latency_ms) => latency_ms,
+            Err(error) => {
+                let _ = store.update_provider_instance_test_state(id, "unavailable", None);
+                return Err(error);
+            }
+        };
+        let profile = provider.probe_translation_capabilities().await;
+        if let Err(error) = store.save_translation_capabilities(&provider, &profile) {
+            diagnostics::warn(
+                "ai_capability_profile_save_failed",
+                DiagnosticFields::default()
+                    .operation("ai_capability_probe")
+                    .provider(provider.provider.id)
+                    .protocol(provider.protocol.id())
+                    .model(&provider.model)
+                    .error(DiagnosticErrorKind::Database),
+            );
+            let _ = error;
+        }
+        if instance.model_name.trim().is_empty() {
+            store
+                .update_provider_instance_model(id, &test_model)
+                .map_err(ai_store_error)?;
+            instance.model_name = test_model;
+            if instance.is_default {
+                store
+                    .set_default_provider_instance(id)
+                    .map_err(ai_store_error)?;
+            }
+        }
+        store
+            .update_provider_instance_test_state(id, "available", Some(latency_ms))
+            .map_err(ai_store_error)?;
+        diagnostics::info(
+            "ai_provider_instance_test_completed",
+            DiagnosticFields::default()
+                .operation("ai_provider_instance_test")
+                .provider(provider.provider.id)
+                .protocol(provider.protocol.id())
+                .model(&provider.model)
+                .outcome("available"),
+        );
+        let registry = self.get_provider_registry()?;
+        let provider = registry
+            .providers
+            .into_iter()
+            .find(|provider| provider.id == id)
+            .ok_or_else(|| "测试后的 AI 渠道状态无法读取。".to_owned())?;
+        Ok(AiProviderTestResultDto {
+            provider,
+            model_count: models.len(),
+        })
+    }
+
+    pub(crate) async fn refresh_model_catalog(&self) -> Result<AiModelCatalogDto, String> {
+        let store = self.store()?;
+        let instances = store.load_provider_instances().map_err(ai_store_error)?;
+        let total_provider_count = instances.len();
+        let mut tasks = JoinSet::new();
+        let mut failed_ids = Vec::new();
+        for instance in instances.iter().cloned() {
+            match AiProvider::from_provider_instance(&instance, Some("")) {
+                Ok(provider) => {
+                    tasks.spawn(async move { (instance, provider.list_models().await) });
+                }
+                Err(_) => failed_ids.push(instance.id),
+            }
+        }
+
+        let mut successful_models = HashMap::<String, Vec<String>>::new();
+        while let Some(result) = tasks.join_next().await {
+            match result {
+                Ok((instance, Ok(models))) if !models.is_empty() => {
+                    if let Err(error) = store.save_provider_instance_models(&instance.id, &models) {
+                        diagnostics::warn(
+                            "ai_provider_models_save_failed",
+                            DiagnosticFields::default()
+                                .operation("ai_model_catalog")
+                                .provider(
+                                    provider_preset(&instance.provider_id)
+                                        .map_or("custom", |preset| preset.id),
+                                )
+                                .error(DiagnosticErrorKind::Database),
+                        );
+                        let _ = error;
+                    }
+                    let _ =
+                        store.update_provider_instance_discovery_state(&instance.id, "available");
+                    successful_models.insert(instance.id, models);
+                }
+                Ok((instance, _)) => failed_ids.push(instance.id),
+                Err(_) => {}
+            }
+        }
+        for id in failed_ids {
+            let _ = store.update_provider_instance_discovery_state(&id, "unavailable");
+        }
+
+        let successful_provider_count = successful_models.len();
+        let mut seen = HashSet::<String>::new();
+        let mut models = Vec::new();
+        for instance in instances {
+            let Some(provider_models) = successful_models.get(&instance.id) else {
+                continue;
+            };
+            for model_name in provider_models {
+                if !seen.insert(model_name.clone()) {
+                    continue;
+                }
+                models.push(AiRoutedModelDto {
+                    provider_instance_id: instance.id.clone(),
+                    provider_id: instance.provider_id.clone(),
+                    provider_name: instance.name.clone(),
+                    model_name: model_name.clone(),
+                    is_default: instance.is_default && instance.model_name == *model_name,
+                });
+            }
+        }
+        Ok(AiModelCatalogDto {
+            models,
+            successful_provider_count,
+            total_provider_count,
+        })
     }
 
     pub(crate) async fn translate(
@@ -1480,7 +2027,7 @@ impl AiRuntime {
         events: Option<Channel<AiTurnEvent>>,
     ) -> Result<AiTurnResultDto, String> {
         validate_turn_request(&request)?;
-        let provider = self.configured_provider()?;
+        let provider = self.provider_for_turn(&request)?;
         let store = self.store()?;
         let operation_id = diagnostics::operation_id();
         let request_id = operation_id.as_str().to_owned();
@@ -1796,57 +2343,63 @@ impl AiRuntime {
     }
 
     fn configured_provider(&self) -> Result<AiProvider, String> {
-        let state = self
-            .provider_state
-            .read()
-            .map_err(|_| "AI 配置状态暂时不可用，请重试。".to_owned())?;
-        state.provider.clone().ok_or_else(|| {
-            state.provider_error.clone().unwrap_or_else(|| {
-                "AI 服务尚未配置，请前往“设置 > Agent 配置”完成模型配置。".to_owned()
-            })
-        })
+        let store = self.store()?;
+        let instance = store
+            .load_default_provider_instance()
+            .map_err(ai_store_error)?
+            .ok_or_else(|| {
+                "尚未选择默认 AI 模型，请前往“设置 > Agent 配置”完成设置。".to_owned()
+            })?;
+        if instance.model_name.trim().is_empty() {
+            return Err("默认 AI 渠道尚未选择模型，请前往 Agent 配置补充。".to_owned());
+        }
+        self.provider_for_instance(&instance, &instance.model_name)
+    }
+
+    fn provider_for_turn(&self, request: &AiTurnRequest) -> Result<AiProvider, String> {
+        match (
+            request.provider_instance_id.as_deref(),
+            request.model_name.as_deref(),
+        ) {
+            (None, None) => self.configured_provider(),
+            (Some(instance_id), Some(model_name)) => {
+                validate_provider_instance_id(instance_id)?;
+                let model_name = model_name.trim();
+                if model_name.is_empty()
+                    || model_name.len() > MAX_MODEL_NAME_BYTES
+                    || model_name.chars().any(char::is_control)
+                {
+                    return Err("请选择有效的 AI 模型。".to_owned());
+                }
+                let instance = self
+                    .store()?
+                    .load_provider_instance(instance_id)
+                    .map_err(ai_store_error)?
+                    .ok_or_else(|| "所选 AI 渠道已被删除，请重新选择模型。".to_owned())?;
+                self.provider_for_instance(&instance, model_name)
+            }
+            _ => Err("AI 模型路由信息不完整，请重新选择模型。".to_owned()),
+        }
+    }
+
+    fn provider_for_instance(
+        &self,
+        instance: &StoredAiProviderInstance,
+        model_name: &str,
+    ) -> Result<AiProvider, String> {
+        let provider = AiProvider::from_provider_instance(instance, Some(model_name))?;
+        let profile = self
+            .store()?
+            .load_translation_capabilities(&provider)
+            .map_err(ai_store_error)?
+            .filter(|profile| profile.is_fresh(now_ms()));
+        Ok(profile.map_or(provider.clone(), |profile| {
+            provider.with_translation_capabilities(profile)
+        }))
     }
 
     fn configured_translation_provider(&self) -> Result<AiProvider, String> {
-        let selected = self.configured_provider()?;
-        let store = self.store()?;
-        let Some(config) = store.load_config().map_err(ai_store_error)? else {
-            return Ok(selected);
-        };
-        if config.protocol_id != PROTOCOL_SELECTION_AUTO {
-            return Ok(selected);
-        }
-        let mut best = selected.clone();
-        let mut best_score =
-            translation_capability_score(best.translation_capability_snapshot().as_ref());
-        for candidate_config in store
-            .load_provider_configs()
-            .map_err(ai_store_error)?
-            .into_values()
-            .filter(|candidate| {
-                candidate.provider_id == config.provider_id
-                    && candidate.model_name == config.model_name
-            })
-        {
-            let Ok(candidate) = AiProvider::from_stored_config(&candidate_config) else {
-                continue;
-            };
-            if candidate.protocol == selected.protocol {
-                continue;
-            }
-            let Some(profile) = store
-                .load_translation_capabilities(&candidate)
-                .map_err(ai_store_error)?
-                .filter(|profile| profile.is_fresh(now_ms()))
-            else {
-                continue;
-            };
-            let score = translation_capability_score(Some(&profile));
-            if score > best_score {
-                best_score = score;
-                best = candidate.with_translation_capabilities(profile);
-            }
-        }
+        let best = self.configured_provider()?;
         diagnostics::info(
             "ai_translation_protocol_routed",
             DiagnosticFields::default()
@@ -1854,27 +2407,10 @@ impl AiRuntime {
                 .provider(best.provider.id)
                 .protocol(best.protocol.id())
                 .model(&best.model)
-                .outcome(if best.protocol == selected.protocol {
-                    "recommended_protocol"
-                } else {
-                    "capability_profile"
-                }),
+                .outcome("configured_instance"),
         );
         Ok(best)
     }
-}
-
-fn translation_capability_score(profile: Option<&TranslationCapabilityProfile>) -> i32 {
-    let Some(profile) = profile else {
-        return 0;
-    };
-    let support_score = |support| match support {
-        CapabilitySupport::Supported => 3,
-        CapabilitySupport::Unknown => 0,
-        CapabilitySupport::Unstable => -1,
-        CapabilitySupport::Unsupported => -2,
-    };
-    support_score(profile.streaming) + support_score(profile.structured_outputs) * 2
 }
 
 async fn run_translation_batches(
@@ -2263,6 +2799,28 @@ impl AiProvider {
             provider_preset(&config.provider_id).ok_or_else(|| "AI 供应商配置无效。".to_owned())?;
         let api_key = resolve_configured_api_key(config, preset)?;
         Self::new(config, preset, api_key)
+    }
+
+    fn from_provider_instance(
+        instance: &StoredAiProviderInstance,
+        model_name: Option<&str>,
+    ) -> Result<Self, String> {
+        let preset = provider_preset(&instance.provider_id)
+            .ok_or_else(|| "AI 供应商配置无效。".to_owned())?;
+        let model_name = model_name.unwrap_or(&instance.model_name).trim();
+        if model_name.len() > MAX_MODEL_NAME_BYTES || model_name.chars().any(char::is_control) {
+            return Err("AI 模型名称无效。".to_owned());
+        }
+        let config = StoredAiConfig {
+            provider_id: instance.provider_id.clone(),
+            protocol_id: instance.protocol_id.clone(),
+            base_url: instance.base_url.clone(),
+            model_name: model_name.to_owned(),
+            use_environment_key: instance.use_environment_key,
+            translation_language: default_translation_language(),
+        };
+        let api_key = resolve_provider_instance_api_key(instance, preset)?;
+        Self::new(&config, preset, api_key)
     }
 
     fn from_check_request(
@@ -4985,6 +5543,43 @@ fn default_config() -> StoredAiConfig {
     }
 }
 
+fn validate_provider_instance_id(id: &str) -> Result<(), String> {
+    if Uuid::parse_str(id.trim()).is_err() {
+        return Err("AI 渠道标识无效。".to_owned());
+    }
+    Ok(())
+}
+
+fn provider_instance_dto(
+    instance: &StoredAiProviderInstance,
+    models: Option<&Vec<String>>,
+) -> Result<AiProviderInstanceDto, String> {
+    let preset =
+        provider_preset(&instance.provider_id).ok_or_else(|| "AI 供应商配置无效。".to_owned())?;
+    let resolved_protocol = resolve_provider_protocol(preset, &instance.protocol_id)?;
+    Ok(AiProviderInstanceDto {
+        id: instance.id.clone(),
+        provider_id: instance.provider_id.clone(),
+        provider_label: preset.label.to_owned(),
+        name: instance.name.clone(),
+        protocol_id: instance.protocol_id.clone(),
+        resolved_protocol_id: resolved_protocol.id().to_owned(),
+        protocol_label: resolved_protocol.label().to_owned(),
+        base_url: instance.base_url.clone(),
+        model_name: instance.model_name.clone(),
+        use_environment_key: instance.use_environment_key,
+        has_stored_api_key: has_stored_provider_instance_credential(instance),
+        has_environment_api_key: environment_api_key(preset).is_some(),
+        environment_variable: preset.environment_variable.to_owned(),
+        models: models.cloned().unwrap_or_default(),
+        sort_order: instance.sort_order,
+        is_default: instance.is_default,
+        status: instance.status.clone(),
+        latency_ms: instance.latency_ms,
+        checked_at_ms: instance.checked_at_ms,
+    })
+}
+
 fn config_dto(
     config: &StoredAiConfig,
     provider_models: &HashMap<(String, String), Vec<String>>,
@@ -5225,6 +5820,57 @@ fn ai_keyring_entry(provider_id: &str) -> Result<Entry, String> {
         &format!("{AI_KEYRING_USERNAME_PREFIX}{provider_id}"),
     )
     .map_err(|_| "系统凭据库暂时不可用。".to_owned())
+}
+
+fn ai_provider_instance_keyring_entry(instance_id: &str) -> Result<Entry, String> {
+    if Uuid::parse_str(instance_id).is_err() {
+        return Err("AI 渠道标识无效。".to_owned());
+    }
+    Entry::new(
+        AI_KEYRING_SERVICE,
+        &format!("{AI_KEYRING_USERNAME_PREFIX}instance-{instance_id}"),
+    )
+    .map_err(|_| "系统凭据库暂时不可用。".to_owned())
+}
+
+fn resolve_provider_instance_api_key(
+    instance: &StoredAiProviderInstance,
+    preset: ProviderPreset,
+) -> Result<Zeroizing<String>, String> {
+    if instance.use_environment_key {
+        return read_environment_api_key(preset);
+    }
+    if let Some(value) = read_ai_credential(&ai_provider_instance_keyring_entry(&instance.id)?)? {
+        return Ok(value);
+    }
+    if let Some(legacy_provider_id) = instance.legacy_credential_provider_id.as_deref() {
+        if let Some(value) = read_ai_credential(&ai_keyring_entry(legacy_provider_id)?)? {
+            return Ok(value);
+        }
+    }
+    Err("该 AI 渠道尚未保存 API Key，请前往设置补充。".to_owned())
+}
+
+fn has_stored_provider_instance_credential(instance: &StoredAiProviderInstance) -> bool {
+    if instance.use_environment_key {
+        return false;
+    }
+    if read_ai_credential(&match ai_provider_instance_keyring_entry(&instance.id) {
+        Ok(entry) => entry,
+        Err(_) => return false,
+    })
+    .ok()
+    .flatten()
+    .is_some()
+    {
+        return true;
+    }
+    instance
+        .legacy_credential_provider_id
+        .as_deref()
+        .and_then(|provider_id| ai_keyring_entry(provider_id).ok())
+        .and_then(|entry| read_ai_credential(&entry).ok().flatten())
+        .is_some()
 }
 
 fn read_ai_credential(entry: &Entry) -> Result<Option<Zeroizing<String>>, String> {
@@ -7770,6 +8416,23 @@ fn validate_turn_request(request: &AiTurnRequest) -> Result<(), String> {
     if request.instruction.len() > MAX_INSTRUCTION_BYTES {
         return Err("AI 指令过长。".to_owned());
     }
+    match (
+        request.provider_instance_id.as_deref(),
+        request.model_name.as_deref(),
+    ) {
+        (None, None) => {}
+        (Some(instance_id), Some(model_name)) => {
+            validate_provider_instance_id(instance_id)?;
+            let model_name = model_name.trim();
+            if model_name.is_empty()
+                || model_name.len() > MAX_MODEL_NAME_BYTES
+                || model_name.chars().any(char::is_control)
+            {
+                return Err("请选择有效的 AI 模型。".to_owned());
+            }
+        }
+        _ => return Err("AI 模型路由信息不完整，请重新选择模型。".to_owned()),
+    }
     if request.draft.account_id.trim().is_empty()
         || request.draft.account_id.len() > 128
         || request.draft.account_id.chars().any(char::is_control)
@@ -7930,6 +8593,98 @@ fn ensure_ai_message_columns(connection: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+fn migrate_legacy_provider_instance(connection: &Connection) -> rusqlite::Result<()> {
+    let existing =
+        connection.query_row("SELECT COUNT(*) FROM ai_provider_instances", [], |row| {
+            row.get::<_, i64>(0)
+        })?;
+    if existing > 0 {
+        return Ok(());
+    }
+
+    let legacy = connection
+        .query_row(
+            "SELECT provider_id, protocol_id, base_url, model_name,
+                    use_environment_key
+             FROM ai_config
+             WHERE singleton = 1 AND base_url <> '' AND model_name <> ''",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, i64>(4)? != 0,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((provider_id, protocol_id, base_url, model_name, use_environment_key)) = legacy else {
+        return Ok(());
+    };
+    let Some(preset) = provider_preset(&provider_id) else {
+        return Ok(());
+    };
+    let resolved_protocol =
+        resolve_provider_protocol(preset, &protocol_id).unwrap_or(preset.recommended_protocol);
+    let instance_id = Uuid::new_v4().to_string();
+    connection.execute(
+        "INSERT INTO ai_provider_instances (
+             id, provider_id, name, protocol_id, base_url, model_name,
+             use_environment_key, sort_order, is_default, status,
+             latency_ms, checked_at_ms, legacy_credential_provider_id, updated_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, 1, 'untested',
+                   NULL, NULL, ?8, ?9)",
+        params![
+            instance_id,
+            provider_id,
+            preset.label,
+            protocol_id,
+            base_url,
+            model_name,
+            i64::from(use_environment_key),
+            (!use_environment_key).then_some(preset.id),
+            now_ms() as i64,
+        ],
+    )?;
+    connection.execute(
+        "INSERT INTO ai_provider_instance_models (
+             provider_instance_id, models_json, updated_at_ms
+         )
+         SELECT ?1, models_json, updated_at_ms
+         FROM ai_provider_protocol_models
+         WHERE provider_id = ?2 AND protocol_id = ?3
+         ON CONFLICT(provider_instance_id) DO NOTHING",
+        params![instance_id, preset.id, resolved_protocol.id()],
+    )?;
+    Ok(())
+}
+
+fn stored_provider_instance_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<StoredAiProviderInstance> {
+    Ok(StoredAiProviderInstance {
+        id: row.get(0)?,
+        provider_id: row.get(1)?,
+        name: row.get(2)?,
+        protocol_id: row.get(3)?,
+        base_url: row.get(4)?,
+        model_name: row.get(5)?,
+        use_environment_key: row.get::<_, i64>(6)? != 0,
+        sort_order: row.get(7)?,
+        is_default: row.get::<_, i64>(8)? != 0,
+        status: row.get(9)?,
+        latency_ms: row
+            .get::<_, Option<i64>>(10)?
+            .map(|value| value.max(0) as u64),
+        checked_at_ms: row
+            .get::<_, Option<i64>>(11)?
+            .map(|value| value.max(0) as u64),
+        legacy_credential_provider_id: row.get(12)?,
+    })
+}
+
 impl AiStore {
     fn open(path: impl AsRef<Path>) -> rusqlite::Result<Self> {
         let store = Self {
@@ -8019,6 +8774,33 @@ impl AiStore {
                  checked_at_ms INTEGER NOT NULL,
                  PRIMARY KEY (provider_id, protocol_id, base_url, model_name)
              );
+             CREATE TABLE IF NOT EXISTS ai_provider_instances (
+                 id TEXT PRIMARY KEY NOT NULL,
+                 provider_id TEXT NOT NULL,
+                 name TEXT NOT NULL,
+                 protocol_id TEXT NOT NULL,
+                 base_url TEXT NOT NULL,
+                 model_name TEXT NOT NULL,
+                 use_environment_key INTEGER NOT NULL CHECK (use_environment_key IN (0, 1)),
+                 sort_order INTEGER NOT NULL,
+                 is_default INTEGER NOT NULL CHECK (is_default IN (0, 1)),
+                 status TEXT NOT NULL CHECK (status IN ('untested', 'available', 'unavailable')),
+                 latency_ms INTEGER,
+                 checked_at_ms INTEGER,
+                 legacy_credential_provider_id TEXT,
+                 updated_at_ms INTEGER NOT NULL
+             );
+             CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_provider_instances_default
+                 ON ai_provider_instances(is_default) WHERE is_default = 1;
+             CREATE INDEX IF NOT EXISTS idx_ai_provider_instances_order
+                 ON ai_provider_instances(sort_order, updated_at_ms);
+             CREATE TABLE IF NOT EXISTS ai_provider_instance_models (
+                 provider_instance_id TEXT PRIMARY KEY NOT NULL,
+                 models_json TEXT NOT NULL,
+                 updated_at_ms INTEGER NOT NULL,
+                 FOREIGN KEY (provider_instance_id)
+                     REFERENCES ai_provider_instances(id) ON DELETE CASCADE
+             );
              CREATE TABLE IF NOT EXISTS ai_runtime_meta (
                  key TEXT PRIMARY KEY NOT NULL,
                  value INTEGER NOT NULL
@@ -8075,6 +8857,7 @@ impl AiStore {
              ON CONFLICT(provider_id) DO NOTHING",
             [],
         )?;
+        migrate_legacy_provider_instance(&connection)?;
         ensure_ai_message_columns(&connection)?;
         connection.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_ai_messages_request
@@ -8116,7 +8899,7 @@ impl AiStore {
              );
              CREATE INDEX IF NOT EXISTS idx_ai_turn_events_expiry
                  ON ai_turn_events(expires_at_ms);
-             PRAGMA user_version = 8;",
+             PRAGMA user_version = 9;",
         )?;
         store.cleanup_expired_rich_state_if_due(&connection)?;
         Ok(store)
@@ -8457,6 +9240,304 @@ impl AiStore {
                  models_json = excluded.models_json,
                  updated_at_ms = excluded.updated_at_ms",
             params![provider_id, protocol.id(), models_json, now_ms() as i64],
+        )?;
+        Ok(())
+    }
+
+    fn load_provider_instances(&self) -> rusqlite::Result<Vec<StoredAiProviderInstance>> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT id, provider_id, name, protocol_id, base_url, model_name,
+                    use_environment_key, sort_order, is_default, status,
+                    latency_ms, checked_at_ms, legacy_credential_provider_id
+             FROM ai_provider_instances
+             ORDER BY sort_order ASC, updated_at_ms ASC, id ASC",
+        )?;
+        let rows = statement.query_map([], stored_provider_instance_from_row)?;
+        rows.collect()
+    }
+
+    fn load_provider_instance(
+        &self,
+        id: &str,
+    ) -> rusqlite::Result<Option<StoredAiProviderInstance>> {
+        let connection = self.connection()?;
+        connection
+            .query_row(
+                "SELECT id, provider_id, name, protocol_id, base_url, model_name,
+                        use_environment_key, sort_order, is_default, status,
+                        latency_ms, checked_at_ms, legacy_credential_provider_id
+                 FROM ai_provider_instances WHERE id = ?1",
+                [id],
+                stored_provider_instance_from_row,
+            )
+            .optional()
+    }
+
+    fn load_default_provider_instance(&self) -> rusqlite::Result<Option<StoredAiProviderInstance>> {
+        let connection = self.connection()?;
+        connection
+            .query_row(
+                "SELECT id, provider_id, name, protocol_id, base_url, model_name,
+                        use_environment_key, sort_order, is_default, status,
+                        latency_ms, checked_at_ms, legacy_credential_provider_id
+                 FROM ai_provider_instances WHERE is_default = 1",
+                [],
+                stored_provider_instance_from_row,
+            )
+            .optional()
+    }
+
+    fn save_provider_instance(
+        &self,
+        instance: &StoredAiProviderInstance,
+        reset_connectivity: bool,
+    ) -> rusqlite::Result<()> {
+        let connection = self.connection()?;
+        connection.execute(
+            "INSERT INTO ai_provider_instances (
+                 id, provider_id, name, protocol_id, base_url, model_name,
+                 use_environment_key, sort_order, is_default, status,
+                 latency_ms, checked_at_ms, legacy_credential_provider_id, updated_at_ms
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+             ON CONFLICT(id) DO UPDATE SET
+                 provider_id = excluded.provider_id,
+                 name = excluded.name,
+                 protocol_id = excluded.protocol_id,
+                 base_url = excluded.base_url,
+                 model_name = excluded.model_name,
+                 use_environment_key = excluded.use_environment_key,
+                 status = excluded.status,
+                 latency_ms = excluded.latency_ms,
+                 checked_at_ms = excluded.checked_at_ms,
+                 legacy_credential_provider_id = excluded.legacy_credential_provider_id,
+                 updated_at_ms = excluded.updated_at_ms",
+            params![
+                instance.id,
+                instance.provider_id,
+                instance.name,
+                instance.protocol_id,
+                instance.base_url,
+                instance.model_name,
+                i64::from(instance.use_environment_key),
+                instance.sort_order,
+                i64::from(instance.is_default),
+                instance.status,
+                instance.latency_ms.map(|value| value as i64),
+                instance.checked_at_ms.map(|value| value as i64),
+                instance.legacy_credential_provider_id,
+                now_ms() as i64,
+            ],
+        )?;
+        if reset_connectivity {
+            connection.execute(
+                "DELETE FROM ai_provider_instance_models WHERE provider_instance_id = ?1",
+                [&instance.id],
+            )?;
+        }
+        Ok(())
+    }
+
+    fn next_provider_sort_order(&self) -> rusqlite::Result<i64> {
+        let connection = self.connection()?;
+        connection.query_row(
+            "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM ai_provider_instances",
+            [],
+            |row| row.get(0),
+        )
+    }
+
+    fn delete_provider_instance(&self, id: &str) -> rusqlite::Result<bool> {
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction()?;
+        let removed =
+            transaction.execute("DELETE FROM ai_provider_instances WHERE id = ?1", [id])? > 0;
+        if removed {
+            let remaining = transaction
+                .prepare(
+                    "SELECT id FROM ai_provider_instances
+                     ORDER BY sort_order ASC, updated_at_ms ASC, id ASC",
+                )?
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            for (index, provider_id) in remaining.iter().enumerate() {
+                transaction.execute(
+                    "UPDATE ai_provider_instances SET sort_order = ?1 WHERE id = ?2",
+                    params![index as i64, provider_id],
+                )?;
+            }
+        }
+        transaction.commit()?;
+        Ok(removed)
+    }
+
+    fn reorder_provider_instances(&self, ids: &[String]) -> rusqlite::Result<bool> {
+        let mut connection = self.connection()?;
+        let stored = connection
+            .prepare("SELECT id FROM ai_provider_instances")?
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<HashSet<_>>>()?;
+        let requested = ids.iter().cloned().collect::<HashSet<_>>();
+        if stored.len() != ids.len() || requested.len() != ids.len() || stored != requested {
+            return Ok(false);
+        }
+        let transaction = connection.transaction()?;
+        for (index, id) in ids.iter().enumerate() {
+            transaction.execute(
+                "UPDATE ai_provider_instances
+                 SET sort_order = ?1, updated_at_ms = ?2 WHERE id = ?3",
+                params![index as i64, now_ms() as i64, id],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(true)
+    }
+
+    fn set_default_provider_instance(&self, id: &str) -> rusqlite::Result<bool> {
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction()?;
+        let selected = transaction
+            .query_row(
+                "SELECT provider_id, protocol_id, base_url, model_name,
+                        use_environment_key
+                 FROM ai_provider_instances WHERE id = ?1",
+                [id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, i64>(4)? != 0,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((provider_id, protocol_id, base_url, model_name, use_environment_key)) = selected
+        else {
+            return Ok(false);
+        };
+        if model_name.trim().is_empty() {
+            return Ok(false);
+        }
+        transaction.execute("UPDATE ai_provider_instances SET is_default = 0", [])?;
+        transaction.execute(
+            "UPDATE ai_provider_instances
+             SET is_default = 1, updated_at_ms = ?1 WHERE id = ?2",
+            params![now_ms() as i64, id],
+        )?;
+        transaction.execute(
+            "INSERT INTO ai_config (
+                 singleton, provider_id, protocol_id, base_url, model_name,
+                 use_environment_key, translation_language, updated_at_ms
+             ) VALUES (
+                 1, ?1, ?2, ?3, ?4, ?5,
+                 COALESCE((SELECT translation_language FROM ai_config WHERE singleton = 1), 'zh-Hans'),
+                 ?6
+             )
+             ON CONFLICT(singleton) DO UPDATE SET
+                 provider_id = excluded.provider_id,
+                 protocol_id = excluded.protocol_id,
+                 base_url = excluded.base_url,
+                 model_name = excluded.model_name,
+                 use_environment_key = excluded.use_environment_key,
+                 updated_at_ms = excluded.updated_at_ms",
+            params![
+                provider_id,
+                protocol_id,
+                base_url,
+                model_name,
+                i64::from(use_environment_key),
+                now_ms() as i64,
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(true)
+    }
+
+    fn load_provider_instance_models(&self) -> rusqlite::Result<HashMap<String, Vec<String>>> {
+        let connection = self.connection()?;
+        let mut statement = connection
+            .prepare("SELECT provider_instance_id, models_json FROM ai_provider_instance_models")?;
+        let rows = statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut models = HashMap::new();
+        for row in rows {
+            let (id, json) = row?;
+            let Ok(parsed) = serde_json::from_str::<Vec<String>>(&json) else {
+                continue;
+            };
+            let parsed = normalize_model_list(parsed);
+            if !parsed.is_empty() {
+                models.insert(id, parsed);
+            }
+        }
+        Ok(models)
+    }
+
+    fn save_provider_instance_models(&self, id: &str, models: &[String]) -> rusqlite::Result<()> {
+        let models = normalize_model_list(models.iter().cloned());
+        if models.is_empty() {
+            return Err(rusqlite::Error::InvalidParameterName("models".to_owned()));
+        }
+        let json = serde_json::to_string(&models)
+            .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
+        let connection = self.connection()?;
+        connection.execute(
+            "INSERT INTO ai_provider_instance_models (
+                 provider_instance_id, models_json, updated_at_ms
+             ) VALUES (?1, ?2, ?3)
+             ON CONFLICT(provider_instance_id) DO UPDATE SET
+                 models_json = excluded.models_json,
+                 updated_at_ms = excluded.updated_at_ms",
+            params![id, json, now_ms() as i64],
+        )?;
+        Ok(())
+    }
+
+    fn update_provider_instance_test_state(
+        &self,
+        id: &str,
+        status: &str,
+        latency_ms: Option<u64>,
+    ) -> rusqlite::Result<()> {
+        let connection = self.connection()?;
+        connection.execute(
+            "UPDATE ai_provider_instances
+             SET status = ?1, latency_ms = ?2, checked_at_ms = ?3, updated_at_ms = ?3
+             WHERE id = ?4",
+            params![
+                status,
+                latency_ms.map(|value| value as i64),
+                now_ms() as i64,
+                id,
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn update_provider_instance_discovery_state(
+        &self,
+        id: &str,
+        status: &str,
+    ) -> rusqlite::Result<()> {
+        let connection = self.connection()?;
+        connection.execute(
+            "UPDATE ai_provider_instances
+             SET status = ?1, checked_at_ms = ?2, updated_at_ms = ?2
+             WHERE id = ?3",
+            params![status, now_ms() as i64, id],
+        )?;
+        Ok(())
+    }
+
+    fn update_provider_instance_model(&self, id: &str, model: &str) -> rusqlite::Result<()> {
+        let connection = self.connection()?;
+        connection.execute(
+            "UPDATE ai_provider_instances
+             SET model_name = ?1, updated_at_ms = ?2 WHERE id = ?3",
+            params![model, now_ms() as i64, id],
         )?;
         Ok(())
     }
@@ -9146,10 +10227,10 @@ mod tests {
         AiMode, AiProvider, AiRuntime, AiStore, AiTranslationFormat, AiTranslationPartRequest,
         AiTranslationRequest, EmptyToolArguments, PROTOCOL_SELECTION_AUTO, ProviderProtocol,
         ProviderResponseReadFailure, ProviderTrace, ReplaceDraftBodyArguments,
-        SearchContactsArguments, StoredAiConfig, ToolArgumentFailureTracker, ToolFailure,
-        ToolPreparationTracker, TranslationBatchOutcome, TranslationOutputMode,
-        TranslationUnitRequest, anthropic_messages, append_endpoint, apply_translation_units,
-        assistant_tool_message, collect_translation_units, default_config,
+        SearchContactsArguments, StoredAiConfig, StoredAiProviderInstance,
+        ToolArgumentFailureTracker, ToolFailure, ToolPreparationTracker, TranslationBatchOutcome,
+        TranslationOutputMode, TranslationUnitRequest, anthropic_messages, append_endpoint,
+        apply_translation_units, assistant_tool_message, collect_translation_units, default_config,
         default_translation_language, disable_parallel_tool_calls, enforce_serial_tool_calls,
         explicit_addresses, is_mimo_compatible_provider, is_mimo_token_plan_url,
         json_structure_state, merge_translation_batch_outcomes, model_size_priority,
@@ -10593,6 +11674,103 @@ mod tests {
                 .expect("load migrated provider configs")
                 .get(&("deepseek".to_owned(), "openai_chat_completions".to_owned(),)),
             Some(&config)
+        );
+        let instances = store
+            .load_provider_instances()
+            .expect("load migrated provider instances");
+        assert_eq!(instances.len(), 1);
+        assert_eq!(instances[0].provider_id, "deepseek");
+        assert_eq!(instances[0].model_name, "deepseek-chat");
+        assert!(instances[0].is_default);
+        assert_eq!(instances[0].legacy_credential_provider_id.as_deref(), None,);
+    }
+
+    #[test]
+    fn ai_store_keeps_same_provider_instances_ordered_and_independent() {
+        let directory = tempdir().expect("tempdir");
+        let store = AiStore::open(directory.path().join("ai.sqlite3")).expect("store");
+        let first = StoredAiProviderInstance {
+            id: "11111111-1111-4111-8111-111111111111".to_owned(),
+            provider_id: "deepseek".to_owned(),
+            name: "主线路".to_owned(),
+            protocol_id: "openai_chat_completions".to_owned(),
+            base_url: "https://primary.example.com".to_owned(),
+            model_name: "shared-model".to_owned(),
+            use_environment_key: true,
+            sort_order: 0,
+            is_default: false,
+            status: "available".to_owned(),
+            latency_ms: Some(42),
+            checked_at_ms: Some(100),
+            legacy_credential_provider_id: None,
+        };
+        let second = StoredAiProviderInstance {
+            id: "22222222-2222-4222-8222-222222222222".to_owned(),
+            provider_id: "deepseek".to_owned(),
+            name: "备用线路".to_owned(),
+            protocol_id: "openai_chat_completions".to_owned(),
+            base_url: "https://backup.example.com".to_owned(),
+            model_name: "backup-model".to_owned(),
+            use_environment_key: true,
+            sort_order: 1,
+            is_default: false,
+            status: "untested".to_owned(),
+            latency_ms: None,
+            checked_at_ms: None,
+            legacy_credential_provider_id: None,
+        };
+
+        store
+            .save_provider_instance(&first, false)
+            .expect("save first instance");
+        store
+            .save_provider_instance(&second, false)
+            .expect("save second instance");
+        store
+            .save_provider_instance_models(&first.id, &["shared-model".to_owned()])
+            .expect("save first models");
+        store
+            .save_provider_instance_models(&second.id, &["backup-model".to_owned()])
+            .expect("save second models");
+        assert!(
+            store
+                .set_default_provider_instance(&first.id)
+                .expect("set default")
+        );
+        assert!(
+            store
+                .reorder_provider_instances(&[second.id.clone(), first.id.clone()])
+                .expect("reorder")
+        );
+
+        let instances = store.load_provider_instances().expect("load instances");
+        assert_eq!(
+            instances
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![second.id.as_str(), first.id.as_str()],
+        );
+        assert_eq!(instances[0].base_url, second.base_url);
+        assert_eq!(instances[1].base_url, first.base_url);
+        assert!(instances[1].is_default);
+        let models = store
+            .load_provider_instance_models()
+            .expect("load instance models");
+        assert_eq!(
+            models.get(&first.id),
+            Some(&vec!["shared-model".to_owned()])
+        );
+        assert_eq!(
+            models.get(&second.id),
+            Some(&vec!["backup-model".to_owned()])
+        );
+        assert_eq!(
+            store
+                .load_config()
+                .expect("load legacy default")
+                .map(|item| item.base_url),
+            Some(first.base_url),
         );
     }
 
