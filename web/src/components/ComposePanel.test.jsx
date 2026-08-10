@@ -651,6 +651,7 @@ it("switches between the application session list and a conversation", async () 
       ),
     ).toBeTruthy(),
   );
+  expect(within(assistant).getAllByText("答案整理完毕")).toHaveLength(1);
   expect(
     within(assistant).getByRole("button", { name: /版本化附件.*#[0-9A-F]{8}/ }),
   ).toBeTruthy();

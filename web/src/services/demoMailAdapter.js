@@ -832,7 +832,7 @@ function createDemoActions(
         type: "started",
         request_id: requestId,
         mode: request.mode,
-        session,
+        session: session ? structuredClone(session) : null,
       });
       if (request.mode !== "optimize") {
         const turn = { cancelled: false };
