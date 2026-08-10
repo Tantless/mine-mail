@@ -316,10 +316,12 @@ product decision changes.
   OpenAI, Anthropic, Qwen, Xiaomi MiMo, MiniMax, ModelScope, Doubao Seed, GLM,
   and OpenRouter. Every preset exposes only the protocols implemented by both
   that service and Mine Mail: OpenAI Responses, OpenAI Chat Completions, and/or
-  Anthropic Messages. **自动** resolves to the preset recommendation; an explicit
-  selection remains explicit. Mine Mail never silently retries a failed request
-  through another protocol because that could duplicate billed work or tool
-  effects. An unconfigured installation starts on **自定义** with empty service
+  Anthropic Messages. **自动** normally resolves to the preset recommendation;
+  reader translation may choose another already configured protocol for the same
+  Provider and model before a request when a fresh tested capability profile is
+  strictly better. An explicit selection remains explicit. Mine Mail never
+  retries a failed request through another protocol because that could duplicate
+  billed work or tool effects. An unconfigured installation starts on **自定义** with empty service
   and model fields, and does not opt into reading an API Key from the environment.
   Existing provider configurations migrate to their previous wire protocol.
 - The same configured Provider powers reader translation. **AI 翻译语言** is a
@@ -340,15 +342,20 @@ product decision changes.
   reader error. A structurally valid partial Provider result is still useful:
   valid numbered translations replace their matching text positions, missing
   positions retain the original text, and the reader reports the completed and
-  total position counts. Duplicate, unknown, malformed, or unsafe positions
+  total translation-unit counts. Duplicate, unknown, malformed, or unsafe positions
   remain a failed translation rather than being guessed into the message. MiMo
-  translation disables thinking and receives its response through an internal
-  stream with translation-specific total and idle timeouts. Rust translates at
-  most six numbered text positions and normally no more than 800 UTF-8 bytes per
-  batch, then runs no more than two batches concurrently. A single position over
-  that byte budget remains intact in its own batch. A failed or timed-out batch
-  retains its original positions while other valid batches remain usable; the
-  reader still updates only after Rust validates and merges the available results.
+  translation additionally disables thinking. Every protocol receives translation
+  responses through its internal SSE adapter with a 180-second total limit and a
+  45-second between-chunk idle limit. Rust first splits a long plain-text body or
+  HTML text node at semantic boundaries into units of at most 800 UTF-8 bytes,
+  then creates batches of at most six units and normally 800 bytes. The scheduler
+  starts with four requests, raises concurrency to at most six after consecutive
+  successes, lowers it after partial or failed batches, and starts the next batch
+  whenever any active batch completes. Missing retryable units receive one retry
+  in smaller batches of at most two units and normally 400 bytes; an individual
+  larger unit remains intact. A failed or timed-out
+  unit retains its original text while other valid units remain usable; the reader
+  still updates only after Rust validates and merges the available results.
 - Valid Agent configuration edits persist automatically after a short quiet
   period. Incomplete transient input remains local and does not produce repeated
   failures. The manual save action remains available for immediate persistence
@@ -366,8 +373,13 @@ product decision changes.
   development, and cannot contain embedded credentials, query parameters, or
   fragments. Model discovery and connection tests run in Rust with bounded
   responses and privacy-safe logs. A connection test performs one minimal model
-  request and reports Rust-observed latency; it does not imply that every model
-  capability is available.
+  request, reports that request's Rust-observed latency, and then performs a
+  best-effort structured-output capability probe whose failure does not turn a
+  successful connection test into a failure. Capability profiles are scoped by
+  Provider, protocol, base URL, and model, cached for seven days, and combine
+  presets with tested and runtime-observed support for structured output,
+  streaming, and reasoning controls. They never contain credentials or mail
+  content. A model list alone does not prove those capabilities.
 - Except for the user's instruction and visible Session history, draft data is
   not placed in the initial model context. The model must use bounded tools to
   read the current subject, body, sender, recipients, immutable reply/forward

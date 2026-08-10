@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     fs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, RwLock},
@@ -13,10 +13,12 @@ use mine_mail::{
 };
 use reqwest::{Client, RequestBuilder, Url};
 use rusqlite::{Connection, OptionalExtension, params};
+use schemars::{JsonSchema, schema_for};
 use scraper::{Html, Node};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};
 use serde_json::{Map, Value, json};
 use tauri::ipc::Channel;
+use tokio::{sync::Semaphore, task::JoinSet};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 use zeroize::{Zeroize, Zeroizing};
@@ -39,6 +41,7 @@ const MAX_TOOL_ARGUMENT_BYTES: usize = 64 * 1024;
 const MAX_TOOL_ROUNDS: usize = 8;
 const MAX_SERIAL_TOOL_ROUNDS: usize = 16;
 const MAX_TOOL_CALLS_PER_ROUND: usize = 16;
+const MAX_CONSECUTIVE_TOOL_ARGUMENT_FAILURES: usize = 2;
 const MAX_PROVIDER_REQUEST_BYTES: usize = 4 * 1024 * 1024;
 const MAX_PROVIDER_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_TEXT_ATTACHMENT_BYTES: u64 = 256 * 1024;
@@ -48,11 +51,18 @@ const MAX_TRANSLATION_PARTS: usize = 256;
 const MAX_TRANSLATION_INPUT_BYTES: usize = 1024 * 1024;
 const MAX_TRANSLATION_UNITS: usize = 4_096;
 const AI_PROVIDER_REQUEST_TIMEOUT_SECS: u64 = 90;
-const AI_MIMO_TRANSLATION_TIMEOUT_SECS: u64 = 180;
-const AI_MIMO_TRANSLATION_IDLE_TIMEOUT_SECS: u64 = 45;
+const AI_TRANSLATION_TIMEOUT_SECS: u64 = 180;
+const AI_TRANSLATION_IDLE_TIMEOUT_SECS: u64 = 45;
 const AI_TRANSLATION_BATCH_SIZE: usize = 6;
 const AI_TRANSLATION_BATCH_MAX_BYTES: usize = 800;
-const AI_TRANSLATION_MAX_CONCURRENT_BATCHES: usize = 2;
+const AI_TRANSLATION_UNIT_MAX_BYTES: usize = 800;
+const AI_TRANSLATION_INITIAL_CONCURRENCY: usize = 4;
+const AI_TRANSLATION_MAX_CONCURRENCY: usize = 6;
+const AI_TRANSLATION_RETRY_BATCH_SIZE: usize = 2;
+const AI_TRANSLATION_RETRY_BATCH_MAX_BYTES: usize = 400;
+const AI_TRANSLATION_MAX_RETRY_ROUNDS: usize = 1;
+const AI_PROVIDER_MAX_CONCURRENT_REQUESTS: usize = 6;
+const AI_CAPABILITY_PROFILE_TTL_MS: u64 = 7 * 24 * 60 * 60 * 1_000;
 const AI_TRANSLATION_MIN_COMPLETION_TOKENS: u64 = 1_024;
 const AI_TRANSLATION_MAX_COMPLETION_TOKENS: u64 = 8_192;
 const AI_RICH_STATE_RETENTION_MS: u64 = 7 * 24 * 60 * 60 * 1_000;
@@ -504,7 +514,87 @@ pub(crate) struct AiTranslationResultDto {
 #[derive(Clone, Debug, Serialize)]
 struct TranslationUnitRequest {
     id: usize,
+    #[serde(skip)]
+    target_id: usize,
     text: String,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum CapabilitySupport {
+    Unknown,
+    Supported,
+    Unsupported,
+    Unstable,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum CapabilityEvidence {
+    Preset,
+    Declared,
+    Probed,
+    Observed,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+struct TranslationCapabilityProfile {
+    structured_outputs: CapabilitySupport,
+    streaming: CapabilitySupport,
+    reasoning_control: CapabilitySupport,
+    evidence: CapabilityEvidence,
+    checked_at_ms: u64,
+    latency_ms: Option<u64>,
+}
+
+impl TranslationCapabilityProfile {
+    fn preset(provider: ProviderPreset, protocol: ProviderProtocol) -> Self {
+        let official_structured_output = matches!(
+            (provider.id, protocol),
+            ("openai", ProviderProtocol::OpenAiResponses)
+                | ("openai", ProviderProtocol::OpenAiChatCompletions)
+                | ("anthropic", ProviderProtocol::AnthropicMessages)
+        );
+        let known_reasoning_control = provider.id == "mimo"
+            && matches!(
+                protocol,
+                ProviderProtocol::OpenAiResponses | ProviderProtocol::OpenAiChatCompletions
+            );
+        Self {
+            structured_outputs: if official_structured_output {
+                CapabilitySupport::Supported
+            } else {
+                CapabilitySupport::Unknown
+            },
+            streaming: CapabilitySupport::Unknown,
+            reasoning_control: if known_reasoning_control {
+                CapabilitySupport::Supported
+            } else {
+                CapabilitySupport::Unknown
+            },
+            evidence: CapabilityEvidence::Preset,
+            checked_at_ms: 0,
+            latency_ms: None,
+        }
+    }
+
+    fn is_fresh(&self, now_ms: u64) -> bool {
+        self.checked_at_ms > 0
+            && now_ms.saturating_sub(self.checked_at_ms) <= AI_CAPABILITY_PROFILE_TTL_MS
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TranslationOutputMode {
+    JsonSchema,
+    JsonObject,
+    PromptJson,
+}
+
+#[derive(Clone, Debug)]
+struct TranslationBatchJob {
+    batch_index: usize,
+    units: Vec<TranslationUnitRequest>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -532,16 +622,18 @@ struct TranslationBatchOutcome {
     unit_ids: Vec<usize>,
     translations: Vec<Option<String>>,
     error: Option<String>,
+    retryable: bool,
 }
 
 impl TranslationBatchOutcome {
-    fn failed(batch_index: usize, unit_ids: Vec<usize>, error: String) -> Self {
+    fn failed(batch_index: usize, unit_ids: Vec<usize>, error: String, retryable: bool) -> Self {
         let translations = vec![None; unit_ids.len()];
         Self {
             batch_index,
             unit_ids,
             translations,
             error: Some(error),
+            retryable,
         }
     }
 }
@@ -887,7 +979,21 @@ impl AiRuntime {
             .and_then(|store| store.load_config().ok().flatten())
             .unwrap_or_else(default_config);
         let (provider, provider_error) = match AiProvider::from_stored_config(&config) {
-            Ok(provider) => (Some(provider), None),
+            Ok(provider) => {
+                let provider = store
+                    .as_ref()
+                    .and_then(|store| {
+                        store
+                            .load_translation_capabilities(&provider)
+                            .ok()
+                            .flatten()
+                    })
+                    .filter(|profile| profile.is_fresh(now_ms()))
+                    .map_or(provider.clone(), |profile| {
+                        provider.with_translation_capabilities(profile)
+                    });
+                (Some(provider), None)
+            }
             Err(error) => {
                 diagnostics::warn(
                     "ai_provider_unavailable",
@@ -973,7 +1079,17 @@ impl AiRuntime {
         request.api_key.zeroize();
 
         let (provider, provider_error) = match AiProvider::from_stored_config(&config) {
-            Ok(provider) => (Some(provider), None),
+            Ok(provider) => {
+                let provider = self
+                    .store()?
+                    .load_translation_capabilities(&provider)
+                    .map_err(ai_store_error)?
+                    .filter(|profile| profile.is_fresh(now_ms()))
+                    .map_or(provider.clone(), |profile| {
+                        provider.with_translation_capabilities(profile)
+                    });
+                (Some(provider), None)
+            }
             Err(error) => (None, Some(error)),
         };
         let mut state = self
@@ -1064,6 +1180,32 @@ impl AiRuntime {
         let provider = AiProvider::from_check_request(&request, true)?;
         request.api_key.zeroize();
         let latency_ms = provider.test_connection().await?;
+        let profile = provider.probe_translation_capabilities().await;
+        if let Err(error) = self
+            .store()?
+            .save_translation_capabilities(&provider, &profile)
+        {
+            diagnostics::warn(
+                "ai_capability_profile_save_failed",
+                DiagnosticFields::default()
+                    .operation("ai_capability_probe")
+                    .provider(provider.provider.id)
+                    .protocol(provider.protocol.id())
+                    .model(&provider.model)
+                    .error(DiagnosticErrorKind::Database),
+            );
+            let _ = error;
+        }
+        if let Ok(state) = self.provider_state.read()
+            && let Some(active) = state.provider.as_ref()
+            && active.provider.id == provider.provider.id
+            && active.protocol == provider.protocol
+            && active.base_url == provider.base_url
+            && active.model == provider.model
+            && let Ok(mut active_profile) = active.translation_capabilities.write()
+        {
+            *active_profile = profile;
+        }
         Ok(AiConnectionTestDto { latency_ms })
     }
 
@@ -1074,7 +1216,7 @@ impl AiRuntime {
         validate_translation_request(&request)?;
         let requested_language_id = request.language_id.clone();
         let parts = sanitize_translation_parts(request.parts);
-        let provider = self.configured_provider()?;
+        let provider = self.configured_translation_provider()?;
         let config = self
             .store()?
             .load_config()
@@ -1111,35 +1253,69 @@ impl AiRuntime {
             .payload_bytes(input_bytes, 0);
         diagnostics::info("ai_translation_started", fields.clone());
 
-        let mut outcomes = Vec::with_capacity(batch_count);
-        for pair_start in (0..batch_count).step_by(AI_TRANSLATION_MAX_CONCURRENT_BATCHES) {
-            let first = translate_units_batch(
+        let outcomes =
+            run_translation_batches(provider.clone(), language, batches, operation_id.clone(), 0)
+                .await;
+        let (mut translations, first_error, retryable_ids) =
+            merge_translation_batch_outcomes(unit_count, outcomes);
+
+        for retry_round in 1..=AI_TRANSLATION_MAX_RETRY_ROUNDS {
+            let retry_units = units
+                .iter()
+                .filter(|unit| {
+                    translations.get(unit.id).is_some_and(Option::is_none)
+                        && retryable_ids.contains(&unit.id)
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            if retry_units.is_empty() {
+                break;
+            }
+            let retry_batches = partition_translation_units_with_limits(
+                &retry_units,
+                AI_TRANSLATION_RETRY_BATCH_SIZE,
+                AI_TRANSLATION_RETRY_BATCH_MAX_BYTES,
+            );
+            diagnostics::info(
+                "ai_translation_retry_started",
+                fields
+                    .clone()
+                    .attempt((retry_round + 1) as u64)
+                    .changes(retry_units.len())
+                    .batches(retry_batches.len())
+                    .outcome("missing_units_only"),
+            );
+            let retry_outcomes = run_translation_batches(
                 provider.clone(),
                 language,
-                batches[pair_start].clone(),
+                retry_batches,
                 operation_id.clone(),
-                pair_start,
-                batch_count,
-            );
-            if pair_start + 1 < batch_count {
-                let second = translate_units_batch(
-                    provider.clone(),
-                    language,
-                    batches[pair_start + 1].clone(),
-                    operation_id.clone(),
-                    pair_start + 1,
-                    batch_count,
-                );
-                let (first, second) = tokio::join!(first, second);
-                outcomes.push(first);
-                outcomes.push(second);
-            } else {
-                outcomes.push(first.await);
+                retry_round,
+            )
+            .await;
+            let (retry_translations, _, _) =
+                merge_translation_batch_outcomes(unit_count, retry_outcomes);
+            let mut recovered = 0usize;
+            for (unit_id, translation) in retry_translations.into_iter().enumerate() {
+                if translations[unit_id].is_none() && translation.is_some() {
+                    translations[unit_id] = translation;
+                    recovered += 1;
+                }
             }
+            diagnostics::info(
+                "ai_translation_retry_completed",
+                fields
+                    .clone()
+                    .attempt((retry_round + 1) as u64)
+                    .successes(recovered)
+                    .failures(retry_units.len().saturating_sub(recovered))
+                    .outcome(if recovered == retry_units.len() {
+                        "completed"
+                    } else {
+                        "partially_completed"
+                    }),
+            );
         }
-        outcomes.sort_by_key(|outcome| outcome.batch_index);
-
-        let (translations, first_error) = merge_translation_batch_outcomes(unit_count, outcomes);
         let translated_count = translations.iter().flatten().count();
         if translated_count == 0 {
             diagnostics::error(
@@ -1155,7 +1331,7 @@ impl AiRuntime {
             );
         }
 
-        let translated_parts = apply_translation_units(&parts, &translations)?;
+        let translated_parts = apply_translation_units(&parts, &units, &translations)?;
         let missing_count = unit_count.saturating_sub(translated_count);
         let output_bytes = translated_parts
             .iter()
@@ -1164,6 +1340,7 @@ impl AiRuntime {
         diagnostics::info(
             "ai_translation_completed",
             fields
+                .clone()
                 .outcome(if missing_count == 0 {
                     "completed"
                 } else {
@@ -1174,6 +1351,20 @@ impl AiRuntime {
                 .payload_bytes(input_bytes, output_bytes)
                 .duration(started.elapsed()),
         );
+        if let Some(profile) = provider.translation_capability_snapshot() {
+            if let Err(_error) = self
+                .store()?
+                .save_translation_capabilities(&provider, &profile)
+            {
+                diagnostics::warn(
+                    "ai_capability_profile_save_failed",
+                    fields
+                        .clone()
+                        .operation("ai_capability_profile")
+                        .error(DiagnosticErrorKind::Database),
+                );
+            }
+        }
         Ok(AiTranslationResultDto {
             language: language.id.to_owned(),
             parts: translated_parts,
@@ -1608,6 +1799,212 @@ impl AiRuntime {
             })
         })
     }
+
+    fn configured_translation_provider(&self) -> Result<AiProvider, String> {
+        let selected = self.configured_provider()?;
+        let store = self.store()?;
+        let Some(config) = store.load_config().map_err(ai_store_error)? else {
+            return Ok(selected);
+        };
+        if config.protocol_id != PROTOCOL_SELECTION_AUTO {
+            return Ok(selected);
+        }
+        let mut best = selected.clone();
+        let mut best_score =
+            translation_capability_score(best.translation_capability_snapshot().as_ref());
+        for candidate_config in store
+            .load_provider_configs()
+            .map_err(ai_store_error)?
+            .into_values()
+            .filter(|candidate| {
+                candidate.provider_id == config.provider_id
+                    && candidate.model_name == config.model_name
+            })
+        {
+            let Ok(candidate) = AiProvider::from_stored_config(&candidate_config) else {
+                continue;
+            };
+            if candidate.protocol == selected.protocol {
+                continue;
+            }
+            let Some(profile) = store
+                .load_translation_capabilities(&candidate)
+                .map_err(ai_store_error)?
+                .filter(|profile| profile.is_fresh(now_ms()))
+            else {
+                continue;
+            };
+            let score = translation_capability_score(Some(&profile));
+            if score > best_score {
+                best_score = score;
+                best = candidate.with_translation_capabilities(profile);
+            }
+        }
+        diagnostics::info(
+            "ai_translation_protocol_routed",
+            DiagnosticFields::default()
+                .operation("ai_translation_routing")
+                .provider(best.provider.id)
+                .protocol(best.protocol.id())
+                .model(&best.model)
+                .outcome(if best.protocol == selected.protocol {
+                    "recommended_protocol"
+                } else {
+                    "capability_profile"
+                }),
+        );
+        Ok(best)
+    }
+}
+
+fn translation_capability_score(profile: Option<&TranslationCapabilityProfile>) -> i32 {
+    let Some(profile) = profile else {
+        return 0;
+    };
+    let support_score = |support| match support {
+        CapabilitySupport::Supported => 3,
+        CapabilitySupport::Unknown => 0,
+        CapabilitySupport::Unstable => -1,
+        CapabilitySupport::Unsupported => -2,
+    };
+    support_score(profile.streaming) + support_score(profile.structured_outputs) * 2
+}
+
+async fn run_translation_batches(
+    provider: AiProvider,
+    language: TranslationLanguage,
+    batches: Vec<Vec<TranslationUnitRequest>>,
+    operation_id: diagnostics::OperationId,
+    retry_round: usize,
+) -> Vec<TranslationBatchOutcome> {
+    let batch_count = batches.len();
+    if batch_count == 0 {
+        return Vec::new();
+    }
+    let mut jobs = batches
+        .into_iter()
+        .enumerate()
+        .map(|(batch_index, units)| TranslationBatchJob { batch_index, units })
+        .collect::<Vec<_>>();
+    jobs.sort_by(|left, right| {
+        let left_bytes = left.units.iter().map(|unit| unit.text.len()).sum::<usize>();
+        let right_bytes = right
+            .units
+            .iter()
+            .map(|unit| unit.text.len())
+            .sum::<usize>();
+        right_bytes
+            .cmp(&left_bytes)
+            .then_with(|| left.batch_index.cmp(&right.batch_index))
+    });
+    let mut pending = VecDeque::from(jobs);
+    let mut running = JoinSet::new();
+    let mut outcomes = Vec::with_capacity(batch_count);
+    let mut concurrency = AI_TRANSLATION_INITIAL_CONCURRENCY
+        .min(AI_TRANSLATION_MAX_CONCURRENCY)
+        .min(batch_count)
+        .max(1);
+    let mut successful_streak = 0usize;
+    let scheduler_fields = DiagnosticFields::default()
+        .operation_id(operation_id.clone())
+        .operation("ai_translation_scheduler")
+        .provider(provider.provider.id)
+        .protocol(provider.protocol.id())
+        .model(&provider.model)
+        .mode("translate")
+        .attempt((retry_round + 1) as u64)
+        .batches(batch_count);
+    diagnostics::info(
+        "ai_translation_scheduler_started",
+        scheduler_fields
+            .clone()
+            .changes(concurrency)
+            .outcome("largest_batch_first"),
+    );
+
+    while !pending.is_empty() || !running.is_empty() {
+        while running.len() < concurrency {
+            let Some(job) = pending.pop_front() else {
+                break;
+            };
+            let task_provider = provider.clone();
+            let task_operation_id = operation_id.clone();
+            running.spawn(async move {
+                translate_units_batch(
+                    task_provider,
+                    language,
+                    job.units,
+                    task_operation_id,
+                    job.batch_index,
+                    batch_count,
+                    retry_round,
+                )
+                .await
+            });
+        }
+
+        let Some(joined) = running.join_next().await else {
+            break;
+        };
+        match joined {
+            Ok(outcome) => {
+                let completed =
+                    outcome.error.is_none() && outcome.translations.iter().all(Option::is_some);
+                if completed {
+                    successful_streak += 1;
+                    if successful_streak >= 2
+                        && concurrency < AI_TRANSLATION_MAX_CONCURRENCY.min(batch_count)
+                    {
+                        concurrency += 1;
+                        successful_streak = 0;
+                        diagnostics::info(
+                            "ai_translation_concurrency_adjusted",
+                            scheduler_fields
+                                .clone()
+                                .changes(concurrency)
+                                .outcome("increased_after_success"),
+                        );
+                    }
+                } else {
+                    successful_streak = 0;
+                    let reduced = concurrency.saturating_sub(1).max(1);
+                    if reduced != concurrency {
+                        concurrency = reduced;
+                        diagnostics::warn(
+                            "ai_translation_concurrency_adjusted",
+                            scheduler_fields
+                                .clone()
+                                .changes(concurrency)
+                                .outcome("reduced_after_failure")
+                                .degraded(true),
+                        );
+                    }
+                }
+                outcomes.push(outcome);
+            }
+            Err(_) => {
+                successful_streak = 0;
+                concurrency = concurrency.saturating_sub(1).max(1);
+                diagnostics::error(
+                    "ai_translation_batch_join_failed",
+                    scheduler_fields
+                        .clone()
+                        .changes(concurrency)
+                        .outcome("task_failed")
+                        .error(DiagnosticErrorKind::Runtime),
+                );
+            }
+        }
+    }
+    outcomes.sort_by_key(|outcome| outcome.batch_index);
+    diagnostics::info(
+        "ai_translation_scheduler_completed",
+        scheduler_fields
+            .successes(outcomes.len())
+            .failures(batch_count.saturating_sub(outcomes.len()))
+            .outcome("completed"),
+    );
+    outcomes
 }
 
 async fn translate_units_batch(
@@ -1617,6 +2014,7 @@ async fn translate_units_batch(
     operation_id: diagnostics::OperationId,
     batch_index: usize,
     batch_count: usize,
+    retry_round: usize,
 ) -> TranslationBatchOutcome {
     let started = Instant::now();
     let unit_ids = units.iter().map(|unit| unit.id).collect::<Vec<_>>();
@@ -1628,6 +2026,7 @@ async fn translate_units_batch(
         .protocol(provider.protocol.id())
         .model(&provider.model)
         .mode("translate")
+        .attempt((retry_round + 1) as u64)
         .batch(batch_index + 1, batch_count)
         .changes(units.len())
         .payload_bytes(input_bytes, 0);
@@ -1645,7 +2044,7 @@ async fn translate_units_batch(
                     .failures(units.len())
                     .duration(started.elapsed()),
             );
-            return TranslationBatchOutcome::failed(batch_index, unit_ids, error);
+            return TranslationBatchOutcome::failed(batch_index, unit_ids, error, false);
         }
     };
     let messages = vec![
@@ -1671,13 +2070,17 @@ async fn translate_units_batch(
                 provider: provider.provider.id,
                 protocol: provider.protocol.id(),
                 model: provider.model.clone(),
-                round: batch_index + 1,
+                round: retry_round
+                    .saturating_mul(batch_count)
+                    .saturating_add(batch_index)
+                    .saturating_add(1),
             },
         )
         .await
     {
         Ok(turn) => turn,
         Err(error) => {
+            let retryable = is_retryable_translation_error(&error);
             diagnostics::error(
                 "ai_translation_batch_failed",
                 fields
@@ -1686,7 +2089,7 @@ async fn translate_units_batch(
                     .failures(units.len())
                     .duration(started.elapsed()),
             );
-            return TranslationBatchOutcome::failed(batch_index, unit_ids, error);
+            return TranslationBatchOutcome::failed(batch_index, unit_ids, error, retryable);
         }
     };
     if turn.finish_reason != "stop"
@@ -1706,7 +2109,8 @@ async fn translate_units_batch(
                 .finish_reason(turn.finish_reason)
                 .duration(started.elapsed()),
         );
-        return TranslationBatchOutcome::failed(batch_index, unit_ids, error);
+        let retryable = !matches!(turn.finish_reason, "content_filter" | "refusal");
+        return TranslationBatchOutcome::failed(batch_index, unit_ids, error, retryable);
     }
     let Some(content) = turn.message.get("content").and_then(Value::as_str) else {
         let error = "AI 翻译没有返回结果。".to_owned();
@@ -1718,7 +2122,7 @@ async fn translate_units_batch(
                 .failures(units.len())
                 .duration(started.elapsed()),
         );
-        return TranslationBatchOutcome::failed(batch_index, unit_ids, error);
+        return TranslationBatchOutcome::failed(batch_index, unit_ids, error, true);
     };
     let parsed = match parse_translation_envelope_for_ids(content, &unit_ids) {
         Ok(parsed) => parsed,
@@ -1735,7 +2139,12 @@ async fn translate_units_batch(
                 rejection_fields = rejection_fields.json_error(kind, line, column);
             }
             diagnostics::error("ai_translation_batch_failed", rejection_fields);
-            return TranslationBatchOutcome::failed(batch_index, unit_ids, error.user_message);
+            return TranslationBatchOutcome::failed(
+                batch_index,
+                unit_ids,
+                error.user_message,
+                true,
+            );
         }
     };
     let missing_count = units.len().saturating_sub(parsed.translated_count);
@@ -1763,6 +2172,7 @@ async fn translate_units_batch(
         unit_ids,
         translations: parsed.translations,
         error: None,
+        retryable: missing_count > 0,
     }
 }
 
@@ -1836,6 +2246,8 @@ struct AiProvider {
     endpoint: Url,
     model: String,
     supports_images: bool,
+    translation_capabilities: Arc<RwLock<TranslationCapabilityProfile>>,
+    request_limiter: Arc<Semaphore>,
 }
 
 impl AiProvider {
@@ -1907,7 +2319,49 @@ impl AiProvider {
             endpoint,
             model: config.model_name.clone(),
             supports_images: provider.supports_images,
+            translation_capabilities: Arc::new(RwLock::new(TranslationCapabilityProfile::preset(
+                provider, protocol,
+            ))),
+            request_limiter: Arc::new(Semaphore::new(AI_PROVIDER_MAX_CONCURRENT_REQUESTS)),
         })
+    }
+
+    fn with_translation_capabilities(mut self, profile: TranslationCapabilityProfile) -> Self {
+        self.translation_capabilities = Arc::new(RwLock::new(profile));
+        self
+    }
+
+    fn translation_output_mode(&self) -> TranslationOutputMode {
+        let structured_outputs = self
+            .translation_capabilities
+            .read()
+            .map(|profile| profile.structured_outputs)
+            .unwrap_or(CapabilitySupport::Unknown);
+        if structured_outputs == CapabilitySupport::Supported {
+            TranslationOutputMode::JsonSchema
+        } else if matches!(
+            self.protocol,
+            ProviderProtocol::OpenAiResponses | ProviderProtocol::OpenAiChatCompletions
+        ) {
+            TranslationOutputMode::JsonObject
+        } else {
+            TranslationOutputMode::PromptJson
+        }
+    }
+
+    fn translation_capability_snapshot(&self) -> Option<TranslationCapabilityProfile> {
+        self.translation_capabilities
+            .read()
+            .ok()
+            .map(|profile| profile.clone())
+    }
+
+    fn record_translation_stream_success(&self) {
+        if let Ok(mut profile) = self.translation_capabilities.write() {
+            profile.streaming = CapabilitySupport::Supported;
+            profile.evidence = CapabilityEvidence::Observed;
+            profile.checked_at_ms = now_ms();
+        }
     }
 
     async fn complete(
@@ -1916,24 +2370,130 @@ impl AiProvider {
         tools: &[ToolSpec],
         trace: ProviderTrace,
     ) -> Result<ProviderTurn, String> {
-        if self.uses_mimo_translation_transport(&trace) {
+        let _permit = self
+            .request_limiter
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| "AI 请求调度器暂时不可用，请重试。".to_owned())?;
+        if trace.mode == "translate" {
             diagnostics::info(
                 "ai_translation_transport_selected",
-                trace.fields().outcome("mimo_streaming_without_thinking"),
+                trace.fields().outcome(match self.protocol {
+                    ProviderProtocol::OpenAiResponses => "openai_responses_streaming",
+                    ProviderProtocol::OpenAiChatCompletions => {
+                        if self.is_mimo_compatible() {
+                            "openai_chat_streaming_without_thinking"
+                        } else {
+                            "openai_chat_streaming"
+                        }
+                    }
+                    ProviderProtocol::AnthropicMessages => "anthropic_messages_streaming",
+                }),
             );
             let cancellation = CancellationToken::new();
-            return self
-                .complete_openai_streaming(
-                    messages,
-                    tools,
-                    trace,
-                    "translation",
-                    "translation",
-                    None,
-                    &cancellation,
-                )
-                .await
-                .map_err(|failure| failure.message);
+            let fallback_trace = trace.clone();
+            let result = match self.protocol {
+                ProviderProtocol::OpenAiResponses => {
+                    self.complete_openai_responses_streaming(
+                        messages,
+                        tools,
+                        trace,
+                        "translation",
+                        "translation",
+                        None,
+                        &cancellation,
+                    )
+                    .await
+                }
+                ProviderProtocol::OpenAiChatCompletions => {
+                    self.complete_openai_streaming(
+                        messages,
+                        tools,
+                        trace,
+                        "translation",
+                        "translation",
+                        None,
+                        &cancellation,
+                    )
+                    .await
+                }
+                ProviderProtocol::AnthropicMessages => {
+                    self.complete_anthropic_streaming(
+                        messages,
+                        tools,
+                        trace,
+                        "translation",
+                        "translation",
+                        None,
+                        &cancellation,
+                    )
+                    .await
+                }
+            };
+            if let Err(failure) = &result
+                && self.translation_output_mode() == TranslationOutputMode::JsonSchema
+                && is_structured_output_rejection(&failure.message)
+            {
+                if let Ok(mut profile) = self.translation_capabilities.write() {
+                    profile.structured_outputs = CapabilitySupport::Unsupported;
+                    profile.evidence = CapabilityEvidence::Observed;
+                    profile.checked_at_ms = now_ms();
+                }
+                diagnostics::warn(
+                    "ai_translation_structured_output_downgraded",
+                    fallback_trace
+                        .fields()
+                        .outcome("provider_rejected_json_schema")
+                        .degraded(true),
+                );
+                let fallback_result = match self.protocol {
+                    ProviderProtocol::OpenAiResponses => {
+                        self.complete_openai_responses_streaming(
+                            messages,
+                            tools,
+                            fallback_trace,
+                            "translation",
+                            "translation",
+                            None,
+                            &cancellation,
+                        )
+                        .await
+                    }
+                    ProviderProtocol::OpenAiChatCompletions => {
+                        self.complete_openai_streaming(
+                            messages,
+                            tools,
+                            fallback_trace,
+                            "translation",
+                            "translation",
+                            None,
+                            &cancellation,
+                        )
+                        .await
+                    }
+                    ProviderProtocol::AnthropicMessages => {
+                        self.complete_anthropic_streaming(
+                            messages,
+                            tools,
+                            fallback_trace,
+                            "translation",
+                            "translation",
+                            None,
+                            &cancellation,
+                        )
+                        .await
+                    }
+                };
+                if fallback_result.is_ok() {
+                    self.record_translation_stream_success();
+                }
+                return fallback_result.map_err(|failure| failure.message);
+            }
+            if result.is_ok() {
+                self.record_translation_stream_success();
+            }
+            return result.map_err(|failure| failure.message);
         }
         match self.protocol {
             ProviderProtocol::OpenAiResponses => {
@@ -1999,6 +2559,12 @@ impl AiProvider {
         events: Option<&Channel<AiTurnEvent>>,
         cancellation: &CancellationToken,
     ) -> Result<ProviderTurn, StreamingFailure> {
+        let _permit = self
+            .request_limiter
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| StreamingFailure::new("AI 请求调度器暂时不可用，请重试。"))?;
         match self.protocol {
             ProviderProtocol::OpenAiResponses => {
                 self.complete_openai_responses_streaming(
@@ -2069,8 +2635,8 @@ impl AiProvider {
         let request = self
             .authenticate_openai_request(self.client.post(self.endpoint.clone()))
             .json(&payload);
-        let request = if translation && self.is_mimo_compatible() {
-            request.timeout(Duration::from_secs(AI_MIMO_TRANSLATION_TIMEOUT_SECS))
+        let request = if translation {
+            request.timeout(Duration::from_secs(AI_TRANSLATION_TIMEOUT_SECS))
         } else {
             request
         };
@@ -2083,8 +2649,8 @@ impl AiProvider {
                     &trace,
                     request_bytes,
                     started,
-                    if translation && self.is_mimo_compatible() {
-                        AI_MIMO_TRANSLATION_TIMEOUT_SECS
+                    if translation {
+                        AI_TRANSLATION_TIMEOUT_SECS
                     } else {
                         AI_PROVIDER_REQUEST_TIMEOUT_SECS
                     },
@@ -2135,16 +2701,26 @@ impl AiProvider {
                 String::new()
             };
             let read_chunk = async {
-                let chunk = if translation && self.is_mimo_compatible() {
+                let chunk = if translation {
                     tokio::time::timeout(
-                        Duration::from_secs(AI_MIMO_TRANSLATION_IDLE_TIMEOUT_SECS),
+                        Duration::from_secs(AI_TRANSLATION_IDLE_TIMEOUT_SECS),
                         response.chunk(),
                     )
                     .await
                     .map_err(|_| {
+                        diagnostics::error(
+                            "ai_provider_stream_idle_timeout",
+                            trace
+                                .fields()
+                                .attempt(trace.round as u64)
+                                .payload_bytes(request_bytes, response_bytes)
+                                .duration(started.elapsed())
+                                .outcome("stream_idle_timeout")
+                                .error(DiagnosticErrorKind::Timeout),
+                        );
                         StreamingFailure::with_partial(
                             format!(
-                                "AI 翻译流式响应超过 {AI_MIMO_TRANSLATION_IDLE_TIMEOUT_SECS} 秒没有新数据，请重试。"
+                                "AI 翻译流式响应超过 {AI_TRANSLATION_IDLE_TIMEOUT_SECS} 秒没有新数据，请重试。"
                             ),
                             partial.clone(),
                         )
@@ -2160,8 +2736,8 @@ impl AiProvider {
                             request_bytes,
                             response_bytes,
                             started,
-                            if translation && self.is_mimo_compatible() {
-                                AI_MIMO_TRANSLATION_TIMEOUT_SECS
+                            if translation {
+                                AI_TRANSLATION_TIMEOUT_SECS
                             } else {
                                 AI_PROVIDER_REQUEST_TIMEOUT_SECS
                             },
@@ -2422,8 +2998,16 @@ impl AiProvider {
         events: Option<&Channel<AiTurnEvent>>,
         cancellation: &CancellationToken,
     ) -> Result<ProviderTurn, StreamingFailure> {
+        let translation = trace.mode == "translate";
         let mimo_translation = self.uses_mimo_translation_transport(&trace);
-        let mut payload = openai_stream_payload(&self.model, messages, tools, mimo_translation);
+        let mut payload = openai_stream_payload(
+            &self.model,
+            messages,
+            tools,
+            translation,
+            mimo_translation,
+            self.translation_output_mode(),
+        );
         if self.is_mimo_compatible() {
             use_completion_token_limit(&mut payload);
             disable_parallel_tool_calls(&mut payload, !tools.is_empty());
@@ -2445,8 +3029,8 @@ impl AiProvider {
         let request = self
             .authenticate_openai_request(self.client.post(self.endpoint.clone()))
             .json(&payload);
-        let request = if mimo_translation {
-            request.timeout(Duration::from_secs(AI_MIMO_TRANSLATION_TIMEOUT_SECS))
+        let request = if translation {
+            request.timeout(Duration::from_secs(AI_TRANSLATION_TIMEOUT_SECS))
         } else {
             request
         };
@@ -2459,8 +3043,8 @@ impl AiProvider {
                     &trace,
                     request_bytes,
                     started,
-                    if mimo_translation {
-                        AI_MIMO_TRANSLATION_TIMEOUT_SECS
+                    if translation {
+                        AI_TRANSLATION_TIMEOUT_SECS
                     } else {
                         AI_PROVIDER_REQUEST_TIMEOUT_SECS
                     },
@@ -2513,9 +3097,9 @@ impl AiProvider {
                 String::new()
             };
             let read_chunk = async {
-                let chunk = if mimo_translation {
+                let chunk = if translation {
                     match tokio::time::timeout(
-                        Duration::from_secs(AI_MIMO_TRANSLATION_IDLE_TIMEOUT_SECS),
+                        Duration::from_secs(AI_TRANSLATION_IDLE_TIMEOUT_SECS),
                         response.chunk(),
                     )
                     .await
@@ -2534,7 +3118,7 @@ impl AiProvider {
                             );
                             return Err(StreamingFailure::with_partial(
                                 format!(
-                                    "AI 翻译流式响应超过 {AI_MIMO_TRANSLATION_IDLE_TIMEOUT_SECS} 秒没有新数据，请重试。"
+                                    "AI 翻译流式响应超过 {AI_TRANSLATION_IDLE_TIMEOUT_SECS} 秒没有新数据，请重试。"
                                 ),
                                 partial_content,
                             ));
@@ -2551,8 +3135,8 @@ impl AiProvider {
                             request_bytes,
                             response_bytes,
                             started,
-                            if mimo_translation {
-                                AI_MIMO_TRANSLATION_TIMEOUT_SECS
+                            if translation {
+                                AI_TRANSLATION_TIMEOUT_SECS
                             } else {
                                 AI_PROVIDER_REQUEST_TIMEOUT_SECS
                             },
@@ -2829,14 +3413,27 @@ impl AiProvider {
         events: Option<&Channel<AiTurnEvent>>,
         cancellation: &CancellationToken,
     ) -> Result<ProviderTurn, StreamingFailure> {
+        let translation = trace.mode == "translate";
         let (system, messages) = anthropic_messages(messages).map_err(StreamingFailure::new)?;
         let mut payload = json!({
             "model": self.model,
             "system": system,
             "messages": messages,
-            "max_tokens": 8192,
+            "max_tokens": if translation {
+                translation_completion_token_limit(&messages)
+            } else {
+                8192
+            },
             "stream": true,
         });
+        if translation && self.translation_output_mode() == TranslationOutputMode::JsonSchema {
+            payload["output_config"] = json!({
+                "format": {
+                    "type": "json_schema",
+                    "schema": translation_json_schema(),
+                }
+            });
+        }
         if !tools.is_empty() {
             payload["tools"] = Value::Array(
                 tools
@@ -2865,14 +3462,29 @@ impl AiProvider {
                 .attempt(trace.round as u64)
                 .payload_bytes(request_bytes, 0),
         );
-        let send = self
+        let request = self
             .authenticate_anthropic_request(self.client.post(self.endpoint.clone()))
-            .json(&payload)
-            .send();
+            .json(&payload);
+        let request = if translation {
+            request.timeout(Duration::from_secs(AI_TRANSLATION_TIMEOUT_SECS))
+        } else {
+            request
+        };
+        let send = request.send();
         let mut response = tokio::select! {
             _ = cancellation.cancelled() => return Ok(cancelled_provider_turn(String::new())),
             response = send => response
-                .map_err(|error| provider_network_error(error, &trace, request_bytes, started))
+                .map_err(|error| provider_network_error_with_timeout(
+                    error,
+                    &trace,
+                    request_bytes,
+                    started,
+                    if translation {
+                        AI_TRANSLATION_TIMEOUT_SECS
+                    } else {
+                        AI_PROVIDER_REQUEST_TIMEOUT_SECS
+                    },
+                ))
                 .map_err(StreamingFailure::new)?,
         };
         let status = response.status();
@@ -2911,22 +3523,62 @@ impl AiProvider {
         let mut content_was_emitted = false;
         let mut content_was_reset = false;
         loop {
-            let chunk = tokio::select! {
-                _ = cancellation.cancelled() => {
-                    return Ok(cancelled_provider_turn(if tool_seen { String::new() } else { visible_content }));
-                }
-                chunk = response.chunk() => chunk.map_err(|error| {
+            let partial = if tool_seen {
+                String::new()
+            } else {
+                visible_content.clone()
+            };
+            let read_chunk = async {
+                let chunk = if translation {
+                    tokio::time::timeout(
+                        Duration::from_secs(AI_TRANSLATION_IDLE_TIMEOUT_SECS),
+                        response.chunk(),
+                    )
+                    .await
+                    .map_err(|_| {
+                        diagnostics::error(
+                            "ai_provider_stream_idle_timeout",
+                            trace
+                                .fields()
+                                .attempt(trace.round as u64)
+                                .payload_bytes(request_bytes, response_bytes)
+                                .duration(started.elapsed())
+                                .outcome("stream_idle_timeout")
+                                .error(DiagnosticErrorKind::Timeout),
+                        );
+                        StreamingFailure::with_partial(
+                            format!(
+                                "AI 翻译流式响应超过 {AI_TRANSLATION_IDLE_TIMEOUT_SECS} 秒没有新数据，请重试。"
+                            ),
+                            partial.clone(),
+                        )
+                    })?
+                } else {
+                    response.chunk().await
+                };
+                chunk.map_err(|error| {
                     StreamingFailure::with_partial(
-                        provider_response_read_error(
+                        provider_response_read_error_with_timeout(
                             error,
                             &trace,
                             request_bytes,
                             response_bytes,
                             started,
+                            if translation {
+                                AI_TRANSLATION_TIMEOUT_SECS
+                            } else {
+                                AI_PROVIDER_REQUEST_TIMEOUT_SECS
+                            },
                         ),
-                        if tool_seen { String::new() } else { visible_content.clone() },
+                        partial,
                     )
-                })?,
+                })
+            };
+            let chunk = tokio::select! {
+                _ = cancellation.cancelled() => {
+                    return Ok(cancelled_provider_turn(if tool_seen { String::new() } else { visible_content }));
+                }
+                chunk = read_chunk => chunk?,
             };
             let stream_ended = chunk.is_none();
             let data_events = if let Some(chunk) = chunk {
@@ -3691,6 +4343,140 @@ impl AiProvider {
         );
         Ok(latency_ms)
     }
+
+    async fn probe_translation_capabilities(&self) -> TranslationCapabilityProfile {
+        let started = Instant::now();
+        let mut profile = TranslationCapabilityProfile::preset(self.provider, self.protocol);
+        profile.checked_at_ms = now_ms();
+        profile.evidence = CapabilityEvidence::Probed;
+        diagnostics::info(
+            "ai_capability_probe_started",
+            DiagnosticFields::default()
+                .operation("ai_capability_probe")
+                .provider(self.provider.id)
+                .protocol(self.protocol.id())
+                .model(&self.model),
+        );
+        let schema = json!({
+            "type": "object",
+            "properties": { "ok": { "type": "boolean" } },
+            "required": ["ok"],
+            "additionalProperties": false
+        });
+        let mut payload = match self.protocol {
+            ProviderProtocol::OpenAiResponses => json!({
+                "model": self.model,
+                "input": "只返回 {\"ok\":true}",
+                "max_output_tokens": 32,
+                "stream": false,
+                "store": false,
+                "text": {
+                    "format": {
+                        "type": "json_schema",
+                        "name": "mine_mail_capability_probe",
+                        "strict": true,
+                        "schema": schema,
+                    }
+                }
+            }),
+            ProviderProtocol::OpenAiChatCompletions => json!({
+                "model": self.model,
+                "messages": [{ "role": "user", "content": "只返回 {\"ok\":true}" }],
+                "max_tokens": 32,
+                "stream": false,
+                "response_format": {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "mine_mail_capability_probe",
+                        "strict": true,
+                        "schema": schema,
+                    }
+                }
+            }),
+            ProviderProtocol::AnthropicMessages => json!({
+                "model": self.model,
+                "messages": [{ "role": "user", "content": "只返回 {\"ok\":true}" }],
+                "max_tokens": 32,
+                "stream": false,
+                "output_config": {
+                    "format": {
+                        "type": "json_schema",
+                        "schema": schema,
+                    }
+                }
+            }),
+        };
+        if self.protocol == ProviderProtocol::OpenAiChatCompletions && self.is_mimo_compatible() {
+            use_completion_token_limit(&mut payload);
+        }
+        if self.protocol == ProviderProtocol::OpenAiResponses && self.is_mimo_compatible() {
+            payload["reasoning"] = json!({ "effort": "none" });
+        }
+        let request = self.client.post(self.endpoint.clone()).json(&payload);
+        let request = match self.protocol {
+            ProviderProtocol::OpenAiResponses | ProviderProtocol::OpenAiChatCompletions => {
+                self.authenticate_openai_request(request)
+            }
+            ProviderProtocol::AnthropicMessages => self.authenticate_anthropic_request(request),
+        }
+        .timeout(Duration::from_secs(30));
+        let result = request.send().await;
+        profile.latency_ms = Some(started.elapsed().as_millis().min(u64::MAX as u128) as u64);
+        let (support, outcome, error_kind) = match result {
+            Ok(response) if response.status().is_success() => match response.bytes().await {
+                Ok(bytes) if capability_probe_output_valid(self.protocol, &bytes) => (
+                    CapabilitySupport::Supported,
+                    "structured_output_supported",
+                    None,
+                ),
+                _ => (
+                    CapabilitySupport::Unstable,
+                    "structured_output_not_enforced",
+                    Some(DiagnosticErrorKind::Serialization),
+                ),
+            },
+            Ok(response) if matches!(response.status().as_u16(), 400 | 404 | 405 | 415 | 422) => {
+                let _ = response.bytes().await;
+                (
+                    CapabilitySupport::Unsupported,
+                    "structured_output_unsupported",
+                    None,
+                )
+            }
+            Ok(response) => {
+                let _ = response.bytes().await;
+                (
+                    CapabilitySupport::Unstable,
+                    "structured_output_inconclusive",
+                    Some(DiagnosticErrorKind::Runtime),
+                )
+            }
+            Err(error) => (
+                CapabilitySupport::Unstable,
+                "structured_output_probe_failed",
+                Some(if error.is_timeout() {
+                    DiagnosticErrorKind::Timeout
+                } else {
+                    DiagnosticErrorKind::Runtime
+                }),
+            ),
+        };
+        profile.structured_outputs = support;
+        let mut fields = DiagnosticFields::default()
+            .operation("ai_capability_probe")
+            .provider(self.provider.id)
+            .protocol(self.protocol.id())
+            .model(&self.model)
+            .duration(started.elapsed())
+            .outcome(outcome);
+        if let Some(error_kind) = error_kind {
+            fields = fields.error(error_kind).degraded(true);
+            diagnostics::warn("ai_capability_probe_completed", fields);
+        } else {
+            diagnostics::info("ai_capability_probe_completed", fields);
+        }
+        profile
+    }
 }
 
 fn normalize_model_list(models: impl IntoIterator<Item = String>) -> Vec<String> {
@@ -3796,16 +4582,16 @@ fn openai_stream_payload(
     model: &str,
     messages: &[Value],
     tools: &[ToolSpec],
+    translation: bool,
     mimo_translation: bool,
+    output_mode: TranslationOutputMode,
 ) -> Value {
     let tool_values = tools.iter().map(ToolSpec::as_api_value).collect::<Vec<_>>();
-    let mut payload = if mimo_translation {
+    let mut payload = if translation {
         json!({
             "model": model,
             "messages": messages,
-            "response_format": { "type": "json_object" },
-            "max_completion_tokens": translation_completion_token_limit(messages),
-            "thinking": { "type": "disabled" },
+            "max_tokens": translation_completion_token_limit(messages),
             "stream": true,
         })
     } else {
@@ -3817,6 +4603,27 @@ fn openai_stream_payload(
             "stream_options": { "include_usage": true },
         })
     };
+    if translation {
+        match output_mode {
+            TranslationOutputMode::JsonSchema => {
+                payload["response_format"] = json!({
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "mine_mail_translation",
+                        "strict": true,
+                        "schema": translation_json_schema(),
+                    }
+                });
+            }
+            TranslationOutputMode::JsonObject => {
+                payload["response_format"] = json!({ "type": "json_object" });
+            }
+            TranslationOutputMode::PromptJson => {}
+        }
+    }
+    if mimo_translation {
+        payload["thinking"] = json!({ "type": "disabled" });
+    }
     if !tool_values.is_empty() {
         payload["tools"] = Value::Array(tool_values);
     }
@@ -4520,12 +5327,81 @@ fn openai_responses_payload(
         payload["include"] = json!(["reasoning.encrypted_content"]);
     }
     if trace.mode == "translate" {
-        payload["text"] = json!({ "format": { "type": "json_object" } });
+        match provider.translation_output_mode() {
+            TranslationOutputMode::JsonSchema => {
+                payload["text"] = json!({
+                    "format": {
+                        "type": "json_schema",
+                        "name": "mine_mail_translation",
+                        "strict": true,
+                        "schema": translation_json_schema(),
+                    }
+                });
+            }
+            TranslationOutputMode::JsonObject => {
+                payload["text"] = json!({ "format": { "type": "json_object" } });
+            }
+            TranslationOutputMode::PromptJson => {}
+        }
         if provider.is_mimo_compatible() {
             payload["reasoning"] = json!({ "effort": "none" });
         }
     }
     Ok(payload)
+}
+
+fn translation_json_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "translations": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "integer" },
+                        "text": { "type": "string" }
+                    },
+                    "required": ["id", "text"],
+                    "additionalProperties": false
+                }
+            }
+        },
+        "required": ["translations"],
+        "additionalProperties": false
+    })
+}
+
+fn capability_probe_output_valid(protocol: ProviderProtocol, response: &[u8]) -> bool {
+    let Ok(value) = serde_json::from_slice::<Value>(response) else {
+        return false;
+    };
+    let content = match protocol {
+        ProviderProtocol::OpenAiResponses => {
+            parse_openai_responses_turn(&value).ok().and_then(|turn| {
+                turn.message
+                    .get("content")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            })
+        }
+        ProviderProtocol::OpenAiChatCompletions => value
+            .pointer("/choices/0/message/content")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        ProviderProtocol::AnthropicMessages => value
+            .get("content")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|block| block.get("type").and_then(Value::as_str) == Some("text"))
+            .filter_map(|block| block.get("text").and_then(Value::as_str))
+            .collect::<String>()
+            .into(),
+    };
+    content
+        .and_then(|content| serde_json::from_str::<Value>(&content).ok())
+        .is_some_and(|json| json.get("ok").and_then(Value::as_bool) == Some(true))
 }
 
 fn parse_openai_responses_turn(response: &Value) -> Result<ProviderTurn, String> {
@@ -4809,6 +5685,8 @@ async fn run_tool_loop(
     } else {
         MAX_TOOL_ROUNDS
     };
+    let mut last_argument_failure = None::<String>;
+    let mut consecutive_argument_failures = 0usize;
     for round in 1..=max_tool_rounds {
         if cancellation.is_cancelled() {
             return Ok(ToolLoopOutcome {
@@ -5083,13 +5961,16 @@ async fn run_tool_loop(
                     .payload_bytes(arguments.len() as u64, 0),
             );
             let result = if argument_error.is_some() {
-                Err("工具参数不完整，请仅重新调用此工具并提交完整 JSON。".to_owned())
+                Err(ToolFailure::invalid_json())
             } else {
                 execute_tool(static_name, arguments, working)
             };
-            let (result_value, success) = match result {
-                Ok(value) => (json!({ "ok": true, "result": value }), true),
-                Err(message) => (json!({ "ok": false, "error": message }), false),
+            let (result_value, success, argument_failure_fingerprint) = match result {
+                Ok(value) => (json!({ "ok": true, "result": value }), true, None),
+                Err(failure) => {
+                    let fingerprint = failure.repeated_argument_fingerprint(static_name);
+                    (failure.response_value(), false, fingerprint)
+                }
             };
             let result_text = serde_json::to_string(&result_value)
                 .map_err(|_| StreamingFailure::new("AI 工具结果序列化失败。"))?;
@@ -5131,6 +6012,36 @@ async fn run_tool_loop(
                 "tool_call_id": call_id,
                 "content": result_text,
             }));
+            if let Some(fingerprint) = argument_failure_fingerprint {
+                if last_argument_failure.as_deref() == Some(fingerprint.as_str()) {
+                    consecutive_argument_failures += 1;
+                } else {
+                    last_argument_failure = Some(fingerprint);
+                    consecutive_argument_failures = 1;
+                }
+                if consecutive_argument_failures >= MAX_CONSECUTIVE_TOOL_ARGUMENT_FAILURES {
+                    diagnostics::warn(
+                        "ai_tool_argument_retry_stopped",
+                        DiagnosticFields::default()
+                            .operation_id(operation_id.clone())
+                            .operation("ai_tool_call")
+                            .mode(mode.as_str())
+                            .provider(provider.provider.id)
+                            .model(&provider.model)
+                            .account(&working.snapshot.account_id)
+                            .tool(static_name)
+                            .attempt(consecutive_argument_failures as u64)
+                            .outcome("repeated_invalid_arguments")
+                            .error(DiagnosticErrorKind::Validation),
+                    );
+                    return Err(StreamingFailure::new(
+                        "AI 连续提交了不符合工具契约的参数，已停止处理。",
+                    ));
+                }
+            } else {
+                last_argument_failure = None;
+                consecutive_argument_failures = 0;
+            }
         }
     }
     Err(StreamingFailure::new("AI 工具调用轮次过多，已停止处理。"))
@@ -5257,6 +6168,222 @@ fn enforce_serial_tool_calls(tool_calls: &mut Vec<Value>, required: bool) -> usi
     deferred
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct EmptyToolArguments {}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct SearchContactsArguments {
+    /// 姓名、备注或邮箱地址检索词。
+    query: String,
+    /// 返回数量；省略时默认为 10。
+    #[serde(default, deserialize_with = "deserialize_optional_non_null_u8")]
+    #[schemars(with = "u8", range(min = 1, max = 20))]
+    limit: Option<u8>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct AttachmentArguments {
+    /// 当前草稿中的不透明附件标识。
+    attachment_id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct SetDraftRecipientsArguments {
+    /// 完整的收件人邮箱地址列表。
+    to: Vec<String>,
+    /// 完整的抄送邮箱地址列表。
+    cc: Vec<String>,
+    /// 完整的密送邮箱地址列表。
+    bcc: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct SetDraftSubjectArguments {
+    /// 完整的邮件主题。
+    subject: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct ReplaceDraftBodyArguments {
+    /// 完整的纯文本正文。
+    body_text: String,
+    /// 完整的安全富文本 HTML；普通纯文本邮件省略此字段。
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_non_null_string"
+    )]
+    #[schemars(with = "String")]
+    body_html: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum DraftStationeryArgument {
+    None,
+    Lined,
+    Grid,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct SetDraftStationeryArguments {
+    /// 信纸类型。
+    stationery: DraftStationeryArgument,
+    /// 是否在发送的邮件中携带信纸样式。
+    send_stationery: bool,
+}
+
+fn deserialize_optional_non_null_string<'de, D>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    String::deserialize(deserializer).map(Some)
+}
+
+fn deserialize_optional_non_null_u8<'de, D>(deserializer: D) -> Result<Option<u8>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    u8::deserialize(deserializer).map(Some)
+}
+
+fn tool_parameters<T: JsonSchema>() -> Value {
+    let mut parameters = serde_json::to_value(schema_for!(T))
+        .expect("Mine Mail tool schemas must be serializable");
+    if let Some(object) = parameters.as_object_mut() {
+        object.remove("$schema");
+        object.remove("title");
+    }
+    parameters
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ToolFailure {
+    code: &'static str,
+    message: String,
+    field: Option<String>,
+}
+
+impl ToolFailure {
+    fn invalid_json() -> Self {
+        Self {
+            code: "INVALID_JSON",
+            message: "工具参数不是完整有效的 JSON；请仅重新调用此工具并提交完整参数。"
+                .to_owned(),
+            field: None,
+        }
+    }
+
+    fn invalid_arguments(tool_name: &'static str, field: Option<String>) -> Self {
+        Self {
+            code: "INVALID_ARGUMENTS",
+            message: tool_argument_hint(tool_name).to_owned(),
+            field,
+        }
+    }
+
+    fn validation(message: impl Into<String>, field: Option<&str>) -> Self {
+        Self {
+            code: "VALIDATION_FAILED",
+            message: message.into(),
+            field: field.map(str::to_owned),
+        }
+    }
+
+    fn policy(message: impl Into<String>, field: Option<&str>) -> Self {
+        Self {
+            code: "POLICY_REJECTED",
+            message: message.into(),
+            field: field.map(str::to_owned),
+        }
+    }
+
+    fn unavailable(message: impl Into<String>) -> Self {
+        Self {
+            code: "TOOL_UNAVAILABLE",
+            message: message.into(),
+            field: None,
+        }
+    }
+
+    fn response_value(&self) -> Value {
+        let mut error = json!({
+            "code": self.code,
+            "message": self.message,
+        });
+        if let Some(field) = self.field.as_deref() {
+            error["field"] = Value::String(field.to_owned());
+        }
+        json!({ "ok": false, "error": error })
+    }
+
+    fn repeated_argument_fingerprint(&self, tool_name: &str) -> Option<String> {
+        matches!(self.code, "INVALID_JSON" | "INVALID_ARGUMENTS").then(|| {
+            format!(
+                "{tool_name}:{}:{}",
+                self.code,
+                self.field.as_deref().unwrap_or_default()
+            )
+        })
+    }
+}
+
+fn tool_argument_hint(tool_name: &str) -> &'static str {
+    match tool_name {
+        "get_draft_body"
+        | "get_draft_subject"
+        | "get_draft_sender"
+        | "get_draft_recipients"
+        | "get_draft_reference"
+        | "list_draft_attachments" => "此工具不接受参数，请提交空对象 {}。",
+        "search_contacts" => {
+            "query 必须是字符串；limit 可省略，传入时必须是 1 至 20 的整数。"
+        }
+        "read_text_attachment" | "read_image_attachment" => {
+            "attachment_id 必须是当前草稿中的字符串附件标识。"
+        }
+        "set_draft_recipients" => "to、cc、bcc 都必须是完整的邮箱地址字符串数组。",
+        "set_draft_subject" => "subject 必须是字符串。",
+        "replace_draft_body" => {
+            "body_text 必须是字符串；body_html 可省略，传入时必须是字符串，不能传 null。"
+        }
+        "set_draft_stationery" => {
+            "stationery 必须是 none、lined 或 grid，send_stationery 必须是布尔值。"
+        }
+        _ => "工具参数不符合声明的契约。",
+    }
+}
+
+fn tool_argument_field(path: &str) -> Option<String> {
+    let field = path
+        .trim_matches('.')
+        .split(['.', '['])
+        .next()
+        .unwrap_or_default();
+    (!field.is_empty()).then(|| field.to_owned())
+}
+
+fn parse_tool_arguments<T: DeserializeOwned>(
+    tool_name: &'static str,
+    arguments: &str,
+) -> Result<T, ToolFailure> {
+    let mut deserializer = serde_json::Deserializer::from_str(arguments);
+    serde_path_to_error::deserialize(&mut deserializer).map_err(|error| {
+        ToolFailure::invalid_arguments(
+            tool_name,
+            tool_argument_field(&error.path().to_string()),
+        )
+    })
+}
+
 #[derive(Clone, Debug)]
 struct ToolSpec {
     name: &'static str,
@@ -5336,126 +6463,71 @@ fn tool_specs(mode: AiMode, supports_images: bool) -> Vec<ToolSpec> {
 }
 
 fn tool_spec(name: &str) -> Option<ToolSpec> {
-    let empty = json!({ "type": "object", "properties": {}, "additionalProperties": false });
     Some(match name {
         "get_draft_body" => ToolSpec {
             name: "get_draft_body",
             description: "读取当前草稿正文及其富文本 HTML。",
-            parameters: empty,
+            parameters: tool_parameters::<EmptyToolArguments>(),
         },
         "get_draft_subject" => ToolSpec {
             name: "get_draft_subject",
             description: "读取当前草稿主题。",
-            parameters: empty,
+            parameters: tool_parameters::<EmptyToolArguments>(),
         },
         "get_draft_sender" => ToolSpec {
             name: "get_draft_sender",
             description: "读取当前草稿账户的发信人；不能切换账户。",
-            parameters: empty,
+            parameters: tool_parameters::<EmptyToolArguments>(),
         },
         "get_draft_recipients" => ToolSpec {
             name: "get_draft_recipients",
             description: "读取当前草稿的收件人、抄送和密送。",
-            parameters: empty,
+            parameters: tool_parameters::<EmptyToolArguments>(),
         },
         "get_draft_reference" => ToolSpec {
             name: "get_draft_reference",
             description: "读取当前回复或转发草稿所引用的邮件内容。",
-            parameters: empty,
+            parameters: tool_parameters::<EmptyToolArguments>(),
         },
         "search_contacts" => ToolSpec {
             name: "search_contacts",
             description: "按姓名或邮箱检索 Mine Mail 本地联系人。",
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "query": { "type": "string" },
-                    "limit": { "type": "integer", "minimum": 1, "maximum": 20 }
-                },
-                "required": ["query"],
-                "additionalProperties": false
-            }),
+            parameters: tool_parameters::<SearchContactsArguments>(),
         },
         "list_draft_attachments" => ToolSpec {
             name: "list_draft_attachments",
             description: "列出当前草稿附件的受限元数据，不返回路径。",
-            parameters: empty,
+            parameters: tool_parameters::<EmptyToolArguments>(),
         },
         "read_text_attachment" => ToolSpec {
             name: "read_text_attachment",
             description: "按附件 ID 读取当前草稿中的小型纯文本附件；不解析 PDF 或 Office 文件。",
-            parameters: json!({
-                "type": "object",
-                "properties": { "attachment_id": { "type": "string" } },
-                "required": ["attachment_id"],
-                "additionalProperties": false
-            }),
+            parameters: tool_parameters::<AttachmentArguments>(),
         },
         "read_image_attachment" => ToolSpec {
             name: "read_image_attachment",
             description: "读取当前草稿中的图片附件，仅多模态模型可用。",
-            parameters: json!({
-                "type": "object",
-                "properties": { "attachment_id": { "type": "string" } },
-                "required": ["attachment_id"],
-                "additionalProperties": false
-            }),
+            parameters: tool_parameters::<AttachmentArguments>(),
         },
         "set_draft_recipients" => ToolSpec {
             name: "set_draft_recipients",
             description: "替换当前草稿的收件人、抄送和密送。",
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "to": { "type": "array", "items": { "type": "string" } },
-                    "cc": { "type": "array", "items": { "type": "string" } },
-                    "bcc": { "type": "array", "items": { "type": "string" } }
-                },
-                "required": ["to", "cc", "bcc"],
-                "additionalProperties": false
-            }),
+            parameters: tool_parameters::<SetDraftRecipientsArguments>(),
         },
         "set_draft_subject" => ToolSpec {
             name: "set_draft_subject",
             description: "替换当前草稿主题。",
-            parameters: json!({
-                "type": "object",
-                "properties": { "subject": { "type": "string" } },
-                "required": ["subject"],
-                "additionalProperties": false
-            }),
+            parameters: tool_parameters::<SetDraftSubjectArguments>(),
         },
         "replace_draft_body" => ToolSpec {
             name: "replace_draft_body",
             description: "替换当前草稿正文。body_text 必填；仅需富文本排版时再传 body_html，省略时使用纯文本正文。",
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "body_text": {
-                        "type": "string",
-                        "description": "完整的纯文本正文。"
-                    },
-                    "body_html": {
-                        "type": "string",
-                        "description": "可选的完整安全富文本 HTML；普通纯文本邮件不要传此字段。"
-                    }
-                },
-                "required": ["body_text"],
-                "additionalProperties": false
-            }),
+            parameters: tool_parameters::<ReplaceDraftBodyArguments>(),
         },
         "set_draft_stationery" => ToolSpec {
             name: "set_draft_stationery",
             description: "切换当前草稿信纸；仅邮件生成和自动模式可用。",
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "stationery": { "type": "string", "enum": ["none", "lined", "grid"] },
-                    "send_stationery": { "type": "boolean" }
-                },
-                "required": ["stationery", "send_stationery"],
-                "additionalProperties": false
-            }),
+            parameters: tool_parameters::<SetDraftStationeryArguments>(),
         },
         _ => return None,
     })
@@ -5559,64 +6631,75 @@ fn execute_tool(
     name: &'static str,
     arguments: &str,
     working: &mut WorkingDraft,
-) -> Result<Value, String> {
-    let arguments: Value =
-        serde_json::from_str(arguments).map_err(|_| "工具参数不是有效的 JSON。".to_owned())?;
-    let object = arguments
-        .as_object()
-        .ok_or_else(|| "工具参数必须是对象。".to_owned())?;
-    validate_tool_argument_keys(name, object)?;
+) -> Result<Value, ToolFailure> {
     if name != "search_contacts" {
         working.touched_draft = true;
     }
     match name {
-        "get_draft_body" => Ok(json!({
-            "body_text": working.compose.body_text,
-            "body_html": working.compose.format.body_html,
-        })),
-        "get_draft_subject" => Ok(json!({ "subject": working.compose.subject })),
-        "get_draft_sender" => Ok(json!({
-            "address": working.context.sender_email,
-            "display_name": working.context.sender_remark,
-        })),
-        "get_draft_recipients" => Ok(json!({
-            "to": working.compose.to,
-            "cc": working.compose.cc,
-            "bcc": working.compose.bcc,
-        })),
-        "get_draft_reference" => Ok(draft_reference(working)),
-        "search_contacts" => search_contacts(object, working),
-        "list_draft_attachments" => Ok(list_attachments(working)),
-        "read_text_attachment" => read_text_attachment(object, working),
-        "read_image_attachment" => Err("当前模型不支持图片输入。".to_owned()),
-        "set_draft_recipients" => set_recipients(object, working),
-        "set_draft_subject" => set_subject(object, working),
-        "replace_draft_body" => replace_body(object, working),
-        "set_draft_stationery" => set_stationery(object, working),
-        _ => Err("未知工具。".to_owned()),
+        "get_draft_body" => {
+            parse_tool_arguments::<EmptyToolArguments>(name, arguments)?;
+            Ok(json!({
+                "body_text": working.compose.body_text,
+                "body_html": working.compose.format.body_html,
+            }))
+        }
+        "get_draft_subject" => {
+            parse_tool_arguments::<EmptyToolArguments>(name, arguments)?;
+            Ok(json!({ "subject": working.compose.subject }))
+        }
+        "get_draft_sender" => {
+            parse_tool_arguments::<EmptyToolArguments>(name, arguments)?;
+            Ok(json!({
+                "address": working.context.sender_email,
+                "display_name": working.context.sender_remark,
+            }))
+        }
+        "get_draft_recipients" => {
+            parse_tool_arguments::<EmptyToolArguments>(name, arguments)?;
+            Ok(json!({
+                "to": working.compose.to,
+                "cc": working.compose.cc,
+                "bcc": working.compose.bcc,
+            }))
+        }
+        "get_draft_reference" => {
+            parse_tool_arguments::<EmptyToolArguments>(name, arguments)?;
+            Ok(draft_reference(working))
+        }
+        "search_contacts" => search_contacts(
+            parse_tool_arguments::<SearchContactsArguments>(name, arguments)?,
+            working,
+        ),
+        "list_draft_attachments" => {
+            parse_tool_arguments::<EmptyToolArguments>(name, arguments)?;
+            Ok(list_attachments(working))
+        }
+        "read_text_attachment" => read_text_attachment(
+            parse_tool_arguments::<AttachmentArguments>(name, arguments)?,
+            working,
+        ),
+        "read_image_attachment" => {
+            parse_tool_arguments::<AttachmentArguments>(name, arguments)?;
+            Err(ToolFailure::unavailable("当前模型不支持图片输入。"))
+        }
+        "set_draft_recipients" => set_recipients(
+            parse_tool_arguments::<SetDraftRecipientsArguments>(name, arguments)?,
+            working,
+        ),
+        "set_draft_subject" => set_subject(
+            parse_tool_arguments::<SetDraftSubjectArguments>(name, arguments)?,
+            working,
+        ),
+        "replace_draft_body" => replace_body(
+            parse_tool_arguments::<ReplaceDraftBodyArguments>(name, arguments)?,
+            working,
+        ),
+        "set_draft_stationery" => set_stationery(
+            parse_tool_arguments::<SetDraftStationeryArguments>(name, arguments)?,
+            working,
+        ),
+        _ => Err(ToolFailure::unavailable("未知工具。")),
     }
-}
-
-fn validate_tool_argument_keys(name: &str, object: &Map<String, Value>) -> Result<(), String> {
-    let allowed: &[&str] = match name {
-        "get_draft_body"
-        | "get_draft_subject"
-        | "get_draft_sender"
-        | "get_draft_recipients"
-        | "get_draft_reference"
-        | "list_draft_attachments" => &[],
-        "search_contacts" => &["query", "limit"],
-        "read_text_attachment" | "read_image_attachment" => &["attachment_id"],
-        "set_draft_recipients" => &["to", "cc", "bcc"],
-        "set_draft_subject" => &["subject"],
-        "replace_draft_body" => &["body_text", "body_html"],
-        "set_draft_stationery" => &["stationery", "send_stationery"],
-        _ => return Err("未知工具。".to_owned()),
-    };
-    if object.keys().any(|key| !allowed.contains(&key.as_str())) {
-        return Err("工具参数包含未声明字段。".to_owned());
-    }
-    Ok(())
 }
 
 fn list_attachments(working: &WorkingDraft) -> Value {
@@ -5668,16 +6751,25 @@ fn draft_reference(working: &WorkingDraft) -> Value {
     json!({ "kind": "none" })
 }
 
-fn search_contacts(object: &Map<String, Value>, working: &WorkingDraft) -> Result<Value, String> {
-    let query = required_string(object, "query")?.trim().to_lowercase();
+fn search_contacts(
+    arguments: SearchContactsArguments,
+    working: &WorkingDraft,
+) -> Result<Value, ToolFailure> {
+    let query = arguments.query.trim().to_lowercase();
     if query.is_empty() || query.len() > 256 {
-        return Err("联系人检索词无效。".to_owned());
+        return Err(ToolFailure::validation(
+            "联系人检索词不能为空且不能超过 256 字节。",
+            Some("query"),
+        ));
     }
-    let limit = object
-        .get("limit")
-        .and_then(Value::as_u64)
-        .unwrap_or(10)
-        .clamp(1, 20) as usize;
+    let limit = arguments.limit.unwrap_or(10);
+    if !(1..=20).contains(&limit) {
+        return Err(ToolFailure::validation(
+            "limit 必须是 1 至 20 的整数。",
+            Some("limit"),
+        ));
+    }
+    let limit = usize::from(limit);
     let mut contacts = working
         .context
         .contacts
@@ -5701,28 +6793,32 @@ fn search_contacts(object: &Map<String, Value>, working: &WorkingDraft) -> Resul
 }
 
 fn read_text_attachment(
-    object: &Map<String, Value>,
+    arguments: AttachmentArguments,
     working: &WorkingDraft,
-) -> Result<Value, String> {
-    let attachment_id = required_string(object, "attachment_id")?;
-    validate_opaque_id(attachment_id, "附件")?;
+) -> Result<Value, ToolFailure> {
+    let attachment_id = arguments.attachment_id;
+    validate_opaque_id(&attachment_id, "附件").map_err(|message| {
+        ToolFailure::validation(message, Some("attachment_id"))
+    })?;
     let draft_id = working
         .snapshot
         .draft_id
         .as_deref()
-        .ok_or_else(|| "草稿尚未保存，不能读取附件。".to_owned())?;
+        .ok_or_else(|| ToolFailure::unavailable("草稿尚未保存，不能读取附件。"))?;
     let local_version = working
         .snapshot
         .local_version
-        .ok_or_else(|| "草稿缺少可验证的版本，不能读取附件。".to_owned())?;
+        .ok_or_else(|| ToolFailure::unavailable("草稿缺少可验证的版本，不能读取附件。"))?;
     let metadata = working
         .snapshot
         .attachments
         .iter()
         .find(|attachment| attachment.id == attachment_id)
-        .ok_or_else(|| "当前草稿中没有这个附件。".to_owned())?;
+        .ok_or_else(|| ToolFailure::unavailable("当前草稿中没有这个附件。"))?;
     if !is_plain_text_attachment(metadata) {
-        return Err("此附件不是本阶段支持的纯文本类型。".to_owned());
+        return Err(ToolFailure::unavailable(
+            "此附件不是本阶段支持的纯文本类型。",
+        ));
     }
     let (meta, bytes) = working
         .context
@@ -5730,11 +6826,12 @@ fn read_text_attachment(
         .read_draft_attachment_bytes(
             draft_id,
             local_version,
-            attachment_id,
+            &attachment_id,
             MAX_TEXT_ATTACHMENT_BYTES,
         )
-        .map_err(|_| "附件不可读取、版本已变化或文件过大。".to_owned())?;
-    let text = String::from_utf8(bytes).map_err(|_| "附件不是有效的 UTF-8 文本。".to_owned())?;
+        .map_err(|_| ToolFailure::unavailable("附件不可读取、版本已变化或文件过大。"))?;
+    let text = String::from_utf8(bytes)
+        .map_err(|_| ToolFailure::unavailable("附件不是有效的 UTF-8 文本。"))?;
     Ok(json!({
         "attachment_id": meta.id,
         "mime_type": meta.mime_type,
@@ -5771,14 +6868,14 @@ fn is_plain_text_attachment(meta: &DraftAttachmentMeta) -> bool {
 }
 
 fn set_recipients(
-    object: &Map<String, Value>,
+    arguments: SetDraftRecipientsArguments,
     working: &mut WorkingDraft,
-) -> Result<Value, String> {
-    let to = normalized_address_array(object, "to")?;
-    let cc = normalized_address_array(object, "cc")?;
-    let bcc = normalized_address_array(object, "bcc")?;
+) -> Result<Value, ToolFailure> {
+    let to = normalized_address_array(arguments.to, "to")?;
+    let cc = normalized_address_array(arguments.cc, "cc")?;
+    let bcc = normalized_address_array(arguments.bcc, "bcc")?;
     if to.len() + cc.len() + bcc.len() > MAX_RECIPIENTS {
-        return Err("收件人数量过多。".to_owned());
+        return Err(ToolFailure::validation("收件人数量过多。", None));
     }
     if to
         .iter()
@@ -5786,7 +6883,10 @@ fn set_recipients(
         .chain(&bcc)
         .any(|address| !working.allowed_recipient_addresses.contains(address))
     {
-        return Err("收件人必须来自当前草稿、用户本轮明确提供的地址或本地联系人。".to_owned());
+        return Err(ToolFailure::policy(
+            "收件人必须来自当前草稿、用户本轮明确提供的地址或本地联系人。",
+            None,
+        ));
     }
     let mut changed_fields = Vec::new();
     if working.compose.to != to {
@@ -5804,26 +6904,30 @@ fn set_recipients(
     Ok(json!({ "updated": !changed_fields.is_empty(), "changed_fields": changed_fields }))
 }
 
-fn normalized_address_array(object: &Map<String, Value>, key: &str) -> Result<Vec<String>, String> {
-    let values = object
-        .get(key)
-        .and_then(Value::as_array)
-        .ok_or_else(|| format!("{key} 必须是邮箱数组。"))?;
+fn normalized_address_array(
+    values: Vec<String>,
+    key: &'static str,
+) -> Result<Vec<String>, ToolFailure> {
     values
-        .iter()
-        .map(|value| {
-            let address = value
-                .as_str()
-                .ok_or_else(|| format!("{key} 中包含无效邮箱。"))?;
-            normalize_contact_email(address).map_err(|_| format!("{key} 中包含无效邮箱。"))
+        .into_iter()
+        .map(|address| {
+            normalize_contact_email(&address).map_err(|_| {
+                ToolFailure::validation(format!("{key} 中包含无效邮箱。"), Some(key))
+            })
         })
         .collect()
 }
 
-fn set_subject(object: &Map<String, Value>, working: &mut WorkingDraft) -> Result<Value, String> {
-    let subject = required_string(object, "subject")?.trim();
+fn set_subject(
+    arguments: SetDraftSubjectArguments,
+    working: &mut WorkingDraft,
+) -> Result<Value, ToolFailure> {
+    let subject = arguments.subject.trim();
     if subject.chars().count() > MAX_SUBJECT_CHARACTERS || subject.chars().any(char::is_control) {
-        return Err("邮件主题无效或过长。".to_owned());
+        return Err(ToolFailure::validation(
+            "邮件主题无效或过长。",
+            Some("subject"),
+        ));
     }
     let updated = working.compose.subject != subject;
     working.compose.subject = subject.to_owned();
@@ -5833,20 +6937,28 @@ fn set_subject(object: &Map<String, Value>, working: &mut WorkingDraft) -> Resul
     }))
 }
 
-fn replace_body(object: &Map<String, Value>, working: &mut WorkingDraft) -> Result<Value, String> {
-    let body_text = required_string(object, "body_text")?;
+fn replace_body(
+    arguments: ReplaceDraftBodyArguments,
+    working: &mut WorkingDraft,
+) -> Result<Value, ToolFailure> {
+    let body_text = arguments.body_text;
     if body_text.len() > MAX_BODY_TEXT_BYTES {
-        return Err("邮件正文过长。".to_owned());
+        return Err(ToolFailure::validation(
+            "邮件正文过长。",
+            Some("body_text"),
+        ));
     }
-    let body_html = match object.get("body_html") {
-        Some(Value::Null) | None => None,
-        Some(Value::String(html)) => {
+    let body_html = match arguments.body_html {
+        None => None,
+        Some(html) => {
             if html.len() > MAX_BODY_HTML_BYTES {
-                return Err("富文本正文过长。".to_owned());
+                return Err(ToolFailure::validation(
+                    "富文本正文过长。",
+                    Some("body_html"),
+                ));
             }
             sanitize_compose_html(Some(html.as_str()))
         }
-        _ => return Err("body_html 必须是字符串；纯文本正文请省略该字段。".to_owned()),
     };
     let mut changed_fields = Vec::new();
     if working.compose.body_text != body_text {
@@ -5855,25 +6967,21 @@ fn replace_body(object: &Map<String, Value>, working: &mut WorkingDraft) -> Resu
     if working.compose.format.body_html != body_html {
         changed_fields.push("body_html");
     }
-    working.compose.body_text = body_text.to_owned();
+    working.compose.body_text = body_text;
     working.compose.format.body_html = body_html;
     Ok(json!({ "updated": !changed_fields.is_empty(), "changed_fields": changed_fields }))
 }
 
 fn set_stationery(
-    object: &Map<String, Value>,
+    arguments: SetDraftStationeryArguments,
     working: &mut WorkingDraft,
-) -> Result<Value, String> {
-    let stationery = match required_string(object, "stationery")? {
-        "none" => StationeryTheme::None,
-        "lined" => StationeryTheme::Lined,
-        "grid" => StationeryTheme::Grid,
-        _ => return Err("未知信纸类型。".to_owned()),
+) -> Result<Value, ToolFailure> {
+    let stationery = match arguments.stationery {
+        DraftStationeryArgument::None => StationeryTheme::None,
+        DraftStationeryArgument::Lined => StationeryTheme::Lined,
+        DraftStationeryArgument::Grid => StationeryTheme::Grid,
     };
-    let send_stationery = object
-        .get("send_stationery")
-        .and_then(Value::as_bool)
-        .ok_or_else(|| "send_stationery 必须是布尔值。".to_owned())?;
+    let send_stationery = arguments.send_stationery;
     let normalized_send_stationery = stationery != StationeryTheme::None && send_stationery;
     let mut changed_fields = Vec::new();
     if working.compose.format.stationery != stationery {
@@ -5885,13 +6993,6 @@ fn set_stationery(
     working.compose.format.stationery = stationery;
     working.compose.format.send_stationery = normalized_send_stationery;
     Ok(json!({ "updated": !changed_fields.is_empty(), "changed_fields": changed_fields }))
-}
-
-fn required_string<'a>(object: &'a Map<String, Value>, key: &str) -> Result<&'a str, String> {
-    object
-        .get(key)
-        .and_then(Value::as_str)
-        .ok_or_else(|| format!("缺少字符串参数 {key}。"))
 }
 
 fn changed_fields(initial: &ComposeRequest, current: &ComposeRequest) -> Vec<String> {
@@ -6031,14 +7132,13 @@ fn collect_translation_units(
     parts: &[AiTranslationPartRequest],
 ) -> Result<Vec<TranslationUnitRequest>, String> {
     let mut units = Vec::new();
+    let mut target_id = 0usize;
     for part in parts {
         match part.format {
             AiTranslationFormat::Plain => {
                 if !part.content.trim().is_empty() {
-                    units.push(TranslationUnitRequest {
-                        id: units.len(),
-                        text: part.content.clone(),
-                    });
+                    push_translation_target(&mut units, target_id, &part.content)?;
+                    target_id += 1;
                 }
             }
             AiTranslationFormat::Html => {
@@ -6051,13 +7151,8 @@ fn collect_translation_units(
                     if core.is_empty() || !is_translatable_html_text(node) {
                         continue;
                     }
-                    units.push(TranslationUnitRequest {
-                        id: units.len(),
-                        text: core.to_owned(),
-                    });
-                    if units.len() > MAX_TRANSLATION_UNITS {
-                        return Err("邮件结构过于复杂，无法安全完成翻译。".to_owned());
-                    }
+                    push_translation_target(&mut units, target_id, core)?;
+                    target_id += 1;
                 }
             }
         }
@@ -6065,20 +7160,95 @@ fn collect_translation_units(
     Ok(units)
 }
 
+fn push_translation_target(
+    units: &mut Vec<TranslationUnitRequest>,
+    target_id: usize,
+    text: &str,
+) -> Result<(), String> {
+    for fragment in split_translation_text(text, AI_TRANSLATION_UNIT_MAX_BYTES) {
+        units.push(TranslationUnitRequest {
+            id: units.len(),
+            target_id,
+            text: fragment.to_owned(),
+        });
+        if units.len() > MAX_TRANSLATION_UNITS {
+            return Err("邮件结构过于复杂，无法安全完成翻译。".to_owned());
+        }
+    }
+    Ok(())
+}
+
+fn split_translation_text(text: &str, max_bytes: usize) -> Vec<&str> {
+    if text.is_empty() || text.len() <= max_bytes {
+        return vec![text];
+    }
+    let mut fragments = Vec::new();
+    let mut start = 0usize;
+    while start < text.len() {
+        let mut hard_end = start.saturating_add(max_bytes).min(text.len());
+        while hard_end > start && !text.is_char_boundary(hard_end) {
+            hard_end -= 1;
+        }
+        if hard_end == text.len() {
+            fragments.push(&text[start..]);
+            break;
+        }
+        if hard_end == start {
+            hard_end = text[start..]
+                .char_indices()
+                .nth(1)
+                .map(|(offset, _)| start + offset)
+                .unwrap_or(text.len());
+        }
+        let window = &text[start..hard_end];
+        let sentence_boundary = window.char_indices().rev().find_map(|(offset, character)| {
+            matches!(
+                character,
+                '\n' | '\r' | '。' | '！' | '？' | '!' | '?' | '；' | ';'
+            )
+            .then_some(offset + character.len_utf8())
+        });
+        let whitespace_boundary = window.char_indices().rev().find_map(|(offset, character)| {
+            character
+                .is_whitespace()
+                .then_some(offset + character.len_utf8())
+        });
+        let relative_end = sentence_boundary
+            .or(whitespace_boundary)
+            .filter(|boundary| *boundary > 0)
+            .unwrap_or(window.len());
+        let end = start + relative_end;
+        fragments.push(&text[start..end]);
+        start = end;
+    }
+    fragments
+}
+
 fn partition_translation_units(
     units: &[TranslationUnitRequest],
 ) -> Vec<Vec<TranslationUnitRequest>> {
+    partition_translation_units_with_limits(
+        units,
+        AI_TRANSLATION_BATCH_SIZE,
+        AI_TRANSLATION_BATCH_MAX_BYTES,
+    )
+}
+
+fn partition_translation_units_with_limits(
+    units: &[TranslationUnitRequest],
+    max_count: usize,
+    max_bytes: usize,
+) -> Vec<Vec<TranslationUnitRequest>> {
     let mut batches = Vec::new();
-    let mut batch = Vec::with_capacity(AI_TRANSLATION_BATCH_SIZE);
+    let mut batch = Vec::with_capacity(max_count);
     let mut batch_bytes = 0usize;
     for unit in units.iter().cloned() {
         let unit_bytes = unit.text.len();
-        let exceeds_count = batch.len() >= AI_TRANSLATION_BATCH_SIZE;
-        let exceeds_bytes = !batch.is_empty()
-            && batch_bytes.saturating_add(unit_bytes) > AI_TRANSLATION_BATCH_MAX_BYTES;
+        let exceeds_count = batch.len() >= max_count;
+        let exceeds_bytes = !batch.is_empty() && batch_bytes.saturating_add(unit_bytes) > max_bytes;
         if exceeds_count || exceeds_bytes {
             batches.push(std::mem::take(&mut batch));
-            batch = Vec::with_capacity(AI_TRANSLATION_BATCH_SIZE);
+            batch = Vec::with_capacity(max_count);
             batch_bytes = 0;
         }
         batch_bytes = batch_bytes.saturating_add(unit_bytes);
@@ -6093,12 +7263,13 @@ fn partition_translation_units(
 fn merge_translation_batch_outcomes(
     unit_count: usize,
     outcomes: Vec<TranslationBatchOutcome>,
-) -> (Vec<Option<String>>, Option<String>) {
+) -> (Vec<Option<String>>, Option<String>, HashSet<usize>) {
     let mut translations = vec![None; unit_count];
     let mut first_error = None;
+    let mut retryable_ids = HashSet::new();
     for outcome in outcomes {
         if first_error.is_none() {
-            first_error = outcome.error;
+            first_error = outcome.error.clone();
         }
         for (unit_id, translation) in outcome
             .unit_ids
@@ -6106,11 +7277,14 @@ fn merge_translation_batch_outcomes(
             .zip(outcome.translations.into_iter())
         {
             if unit_id < translations.len() {
+                if translation.is_none() && outcome.retryable {
+                    retryable_ids.insert(unit_id);
+                }
                 translations[unit_id] = translation;
             }
         }
     }
-    (translations, first_error)
+    (translations, first_error, retryable_ids)
 }
 
 fn is_translatable_html_text(node: ego_tree::NodeRef<'_, Node>) -> bool {
@@ -6205,8 +7379,36 @@ fn parse_translation_envelope_for_ids(
 
 fn apply_translation_units(
     parts: &[AiTranslationPartRequest],
+    units: &[TranslationUnitRequest],
     translations: &[Option<String>],
 ) -> Result<Vec<AiTranslationPartDto>, String> {
+    if units.len() != translations.len() {
+        return Err("AI 翻译结果与邮件结构不匹配，请重试。".to_owned());
+    }
+    let target_count = units
+        .iter()
+        .map(|unit| unit.target_id)
+        .max()
+        .map(|target_id| target_id + 1)
+        .unwrap_or(0);
+    let mut target_texts = vec![String::new(); target_count];
+    let mut target_has_translation = vec![false; target_count];
+    for (unit, translation) in units.iter().zip(translations) {
+        let target = target_texts
+            .get_mut(unit.target_id)
+            .ok_or_else(|| "AI 翻译结果与邮件结构不匹配，请重试。".to_owned())?;
+        if let Some(translation) = translation {
+            target.push_str(translation);
+            target_has_translation[unit.target_id] = true;
+        } else {
+            target.push_str(&unit.text);
+        }
+    }
+    let target_translations = target_texts
+        .into_iter()
+        .zip(target_has_translation)
+        .map(|(text, translated)| translated.then_some(text))
+        .collect::<Vec<_>>();
     let mut translation_index = 0usize;
     let mut translated_parts = Vec::with_capacity(parts.len());
     for part in parts {
@@ -6215,7 +7417,7 @@ fn apply_translation_units(
                 if part.content.trim().is_empty() {
                     part.content.clone()
                 } else {
-                    let translated = translations
+                    let translated = target_translations
                         .get(translation_index)
                         .ok_or_else(|| "AI 翻译结果不完整，请重试。".to_owned())?;
                     translation_index += 1;
@@ -6236,7 +7438,7 @@ fn apply_translation_units(
                     .map(|node| node.id())
                     .collect::<Vec<_>>();
                 for node_id in node_ids {
-                    let translated = translations
+                    let translated = target_translations
                         .get(translation_index)
                         .ok_or_else(|| "AI 翻译结果不完整，请重试。".to_owned())?;
                     translation_index += 1;
@@ -6268,7 +7470,7 @@ fn apply_translation_units(
             content,
         });
     }
-    if translation_index != translations.len() {
+    if translation_index != target_translations.len() {
         return Err("AI 翻译结果与邮件结构不匹配，请重试。".to_owned());
     }
     Ok(translated_parts)
@@ -6323,10 +7525,29 @@ fn normalized_finish_reason(value: Option<&str>) -> &'static str {
     match value {
         Some("stop" | "end_turn" | "stop_sequence") => "stop",
         Some("tool_calls" | "tool_use") => "tool_calls",
-        Some("length" | "max_tokens") => "length",
+        Some("length" | "max_tokens" | "max_output_tokens" | "model_context_window_exceeded") => {
+            "length"
+        }
         Some("content_filter") => "content_filter",
+        Some("refusal") => "refusal",
+        Some("pause_turn") => "pause_turn",
         _ => "other",
     }
+}
+
+fn is_structured_output_rejection(message: &str) -> bool {
+    ["HTTP 400", "HTTP 404", "HTTP 405", "HTTP 415", "HTTP 422"]
+        .iter()
+        .any(|status| message.contains(status))
+}
+
+fn is_retryable_translation_error(message: &str) -> bool {
+    ![
+        "HTTP 400", "HTTP 401", "HTTP 403", "HTTP 404", "HTTP 405", "HTTP 413", "HTTP 415",
+        "HTTP 422",
+    ]
+    .iter()
+    .any(|status| message.contains(status))
 }
 
 fn send_event(channel: Option<&Channel<AiTurnEvent>>, event: AiTurnEvent) {
@@ -6502,6 +7723,15 @@ impl AiStore {
                  provider_id TEXT PRIMARY KEY NOT NULL,
                  protocol_id TEXT NOT NULL,
                  updated_at_ms INTEGER NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS ai_provider_capabilities (
+                 provider_id TEXT NOT NULL,
+                 protocol_id TEXT NOT NULL,
+                 base_url TEXT NOT NULL,
+                 model_name TEXT NOT NULL,
+                 profile_json TEXT NOT NULL,
+                 checked_at_ms INTEGER NOT NULL,
+                 PRIMARY KEY (provider_id, protocol_id, base_url, model_name)
              );
              CREATE TABLE IF NOT EXISTS ai_runtime_meta (
                  key TEXT PRIMARY KEY NOT NULL,
@@ -6773,6 +8003,57 @@ impl AiStore {
             params![config.provider_id, config.protocol_id, now_ms() as i64,],
         )?;
         transaction.commit()?;
+        Ok(())
+    }
+
+    fn load_translation_capabilities(
+        &self,
+        provider: &AiProvider,
+    ) -> rusqlite::Result<Option<TranslationCapabilityProfile>> {
+        let connection = self.connection()?;
+        let profile_json = connection
+            .query_row(
+                "SELECT profile_json
+                 FROM ai_provider_capabilities
+                 WHERE provider_id = ?1 AND protocol_id = ?2
+                   AND base_url = ?3 AND model_name = ?4",
+                params![
+                    provider.provider.id,
+                    provider.protocol.id(),
+                    provider.base_url.as_str(),
+                    provider.model,
+                ],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        Ok(profile_json.and_then(|json| serde_json::from_str(&json).ok()))
+    }
+
+    fn save_translation_capabilities(
+        &self,
+        provider: &AiProvider,
+        profile: &TranslationCapabilityProfile,
+    ) -> rusqlite::Result<()> {
+        let profile_json = serde_json::to_string(profile)
+            .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
+        let connection = self.connection()?;
+        connection.execute(
+            "INSERT INTO ai_provider_capabilities (
+                 provider_id, protocol_id, base_url, model_name,
+                 profile_json, checked_at_ms
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(provider_id, protocol_id, base_url, model_name) DO UPDATE SET
+                 profile_json = excluded.profile_json,
+                 checked_at_ms = excluded.checked_at_ms",
+            params![
+                provider.provider.id,
+                provider.protocol.id(),
+                provider.base_url.as_str(),
+                provider.model,
+                profile_json,
+                profile.checked_at_ms as i64,
+            ],
+        )?;
         Ok(())
     }
 
@@ -7579,8 +8860,8 @@ mod tests {
         AiMode, AiProvider, AiRuntime, AiStore, AiTranslationFormat, AiTranslationPartRequest,
         AiTranslationRequest, PROTOCOL_SELECTION_AUTO, ProviderProtocol,
         ProviderResponseReadFailure, ProviderTrace, StoredAiConfig, TranslationBatchOutcome,
-        TranslationUnitRequest, anthropic_messages, append_endpoint, apply_translation_units,
-        assistant_tool_message, collect_translation_units, default_config,
+        TranslationOutputMode, TranslationUnitRequest, anthropic_messages, append_endpoint,
+        apply_translation_units, assistant_tool_message, collect_translation_units, default_config,
         default_translation_language, disable_parallel_tool_calls, enforce_serial_tool_calls,
         explicit_addresses, is_mimo_compatible_provider, is_mimo_token_plan_url,
         json_structure_state, merge_translation_batch_outcomes, model_size_priority,
@@ -7644,9 +8925,12 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["Hello", "friend"]
         );
-        let translated =
-            apply_translation_units(&parts, &[Some("你好".to_owned()), Some("朋友".to_owned())])
-                .expect("translated HTML");
+        let translated = apply_translation_units(
+            &parts,
+            &units,
+            &[Some("你好".to_owned()), Some("朋友".to_owned())],
+        )
+        .expect("translated HTML");
         let html = &translated[0].content;
         assert!(html.contains("data-layout=\"kept\""));
         assert!(html.contains("<strong>朋友</strong>"));
@@ -7716,6 +9000,7 @@ mod tests {
         let units = (0..14)
             .map(|id| TranslationUnitRequest {
                 id,
+                target_id: id,
                 text: format!("text-{id}"),
             })
             .collect::<Vec<_>>();
@@ -7734,6 +9019,7 @@ mod tests {
             .enumerate()
             .map(|(id, bytes)| TranslationUnitRequest {
                 id,
+                target_id: id,
                 text: "x".repeat(bytes),
             })
             .collect::<Vec<_>>();
@@ -7770,16 +9056,19 @@ mod tests {
                 unit_ids: vec![0, 1],
                 translations: vec![Some("零".to_owned()), Some("一".to_owned())],
                 error: None,
+                retryable: false,
             },
-            TranslationBatchOutcome::failed(1, vec![2, 3], "batch timeout".to_owned()),
+            TranslationBatchOutcome::failed(1, vec![2, 3], "batch timeout".to_owned(), true),
             TranslationBatchOutcome {
                 batch_index: 2,
                 unit_ids: vec![4, 5],
                 translations: vec![Some("四".to_owned()), None],
                 error: None,
+                retryable: true,
             },
         ];
-        let (translations, first_error) = merge_translation_batch_outcomes(6, outcomes);
+        let (translations, first_error, retryable_ids) =
+            merge_translation_batch_outcomes(6, outcomes);
         assert_eq!(
             translations,
             vec![
@@ -7792,6 +9081,7 @@ mod tests {
             ]
         );
         assert_eq!(first_error.as_deref(), Some("batch timeout"));
+        assert_eq!(retryable_ids, std::collections::HashSet::from([2, 3, 5]));
     }
 
     #[test]
@@ -7844,8 +9134,10 @@ mod tests {
             format: AiTranslationFormat::Html,
             content: "<p>Hello <strong>friend</strong> today</p>".to_owned(),
         }];
+        let units = collect_translation_units(&parts).expect("translation units");
         let translated = apply_translation_units(
             &parts,
+            &units,
             &[Some("你好".to_owned()), None, Some("今天".to_owned())],
         )
         .expect("partial HTML translation");
@@ -7853,6 +9145,41 @@ mod tests {
         assert!(html.contains("你好"));
         assert!(html.contains("<strong>friend</strong>"));
         assert!(html.contains("今天"));
+    }
+
+    #[test]
+    fn long_translation_targets_split_safely_and_recombine_partial_results() {
+        let source = "第一段需要翻译。第二段也需要翻译！".repeat(160);
+        let parts = vec![AiTranslationPartRequest {
+            id: "body-text".to_owned(),
+            format: AiTranslationFormat::Plain,
+            content: source.clone(),
+        }];
+        let units = collect_translation_units(&parts).expect("translation units");
+        assert!(units.len() > 1);
+        assert!(units.iter().all(|unit| unit.text.len() <= 800));
+        assert!(units.iter().all(|unit| unit.target_id == 0));
+        assert_eq!(
+            units
+                .iter()
+                .map(|unit| unit.text.as_str())
+                .collect::<String>(),
+            source
+        );
+
+        let mut translations = vec![None; units.len()];
+        translations[0] = Some("已翻译的第一片。".to_owned());
+        let translated = apply_translation_units(&parts, &units, &translations)
+            .expect("partially translated text");
+        let expected = format!(
+            "已翻译的第一片。{}",
+            units
+                .iter()
+                .skip(1)
+                .map(|unit| unit.text.as_str())
+                .collect::<String>()
+        );
+        assert_eq!(translated[0].content, expected);
     }
 
     #[test]
@@ -8310,7 +9637,15 @@ mod tests {
     #[test]
     fn mimo_translation_stream_payload_disables_thinking_and_uses_completion_tokens() {
         let messages = vec![json!({ "role": "user", "content": "translate" })];
-        let payload = openai_stream_payload("mimo-v2.5", &messages, &[], true);
+        let mut payload = openai_stream_payload(
+            "mimo-v2.5",
+            &messages,
+            &[],
+            true,
+            true,
+            TranslationOutputMode::JsonObject,
+        );
+        use_completion_token_limit(&mut payload);
 
         assert_eq!(payload["stream"], true);
         assert_eq!(payload["thinking"]["type"], "disabled");
@@ -8319,7 +9654,14 @@ mod tests {
         assert!(payload.get("max_tokens").is_none());
         assert!(payload.get("stream_options").is_none());
 
-        let ordinary = openai_stream_payload("deepseek-chat", &messages, &[], false);
+        let ordinary = openai_stream_payload(
+            "deepseek-chat",
+            &messages,
+            &[],
+            false,
+            false,
+            TranslationOutputMode::PromptJson,
+        );
         assert_eq!(ordinary["max_tokens"], 8_192);
         assert_eq!(ordinary["stream_options"]["include_usage"], true);
         assert!(ordinary.get("thinking").is_none());
@@ -8354,6 +9696,12 @@ mod tests {
                 .user_message(90)
                 .contains("无法解码")
         );
+        assert!(!super::is_retryable_translation_error(
+            "AI 服务暂时不可用（HTTP 401）"
+        ));
+        assert!(super::is_retryable_translation_error(
+            "AI 服务响应超时，请重试。"
+        ));
     }
 
     #[test]
@@ -8385,6 +9733,60 @@ mod tests {
     }
 
     #[test]
+    fn capability_profiles_are_scoped_to_provider_protocol_url_and_model() {
+        let directory = tempdir().expect("tempdir");
+        let store = AiStore::open(directory.path().join("ai.sqlite3")).expect("store");
+        let config = StoredAiConfig {
+            provider_id: "openai".to_owned(),
+            protocol_id: "openai_responses".to_owned(),
+            base_url: "https://api.openai.com/v1".to_owned(),
+            model_name: "test-model".to_owned(),
+            use_environment_key: false,
+            translation_language: default_translation_language(),
+        };
+        let preset = provider_preset("openai").expect("preset");
+        let provider = AiProvider::new(
+            &config,
+            preset,
+            zeroize::Zeroizing::new("test-key".to_owned()),
+        )
+        .expect("provider");
+        let profile = super::TranslationCapabilityProfile {
+            structured_outputs: super::CapabilitySupport::Unsupported,
+            streaming: super::CapabilitySupport::Supported,
+            reasoning_control: super::CapabilitySupport::Unknown,
+            evidence: super::CapabilityEvidence::Probed,
+            checked_at_ms: super::now_ms(),
+            latency_ms: Some(23),
+        };
+        store
+            .save_translation_capabilities(&provider, &profile)
+            .expect("save profile");
+        assert_eq!(
+            store
+                .load_translation_capabilities(&provider)
+                .expect("load profile"),
+            Some(profile)
+        );
+
+        let other_model = AiProvider::new(
+            &StoredAiConfig {
+                model_name: "other-model".to_owned(),
+                ..config
+            },
+            preset,
+            zeroize::Zeroizing::new("test-key".to_owned()),
+        )
+        .expect("other provider");
+        assert!(
+            store
+                .load_translation_capabilities(&other_model)
+                .expect("load other profile")
+                .is_none()
+        );
+    }
+
+    #[test]
     fn anthropic_messages_preserve_tool_rounds_without_exposing_openai_shapes() {
         let messages = vec![
             json!({ "role": "system", "content": "system" }),
@@ -8406,6 +9808,11 @@ mod tests {
         assert_eq!(converted[2]["content"][0]["type"], "tool_result");
         assert_eq!(normalized_finish_reason(Some("end_turn")), "stop");
         assert_eq!(normalized_finish_reason(Some("tool_use")), "tool_calls");
+        assert_eq!(
+            normalized_finish_reason(Some("max_output_tokens")),
+            "length"
+        );
+        assert_eq!(normalized_finish_reason(Some("refusal")), "refusal");
     }
 
     #[test]

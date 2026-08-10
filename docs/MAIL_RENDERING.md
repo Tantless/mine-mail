@@ -146,16 +146,21 @@ frontend code. An intentional threshold change must:
   and does not change the persisted default. Re-translation keeps the previous
   validated representation visible until a replacement succeeds; failure leaves
   that previous result intact.
-- MiMo translation disables model thinking and uses its OpenAI-compatible SSE
-  transport internally with a 180-second total request limit and a 45-second
-  between-chunk idle limit. Translation units are split into batches of at most
-  six and normally at most 800 UTF-8 bytes, with at most two Provider requests in
-  flight. A single larger unit stays intact in its own batch. Each batch retains
-  the original global unit IDs, and failed batches leave those positions
-  unchanged without discarding valid translations from other batches. MiMo
-  completion limits are bounded from the batch request size instead of always
-  requesting the maximum output. The reader still receives only the final validated
-  representation; raw deltas are never rendered or persisted.
+- All translation protocols use their SSE adapter internally with a 180-second
+  total request limit and a 45-second between-chunk idle limit; MiMo additionally
+  disables model thinking. A long plain body or visible HTML text node is split
+  at a sentence, newline, or whitespace boundary into numbered units of at most
+  800 UTF-8 bytes. Batches contain at most six units and normally 800 bytes. The
+  scheduler starts four Provider requests, can rise to six after consecutive
+  successes, reduces concurrency after a failed or partial batch, and fills an
+  available slot as soon as any request completes. Each batch retains the original
+  global unit IDs. Retryable missing units receive one smaller retry using at most
+  two units and normally 400 bytes; an individual larger unit remains intact.
+  Units still missing keep their exact original fragment
+  while successful fragments are recombined into their original text node. Output
+  limits are bounded from batch request size instead of always requesting the
+  maximum. The reader still receives only the final validated representation;
+  raw deltas are never rendered or persisted.
 
 ## Attachment indexing and extraction
 

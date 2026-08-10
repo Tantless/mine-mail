@@ -25,8 +25,9 @@
 
 - Rust 直接调用已配置的 Provider，不经过本机 MCP。模型配置可选择 OpenAI
   Responses、OpenAI Chat Completions 或 Anthropic Messages；供应商支持范围、推荐协议、
-  地址和认证差异见 [`API_PROTOCOLS.md`](API_PROTOCOLS.md)。**自动**只解析为当前供应商
-  的推荐协议，不在失败后静默换协议重试。
+  地址和认证差异见 [`API_PROTOCOLS.md`](API_PROTOCOLS.md)。**自动**下的邮件翻译可在
+  请求前使用同一供应商、同一模型的能力档案选择更合适的已配置协议；对话与优化仍用
+  推荐协议。请求发出后不静默换协议重试。
 - 对话 Agent 通过当前协议适配器使用 SSE，独立优化通过同一适配器保持非流式，邮件
   翻译也通过同一适配器请求并在 Rust 校验完整结果。因此切换协议会同时影响三类功能，
   但不会改变各模块的工具白名单、输出校验、超时或正文审阅规则。
@@ -35,14 +36,17 @@
   带回供应商返回的 reasoning item。OpenAI 官方与 OpenRouter 请求额外包含加密推理项，
   以支持 `store: false` 下的连续工具轮次。Anthropic 适配器使用 content block 转换工具
   调用，Chat Completions 适配器继续保存需要回传的推理协议状态。
-- 翻译在前端仍只展示校验后的完整或部分结果；MiMo 翻译在 Rust 内使用 SSE 接收、
-  关闭思考模式并使用翻译专用超时，避免等待整包响应阻塞到通用超时。翻译片段按每批
-  最多 6 个且通常不超过 800 个 UTF-8 字节拆分，同时最多请求 2 批；单个超长片段不会
-  被截断，而是独立成批。失败批次保留原文，其他批次的有效结果仍按全局编号写回。
+- 翻译在前端仍只展示校验后的完整或部分结果；三种协议都在 Rust 内使用 SSE 接收并
+  使用 180 秒总超时与 45 秒流空闲超时，MiMo 额外关闭思考模式。超长正文或 HTML 文本
+  节点先按语义边界拆为不超过 800 个 UTF-8 字节的片段，再按每批最多 6 个且通常不超过
+  800 字节组织。调度以 4 路并发起步，连续成功可升至 6 路，失败或部分成功时降并发；
+  任一路完成后立即补入下一批。缺失且可重试的片段按每批最多 2 个、通常 400 字节再补
+  一次，单个更大片段保持完整。
+  最终仍缺失的片段保留原文，其他有效结果按全局编号写回并重组原文本节点。
   阅读器在应用运行期按邮件保留任务和最新译文，最多同时翻译 2 封邮件；切换邮件不会
   丢弃任务或结果，退出应用后清除。阅读器选择其他语言只覆盖当前邮件并立即重新翻译，
-  不修改设置中的默认语言；新结果失败时继续保留上一份译文。MiMo 每批输出上限按请求
-  大小动态约束，避免小批次无意义地持续生成。
+  不修改设置中的默认语言；新结果失败时继续保留上一份译文。每批输出上限按请求大小
+  动态约束，避免小批次无意义地持续生成。
 - SSE 连接正常结束时会刷新尚未以空行终止的最后一个数据事件，兼容尾帧省略空行的
   OpenAI 与 Anthropic 网关。自定义配置使用 MiMo Token Plan 官方中国、新加坡或欧洲
   地址时，Rust 使用其 `api-key` 认证头，并按 MiMo 接口使用
@@ -258,14 +262,20 @@ Provider 读取和后续工具执行，丢弃未完成工作副本。
 - `ai_provider_first_delta`
 - `ai_provider_stream_completed`
 - `ai_provider_response_read_failed`，区分完整响应超时、传输中断和响应解码失败
-- `ai_translation_transport_selected`，记录 MiMo 翻译采用关闭思考的内部流式传输
-- `ai_provider_stream_idle_timeout`，记录 MiMo 翻译流超过空闲时限未收到新数据
-- `ai_provider_stream_progress`，每约 10 秒记录 MiMo 翻译流累计数据块、SSE 事件、
+- `ai_translation_transport_selected`，记录翻译采用的协议流式适配器
+- `ai_provider_stream_idle_timeout`，记录翻译流超过空闲时限未收到新数据
+- `ai_provider_stream_progress`，Chat Completions 翻译流每约 10 秒记录累计数据块、SSE 事件、
   正文与思考字节数、终止事件状态和 JSON 结构状态，不记录生成文本
 - `ai_provider_stream_interrupted`，流读取失败时记录同一组最终结构计数，便于区分
   持续生成、空闲超时和未闭合 JSON
 - `ai_translation_batch_started`、`ai_translation_batch_completed`、
   `ai_translation_batch_failed`，记录批次序号、批次数、片段数、耗时和结果类别
+- `ai_translation_scheduler_started`、`ai_translation_concurrency_adjusted`、
+  `ai_translation_scheduler_completed`，记录动态并发的起点、升降与最终批次结果
+- `ai_translation_retry_started`、`ai_translation_retry_completed`，记录缺片重试数和恢复数
+- `ai_capability_probe_started`、`ai_capability_probe_completed`，记录结构化输出能力探测
+- `ai_translation_protocol_routed`、`ai_translation_structured_output_downgraded`，记录自动
+  路由依据和同协议内的输出格式兼容降级
 - `ai_translation_failed`，翻译结果校验失败时区分 JSON、片段数量、编号与字符问题；
   片段数量异常只记录预期数、实际数和差值，不记录邮件文本
 - `ai_translation_completed`，`partially_completed` 结果记录已翻译与保留原文的片段数
