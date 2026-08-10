@@ -416,8 +416,11 @@ product decision changes.
   reasoning round and tool call becomes its own ordered step. A Provider may
   supply visible reasoning deltas for the active step; that temporary detail is
   replaced by a bounded completion summary when the step ends and is never saved
-  as Session message text. Hidden reasoning, tool arguments, and tool results are
-  not exposed. Stop cancels the Provider stream and prevents later tools.
+  as Session message text. As soon as a streaming adapter recognizes a complete,
+  allowed tool name, the live trail ends that reasoning step and shows the tool as
+  running while its arguments continue to arrive; validation and execution update
+  that same step rather than adding a duplicate. Hidden reasoning, tool arguments,
+  and tool results are not exposed. Stop cancels the Provider stream and prevents later tools.
   Standalone optimization remains non-streaming. Optimization, conversational
   Agent turns, and reader translation share the same selected adapter, endpoint,
   authentication policy, size limits, and privacy-safe diagnostics; protocol

@@ -881,6 +881,13 @@ pub(crate) enum AiTurnEvent {
         summary: String,
         success: bool,
     },
+    ToolPreparing {
+        request_id: String,
+        thinking_activity_id: String,
+        activity_id: String,
+        name: String,
+        display_name: String,
+    },
     ToolStarted {
         request_id: String,
         activity_id: String,
@@ -2686,6 +2693,13 @@ impl AiProvider {
         let mut reasoning_text = String::new();
         let mut reasoning_items = Vec::new();
         let mut tool_calls: Vec<StreamToolCall> = Vec::new();
+        let mut tool_preparation = ToolPreparationTracker::new(
+            request_id,
+            activity_id,
+            trace.round,
+            tools,
+            self.requires_serial_tool_calls(),
+        );
         let mut finish_reason = "other";
         let mut input_tokens = 0;
         let mut output_tokens = 0;
@@ -2859,6 +2873,15 @@ impl AiProvider {
                                 if let Some(name) = item.get("name").and_then(Value::as_str) {
                                     target.name = name.to_owned();
                                 }
+                                let name = target.name.clone();
+                                announce_tool_preparing(
+                                    &mut tool_preparation,
+                                    &name,
+                                    &mut target.activity_id,
+                                    &mut target.preparing_started,
+                                    events,
+                                    &trace,
+                                );
                                 if event_type == "response.output_item.done" {
                                     if let Some(arguments) =
                                         item.get("arguments").and_then(Value::as_str)
@@ -2907,6 +2930,15 @@ impl AiProvider {
                         if let Some(arguments) = value.get("arguments").and_then(Value::as_str) {
                             target.arguments = arguments.to_owned();
                         }
+                        let name = target.name.clone();
+                        announce_tool_preparing(
+                            &mut tool_preparation,
+                            &name,
+                            &mut target.activity_id,
+                            &mut target.preparing_started,
+                            events,
+                            &trace,
+                        );
                     }
                     "response.completed" => {
                         finish_reason = "stop";
@@ -2943,6 +2975,11 @@ impl AiProvider {
         }
 
         tool_calls.retain(|call| !call.id.is_empty() || !call.name.is_empty());
+        log_tool_preparation_completed(&tool_calls, &trace);
+        let tool_activity_ids = tool_calls
+            .iter()
+            .map(|call| call.activity_id.clone())
+            .collect::<Vec<_>>();
         let mut message = Map::new();
         message.insert("role".to_owned(), Value::String("assistant".to_owned()));
         message.insert("content".to_owned(), Value::String(content));
@@ -2985,6 +3022,7 @@ impl AiProvider {
         Ok(ProviderTurn {
             message,
             finish_reason,
+            tool_activity_ids,
         })
     }
 
@@ -3078,6 +3116,13 @@ impl AiProvider {
         let mut content = String::new();
         let mut reasoning_content = String::new();
         let mut tool_calls: Vec<StreamToolCall> = Vec::new();
+        let mut tool_preparation = ToolPreparationTracker::new(
+            request_id,
+            activity_id,
+            trace.round,
+            tools,
+            self.requires_serial_tool_calls(),
+        );
         let mut finish_reason = "other";
         let mut input_tokens = 0;
         let mut output_tokens = 0;
@@ -3297,6 +3342,15 @@ impl AiProvider {
                                 target.arguments.push_str(arguments);
                             }
                         }
+                        let name = target.name.clone();
+                        announce_tool_preparing(
+                            &mut tool_preparation,
+                            &name,
+                            &mut target.activity_id,
+                            &mut target.preparing_started,
+                            events,
+                            &trace,
+                        );
                     }
                 }
                 if let Some(text) = delta.get("content").and_then(Value::as_str) {
@@ -3385,7 +3439,12 @@ impl AiProvider {
                 Value::String(reasoning_content),
             );
         }
+        let tool_activity_ids = tool_calls
+            .iter()
+            .map(|call| call.activity_id.clone())
+            .collect::<Vec<_>>();
         if !tool_calls.is_empty() {
+            log_tool_preparation_completed(&tool_calls, &trace);
             finish_reason = "tool_calls";
             message.insert(
                 "tool_calls".to_owned(),
@@ -3400,6 +3459,7 @@ impl AiProvider {
         Ok(ProviderTurn {
             message,
             finish_reason,
+            tool_activity_ids,
         })
     }
 
@@ -3512,6 +3572,13 @@ impl AiProvider {
         );
         let mut decoder = SseDecoder::default();
         let mut blocks: Vec<AnthropicStreamBlock> = Vec::new();
+        let mut tool_preparation = ToolPreparationTracker::new(
+            request_id,
+            activity_id,
+            trace.round,
+            tools,
+            self.requires_serial_tool_calls(),
+        );
         let mut visible_content = String::new();
         let mut finish_reason = "other";
         let mut input_tokens = 0;
@@ -3656,17 +3723,27 @@ impl AiProvider {
                                 );
                                 content_was_reset = true;
                             }
-                            blocks[index].kind = "tool_use".to_owned();
-                            blocks[index].id = block
+                            let target = &mut blocks[index];
+                            target.kind = "tool_use".to_owned();
+                            target.id = block
                                 .and_then(|item| item.get("id"))
                                 .and_then(Value::as_str)
                                 .unwrap_or_default()
                                 .to_owned();
-                            blocks[index].name = block
+                            target.name = block
                                 .and_then(|item| item.get("name"))
                                 .and_then(Value::as_str)
                                 .unwrap_or_default()
                                 .to_owned();
+                            let name = target.name.clone();
+                            announce_tool_preparing(
+                                &mut tool_preparation,
+                                &name,
+                                &mut target.activity_id,
+                                &mut target.preparing_started,
+                                events,
+                                &trace,
+                            );
                         } else if block_type == Some("thinking") {
                             blocks[index].kind = "thinking".to_owned();
                         } else {
@@ -3775,6 +3852,28 @@ impl AiProvider {
             .filter(|block| block.kind == "tool_use")
             .map(AnthropicStreamBlock::tool_call_value)
             .collect::<Result<Vec<_>, _>>()?;
+        let tool_activity_ids = blocks
+            .iter()
+            .filter(|block| block.kind == "tool_use")
+            .map(|block| block.activity_id.clone())
+            .collect::<Vec<_>>();
+        for block in blocks.iter().filter(|block| block.kind == "tool_use") {
+            let (Some(started), Some(name)) = (
+                block.preparing_started,
+                known_tool_name(block.name.as_str()),
+            ) else {
+                continue;
+            };
+            diagnostics::info(
+                "ai_tool_preparation_completed",
+                trace
+                    .fields()
+                    .attempt(trace.round as u64)
+                    .tool(name)
+                    .duration(started.elapsed())
+                    .outcome("arguments_received"),
+            );
+        }
         let content = blocks
             .iter()
             .filter(|block| block.kind == "text")
@@ -3802,6 +3901,7 @@ impl AiProvider {
         Ok(ProviderTurn {
             message,
             finish_reason,
+            tool_activity_ids,
         })
     }
 
@@ -3999,6 +4099,7 @@ impl AiProvider {
         Ok(ProviderTurn {
             message,
             finish_reason,
+            tool_activity_ids: Vec::new(),
         })
     }
 
@@ -4147,6 +4248,7 @@ impl AiProvider {
         Ok(ProviderTurn {
             message,
             finish_reason,
+            tool_activity_ids: Vec::new(),
         })
     }
 
@@ -5483,6 +5585,7 @@ fn parse_openai_responses_turn(response: &Value) -> Result<ProviderTurn, String>
     Ok(ProviderTurn {
         message,
         finish_reason,
+        tool_activity_ids: Vec::new(),
     })
 }
 
@@ -5521,6 +5624,7 @@ impl ProviderTrace {
 struct ProviderTurn {
     message: Map<String, Value>,
     finish_reason: &'static str,
+    tool_activity_ids: Vec<Option<String>>,
 }
 
 #[derive(Debug)]
@@ -5611,6 +5715,8 @@ struct StreamToolCall {
     id: String,
     name: String,
     arguments: String,
+    activity_id: Option<String>,
+    preparing_started: Option<Instant>,
 }
 
 impl StreamToolCall {
@@ -5623,6 +5729,108 @@ impl StreamToolCall {
     }
 }
 
+struct PreparedToolActivity {
+    id: String,
+    name: &'static str,
+}
+
+struct ToolPreparationTracker {
+    request_id: String,
+    thinking_activity_id: String,
+    round: usize,
+    allowed_names: HashSet<&'static str>,
+    serial: bool,
+    announced: usize,
+}
+
+impl ToolPreparationTracker {
+    fn new(
+        request_id: &str,
+        thinking_activity_id: &str,
+        round: usize,
+        tools: &[ToolSpec],
+        serial: bool,
+    ) -> Self {
+        Self {
+            request_id: request_id.to_owned(),
+            thinking_activity_id: thinking_activity_id.to_owned(),
+            round,
+            allowed_names: tools.iter().map(|tool| tool.name).collect(),
+            serial,
+            announced: 0,
+        }
+    }
+
+    fn prepare(&mut self, name: &str) -> Option<PreparedToolActivity> {
+        let name = known_tool_name(name)?;
+        if !self.allowed_names.contains(name) || (self.serial && self.announced > 0) {
+            return None;
+        }
+        let activity = PreparedToolActivity {
+            id: format!("{}:tool:{}:{}", self.request_id, self.round, self.announced),
+            name,
+        };
+        self.announced += 1;
+        Some(activity)
+    }
+}
+
+fn announce_tool_preparing(
+    tracker: &mut ToolPreparationTracker,
+    name: &str,
+    activity_id: &mut Option<String>,
+    preparing_started: &mut Option<Instant>,
+    events: Option<&Channel<AiTurnEvent>>,
+    trace: &ProviderTrace,
+) {
+    if activity_id.is_some() || events.is_none() {
+        return;
+    }
+    let Some(activity) = tracker.prepare(name) else {
+        return;
+    };
+    let started = Instant::now();
+    send_event(
+        events,
+        AiTurnEvent::ToolPreparing {
+            request_id: tracker.request_id.clone(),
+            thinking_activity_id: tracker.thinking_activity_id.clone(),
+            activity_id: activity.id.clone(),
+            name: activity.name.to_owned(),
+            display_name: tool_display_name(activity.name).to_owned(),
+        },
+    );
+    diagnostics::info(
+        "ai_tool_preparing",
+        trace
+            .fields()
+            .attempt(trace.round as u64)
+            .tool(activity.name)
+            .outcome("tool_selected"),
+    );
+    *activity_id = Some(activity.id);
+    *preparing_started = Some(started);
+}
+
+fn log_tool_preparation_completed(tool_calls: &[StreamToolCall], trace: &ProviderTrace) {
+    for call in tool_calls {
+        let (Some(started), Some(name)) =
+            (call.preparing_started, known_tool_name(call.name.as_str()))
+        else {
+            continue;
+        };
+        diagnostics::info(
+            "ai_tool_preparation_completed",
+            trace
+                .fields()
+                .attempt(trace.round as u64)
+                .tool(name)
+                .duration(started.elapsed())
+                .outcome("arguments_received"),
+        );
+    }
+}
+
 #[derive(Default)]
 struct AnthropicStreamBlock {
     kind: String,
@@ -5630,6 +5838,8 @@ struct AnthropicStreamBlock {
     name: String,
     text: String,
     input_json: String,
+    activity_id: Option<String>,
+    preparing_started: Option<Instant>,
 }
 
 impl AnthropicStreamBlock {
@@ -5657,6 +5867,7 @@ fn cancelled_provider_turn(content: String) -> ProviderTurn {
     ProviderTurn {
         message,
         finish_reason: "cancelled",
+        tool_activity_ids: Vec::new(),
     }
 }
 
@@ -5776,6 +5987,7 @@ async fn run_tool_loop(
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
+        let mut tool_activity_ids = turn.tool_activity_ids;
         if turn.finish_reason == "cancelled" || cancellation.is_cancelled() {
             if mode != AiMode::Optimize {
                 finish_thinking_activity(
@@ -5838,6 +6050,9 @@ async fn run_tool_loop(
             ));
         }
         let deferred_tool_calls = enforce_serial_tool_calls(&mut tool_calls, serial_tool_calls);
+        if serial_tool_calls && tool_activity_ids.len() > 1 {
+            tool_activity_ids.truncate(1);
+        }
         if deferred_tool_calls > 0 {
             diagnostics::info(
                 "ai_tool_calls_serialized",
@@ -5927,7 +6142,10 @@ async fn run_tool_loop(
                         .error(DiagnosticErrorKind::Validation),
                 );
             }
-            let tool_activity_id = format!("{request_id}:tool:{round}:{tool_index}");
+            let tool_activity_id = tool_activity_ids
+                .get(tool_index)
+                .and_then(Clone::clone)
+                .unwrap_or_else(|| format!("{request_id}:tool:{round}:{tool_index}"));
             send_event(
                 events,
                 AiTurnEvent::ToolStarted {
@@ -8929,20 +9147,49 @@ mod tests {
         AiTranslationRequest, EmptyToolArguments, PROTOCOL_SELECTION_AUTO, ProviderProtocol,
         ProviderResponseReadFailure, ProviderTrace, ReplaceDraftBodyArguments,
         SearchContactsArguments, StoredAiConfig, ToolArgumentFailureTracker, ToolFailure,
-        TranslationBatchOutcome, TranslationOutputMode, TranslationUnitRequest, anthropic_messages,
-        append_endpoint, apply_translation_units, assistant_tool_message,
-        collect_translation_units, default_config, default_translation_language,
-        disable_parallel_tool_calls, enforce_serial_tool_calls, explicit_addresses,
-        is_mimo_compatible_provider, is_mimo_token_plan_url, json_structure_state,
-        merge_translation_batch_outcomes, model_size_priority, normalize_replace_body_arguments,
-        normalize_search_contacts_arguments, normalized_finish_reason, openai_responses_input,
-        openai_stream_payload, parse_final_envelope, parse_openai_responses_turn,
-        parse_tool_arguments, parse_translation_envelope, parse_translation_envelope_for_ids,
+        ToolPreparationTracker, TranslationBatchOutcome, TranslationOutputMode,
+        TranslationUnitRequest, anthropic_messages, append_endpoint, apply_translation_units,
+        assistant_tool_message, collect_translation_units, default_config,
+        default_translation_language, disable_parallel_tool_calls, enforce_serial_tool_calls,
+        explicit_addresses, is_mimo_compatible_provider, is_mimo_token_plan_url,
+        json_structure_state, merge_translation_batch_outcomes, model_size_priority,
+        normalize_replace_body_arguments, normalize_search_contacts_arguments,
+        normalized_finish_reason, openai_responses_input, openai_stream_payload,
+        parse_final_envelope, parse_openai_responses_turn, parse_tool_arguments,
+        parse_translation_envelope, parse_translation_envelope_for_ids,
         partition_translation_units, provider_preset, provider_protocol_base_url,
         provider_safe_tool_calls, resolve_provider_protocol, session_title, tool_spec, tool_specs,
         translation_completion_token_limit, use_completion_token_limit, validate_base_url,
         validate_translation_request,
     };
+
+    #[test]
+    fn tool_preparation_tracker_waits_for_a_known_allowed_name() {
+        let tools = tool_specs(AiMode::Auto, false);
+        let mut tracker = ToolPreparationTracker::new("request-1", "thinking-1", 2, &tools, false);
+
+        assert!(tracker.prepare("replace_draft_").is_none());
+        assert!(tracker.prepare("unknown_tool").is_none());
+        let first = tracker
+            .prepare("replace_draft_body")
+            .expect("known allowed tool");
+        assert_eq!(first.id, "request-1:tool:2:0");
+        assert_eq!(first.name, "replace_draft_body");
+        let second = tracker
+            .prepare("set_draft_subject")
+            .expect("second allowed tool");
+        assert_eq!(second.id, "request-1:tool:2:1");
+    }
+
+    #[test]
+    fn serial_tool_preparation_tracker_announces_only_one_tool() {
+        let tools = tool_specs(AiMode::Auto, false);
+        let mut tracker =
+            ToolPreparationTracker::new("request-serial", "thinking-serial", 1, &tools, true);
+
+        assert!(tracker.prepare("get_draft_body").is_some());
+        assert!(tracker.prepare("set_draft_subject").is_none());
+    }
 
     #[test]
     fn modes_expose_only_their_allowed_write_tools() {

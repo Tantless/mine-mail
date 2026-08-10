@@ -751,6 +751,21 @@ it("keeps a streamed Markdown turn alive while the AI sidebar is collapsed", asy
   expect(within(assistant).getByText("正在检查当前草稿")).toBeTruthy();
   await act(async () => {
     emit({
+      type: "tool_preparing",
+      request_id: "request-stream",
+      thinking_activity_id: "thinking-1",
+      activity_id: "tool-1",
+      name: "get_draft_body",
+      display_name: "读取草稿正文",
+    });
+  });
+  expect(within(assistant).queryByText("正在检查当前草稿")).toBeNull();
+  expect(within(assistant).getByText("分析完成")).toBeTruthy();
+  expect(
+    within(assistant).getByText("正在调用「读取草稿正文」工具…"),
+  ).toBeTruthy();
+  await act(async () => {
+    emit({
       type: "thinking_finished",
       request_id: "request-stream",
       activity_id: "thinking-1",

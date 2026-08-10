@@ -575,6 +575,43 @@ function finishRunningActivities(message, status) {
   };
 }
 
+function beginToolActivity(message, event, completeThinking = false) {
+  const displayName = event.display_name || event.name;
+  let activities = (message.activities || []).map((activity) => {
+    if (
+      completeThinking &&
+      activity.id === event.thinking_activity_id &&
+      activity.kind === "thinking" &&
+      activity.status === "running"
+    ) {
+      return {
+        ...activity,
+        label: "分析完成",
+        detail: "",
+        status: "completed",
+        success: true,
+      };
+    }
+    return activity;
+  });
+  const nextTool = {
+    id: event.activity_id,
+    kind: "tool",
+    label: `正在调用「${displayName}」工具…`,
+    detail: "",
+    status: "running",
+    success: null,
+  };
+  if (activities.some((activity) => activity.id === event.activity_id)) {
+    activities = activities.map((activity) =>
+      activity.id === event.activity_id ? { ...activity, ...nextTool } : activity,
+    );
+  } else {
+    activities = [...activities, nextTool];
+  }
+  return { ...message, activities };
+}
+
 function ProposalAction({ busy, group, label, proposal, onResolve }) {
   const state = proposal[group];
   if (!state?.changed) return null;
@@ -928,7 +965,8 @@ export function ComposeAiAssistant({
                 (message) => ({
                   ...message,
                   activities: (message.activities || []).map((activity) =>
-                    activity.id === event.activity_id
+                    activity.id === event.activity_id &&
+                    activity.status === "running"
                       ? {
                           ...activity,
                           detail: `${activity.detail || ""}${event.delta || ""}`,
@@ -959,25 +997,20 @@ export function ComposeAiAssistant({
                 }),
               ),
             );
+          } else if (event?.type === "tool_preparing") {
+            setSessions((current) =>
+              updateStreamingAssistant(
+                current,
+                streamingSessionIdRef.current,
+                (message) => beginToolActivity(message, event, true),
+              ),
+            );
           } else if (event?.type === "tool_started") {
             setSessions((current) =>
               updateStreamingAssistant(
                 current,
                 streamingSessionIdRef.current,
-                (message) => ({
-                  ...message,
-                  activities: [
-                    ...(message.activities || []),
-                    {
-                      id: event.activity_id,
-                      kind: "tool",
-                      label: `正在调用「${event.display_name || event.name}」工具…`,
-                      detail: "",
-                      status: "running",
-                      success: null,
-                    },
-                  ],
-                }),
+                (message) => beginToolActivity(message, event),
               ),
             );
           } else if (event?.type === "tool_finished") {
