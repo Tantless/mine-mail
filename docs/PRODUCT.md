@@ -306,6 +306,10 @@ product decision changes.
 - The assistant provides **自动**、**邮件生成** and read-only **聊天** modes.
   Optimization remains a separate high-frequency action. Rust selects a hard
   tool allowlist for every mode; prompts alone never grant a capability.
+- Tool definitions and Rust execution share one typed argument contract. Invalid
+  fields, types, and ranges are rejected without silent coercion; repeated
+  contract failures are bounded so a model cannot loop indefinitely while
+  guessing tool arguments.
 - The built-in assistant calls its configured AI Provider directly from Rust.
   It does not route through the local MCP service. A manually entered API Key
   exists in React only as transient form input until the narrow Tauri command

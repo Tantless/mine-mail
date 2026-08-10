@@ -13,7 +13,7 @@ use mine_mail::{
 };
 use reqwest::{Client, RequestBuilder, Url};
 use rusqlite::{Connection, OptionalExtension, params};
-use schemars::{JsonSchema, schema_for};
+use schemars::{JsonSchema, generate::SchemaSettings};
 use scraper::{Html, Node};
 use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};
 use serde_json::{Map, Value, json};
@@ -41,7 +41,7 @@ const MAX_TOOL_ARGUMENT_BYTES: usize = 64 * 1024;
 const MAX_TOOL_ROUNDS: usize = 8;
 const MAX_SERIAL_TOOL_ROUNDS: usize = 16;
 const MAX_TOOL_CALLS_PER_ROUND: usize = 16;
-const MAX_CONSECUTIVE_TOOL_ARGUMENT_FAILURES: usize = 2;
+const MAX_CONSECUTIVE_TOOL_ARGUMENT_FAILURES: usize = 3;
 const MAX_PROVIDER_REQUEST_BYTES: usize = 4 * 1024 * 1024;
 const MAX_PROVIDER_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_TEXT_ATTACHMENT_BYTES: u64 = 256 * 1024;
@@ -5685,8 +5685,7 @@ async fn run_tool_loop(
     } else {
         MAX_TOOL_ROUNDS
     };
-    let mut last_argument_failure = None::<String>;
-    let mut consecutive_argument_failures = 0usize;
+    let mut argument_failure_tracker = ToolArgumentFailureTracker::default();
     for round in 1..=max_tool_rounds {
         if cancellation.is_cancelled() {
             return Ok(ToolLoopOutcome {
@@ -6012,35 +6011,24 @@ async fn run_tool_loop(
                 "tool_call_id": call_id,
                 "content": result_text,
             }));
-            if let Some(fingerprint) = argument_failure_fingerprint {
-                if last_argument_failure.as_deref() == Some(fingerprint.as_str()) {
-                    consecutive_argument_failures += 1;
-                } else {
-                    last_argument_failure = Some(fingerprint);
-                    consecutive_argument_failures = 1;
-                }
-                if consecutive_argument_failures >= MAX_CONSECUTIVE_TOOL_ARGUMENT_FAILURES {
-                    diagnostics::warn(
-                        "ai_tool_argument_retry_stopped",
-                        DiagnosticFields::default()
-                            .operation_id(operation_id.clone())
-                            .operation("ai_tool_call")
-                            .mode(mode.as_str())
-                            .provider(provider.provider.id)
-                            .model(&provider.model)
-                            .account(&working.snapshot.account_id)
-                            .tool(static_name)
-                            .attempt(consecutive_argument_failures as u64)
-                            .outcome("repeated_invalid_arguments")
-                            .error(DiagnosticErrorKind::Validation),
-                    );
-                    return Err(StreamingFailure::new(
-                        "AI 连续提交了不符合工具契约的参数，已停止处理。",
-                    ));
-                }
-            } else {
-                last_argument_failure = None;
-                consecutive_argument_failures = 0;
+            if argument_failure_tracker.observe(argument_failure_fingerprint) {
+                diagnostics::warn(
+                    "ai_tool_argument_retry_stopped",
+                    DiagnosticFields::default()
+                        .operation_id(operation_id.clone())
+                        .operation("ai_tool_call")
+                        .mode(mode.as_str())
+                        .provider(provider.provider.id)
+                        .model(&provider.model)
+                        .account(&working.snapshot.account_id)
+                        .tool(static_name)
+                        .attempt(argument_failure_tracker.consecutive as u64)
+                        .outcome("repeated_invalid_arguments")
+                        .error(DiagnosticErrorKind::Validation),
+                );
+                return Err(StreamingFailure::new(
+                    "AI 连续提交了不符合工具契约的参数，已停止处理。",
+                ));
             }
         }
     }
@@ -6147,16 +6135,71 @@ fn provider_safe_tool_calls(tool_calls: &[Value]) -> Vec<Value> {
             let Some(function) = call.get_mut("function").and_then(Value::as_object_mut) else {
                 return call;
             };
+            let name = function
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
             let valid = function
                 .get("arguments")
                 .and_then(Value::as_str)
-                .is_some_and(|arguments| serde_json::from_str::<Value>(arguments).is_ok());
+                .is_some_and(|arguments| tool_arguments_match_contract(name, arguments));
             if !valid {
-                function.insert("arguments".to_owned(), Value::String("{}".to_owned()));
+                function.insert(
+                    "arguments".to_owned(),
+                    Value::String(provider_safe_tool_arguments(name).to_owned()),
+                );
             }
             call
         })
         .collect()
+}
+
+fn tool_arguments_match_contract(name: &str, arguments: &str) -> bool {
+    match known_tool_name(name) {
+        Some(
+            name @ ("get_draft_body"
+            | "get_draft_subject"
+            | "get_draft_sender"
+            | "get_draft_recipients"
+            | "get_draft_reference"
+            | "list_draft_attachments"),
+        ) => parse_tool_arguments::<EmptyToolArguments>(name, arguments).is_ok(),
+        Some(name @ "search_contacts") => {
+            parse_tool_arguments::<SearchContactsArguments>(name, arguments)
+                .and_then(normalize_search_contacts_arguments)
+                .is_ok()
+        }
+        Some(name @ ("read_text_attachment" | "read_image_attachment")) => {
+            parse_tool_arguments::<AttachmentArguments>(name, arguments).is_ok()
+        }
+        Some(name @ "set_draft_recipients") => {
+            parse_tool_arguments::<SetDraftRecipientsArguments>(name, arguments).is_ok()
+        }
+        Some(name @ "set_draft_subject") => {
+            parse_tool_arguments::<SetDraftSubjectArguments>(name, arguments).is_ok()
+        }
+        Some(name @ "replace_draft_body") => {
+            parse_tool_arguments::<ReplaceDraftBodyArguments>(name, arguments)
+                .and_then(normalize_replace_body_arguments)
+                .is_ok()
+        }
+        Some(name @ "set_draft_stationery") => {
+            parse_tool_arguments::<SetDraftStationeryArguments>(name, arguments).is_ok()
+        }
+        _ => false,
+    }
+}
+
+fn provider_safe_tool_arguments(name: &str) -> &'static str {
+    match name {
+        "search_contacts" => r#"{"query":"invalid"}"#,
+        "read_text_attachment" | "read_image_attachment" => r#"{"attachment_id":"invalid"}"#,
+        "set_draft_recipients" => r#"{"to":[],"cc":[],"bcc":[]}"#,
+        "set_draft_subject" => r#"{"subject":""}"#,
+        "replace_draft_body" => r#"{"body_text":""}"#,
+        "set_draft_stationery" => r#"{"stationery":"none","send_stationery":false}"#,
+        _ => "{}",
+    }
 }
 
 fn enforce_serial_tool_calls(tool_calls: &mut Vec<Value>, required: bool) -> usize {
@@ -6214,10 +6257,7 @@ struct ReplaceDraftBodyArguments {
     /// 完整的纯文本正文。
     body_text: String,
     /// 完整的安全富文本 HTML；普通纯文本邮件省略此字段。
-    #[serde(
-        default,
-        deserialize_with = "deserialize_optional_non_null_string"
-    )]
+    #[serde(default, deserialize_with = "deserialize_optional_non_null_string")]
     #[schemars(with = "String")]
     body_html: Option<String>,
 }
@@ -6239,9 +6279,7 @@ struct SetDraftStationeryArguments {
     send_stationery: bool,
 }
 
-fn deserialize_optional_non_null_string<'de, D>(
-    deserializer: D,
-) -> Result<Option<String>, D::Error>
+fn deserialize_optional_non_null_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -6256,7 +6294,14 @@ where
 }
 
 fn tool_parameters<T: JsonSchema>() -> Value {
-    let mut parameters = serde_json::to_value(schema_for!(T))
+    let generator = SchemaSettings::draft07()
+        .with(|settings| {
+            settings.meta_schema = None;
+            settings.inline_subschemas = true;
+        })
+        .for_deserialize()
+        .into_generator();
+    let mut parameters = serde_json::to_value(generator.into_root_schema_for::<T>())
         .expect("Mine Mail tool schemas must be serializable");
     if let Some(object) = parameters.as_object_mut() {
         object.remove("$schema");
@@ -6272,12 +6317,34 @@ struct ToolFailure {
     field: Option<String>,
 }
 
+#[derive(Default)]
+struct ToolArgumentFailureTracker {
+    last: Option<String>,
+    consecutive: usize,
+}
+
+impl ToolArgumentFailureTracker {
+    fn observe(&mut self, fingerprint: Option<String>) -> bool {
+        let Some(fingerprint) = fingerprint else {
+            self.last = None;
+            self.consecutive = 0;
+            return false;
+        };
+        if self.last.as_deref() == Some(fingerprint.as_str()) {
+            self.consecutive += 1;
+        } else {
+            self.last = Some(fingerprint);
+            self.consecutive = 1;
+        }
+        self.consecutive >= MAX_CONSECUTIVE_TOOL_ARGUMENT_FAILURES
+    }
+}
+
 impl ToolFailure {
     fn invalid_json() -> Self {
         Self {
             code: "INVALID_JSON",
-            message: "工具参数不是完整有效的 JSON；请仅重新调用此工具并提交完整参数。"
-                .to_owned(),
+            message: "工具参数不是完整有效的 JSON；请仅重新调用此工具并提交完整参数。".to_owned(),
             field: None,
         }
     }
@@ -6326,13 +6393,11 @@ impl ToolFailure {
     }
 
     fn repeated_argument_fingerprint(&self, tool_name: &str) -> Option<String> {
-        matches!(self.code, "INVALID_JSON" | "INVALID_ARGUMENTS").then(|| {
-            format!(
-                "{tool_name}:{}:{}",
-                self.code,
-                self.field.as_deref().unwrap_or_default()
-            )
-        })
+        matches!(
+            self.code,
+            "INVALID_JSON" | "INVALID_ARGUMENTS" | "VALIDATION_FAILED"
+        )
+        .then(|| tool_name.to_owned())
     }
 }
 
@@ -6344,9 +6409,7 @@ fn tool_argument_hint(tool_name: &str) -> &'static str {
         | "get_draft_recipients"
         | "get_draft_reference"
         | "list_draft_attachments" => "此工具不接受参数，请提交空对象 {}。",
-        "search_contacts" => {
-            "query 必须是字符串；limit 可省略，传入时必须是 1 至 20 的整数。"
-        }
+        "search_contacts" => "query 必须是字符串；limit 可省略，传入时必须是 1 至 20 的整数。",
         "read_text_attachment" | "read_image_attachment" => {
             "attachment_id 必须是当前草稿中的字符串附件标识。"
         }
@@ -6377,10 +6440,7 @@ fn parse_tool_arguments<T: DeserializeOwned>(
 ) -> Result<T, ToolFailure> {
     let mut deserializer = serde_json::Deserializer::from_str(arguments);
     serde_path_to_error::deserialize(&mut deserializer).map_err(|error| {
-        ToolFailure::invalid_arguments(
-            tool_name,
-            tool_argument_field(&error.path().to_string()),
-        )
+        ToolFailure::invalid_arguments(tool_name, tool_argument_field(&error.path().to_string()))
     })
 }
 
@@ -6755,21 +6815,7 @@ fn search_contacts(
     arguments: SearchContactsArguments,
     working: &WorkingDraft,
 ) -> Result<Value, ToolFailure> {
-    let query = arguments.query.trim().to_lowercase();
-    if query.is_empty() || query.len() > 256 {
-        return Err(ToolFailure::validation(
-            "联系人检索词不能为空且不能超过 256 字节。",
-            Some("query"),
-        ));
-    }
-    let limit = arguments.limit.unwrap_or(10);
-    if !(1..=20).contains(&limit) {
-        return Err(ToolFailure::validation(
-            "limit 必须是 1 至 20 的整数。",
-            Some("limit"),
-        ));
-    }
-    let limit = usize::from(limit);
+    let (query, limit) = normalize_search_contacts_arguments(arguments)?;
     let mut contacts = working
         .context
         .contacts
@@ -6792,14 +6838,33 @@ fn search_contacts(
     Ok(json!({ "contacts": contacts, "truncated": truncated }))
 }
 
+fn normalize_search_contacts_arguments(
+    arguments: SearchContactsArguments,
+) -> Result<(String, usize), ToolFailure> {
+    let query = arguments.query.trim().to_lowercase();
+    if query.is_empty() || query.len() > 256 {
+        return Err(ToolFailure::validation(
+            "联系人检索词不能为空且不能超过 256 字节。",
+            Some("query"),
+        ));
+    }
+    let limit = arguments.limit.unwrap_or(10);
+    if !(1..=20).contains(&limit) {
+        return Err(ToolFailure::validation(
+            "limit 必须是 1 至 20 的整数。",
+            Some("limit"),
+        ));
+    }
+    Ok((query, usize::from(limit)))
+}
+
 fn read_text_attachment(
     arguments: AttachmentArguments,
     working: &WorkingDraft,
 ) -> Result<Value, ToolFailure> {
     let attachment_id = arguments.attachment_id;
-    validate_opaque_id(&attachment_id, "附件").map_err(|message| {
-        ToolFailure::validation(message, Some("attachment_id"))
-    })?;
+    validate_opaque_id(&attachment_id, "附件")
+        .map_err(|message| ToolFailure::validation(message, Some("attachment_id")))?;
     let draft_id = working
         .snapshot
         .draft_id
@@ -6911,9 +6976,8 @@ fn normalized_address_array(
     values
         .into_iter()
         .map(|address| {
-            normalize_contact_email(&address).map_err(|_| {
-                ToolFailure::validation(format!("{key} 中包含无效邮箱。"), Some(key))
-            })
+            normalize_contact_email(&address)
+                .map_err(|_| ToolFailure::validation(format!("{key} 中包含无效邮箱。"), Some(key)))
         })
         .collect()
 }
@@ -6941,12 +7005,25 @@ fn replace_body(
     arguments: ReplaceDraftBodyArguments,
     working: &mut WorkingDraft,
 ) -> Result<Value, ToolFailure> {
+    let (body_text, body_html) = normalize_replace_body_arguments(arguments)?;
+    let mut changed_fields = Vec::new();
+    if working.compose.body_text != body_text {
+        changed_fields.push("body_text");
+    }
+    if working.compose.format.body_html != body_html {
+        changed_fields.push("body_html");
+    }
+    working.compose.body_text = body_text;
+    working.compose.format.body_html = body_html;
+    Ok(json!({ "updated": !changed_fields.is_empty(), "changed_fields": changed_fields }))
+}
+
+fn normalize_replace_body_arguments(
+    arguments: ReplaceDraftBodyArguments,
+) -> Result<(String, Option<String>), ToolFailure> {
     let body_text = arguments.body_text;
     if body_text.len() > MAX_BODY_TEXT_BYTES {
-        return Err(ToolFailure::validation(
-            "邮件正文过长。",
-            Some("body_text"),
-        ));
+        return Err(ToolFailure::validation("邮件正文过长。", Some("body_text")));
     }
     let body_html = match arguments.body_html {
         None => None,
@@ -6960,16 +7037,7 @@ fn replace_body(
             sanitize_compose_html(Some(html.as_str()))
         }
     };
-    let mut changed_fields = Vec::new();
-    if working.compose.body_text != body_text {
-        changed_fields.push("body_text");
-    }
-    if working.compose.format.body_html != body_html {
-        changed_fields.push("body_html");
-    }
-    working.compose.body_text = body_text;
-    working.compose.format.body_html = body_html;
-    Ok(json!({ "updated": !changed_fields.is_empty(), "changed_fields": changed_fields }))
+    Ok((body_text, body_html))
 }
 
 fn set_stationery(
@@ -8853,24 +8921,26 @@ fn session_title(input: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use serde_json::{Map, Value, json};
+    use serde_json::{Value, json};
     use tempfile::tempdir;
 
     use super::{
         AiMode, AiProvider, AiRuntime, AiStore, AiTranslationFormat, AiTranslationPartRequest,
-        AiTranslationRequest, PROTOCOL_SELECTION_AUTO, ProviderProtocol,
-        ProviderResponseReadFailure, ProviderTrace, StoredAiConfig, TranslationBatchOutcome,
-        TranslationOutputMode, TranslationUnitRequest, anthropic_messages, append_endpoint,
-        apply_translation_units, assistant_tool_message, collect_translation_units, default_config,
-        default_translation_language, disable_parallel_tool_calls, enforce_serial_tool_calls,
-        explicit_addresses, is_mimo_compatible_provider, is_mimo_token_plan_url,
-        json_structure_state, merge_translation_batch_outcomes, model_size_priority,
-        normalized_finish_reason, openai_responses_input, openai_stream_payload,
-        parse_final_envelope, parse_openai_responses_turn, parse_translation_envelope,
-        parse_translation_envelope_for_ids, partition_translation_units, provider_preset,
-        provider_protocol_base_url, provider_safe_tool_calls, resolve_provider_protocol,
-        session_title, tool_spec, tool_specs, translation_completion_token_limit,
-        use_completion_token_limit, validate_base_url, validate_tool_argument_keys,
+        AiTranslationRequest, EmptyToolArguments, PROTOCOL_SELECTION_AUTO, ProviderProtocol,
+        ProviderResponseReadFailure, ProviderTrace, ReplaceDraftBodyArguments,
+        SearchContactsArguments, StoredAiConfig, ToolArgumentFailureTracker, ToolFailure,
+        TranslationBatchOutcome, TranslationOutputMode, TranslationUnitRequest, anthropic_messages,
+        append_endpoint, apply_translation_units, assistant_tool_message,
+        collect_translation_units, default_config, default_translation_language,
+        disable_parallel_tool_calls, enforce_serial_tool_calls, explicit_addresses,
+        is_mimo_compatible_provider, is_mimo_token_plan_url, json_structure_state,
+        merge_translation_batch_outcomes, model_size_priority, normalize_replace_body_arguments,
+        normalize_search_contacts_arguments, normalized_finish_reason, openai_responses_input,
+        openai_stream_payload, parse_final_envelope, parse_openai_responses_turn,
+        parse_tool_arguments, parse_translation_envelope, parse_translation_envelope_for_ids,
+        partition_translation_units, provider_preset, provider_protocol_base_url,
+        provider_safe_tool_calls, resolve_provider_protocol, session_title, tool_spec, tool_specs,
+        translation_completion_token_limit, use_completion_token_limit, validate_base_url,
         validate_translation_request,
     };
 
@@ -9452,13 +9522,133 @@ mod tests {
     }
 
     #[test]
-    fn tool_arguments_reject_fields_outside_the_declared_schema() {
-        let mut valid = Map::new();
-        valid.insert("query".to_owned(), Value::String("张三".to_owned()));
-        assert!(validate_tool_argument_keys("search_contacts", &valid).is_ok());
-        valid.insert("mailbox".to_owned(), Value::String("INBOX".to_owned()));
-        assert!(validate_tool_argument_keys("search_contacts", &valid).is_err());
-        assert!(validate_tool_argument_keys("get_draft_body", &valid).is_err());
+    fn generated_tool_schemas_and_typed_arguments_share_one_contract() {
+        for tool in tool_specs(AiMode::Auto, true) {
+            let schema = tool.parameters.to_string();
+            assert!(!schema.contains("$ref"), "{} contains $ref", tool.name);
+            assert!(!schema.contains("$defs"), "{} contains $defs", tool.name);
+        }
+
+        let empty = tool_spec("get_draft_body").expect("empty tool");
+        assert_eq!(empty.parameters["type"], "object");
+        assert_eq!(empty.parameters["additionalProperties"], false);
+        assert!(parse_tool_arguments::<EmptyToolArguments>("get_draft_body", "{}").is_ok());
+        assert!(
+            parse_tool_arguments::<EmptyToolArguments>("get_draft_body", r#"{"unexpected":true}"#,)
+                .is_err()
+        );
+
+        let search = tool_spec("search_contacts").expect("search tool");
+        assert_eq!(search.parameters["required"], json!(["query"]));
+        assert_eq!(search.parameters["properties"]["limit"]["type"], "integer");
+        assert_eq!(search.parameters["properties"]["limit"]["minimum"], 1);
+        assert_eq!(search.parameters["properties"]["limit"]["maximum"], 20);
+
+        let body = tool_spec("replace_draft_body").expect("replace body tool");
+        assert_eq!(body.parameters["required"], json!(["body_text"]));
+        assert_eq!(body.parameters["properties"]["body_html"]["type"], "string");
+        assert_eq!(body.parameters["additionalProperties"], false);
+
+        let stationery = tool_spec("set_draft_stationery").expect("stationery tool");
+        assert_eq!(
+            stationery.parameters["properties"]["stationery"]["enum"],
+            json!(["none", "lined", "grid"]),
+        );
+    }
+
+    #[test]
+    fn search_contact_arguments_default_only_when_limit_is_missing() {
+        let missing = parse_tool_arguments::<SearchContactsArguments>(
+            "search_contacts",
+            r#"{"query":"张三"}"#,
+        )
+        .expect("missing limit");
+        assert_eq!(
+            normalize_search_contacts_arguments(missing).expect("default limit"),
+            ("张三".to_owned(), 10),
+        );
+
+        for invalid in [
+            r#"{"query":"张三","limit":"10"}"#,
+            r#"{"query":"张三","limit":null}"#,
+            r#"{"query":"张三","limit":-1}"#,
+            r#"{"query":"张三","limit":1.5}"#,
+            r#"{"query":"张三","mailbox":"INBOX"}"#,
+        ] {
+            assert!(
+                parse_tool_arguments::<SearchContactsArguments>("search_contacts", invalid)
+                    .is_err(),
+                "accepted invalid arguments: {invalid}",
+            );
+        }
+
+        for invalid_limit in [0, 21] {
+            let arguments = parse_tool_arguments::<SearchContactsArguments>(
+                "search_contacts",
+                &format!(r#"{{"query":"张三","limit":{invalid_limit}}}"#),
+            )
+            .expect("integer arguments");
+            let error = normalize_search_contacts_arguments(arguments).expect_err("range error");
+            assert_eq!(error.code, "VALIDATION_FAILED");
+            assert_eq!(error.field.as_deref(), Some("limit"));
+        }
+    }
+
+    #[test]
+    fn replace_body_arguments_use_omission_for_plain_text_and_reject_null() {
+        for invalid in [
+            r#"{}"#,
+            r#"{"body_text":"hello","body_html":null}"#,
+            r#"{"body_text":"hello","body_html":7}"#,
+            r#"{"body_text":"hello","unexpected":true}"#,
+        ] {
+            assert!(
+                parse_tool_arguments::<ReplaceDraftBodyArguments>("replace_draft_body", invalid,)
+                    .is_err(),
+                "accepted invalid arguments: {invalid}",
+            );
+        }
+
+        let plain = parse_tool_arguments::<ReplaceDraftBodyArguments>(
+            "replace_draft_body",
+            r#"{"body_text":"hello"}"#,
+        )
+        .expect("plain body");
+        assert_eq!(
+            normalize_replace_body_arguments(plain).expect("plain normalized"),
+            ("hello".to_owned(), None),
+        );
+
+        let rich = parse_tool_arguments::<ReplaceDraftBodyArguments>(
+            "replace_draft_body",
+            r#"{"body_text":"hello","body_html":"<p>Hello</p><script>bad()</script>"}"#,
+        )
+        .expect("rich body");
+        let (_, body_html) = normalize_replace_body_arguments(rich).expect("rich normalized");
+        let body_html = body_html.expect("sanitized html");
+        assert!(body_html.contains("<p>Hello</p>"));
+        assert!(!body_html.contains("script"));
+        assert!(!body_html.contains("bad()"));
+    }
+
+    #[test]
+    fn structured_tool_failures_stop_repeated_invalid_argument_guesses() {
+        let failure =
+            ToolFailure::invalid_arguments("replace_draft_body", Some("body_html".to_owned()));
+        assert_eq!(
+            failure.response_value()["error"]["code"],
+            "INVALID_ARGUMENTS"
+        );
+        assert_eq!(failure.response_value()["error"]["field"], "body_html");
+        let fingerprint = failure
+            .repeated_argument_fingerprint("replace_draft_body")
+            .expect("fingerprint");
+        let mut tracker = ToolArgumentFailureTracker::default();
+        assert!(!tracker.observe(Some(fingerprint.clone())));
+        assert!(!tracker.observe(Some(fingerprint.clone())));
+        assert!(tracker.observe(Some(fingerprint.clone())));
+        assert!(!tracker.observe(None));
+        assert!(!tracker.observe(Some(fingerprint)));
     }
 
     #[test]
@@ -9617,6 +9807,22 @@ mod tests {
             json!({
                 "id": "call-2",
                 "type": "function",
+                "function": {
+                    "name": "replace_draft_body",
+                    "arguments": "{\"body_text\":\"hello\",\"body_html\":null}"
+                }
+            }),
+            json!({
+                "id": "call-3",
+                "type": "function",
+                "function": {
+                    "name": "replace_draft_body",
+                    "arguments": "{\"body_text\":\"hello\"}"
+                }
+            }),
+            json!({
+                "id": "call-4",
+                "type": "function",
                 "function": { "name": "get_draft_body" }
             }),
         ];
@@ -9626,8 +9832,10 @@ mod tests {
             calls[0]["function"]["arguments"],
             "{\"body_text\":\"unfinished"
         );
-        assert_eq!(safe[0]["function"]["arguments"], "{}");
-        assert_eq!(safe[1]["function"]["arguments"], "{}");
+        assert_eq!(safe[0]["function"]["arguments"], r#"{"body_text":""}"#);
+        assert_eq!(safe[1]["function"]["arguments"], r#"{"body_text":""}"#);
+        assert_eq!(safe[2]["function"]["arguments"], r#"{"body_text":"hello"}"#,);
+        assert_eq!(safe[3]["function"]["arguments"], "{}");
         assert!(
             serde_json::from_str::<Value>(safe[0]["function"]["arguments"].as_str().unwrap())
                 .is_ok()
