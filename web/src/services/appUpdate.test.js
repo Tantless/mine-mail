@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import tauriConfig from "../../src-tauri/tauri.conf.json";
 import {
   __testing,
@@ -17,6 +17,16 @@ describe("appUpdate", () => {
     const notes = __testing.releaseNotes("a".repeat(1700));
     expect(notes).toHaveLength(1601);
     expect(notes.endsWith("…")).toBe(true);
+  });
+
+  it("uses the update-specific foreground relaunch command", async () => {
+    const invokeCommand = vi.fn().mockResolvedValue(undefined);
+
+    await __testing.relaunchAfterUpdate("1.2.0", invokeCommand);
+
+    expect(invokeCommand).toHaveBeenCalledWith("relaunch_after_app_update", {
+      expectedVersion: "1.2.0",
+    });
   });
 
   it.each([
