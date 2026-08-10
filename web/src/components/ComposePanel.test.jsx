@@ -453,10 +453,18 @@ it("routes editor body updates through the dedicated high-frequency callback", a
   expect(onChange).not.toHaveBeenCalled();
 });
 
-it("reviews an optimization before applying it and can restore the overwritten body", async () => {
+it("reviews and atomically applies or restores an optimized subject and body", async () => {
   const onChange = vi.fn();
   const user = userEvent.setup();
-  const runTurn = vi.spyOn(mailApi, "runAiTurn");
+  const runTurn = vi.spyOn(mailApi, "runAiTurn").mockResolvedValueOnce({
+    request_id: "ai-review-subject-body",
+    draft: {
+      ...baseValue,
+      subject: "附件版本更新",
+      body_text: `${baseValue.body_text}\n\n感谢您的时间，期待您的回复。`,
+    },
+    changed_fields: ["subject", "body_text"],
+  });
   renderCompose({ onChange });
 
   expect(screen.getByRole("button", { name: "回退上次优化" }).disabled).toBe(true);
@@ -469,24 +477,39 @@ it("reviews an optimization before applying it and can restore the overwritten b
   expect(onChange).not.toHaveBeenCalled();
   expect(runTurn.mock.calls[0][0].draft_revision.length).toBeLessThanOrEqual(128);
   expect(runTurn.mock.calls[0][0].draft_revision).not.toContain(baseValue.body_text);
+  expect(runTurn.mock.calls[0][0].instruction).toBe(
+    "用户提供了以下优化要求：\n<user_instruction>\n更正式，保留原有信息\n</user_instruction>",
+  );
 
   await user.click(reviewButton);
   const review = screen.getByRole("dialog", { name: "优化结果对比" });
-  expect(within(review).getByRole("textbox", { name: "编辑左侧原文" }).value)
+  expect(within(review).getByRole("textbox", { name: "编辑左侧主题" }).value)
+    .toBe(baseValue.subject);
+  expect(within(review).getByRole("textbox", { name: "编辑右侧主题" }).value)
+    .toBe("附件版本更新");
+  expect(within(review).getByRole("textbox", { name: "编辑左侧正文" }).value)
     .toBe(baseValue.body_text);
-  expect(within(review).getByRole("textbox", { name: "编辑右侧优化结果" }).value)
+  expect(within(review).getByRole("textbox", { name: "编辑右侧正文" }).value)
     .toContain("期待您的回复");
   expect(review.querySelectorAll('[data-changed="true"]').length).toBeGreaterThan(0);
 
-  await user.click(within(review).getByRole("button", { name: "选用右侧结果" }));
+  const rightSubject = within(review).getByRole("textbox", { name: "编辑右侧主题" });
+  await user.clear(rightSubject);
+  await user.type(rightSubject, "附件版本确认");
+
+  await user.click(
+    within(review).getByRole("button", { name: "整体选用右侧主题与正文" }),
+  );
   const confirmation = screen.getByRole("alertdialog", { name: "应用优化结果？" });
-  expect(within(confirmation).getByText("您确认选用右侧的结果吗？")).toBeTruthy();
+  expect(
+    within(confirmation).getByText("您确认整体选用右侧的主题与正文吗？"),
+  ).toBeTruthy();
   await user.click(within(confirmation).getByRole("button", { name: "确认应用" }));
 
   await waitFor(() => expect(onChange).toHaveBeenCalledTimes(1));
   const optimizeUpdate = onChange.mock.calls.at(-1)[0];
   const optimized = optimizeUpdate(baseValue);
-  expect(optimized.subject).toBe("版本化附件");
+  expect(optimized.subject).toBe("附件版本确认");
   expect(optimized.body_text).toContain("这是新写的正文");
   expect(optimized.body_text).toContain("期待您的回复");
 
@@ -501,6 +524,20 @@ it("reviews an optimization before applying it and can restore the overwritten b
     }),
   );
   expect(screen.getByRole("button", { name: "回退上次优化" }).disabled).toBe(true);
+});
+
+it("includes a generated subject in the review when the submitted subject is empty", async () => {
+  const user = userEvent.setup();
+  renderCompose({ value: { ...baseValue, subject: "" } });
+
+  await user.click(screen.getByRole("button", { name: "优化当前邮件" }));
+  await user.click(await screen.findByRole("button", { name: "查看优化结果" }));
+
+  const review = screen.getByRole("dialog", { name: "优化结果对比" });
+  expect(within(review).getByRole("textbox", { name: "编辑左侧主题" }).value).toBe("");
+  expect(within(review).getByRole("textbox", { name: "编辑右侧主题" }).value).toBe(
+    "这是新写的正文",
+  );
 });
 
 it("keeps compose interactive while optimization runs and only signals the finished result", async () => {
@@ -583,7 +620,7 @@ it("keeps the optimization prompt and pending result through compose minimizatio
 
   await user.click(screen.getByRole("button", { name: "查看优化结果" }));
   expect(
-    screen.getByRole("textbox", { name: "编辑右侧优化结果" }).value,
+    screen.getByRole("textbox", { name: "编辑右侧正文" }).value,
   ).toContain("优化后的排版");
 });
 
@@ -599,6 +636,9 @@ it("uses a bounded revision identifier when optimizing a long body", async () =>
   await screen.findByRole("button", { name: "查看优化结果" });
 
   const request = runTurn.mock.calls[0][0];
+  expect(request.instruction).toBe(
+    "用户未提供额外优化要求。请对当前邮件正文进行保守润色。",
+  );
   expect(request.draft.compose.body_text).toBe(longBody);
   expect(request.draft_revision.length).toBeLessThanOrEqual(128);
   expect(request.draft_revision).not.toContain(longBody.slice(0, 20));

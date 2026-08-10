@@ -351,14 +351,18 @@ All app-owned color and material decisions flow through custom properties in
   the request runs only the wand becomes a spinner; compose remains editable.
   Completion adds a small danger-colored notice dot to the wand without changing
   the draft. Reopening it shows a large, theme-owned two-pane comparison: the
-  submitted snapshot on the left and AI result on the right. Pure-text removals
-  use a restrained danger tint and additions use a success tint; formatting-only
-  changes are not marked. Both panes remain editable, and text entered during
-  review carries no difference tint. Each pane has one check action, followed by
-  a compact confirmation naming the selected side. The comparison can be
-  minimized without losing it or permanently closed after confirmation. Applying
-  a side backs up the then-live body before replacement and enables the adjacent
-  icon-only undo action; the undo stays visible but disabled without a backup.
+  submitted snapshot on the left and AI result on the right. Each pane presents
+  its subject and body as clearly separated editable regions so the pane reads as
+  one complete mail version. Subject changes use a restrained side-colored field
+  tint; body-text removals use a restrained danger tint and additions use a
+  success tint. Formatting-only changes are not marked, and body text entered
+  during review carries no difference tint. Each pane has one check action that
+  chooses its subject and body together, followed by a compact confirmation that
+  names both the selected side and the complete field group. The comparison can
+  be minimized without losing it or permanently closed after confirmation.
+  Applying a side backs up the then-live subject, body, and format before atomic
+  replacement and enables the adjacent icon-only undo action; undo restores that
+  field group atomically and stays visible but disabled without a backup.
   The adjacent AI assistant control opens or collapses the conversational panel.
 - A persisted **默认开启 AI 助理** preference controls the panel's initial state
   whenever a compose surface is opened. It defaults on; the compose control can

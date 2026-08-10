@@ -940,11 +940,18 @@ function createDemoActions(
           /写|生成|回复|填入|改写|优化|润色/.test(instruction));
       if (shouldWrite) {
         draft = structuredClone(initial);
-        if (request.mode !== "optimize" && !draft.subject.trim()) {
-          draft.subject = `关于${instruction.slice(0, 18) || "相关事项"}的确认`;
+        const source = String(draft.body_text || "").trim();
+        if (!draft.subject.trim()) {
+          draft.subject =
+            request.mode === "optimize"
+              ? source
+                  .split(/[。！？!?\n]/)
+                  .map((part) => part.trim())
+                  .find(Boolean)
+                  ?.slice(0, 24) || "邮件内容"
+              : `关于${instruction.slice(0, 18) || "相关事项"}的确认`;
           changedFields.push("subject");
         }
-        const source = String(draft.body_text || "").trim();
         draft.body_text =
           request.mode === "optimize"
             ? `${source || "您好，"}\n\n感谢您的时间，期待您的回复。`

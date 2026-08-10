@@ -276,20 +276,32 @@ product decision changes.
   current edit. A failed save prevents the switch.
 - Reply/forward context is immutable and separate from the authored editor.
   Forwarded ordinary attachments are visible and removable before sending.
-- Compose exposes a dedicated optimization action for the authored body.
-  Optional user instructions may request wording or supported rich-text
-  formatting. Optimization cannot read or change the subject, sender,
-  recipients, attachments, stationery, or quoted source. The request captures
-  the body and instructions at click time and runs without locking compose.
-  Completion does not modify the live draft: the user reopens the result and
-  reviews an editable, pure-text difference between the submitted snapshot and
-  AI result. Formatting differences are preserved but not highlighted. Applying
-  either side requires an explicit side-named confirmation. Mine Mail backs up
-  the then-live body immediately before replacement and exposes one icon-only
-  rollback until it is used or replaced by a later optimization application.
-  The instruction text, an in-flight request, its completed comparison, and the
-  rollback backup remain attached to the live compose session through minimize
-  and restore.
+- Compose exposes a dedicated optimization action for the authored subject and
+  body. The agent must read the full body and subject before any write. Without
+  optional user instructions it conservatively corrects the body without
+  changing its core meaning, facts, stance, intended tone, or commitments. With
+  explicit instructions it may rewrite more actively; translation, continuation,
+  or substantial additions require an explicit request and may not invent facts.
+  An empty subject is generated from the full body. A non-empty subject changes
+  only when explicitly requested or when it is clearly misleading, severely
+  malformed, ambiguous, or a placeholder. Sender, recipients, attachments,
+  stationery, and quoted source remain inaccessible; instructions for those
+  fields are ignored while permitted subject/body work continues.
+- Optimization may use supported safe rich-text formatting and is instructed to
+  adapt paragraphing, lists, emphasis, indentation, spacing, and sign-off to the
+  language and context without imposing a fixed layout. The request captures the
+  subject, body, formatting, and instructions at click time and runs without
+  locking compose. Completion does not modify the live draft: the user reopens
+  two editable complete versions, with subject and body in visibly separate
+  regions on each side. Body text differences are highlighted; subject and
+  formatting changes are preserved, but formatting-only changes are not marked.
+  Choosing either side atomically applies that side's subject and body after an
+  explicit side-named confirmation. Mine Mail backs up the then-live subject,
+  body, and formatting immediately before replacement and exposes one icon-only
+  atomic rollback until it is used or replaced by a later optimization
+  application. The instruction text, an in-flight request, its completed
+  comparison, and the rollback backup remain attached to the live compose
+  session through minimize and restore.
   Minimizing the comparison preserves it; permanently closing it requires
   confirmation and discards that result.
 - Conversational AI sessions belong to the Mine Mail application rather than one

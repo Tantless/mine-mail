@@ -196,9 +196,13 @@ function DiffEditor({ annotations, inputRef = null, label, side, onChange }) {
 
 export function ComposeOptimizationReviewDialog({
   open,
+  leftSubject,
+  rightSubject,
   leftAnnotations,
   rightAnnotations,
   returnFocusRef,
+  onChangeLeftSubject,
+  onChangeRightSubject,
   onChangeLeft,
   onChangeRight,
   onChoose,
@@ -207,11 +211,11 @@ export function ComposeOptimizationReviewDialog({
 }) {
   const generatedId = useId().replaceAll(":", "");
   const titleId = `compose-optimize-review-title-${generatedId}`;
-  const leftEditorRef = useRef(null);
+  const leftSubjectRef = useRef(null);
   const { dialogRef, onBackdropPointerDown, onDialogKeyDown } =
     useConfirmDialogFocus({
       open,
-      initialFocusRef: leftEditorRef,
+      initialFocusRef: leftSubjectRef,
       returnFocusRef,
       onCancel: onMinimize,
     });
@@ -236,7 +240,7 @@ export function ComposeOptimizationReviewDialog({
           <span aria-hidden="true" />
           <div>
             <h2 id={titleId}>优化结果对比</h2>
-            <p>红色为原文差异，绿色为优化后的差异</p>
+            <p>主题与正文按整侧选用；正文差异以红色和绿色标记</p>
           </div>
           <div className="compose-optimize-review-dialog__window-actions">
             <IconButton label="暂时隐藏优化结果" onClick={onMinimize}>
@@ -252,21 +256,39 @@ export function ComposeOptimizationReviewDialog({
           <section className="compose-optimize-review-pane" data-side="left">
             <header>
               <div>
-                <strong>提交时的原文</strong>
-                <small>可以继续编辑后再选用</small>
+                <strong>提交时版本</strong>
+                <small>主题与正文可编辑，按整侧选用</small>
               </div>
-              <IconButton label="选用左侧结果" onClick={() => onChoose("left")}>
+              <IconButton
+                label="整体选用左侧主题与正文"
+                onClick={() => onChoose("left")}
+              >
                 <Check size={18} weight="bold" />
               </IconButton>
             </header>
             <div className="compose-optimize-review-pane__editor">
-              <DiffEditor
-                annotations={leftAnnotations}
-                inputRef={leftEditorRef}
-                label="编辑左侧原文"
-                side="left"
-                onChange={onChangeLeft}
-              />
+              <div
+                className="compose-optimize-review-field compose-optimize-review-field--subject"
+                data-changed={leftSubject !== rightSubject || undefined}
+              >
+                <label htmlFor={`compose-optimize-left-subject-${generatedId}`}>主题</label>
+                <input
+                  ref={leftSubjectRef}
+                  id={`compose-optimize-left-subject-${generatedId}`}
+                  aria-label="编辑左侧主题"
+                  value={leftSubject}
+                  onChange={(event) => onChangeLeftSubject(event.target.value)}
+                />
+              </div>
+              <div className="compose-optimize-review-field compose-optimize-review-field--body">
+                <span>正文</span>
+                <DiffEditor
+                  annotations={leftAnnotations}
+                  label="编辑左侧正文"
+                  side="left"
+                  onChange={onChangeLeft}
+                />
+              </div>
             </div>
           </section>
 
@@ -274,19 +296,37 @@ export function ComposeOptimizationReviewDialog({
             <header>
               <div>
                 <strong>AI 优化后</strong>
-                <small>可以继续编辑后再选用</small>
+                <small>主题与正文可编辑，按整侧选用</small>
               </div>
-              <IconButton label="选用右侧结果" onClick={() => onChoose("right")}>
+              <IconButton
+                label="整体选用右侧主题与正文"
+                onClick={() => onChoose("right")}
+              >
                 <Check size={18} weight="bold" />
               </IconButton>
             </header>
             <div className="compose-optimize-review-pane__editor">
-              <DiffEditor
-                annotations={rightAnnotations}
-                label="编辑右侧优化结果"
-                side="right"
-                onChange={onChangeRight}
-              />
+              <div
+                className="compose-optimize-review-field compose-optimize-review-field--subject"
+                data-changed={leftSubject !== rightSubject || undefined}
+              >
+                <label htmlFor={`compose-optimize-right-subject-${generatedId}`}>主题</label>
+                <input
+                  id={`compose-optimize-right-subject-${generatedId}`}
+                  aria-label="编辑右侧主题"
+                  value={rightSubject}
+                  onChange={(event) => onChangeRightSubject(event.target.value)}
+                />
+              </div>
+              <div className="compose-optimize-review-field compose-optimize-review-field--body">
+                <span>正文</span>
+                <DiffEditor
+                  annotations={rightAnnotations}
+                  label="编辑右侧正文"
+                  side="right"
+                  onChange={onChangeRight}
+                />
+              </div>
             </div>
           </section>
         </div>

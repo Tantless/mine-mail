@@ -5866,9 +5866,64 @@ html[data-surface="new-mail-notification"] #root {
 }
 
 .compose-optimize-review-pane__editor {
+  display: grid;
   min-height: 0;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 12px;
   padding: 14px;
   outline: 0;
+}
+
+.compose-optimize-review-field {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+}
+
+.compose-optimize-review-field > label,
+.compose-optimize-review-field > span {
+  color: var(--color-text-muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.compose-optimize-review-field--subject input {
+  width: 100%;
+  min-width: 0;
+  height: 38px;
+  padding: 0 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 9px;
+  outline: 0;
+  background: var(--compose-content-surface);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 13px;
+}
+
+.compose-optimize-review-field--subject input:focus {
+  border-color: color-mix(in srgb, var(--color-primary) 46%, var(--color-border));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 9%, transparent);
+}
+
+.compose-optimize-review-pane[data-side="left"]
+  .compose-optimize-review-field--subject[data-changed="true"]
+  input {
+  border-color: color-mix(in srgb, var(--color-danger) 48%, var(--color-border));
+  background: color-mix(in srgb, var(--color-danger) 7%, var(--compose-content-surface));
+}
+
+.compose-optimize-review-pane[data-side="right"]
+  .compose-optimize-review-field--subject[data-changed="true"]
+  input {
+  border-color: color-mix(in srgb, var(--color-success) 48%, var(--color-border));
+  background: color-mix(in srgb, var(--color-success) 7%, var(--compose-content-surface));
+}
+
+.compose-optimize-review-field--body {
+  min-height: 0;
+  grid-template-rows: auto minmax(0, 1fr);
 }
 
 .compose-optimize-diff-editor {

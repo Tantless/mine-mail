@@ -190,6 +190,16 @@ export function ComposeOptimizeControl({
     "rightAnnotations",
     [],
   );
+  const [leftSubject, setLeftSubject] = useOptimizationCacheState(
+    cacheRef,
+    "leftSubject",
+    "",
+  );
+  const [rightSubject, setRightSubject] = useOptimizationCacheState(
+    cacheRef,
+    "rightSubject",
+    "",
+  );
   const [leftEdited, setLeftEdited] = useOptimizationCacheState(
     cacheRef,
     "leftEdited",
@@ -229,7 +239,9 @@ export function ComposeOptimizeControl({
       return;
     }
     if (disabled || !hasContent || status === "running" || !aiDraft) return;
+    const trimmedInstruction = instruction.trim();
     const submitted = {
+      subject: value.subject || "",
       body_text: value.body_text || "",
       format: copyFormat(value.format),
     };
@@ -238,12 +250,15 @@ export function ComposeOptimizeControl({
     try {
       const result = await mailApi.runAiTurn({
         mode: "optimize",
-        instruction: instruction.trim() || "优化当前邮件正文",
+        instruction: trimmedInstruction
+          ? `用户提供了以下优化要求：\n<user_instruction>\n${trimmedInstruction}\n</user_instruction>`
+          : "用户未提供额外优化要求。请对当前邮件正文进行保守润色。",
         session_id: null,
         draft_revision: createAiDraftRevision(),
         draft: { ...aiDraft, compose: value },
       });
       const optimized = {
+        subject: result.draft?.subject ?? submitted.subject,
         body_text: result.draft?.body_text ?? submitted.body_text,
         format: copyFormat(result.draft?.format || submitted.format),
       };
@@ -254,6 +269,8 @@ export function ComposeOptimizeControl({
       setReviewResult({ result, submitted, optimized });
       setLeftAnnotations(annotations.left);
       setRightAnnotations(annotations.right);
+      setLeftSubject(submitted.subject);
+      setRightSubject(optimized.subject);
       setLeftEdited(false);
       setRightEdited(false);
       setStatus("ready");
@@ -267,6 +284,7 @@ export function ComposeOptimizeControl({
     if (!undoBackup) return;
     onApply((current) => ({
       ...current,
+      subject: undoBackup.subject,
       body_text: undoBackup.body_text,
       format: copyFormat(undoBackup.format),
     }));
@@ -279,6 +297,8 @@ export function ComposeOptimizeControl({
     setReviewOpen(false);
     setLeftAnnotations([]);
     setRightAnnotations([]);
+    setLeftSubject("");
+    setRightSubject("");
     setLeftEdited(false);
     setRightEdited(false);
     setConfirmation(null);
@@ -288,6 +308,7 @@ export function ComposeOptimizeControl({
   const applyReview = (side) => {
     if (!reviewResult) return;
     const useLeft = side === "left";
+    const selectedSubject = useLeft ? leftSubject : rightSubject;
     const selectedText = optimizationAnnotationText(
       useLeft ? leftAnnotations : rightAnnotations,
     );
@@ -297,11 +318,13 @@ export function ComposeOptimizeControl({
     const wasEdited = useLeft ? leftEdited : rightEdited;
     const live = latestValueRef.current;
     setUndoBackup({
+      subject: live.subject || "",
       body_text: live.body_text || "",
       format: copyFormat(live.format),
     });
     onApply((current) => ({
       ...current,
+      subject: selectedSubject,
       body_text: selectedText,
       format: {
         ...(current.format || {}),
@@ -400,9 +423,13 @@ export function ComposeOptimizeControl({
         <>
           <ComposeOptimizationReviewDialog
             open={reviewOpen && Boolean(reviewResult) && !confirmation}
+            leftSubject={leftSubject}
+            rightSubject={rightSubject}
             leftAnnotations={leftAnnotations}
             rightAnnotations={rightAnnotations}
             returnFocusRef={optimizeButtonRef}
+            onChangeLeftSubject={setLeftSubject}
+            onChangeRightSubject={setRightSubject}
             onChangeLeft={(annotations) => {
               setLeftAnnotations(annotations);
               setLeftEdited(true);
@@ -419,7 +446,7 @@ export function ComposeOptimizeControl({
           <ConsequentialConfirmDialog
             open={confirmation?.type === "apply"}
             title="应用优化结果？"
-            description={`您确认选用${confirmation?.side === "left" ? "左侧" : "右侧"}的结果吗？`}
+            description={`您确认整体选用${confirmation?.side === "left" ? "左侧" : "右侧"}的主题与正文吗？`}
             icon={<CheckCircle size={23} weight="duotone" />}
             confirmLabel="确认应用"
             closeLabel="取消应用优化结果"
