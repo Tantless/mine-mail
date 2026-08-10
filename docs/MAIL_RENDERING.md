@@ -119,8 +119,16 @@ frontend code. An intentional threshold change must:
   reparses the sanitized fragment, extracts only non-empty visible text nodes,
   assigns opaque numeric positions, and sends those text values to the configured
   AI Provider. Script, style, title, template, and noscript text is excluded.
-- The model must return one strict JSON translation for every supplied position.
-  Rust rejects missing, duplicate, unknown, oversized, or malformed results.
+- The model should return one strict JSON translation for every supplied
+  position. Rust applies every valid numbered translation to its matching text
+  node and leaves missing positions unchanged, so a partial result cannot shift
+  later text into the wrong location. Empty, duplicate, unknown, oversized, or
+  malformed results are rejected.
+  Rejection diagnostics record only the failure category and bounded structural
+  counts (including expected and actual item counts), never translated or source
+  text. A partial completion records its translated and missing counts and the
+  reader reports them; a rejected result identifies the failed contract category
+  so an intermittent Provider response can be distinguished from mail HTML parsing.
   Returned values are written back as text nodes and serialized, so model output
   cannot introduce tags, attributes, links, styles, images, or active content.
 - Element order, attributes, sender styling, table/layout structure, links,
@@ -130,6 +138,10 @@ frontend code. An intentional threshold change must:
 - The translated representation is reader-only and in memory. Switching back to
   the original uses the unchanged cached representation; translation never
   rewrites MIME data, body cache rows, reply/forward sources, or search text.
+- MiMo translation disables model thinking and uses its OpenAI-compatible SSE
+  transport internally with a 180-second total request limit and a 45-second
+  between-chunk idle limit. The reader still receives only the final validated
+  representation; raw deltas are never rendered or persisted.
 
 ## Attachment indexing and extraction
 

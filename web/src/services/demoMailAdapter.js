@@ -610,8 +610,10 @@ function createDemoActions(
 
     translateMailContent(request) {
       const language = state.aiConfig.translationLanguage || "zh-Hans";
+      let translatedCount = 0;
       const parts = (request.parts || []).map((part) => {
         if (part.format !== "html") {
+          if (part.content.trim()) translatedCount += 1;
           return {
             id: part.id,
             content: `【AI 译文】\n${part.content}`,
@@ -633,12 +635,18 @@ function createDemoActions(
             const leading = source.slice(0, source.length - source.trimStart().length);
             const trailing = source.slice(source.trimEnd().length);
             node.textContent = `${leading}【译】${source.trim()}${trailing}`;
+            translatedCount += 1;
           }
           node = walker.nextNode();
         }
         return { id: part.id, content: template.innerHTML };
       });
-      return { language, parts };
+      return {
+        language,
+        parts,
+        translatedCount,
+        totalCount: translatedCount,
+      };
     },
 
     listAiSessions() {

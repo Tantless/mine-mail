@@ -251,6 +251,8 @@ describe("mailApi desktop IPC contract", () => {
     ipc.invoke.mockResolvedValue({
       language: "zh-Hans",
       parts: [{ id: "body-html", content: "<p>你好</p>" }],
+      translatedCount: 1,
+      totalCount: 2,
     });
     const { mailApi } = await import("./mailApi.js");
     const parts = [
@@ -260,6 +262,8 @@ describe("mailApi desktop IPC contract", () => {
     await expect(mailApi.translateMailContent(parts)).resolves.toEqual({
       language: "zh-Hans",
       parts: [{ id: "body-html", content: "<p>你好</p>" }],
+      translatedCount: 1,
+      totalCount: 2,
     });
     expect(ipc.invoke).toHaveBeenCalledWith("translate_mail_content", {
       request: { parts },

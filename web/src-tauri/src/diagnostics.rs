@@ -139,6 +139,12 @@ pub(crate) struct Fields {
     #[serde(skip_serializing_if = "Option::is_none")]
     output_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    json_error_kind: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    json_error_line: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    json_error_column: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     app_version: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     platform: Option<&'static str>,
@@ -295,6 +301,13 @@ impl Fields {
     pub(crate) fn tokens(mut self, input: u64, output: u64) -> Self {
         self.input_tokens = Some(input);
         self.output_tokens = Some(output);
+        self
+    }
+
+    pub(crate) fn json_error(mut self, kind: &'static str, line: usize, column: usize) -> Self {
+        self.json_error_kind = Some(kind);
+        self.json_error_line = Some(line);
+        self.json_error_column = Some(column);
         self
     }
 
@@ -935,9 +948,13 @@ mod tests {
                 .failures(1)
                 .inbox_counts(4, 5, 6)
                 .conflicts(1)
-                .draft_version(9),
+                .draft_version(9)
+                .json_error("syntax", 2, 17),
         );
         let parsed: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(parsed["json_error_kind"], "syntax");
+        assert_eq!(parsed["json_error_line"], 2);
+        assert_eq!(parsed["json_error_column"], 17);
         let allowed = [
             "schema_version",
             "timestamp_utc_ms",
@@ -971,6 +988,9 @@ mod tests {
             "cleanup_removed_files",
             "cleanup_removed_bytes",
             "moved_bytes",
+            "json_error_kind",
+            "json_error_line",
+            "json_error_column",
             "app_version",
             "platform",
             "architecture",

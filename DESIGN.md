@@ -195,7 +195,10 @@ All app-owned color and material decisions flow through custom properties in
   mail body so sender text cannot show through or intercept its options. While
   translating, the icon alone shows progress. Success replaces the split
   control with a low-profile **原文 / 译文** capsule; the selected half uses the
-  restrained primary tint and switching never reflows the toolbar. Sent, Draft,
+  restrained primary tint and switching never reflows the toolbar. If the
+  Provider returns only some valid text positions, the translated view fills
+  those positions, leaves missing positions in the original language, and shows
+  one compact warning with the completed and total position counts. Sent, Draft,
   and Outbox content has no translation action. If translation cannot start
   because Agent configuration is incomplete, the reader uses the shared
   bottom-right yellow warning toast with the fixed copy **请先前往设置界面完成AGENT配置**

@@ -229,6 +229,40 @@ describe("MessageView AI translation", () => {
     expect(screen.queryByText("你好，朋友")).toBeNull();
   });
 
+  it("shows valid partial translations and explains that missing fragments stay original", async () => {
+    const user = userEvent.setup();
+    const onTranslateMessage = vi.fn().mockResolvedValue({
+      language: "zh-Hans",
+      translatedCount: 1,
+      totalCount: 2,
+      parts: [
+        {
+          id: "body-html",
+          content: "<p>你好，<strong>friend</strong></p>",
+        },
+      ],
+    });
+    render(
+      <MessageView
+        message={messageFixture({
+          body_text: "Hello, friend",
+          body_html: "<p>Hello, <strong>friend</strong></p>",
+          body_render_mode: "native_html",
+          body_html_loaded: true,
+        })}
+        onClose={vi.fn()}
+        onTranslateMessage={onTranslateMessage}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "AI 翻译" }));
+    expect(await screen.findByText("你好，")).toBeTruthy();
+    expect(screen.getByText("friend")).toBeTruthy();
+    expect(
+      screen.getByText("部分翻译完成：已翻译 1/2 个片段，未完成部分保留原文。"),
+    ).toBeTruthy();
+  });
+
   it("keeps translation unavailable for outgoing mail", () => {
     render(
       <MessageView

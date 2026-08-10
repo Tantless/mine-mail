@@ -326,7 +326,14 @@ product decision changes.
   start because the Agent Provider, model, or API credential configuration is
   incomplete, the reader keeps the original content visible and shows the
   bottom-right warning **请先前往设置界面完成AGENT配置** instead of an inline
-  reader error.
+  reader error. A structurally valid partial Provider result is still useful:
+  valid numbered translations replace their matching text positions, missing
+  positions retain the original text, and the reader reports the completed and
+  total position counts. Duplicate, unknown, malformed, or unsafe positions
+  remain a failed translation rather than being guessed into the message. MiMo
+  translation disables thinking and receives its response through an internal
+  stream with translation-specific total and idle timeouts; the reader still
+  updates only after Rust validates the accumulated result.
 - Valid Agent configuration edits persist automatically after a short quiet
   period. Incomplete transient input remains local and does not produce repeated
   failures. The manual save action remains available for immediate persistence

@@ -3022,6 +3022,18 @@ html[data-surface="new-mail-notification"] #root {
   line-height: 1.5;
 }
 
+.reader-translation-notice {
+  max-width: 760px;
+  margin: -12px 0 20px;
+  padding: 9px 12px;
+  border: 1px solid var(--state-warning-edge);
+  border-radius: 9px;
+  background: var(--state-warning-surface);
+  color: color-mix(in srgb, var(--color-warning) 82%, var(--color-text));
+  font-size: 10px;
+  line-height: 1.5;
+}
+
 .message-header,
 .message-body,
 .attachments,

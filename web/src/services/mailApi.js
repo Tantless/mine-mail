@@ -564,7 +564,7 @@ export const mailApi = {
     const response = isTauri
       ? await desktopInvoke("translate_mail_content", { request })
       : await callDemo("translateMailContent", request);
-    return {
+    const result = {
       language: response?.language || "zh-Hans",
       parts: Array.isArray(response?.parts)
         ? response.parts.map((part) => ({
@@ -573,6 +573,13 @@ export const mailApi = {
           }))
         : [],
     };
+    const translatedCount = response?.translatedCount ?? response?.translated_count;
+    const totalCount = response?.totalCount ?? response?.total_count;
+    if (Number.isInteger(translatedCount) && Number.isInteger(totalCount)) {
+      result.translatedCount = translatedCount;
+      result.totalCount = totalCount;
+    }
+    return result;
   },
 
   async listAiSessions() {

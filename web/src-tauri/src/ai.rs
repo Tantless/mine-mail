@@ -11,7 +11,7 @@ use mine_mail::{
     ComposeRequest, DraftAttachmentMeta, ForwardContext, MailBackend, ReplyContext,
     StationeryTheme, normalize_contact_email, sanitize_compose_html,
 };
-use reqwest::{Client, Url};
+use reqwest::{Client, RequestBuilder, Url};
 use rusqlite::{Connection, OptionalExtension, params};
 use scraper::{Html, Node};
 use serde::{Deserialize, Serialize};
@@ -46,6 +46,10 @@ const MAX_SESSIONS: usize = 100;
 const MAX_TRANSLATION_PARTS: usize = 256;
 const MAX_TRANSLATION_INPUT_BYTES: usize = 1024 * 1024;
 const MAX_TRANSLATION_UNITS: usize = 4_096;
+const AI_PROVIDER_REQUEST_TIMEOUT_SECS: u64 = 90;
+const AI_MIMO_TRANSLATION_TIMEOUT_SECS: u64 = 180;
+const AI_MIMO_TRANSLATION_IDLE_TIMEOUT_SECS: u64 = 45;
+const AI_TRANSLATION_MAX_COMPLETION_TOKENS: u64 = 8_192;
 const AI_RICH_STATE_RETENTION_MS: u64 = 7 * 24 * 60 * 60 * 1_000;
 const AI_RICH_STATE_CLEANUP_INTERVAL_MS: u64 = 24 * 60 * 60 * 1_000;
 
@@ -395,6 +399,8 @@ pub(crate) struct AiTranslationPartDto {
 pub(crate) struct AiTranslationResultDto {
     pub language: String,
     pub parts: Vec<AiTranslationPartDto>,
+    pub translated_count: usize,
+    pub total_count: usize,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -414,6 +420,69 @@ struct TranslationEnvelope {
 struct TranslationEnvelopeItem {
     id: usize,
     text: String,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct ParsedTranslationEnvelope {
+    translations: Vec<Option<String>>,
+    translated_count: usize,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct TranslationResultError {
+    outcome: &'static str,
+    user_message: String,
+    actual_count: Option<usize>,
+    rejected_count: usize,
+    json_error: Option<(&'static str, usize, usize)>,
+}
+
+impl TranslationResultError {
+    fn invalid_json(error: serde_json::Error) -> Self {
+        let kind = match error.classify() {
+            serde_json::error::Category::Io => "io",
+            serde_json::error::Category::Syntax => "syntax",
+            serde_json::error::Category::Data => "data",
+            serde_json::error::Category::Eof => "eof",
+        };
+        let user_message = if matches!(error.classify(), serde_json::error::Category::Eof) {
+            "AI 翻译结果提前结束，未形成完整 JSON，请重试。".to_owned()
+        } else {
+            "AI 翻译结果不是约定的 JSON 格式，请重试。".to_owned()
+        };
+        Self {
+            outcome: "invalid_json",
+            user_message,
+            actual_count: None,
+            rejected_count: 1,
+            json_error: Some((kind, error.line(), error.column())),
+        }
+    }
+
+    fn count_mismatch(expected: usize, actual: usize) -> Self {
+        let user_message = if actual < expected {
+            format!("AI 仅返回了 {actual}/{expected} 个翻译片段，请重试。")
+        } else {
+            format!("AI 返回了异常数量的翻译片段（{actual}/{expected}），请重试。")
+        };
+        Self {
+            outcome: "count_mismatch",
+            user_message,
+            actual_count: Some(actual),
+            rejected_count: expected.abs_diff(actual).max(1),
+            json_error: None,
+        }
+    }
+
+    fn invalid_item(outcome: &'static str, message: &'static str, actual: usize) -> Self {
+        Self {
+            outcome,
+            user_message: message.to_owned(),
+            actual_count: Some(actual),
+            rejected_count: 1,
+            json_error: None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -944,18 +1013,24 @@ impl AiRuntime {
             .get("content")
             .and_then(Value::as_str)
             .ok_or_else(|| "AI 翻译没有返回结果。".to_owned())?;
-        let translations = parse_translation_envelope(content, unit_count).map_err(|error| {
-            diagnostics::error(
-                "ai_translation_failed",
-                fields
-                    .clone()
-                    .outcome("invalid_result")
-                    .error(DiagnosticErrorKind::Serialization)
-                    .duration(started.elapsed()),
-            );
-            error
+        let parsed = parse_translation_envelope(content, unit_count).map_err(|error| {
+            let mut rejection_fields = fields
+                .clone()
+                .outcome(error.outcome)
+                .error(DiagnosticErrorKind::Serialization)
+                .failures(error.rejected_count)
+                .duration(started.elapsed());
+            if let Some(actual_count) = error.actual_count {
+                rejection_fields = rejection_fields.successes(actual_count);
+            }
+            if let Some((kind, line, column)) = error.json_error {
+                rejection_fields = rejection_fields.json_error(kind, line, column);
+            }
+            diagnostics::error("ai_translation_failed", rejection_fields);
+            error.user_message
         })?;
-        let translated_parts = apply_translation_units(&parts, &translations)?;
+        let translated_parts = apply_translation_units(&parts, &parsed.translations)?;
+        let missing_count = unit_count.saturating_sub(parsed.translated_count);
         let output_bytes = translated_parts
             .iter()
             .map(|part| part.content.len() as u64)
@@ -963,13 +1038,21 @@ impl AiRuntime {
         diagnostics::info(
             "ai_translation_completed",
             fields
-                .outcome("completed")
+                .outcome(if missing_count == 0 {
+                    "completed"
+                } else {
+                    "partially_completed"
+                })
+                .successes(parsed.translated_count)
+                .failures(missing_count)
                 .payload_bytes(input_bytes, output_bytes)
                 .duration(started.elapsed()),
         );
         Ok(AiTranslationResultDto {
             language: language.id.to_owned(),
             parts: translated_parts,
+            translated_count: parsed.translated_count,
+            total_count: unit_count,
         })
     }
 
@@ -1522,7 +1605,7 @@ impl AiProvider {
         };
         let client = Client::builder()
             .connect_timeout(Duration::from_secs(15))
-            .timeout(Duration::from_secs(90))
+            .timeout(Duration::from_secs(AI_PROVIDER_REQUEST_TIMEOUT_SECS))
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|_| "AI 网络客户端初始化失败。".to_owned())?;
@@ -1543,9 +1626,46 @@ impl AiProvider {
         tools: &[ToolSpec],
         trace: ProviderTrace,
     ) -> Result<ProviderTurn, String> {
+        if self.uses_mimo_translation_transport(&trace) {
+            diagnostics::info(
+                "ai_translation_transport_selected",
+                trace.fields().outcome("mimo_streaming_without_thinking"),
+            );
+            let cancellation = CancellationToken::new();
+            return self
+                .complete_openai_streaming(
+                    messages,
+                    tools,
+                    trace,
+                    "translation",
+                    "translation",
+                    None,
+                    &cancellation,
+                )
+                .await
+                .map_err(|failure| failure.message);
+        }
         match self.provider.protocol {
             ProviderProtocol::OpenAi => self.complete_openai(messages, tools, trace).await,
             ProviderProtocol::Anthropic => self.complete_anthropic(messages, tools, trace).await,
+        }
+    }
+
+    fn uses_mimo_translation_transport(&self, trace: &ProviderTrace) -> bool {
+        trace.mode == "translate"
+            && self.provider.protocol == ProviderProtocol::OpenAi
+            && self.is_mimo_compatible()
+    }
+
+    fn is_mimo_compatible(&self) -> bool {
+        is_mimo_compatible_provider(self.provider.id, &self.base_url, &self.model)
+    }
+
+    fn authenticate_openai_request(&self, request: RequestBuilder) -> RequestBuilder {
+        if is_mimo_token_plan_url(&self.base_url) {
+            request.header("api-key", self.api_key.as_str())
+        } else {
+            request.bearer_auth(self.api_key.as_str())
         }
     }
 
@@ -1597,16 +1717,10 @@ impl AiProvider {
         events: Option<&Channel<AiTurnEvent>>,
         cancellation: &CancellationToken,
     ) -> Result<ProviderTurn, StreamingFailure> {
-        let tool_values = tools.iter().map(ToolSpec::as_api_value).collect::<Vec<_>>();
-        let mut payload = json!({
-            "model": self.model,
-            "messages": messages,
-            "max_tokens": 8192,
-            "stream": true,
-            "stream_options": { "include_usage": true },
-        });
-        if !tool_values.is_empty() {
-            payload["tools"] = Value::Array(tool_values);
+        let mimo_translation = self.uses_mimo_translation_transport(&trace);
+        let mut payload = openai_stream_payload(&self.model, messages, tools, mimo_translation);
+        if self.is_mimo_compatible() {
+            use_completion_token_limit(&mut payload);
         }
         let request_bytes = serde_json::to_vec(&payload)
             .map_err(|_| StreamingFailure::new("AI 请求序列化失败。"))?;
@@ -1622,16 +1736,29 @@ impl AiProvider {
                 .attempt(trace.round as u64)
                 .payload_bytes(request_bytes, 0),
         );
-        let send = self
-            .client
-            .post(self.endpoint.clone())
-            .bearer_auth(self.api_key.as_str())
-            .json(&payload)
-            .send();
+        let request = self
+            .authenticate_openai_request(self.client.post(self.endpoint.clone()))
+            .json(&payload);
+        let request = if mimo_translation {
+            request.timeout(Duration::from_secs(AI_MIMO_TRANSLATION_TIMEOUT_SECS))
+        } else {
+            request
+        };
+        let send = request.send();
         let mut response = tokio::select! {
             _ = cancellation.cancelled() => return Ok(cancelled_provider_turn(String::new())),
             response = send => response.map_err(|error| {
-                provider_network_error(error, &trace, request_bytes, started)
+                provider_network_error_with_timeout(
+                    error,
+                    &trace,
+                    request_bytes,
+                    started,
+                    if mimo_translation {
+                        AI_MIMO_TRANSLATION_TIMEOUT_SECS
+                    } else {
+                        AI_PROVIDER_REQUEST_TIMEOUT_SECS
+                    },
+                )
             }).map_err(StreamingFailure::new)?,
         };
         let status = response.status();
@@ -1670,29 +1797,84 @@ impl AiProvider {
         let mut content_was_emitted = false;
         let mut content_was_reset = false;
         loop {
+            let partial_content = if tool_calls.is_empty() {
+                content.clone()
+            } else {
+                String::new()
+            };
+            let read_chunk = async {
+                let chunk = if mimo_translation {
+                    match tokio::time::timeout(
+                        Duration::from_secs(AI_MIMO_TRANSLATION_IDLE_TIMEOUT_SECS),
+                        response.chunk(),
+                    )
+                    .await
+                    {
+                        Ok(chunk) => chunk,
+                        Err(_) => {
+                            diagnostics::error(
+                                "ai_provider_stream_idle_timeout",
+                                trace
+                                    .fields()
+                                    .attempt(trace.round as u64)
+                                    .payload_bytes(request_bytes, response_bytes)
+                                    .duration(started.elapsed())
+                                    .outcome("stream_idle_timeout")
+                                    .error(DiagnosticErrorKind::Timeout),
+                            );
+                            return Err(StreamingFailure::with_partial(
+                                format!(
+                                    "AI 翻译流式响应超过 {AI_MIMO_TRANSLATION_IDLE_TIMEOUT_SECS} 秒没有新数据，请重试。"
+                                ),
+                                partial_content,
+                            ));
+                        }
+                    }
+                } else {
+                    response.chunk().await
+                };
+                chunk.map_err(|error| {
+                    StreamingFailure::with_partial(
+                        provider_response_read_error_with_timeout(
+                            error,
+                            &trace,
+                            request_bytes,
+                            response_bytes,
+                            started,
+                            if mimo_translation {
+                                AI_MIMO_TRANSLATION_TIMEOUT_SECS
+                            } else {
+                                AI_PROVIDER_REQUEST_TIMEOUT_SECS
+                            },
+                        ),
+                        partial_content,
+                    )
+                })
+            };
             let chunk = tokio::select! {
                 _ = cancellation.cancelled() => {
                     return Ok(cancelled_provider_turn(if tool_calls.is_empty() { content } else { String::new() }));
                 }
-                chunk = response.chunk() => chunk
-                    .map_err(|_| StreamingFailure::with_partial(
-                        "AI 服务响应读取失败，请重试。",
-                        if tool_calls.is_empty() { content.clone() } else { String::new() },
-                    ))?,
+                chunk = read_chunk => chunk?,
             };
-            let Some(chunk) = chunk else { break };
-            response_bytes = response_bytes.saturating_add(chunk.len() as u64);
-            if response_bytes > MAX_PROVIDER_RESPONSE_BYTES as u64 {
-                return Err(StreamingFailure::with_partial(
-                    "AI 服务返回的数据过大，已停止处理。",
-                    if tool_calls.is_empty() {
-                        content
-                    } else {
-                        String::new()
-                    },
-                ));
+            let stream_ended = chunk.is_none();
+            let data_events = if let Some(chunk) = chunk {
+                response_bytes = response_bytes.saturating_add(chunk.len() as u64);
+                if response_bytes > MAX_PROVIDER_RESPONSE_BYTES as u64 {
+                    return Err(StreamingFailure::with_partial(
+                        "AI 服务返回的数据过大，已停止处理。",
+                        if tool_calls.is_empty() {
+                            content
+                        } else {
+                            String::new()
+                        },
+                    ));
+                }
+                decoder.push(&chunk)
+            } else {
+                decoder.finish()
             }
-            for data in decoder.push(&chunk).map_err(|message| {
+            .map_err(|message| {
                 StreamingFailure::with_partial(
                     message,
                     if tool_calls.is_empty() {
@@ -1701,7 +1883,8 @@ impl AiProvider {
                         String::new()
                     },
                 )
-            })? {
+            })?;
+            for data in data_events {
                 if data == "[DONE]" {
                     continue;
                 }
@@ -1818,6 +2001,9 @@ impl AiProvider {
                         }
                     }
                 }
+            }
+            if stream_ended {
+                break;
             }
         }
         let mut message = Map::new();
@@ -1958,24 +2144,37 @@ impl AiProvider {
                 _ = cancellation.cancelled() => {
                     return Ok(cancelled_provider_turn(if tool_seen { String::new() } else { visible_content }));
                 }
-                chunk = response.chunk() => chunk.map_err(|_| StreamingFailure::with_partial(
-                    "AI 服务响应读取失败，请重试。",
-                    if tool_seen { String::new() } else { visible_content.clone() },
-                ))?,
+                chunk = response.chunk() => chunk.map_err(|error| {
+                    StreamingFailure::with_partial(
+                        provider_response_read_error(
+                            error,
+                            &trace,
+                            request_bytes,
+                            response_bytes,
+                            started,
+                        ),
+                        if tool_seen { String::new() } else { visible_content.clone() },
+                    )
+                })?,
             };
-            let Some(chunk) = chunk else { break };
-            response_bytes = response_bytes.saturating_add(chunk.len() as u64);
-            if response_bytes > MAX_PROVIDER_RESPONSE_BYTES as u64 {
-                return Err(StreamingFailure::with_partial(
-                    "AI 服务返回的数据过大，已停止处理。",
-                    if tool_seen {
-                        String::new()
-                    } else {
-                        visible_content
-                    },
-                ));
+            let stream_ended = chunk.is_none();
+            let data_events = if let Some(chunk) = chunk {
+                response_bytes = response_bytes.saturating_add(chunk.len() as u64);
+                if response_bytes > MAX_PROVIDER_RESPONSE_BYTES as u64 {
+                    return Err(StreamingFailure::with_partial(
+                        "AI 服务返回的数据过大，已停止处理。",
+                        if tool_seen {
+                            String::new()
+                        } else {
+                            visible_content
+                        },
+                    ));
+                }
+                decoder.push(&chunk)
+            } else {
+                decoder.finish()
             }
-            for data in decoder.push(&chunk).map_err(|message| {
+            .map_err(|message| {
                 StreamingFailure::with_partial(
                     message,
                     if tool_seen {
@@ -1984,7 +2183,8 @@ impl AiProvider {
                         visible_content.clone()
                     },
                 )
-            })? {
+            })?;
+            for data in data_events {
                 let value: Value = serde_json::from_str(&data).map_err(|_| {
                     StreamingFailure::with_partial(
                         "AI 服务返回了无法识别的流式数据。",
@@ -2143,6 +2343,9 @@ impl AiProvider {
                     _ => {}
                 }
             }
+            if stream_ended {
+                break;
+            }
         }
         let tool_calls = blocks
             .iter()
@@ -2196,6 +2399,9 @@ impl AiProvider {
         if !tool_values.is_empty() {
             payload["tools"] = Value::Array(tool_values);
         }
+        if self.is_mimo_compatible() {
+            use_completion_token_limit(&mut payload);
+        }
         let request_bytes =
             serde_json::to_vec(&payload).map_err(|_| "AI 请求序列化失败。".to_owned())?;
         if request_bytes.len() > MAX_PROVIDER_REQUEST_BYTES {
@@ -2211,9 +2417,7 @@ impl AiProvider {
                 .payload_bytes(request_bytes, 0),
         );
         let response = self
-            .client
-            .post(self.endpoint.clone())
-            .bearer_auth(self.api_key.as_str())
+            .authenticate_openai_request(self.client.post(self.endpoint.clone()))
             .json(&payload)
             .send()
             .await
@@ -2238,10 +2442,9 @@ impl AiProvider {
                 }
             })?;
         let status = response.status();
-        let response_bytes = response
-            .bytes()
-            .await
-            .map_err(|_| "AI 服务响应读取失败，请重试。".to_owned())?;
+        let response_bytes = response.bytes().await.map_err(|error| {
+            provider_response_read_error(error, &trace, request_bytes, 0, started)
+        })?;
         if response_bytes.len() > MAX_PROVIDER_RESPONSE_BYTES {
             return Err("AI 服务返回的数据过大，已停止处理。".to_owned());
         }
@@ -2352,10 +2555,9 @@ impl AiProvider {
             .await
             .map_err(|error| provider_network_error(error, &trace, request_bytes, started))?;
         let status = response.status();
-        let response_bytes = response
-            .bytes()
-            .await
-            .map_err(|_| "AI 服务响应读取失败，请重试。".to_owned())?;
+        let response_bytes = response.bytes().await.map_err(|error| {
+            provider_response_read_error(error, &trace, request_bytes, 0, started)
+        })?;
         if response_bytes.len() > MAX_PROVIDER_RESPONSE_BYTES {
             return Err("AI 服务返回的数据过大，已停止处理。".to_owned());
         }
@@ -2466,7 +2668,7 @@ impl AiProvider {
         );
         let request = self.client.get(endpoint);
         let request = match self.provider.protocol {
-            ProviderProtocol::OpenAi => request.bearer_auth(self.api_key.as_str()),
+            ProviderProtocol::OpenAi => self.authenticate_openai_request(request),
             ProviderProtocol::Anthropic => request
                 .header("x-api-key", self.api_key.as_str())
                 .header("anthropic-version", "2023-06-01"),
@@ -2547,7 +2749,7 @@ impl AiProvider {
                 .provider(self.provider.id)
                 .model(&self.model),
         );
-        let payload = match self.provider.protocol {
+        let mut payload = match self.provider.protocol {
             ProviderProtocol::OpenAi => json!({
                 "model": self.model,
                 "messages": [{ "role": "user", "content": "仅回复 OK" }],
@@ -2561,9 +2763,12 @@ impl AiProvider {
                 "stream": false,
             }),
         };
+        if self.provider.protocol == ProviderProtocol::OpenAi && self.is_mimo_compatible() {
+            use_completion_token_limit(&mut payload);
+        }
         let request = self.client.post(self.endpoint.clone()).json(&payload);
         let request = match self.provider.protocol {
-            ProviderProtocol::OpenAi => request.bearer_auth(self.api_key.as_str()),
+            ProviderProtocol::OpenAi => self.authenticate_openai_request(request),
             ProviderProtocol::Anthropic => request
                 .header("x-api-key", self.api_key.as_str())
                 .header("anthropic-version", "2023-06-01"),
@@ -2644,6 +2849,65 @@ fn normalize_model_list(models: impl IntoIterator<Item = String>) -> Vec<String>
     models
 }
 
+fn is_mimo_compatible_provider(provider_id: &str, base_url: &Url, model: &str) -> bool {
+    provider_id == "mimo"
+        || base_url.host_str() == Some("api.xiaomimimo.com")
+        || is_mimo_token_plan_url(base_url)
+        || model.trim().to_ascii_lowercase().starts_with("mimo-")
+}
+
+fn is_mimo_token_plan_url(base_url: &Url) -> bool {
+    matches!(
+        base_url.host_str(),
+        Some(
+            "token-plan-cn.xiaomimimo.com"
+                | "token-plan-sgp.xiaomimimo.com"
+                | "token-plan-ams.xiaomimimo.com"
+        )
+    )
+}
+
+fn use_completion_token_limit(payload: &mut Value) {
+    let Some(limit) = payload
+        .as_object_mut()
+        .and_then(|object| object.remove("max_tokens"))
+    else {
+        return;
+    };
+    payload["max_completion_tokens"] = limit;
+}
+
+fn openai_stream_payload(
+    model: &str,
+    messages: &[Value],
+    tools: &[ToolSpec],
+    mimo_translation: bool,
+) -> Value {
+    let tool_values = tools.iter().map(ToolSpec::as_api_value).collect::<Vec<_>>();
+    let mut payload = if mimo_translation {
+        json!({
+            "model": model,
+            "messages": messages,
+            "response_format": { "type": "json_object" },
+            "max_completion_tokens": AI_TRANSLATION_MAX_COMPLETION_TOKENS,
+            "thinking": { "type": "disabled" },
+            "stream": true,
+        })
+    } else {
+        json!({
+            "model": model,
+            "messages": messages,
+            "max_tokens": 8192,
+            "stream": true,
+            "stream_options": { "include_usage": true },
+        })
+    };
+    if !tool_values.is_empty() {
+        payload["tools"] = Value::Array(tool_values);
+    }
+    payload
+}
+
 fn model_size_priority(model: &str) -> u8 {
     let model = model.to_ascii_lowercase();
     let minimax = model.contains("minimax");
@@ -2671,11 +2935,116 @@ fn model_size_priority(model: &str) -> u8 {
     1
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProviderResponseReadFailure {
+    Timeout,
+    Decode,
+    Body,
+    Other,
+}
+
+impl ProviderResponseReadFailure {
+    fn from_error(error: &reqwest::Error) -> Self {
+        if error.is_timeout() {
+            Self::Timeout
+        } else if error.is_decode() {
+            Self::Decode
+        } else if error.is_body() {
+            Self::Body
+        } else {
+            Self::Other
+        }
+    }
+
+    fn outcome(self) -> &'static str {
+        match self {
+            Self::Timeout => "response_timeout",
+            Self::Decode => "response_decode_failed",
+            Self::Body => "response_body_interrupted",
+            Self::Other => "response_read_failed",
+        }
+    }
+
+    fn error_kind(self) -> DiagnosticErrorKind {
+        match self {
+            Self::Timeout => DiagnosticErrorKind::Timeout,
+            Self::Decode => DiagnosticErrorKind::Serialization,
+            Self::Body | Self::Other => DiagnosticErrorKind::Runtime,
+        }
+    }
+
+    fn user_message(self, timeout_secs: u64) -> String {
+        match self {
+            Self::Timeout => format!(
+                "AI 服务已连接，但等待完整响应超过 {timeout_secs} 秒。请重试或改用响应更快的模型。"
+            ),
+            Self::Decode => "AI 服务返回的响应无法解码，请重试。".to_owned(),
+            Self::Body => "AI 服务已连接，但响应在传输过程中中断，请重试。".to_owned(),
+            Self::Other => "AI 服务响应读取失败，请重试。".to_owned(),
+        }
+    }
+}
+
+fn provider_response_read_error(
+    error: reqwest::Error,
+    trace: &ProviderTrace,
+    request_bytes: u64,
+    response_bytes: u64,
+    started: Instant,
+) -> String {
+    provider_response_read_error_with_timeout(
+        error,
+        trace,
+        request_bytes,
+        response_bytes,
+        started,
+        AI_PROVIDER_REQUEST_TIMEOUT_SECS,
+    )
+}
+
+fn provider_response_read_error_with_timeout(
+    error: reqwest::Error,
+    trace: &ProviderTrace,
+    request_bytes: u64,
+    response_bytes: u64,
+    started: Instant,
+    timeout_secs: u64,
+) -> String {
+    let failure = ProviderResponseReadFailure::from_error(&error);
+    diagnostics::error(
+        "ai_provider_response_read_failed",
+        trace
+            .fields()
+            .attempt(trace.round as u64)
+            .payload_bytes(request_bytes, response_bytes)
+            .duration(started.elapsed())
+            .outcome(failure.outcome())
+            .error(failure.error_kind()),
+    );
+    failure.user_message(timeout_secs)
+}
+
 fn provider_network_error(
     error: reqwest::Error,
     trace: &ProviderTrace,
     request_bytes: u64,
     started: Instant,
+) -> String {
+    provider_network_error_with_timeout(
+        error,
+        trace,
+        request_bytes,
+        started,
+        AI_PROVIDER_REQUEST_TIMEOUT_SECS,
+    )
+}
+
+fn provider_network_error_with_timeout(
+    error: reqwest::Error,
+    trace: &ProviderTrace,
+    request_bytes: u64,
+    started: Instant,
+    timeout_secs: u64,
 ) -> String {
     diagnostics::error(
         "ai_provider_request_failed",
@@ -2691,7 +3060,7 @@ fn provider_network_error(
             }),
     );
     if error.is_timeout() {
-        "AI 服务响应超时，请重试。".to_owned()
+        format!("AI 服务响应超过 {timeout_secs} 秒，请重试。")
     } else {
         "无法连接 AI 服务，请检查网络后重试。".to_owned()
     }
@@ -3112,24 +3481,45 @@ impl SseDecoder {
             if line.last() == Some(&b'\r') {
                 line.pop();
             }
-            if line.is_empty() {
-                if !self.data_lines.is_empty() {
-                    events.push(self.data_lines.join("\n"));
-                    self.data_lines.clear();
-                }
-                continue;
-            }
-            if line.first() == Some(&b':') {
-                continue;
-            }
-            if line.starts_with(b"data:") {
-                let data = line[5..].strip_prefix(b" ").unwrap_or(&line[5..]);
-                let data = String::from_utf8(data.to_vec())
-                    .map_err(|_| "AI 服务返回了无效的流式文本。".to_owned())?;
-                self.data_lines.push(data);
-            }
+            self.process_line(line, &mut events)?;
         }
         Ok(events)
+    }
+
+    fn finish(&mut self) -> Result<Vec<String>, String> {
+        let mut events = Vec::new();
+        if !self.pending.is_empty() {
+            let mut line = std::mem::take(&mut self.pending);
+            if line.last() == Some(&b'\r') {
+                line.pop();
+            }
+            self.process_line(line, &mut events)?;
+        }
+        if !self.data_lines.is_empty() {
+            events.push(self.data_lines.join("\n"));
+            self.data_lines.clear();
+        }
+        Ok(events)
+    }
+
+    fn process_line(&mut self, line: Vec<u8>, events: &mut Vec<String>) -> Result<(), String> {
+        if line.is_empty() {
+            if !self.data_lines.is_empty() {
+                events.push(self.data_lines.join("\n"));
+                self.data_lines.clear();
+            }
+            return Ok(());
+        }
+        if line.first() == Some(&b':') {
+            return Ok(());
+        }
+        if line.starts_with(b"data:") {
+            let data = line[5..].strip_prefix(b" ").unwrap_or(&line[5..]);
+            let data = String::from_utf8(data.to_vec())
+                .map_err(|_| "AI 服务返回了无效的流式文本。".to_owned())?;
+            self.data_lines.push(data);
+        }
+        Ok(())
     }
 }
 
@@ -3404,6 +3794,26 @@ async fn run_tool_loop(
                 .unwrap_or("{}");
             if arguments.len() > MAX_TOOL_ARGUMENT_BYTES {
                 return Err(StreamingFailure::new("AI 工具参数过大，已停止处理。"));
+            }
+            if let Err(error) = serde_json::from_str::<Value>(arguments) {
+                let error_kind = match error.classify() {
+                    serde_json::error::Category::Io => "io",
+                    serde_json::error::Category::Syntax => "syntax",
+                    serde_json::error::Category::Data => "data",
+                    serde_json::error::Category::Eof => "eof",
+                };
+                diagnostics::warn(
+                    "ai_tool_arguments_invalid",
+                    DiagnosticFields::default()
+                        .operation_id(operation_id.clone())
+                        .operation("ai_tool_call")
+                        .mode(mode.as_str())
+                        .account(&working.snapshot.account_id)
+                        .tool(static_name)
+                        .payload_bytes(arguments.len() as u64, 0)
+                        .json_error(error_kind, error.line(), error.column())
+                        .error(DiagnosticErrorKind::Validation),
+                );
             }
             let tool_activity_id = format!("{request_id}:tool:{round}:{tool_index}");
             send_event(
@@ -4372,40 +4782,72 @@ fn is_translatable_html_text(node: ego_tree::NodeRef<'_, Node>) -> bool {
     })
 }
 
-fn parse_translation_envelope(content: &str, expected: usize) -> Result<Vec<String>, String> {
-    let envelope: TranslationEnvelope = serde_json::from_str(content)
-        .map_err(|_| "AI 翻译结果不是约定的 JSON 格式。".to_owned())?;
-    if envelope.translations.len() != expected {
-        return Err("AI 翻译结果不完整，请重试。".to_owned());
+fn parse_translation_envelope(
+    content: &str,
+    expected: usize,
+) -> Result<ParsedTranslationEnvelope, TranslationResultError> {
+    let envelope: TranslationEnvelope =
+        serde_json::from_str(content).map_err(TranslationResultError::invalid_json)?;
+    let actual = envelope.translations.len();
+    if actual == 0 || actual > expected {
+        return Err(TranslationResultError::count_mismatch(expected, actual));
     }
     let mut translations = vec![None; expected];
+    let mut seen = vec![false; expected];
+    let mut translated_count = 0usize;
     let mut output_bytes = 0usize;
     for item in envelope.translations {
-        if item.id >= expected || translations[item.id].is_some() {
-            return Err("AI 翻译结果包含重复或未知内容。".to_owned());
+        if item.id >= expected {
+            return Err(TranslationResultError::invalid_item(
+                "unknown_id",
+                "AI 翻译结果包含未知的片段编号，请重试。",
+                actual,
+            ));
         }
+        if seen[item.id] {
+            return Err(TranslationResultError::invalid_item(
+                "duplicate_id",
+                "AI 翻译结果包含重复的片段编号，请重试。",
+                actual,
+            ));
+        }
+        seen[item.id] = true;
         if item
             .text
             .chars()
             .any(|character| character.is_control() && !matches!(character, '\n' | '\r' | '\t'))
         {
-            return Err("AI 翻译结果包含无效字符。".to_owned());
+            return Err(TranslationResultError::invalid_item(
+                "invalid_characters",
+                "AI 翻译结果包含无效字符，请重试。",
+                actual,
+            ));
         }
         output_bytes = output_bytes.saturating_add(item.text.len());
         if output_bytes > MAX_TRANSLATION_INPUT_BYTES.saturating_mul(2) {
-            return Err("AI 翻译结果过大，已停止处理。".to_owned());
+            return Err(TranslationResultError::invalid_item(
+                "result_too_large",
+                "AI 翻译结果过大，已停止处理。",
+                actual,
+            ));
         }
-        translations[item.id] = Some(item.text);
+        if !item.text.trim().is_empty() {
+            translations[item.id] = Some(item.text);
+            translated_count += 1;
+        }
     }
-    translations
-        .into_iter()
-        .map(|value| value.ok_or_else(|| "AI 翻译结果不完整，请重试。".to_owned()))
-        .collect()
+    if translated_count == 0 {
+        return Err(TranslationResultError::count_mismatch(expected, 0));
+    }
+    Ok(ParsedTranslationEnvelope {
+        translations,
+        translated_count,
+    })
 }
 
 fn apply_translation_units(
     parts: &[AiTranslationPartRequest],
-    translations: &[String],
+    translations: &[Option<String>],
 ) -> Result<Vec<AiTranslationPartDto>, String> {
     let mut translation_index = 0usize;
     let mut translated_parts = Vec::with_capacity(parts.len());
@@ -4417,10 +4859,9 @@ fn apply_translation_units(
                 } else {
                     let translated = translations
                         .get(translation_index)
-                        .ok_or_else(|| "AI 翻译结果不完整，请重试。".to_owned())?
-                        .clone();
+                        .ok_or_else(|| "AI 翻译结果不完整，请重试。".to_owned())?;
                     translation_index += 1;
-                    translated
+                    translated.clone().unwrap_or_else(|| part.content.clone())
                 }
             }
             AiTranslationFormat::Html => {
@@ -4441,6 +4882,9 @@ fn apply_translation_units(
                         .get(translation_index)
                         .ok_or_else(|| "AI 翻译结果不完整，请重试。".to_owned())?;
                     translation_index += 1;
+                    let Some(translated) = translated else {
+                        continue;
+                    };
                     let mut node = document
                         .tree
                         .get_mut(node_id)
@@ -5621,12 +6065,13 @@ mod tests {
 
     use super::{
         AiMode, AiProvider, AiRuntime, AiStore, AiTranslationFormat, AiTranslationPartRequest,
-        ProviderTrace, StoredAiConfig, anthropic_messages, append_endpoint,
-        apply_translation_units, assistant_tool_message, collect_translation_units, default_config,
-        default_translation_language, explicit_addresses, model_size_priority,
-        normalized_finish_reason, parse_final_envelope, parse_translation_envelope,
-        provider_preset, session_title, tool_spec, tool_specs, validate_base_url,
-        validate_tool_argument_keys,
+        ProviderResponseReadFailure, ProviderTrace, StoredAiConfig, anthropic_messages,
+        append_endpoint, apply_translation_units, assistant_tool_message,
+        collect_translation_units, default_config, default_translation_language,
+        explicit_addresses, is_mimo_compatible_provider, is_mimo_token_plan_url,
+        model_size_priority, normalized_finish_reason, openai_stream_payload, parse_final_envelope,
+        parse_translation_envelope, provider_preset, session_title, tool_spec, tool_specs,
+        use_completion_token_limit, validate_base_url, validate_tool_argument_keys,
     };
 
     #[test]
@@ -5680,8 +6125,9 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["Hello", "friend"]
         );
-        let translated = apply_translation_units(&parts, &["你好".to_owned(), "朋友".to_owned()])
-            .expect("translated HTML");
+        let translated =
+            apply_translation_units(&parts, &[Some("你好".to_owned()), Some("朋友".to_owned())])
+                .expect("translated HTML");
         let html = &translated[0].content;
         assert!(html.contains("data-layout=\"kept\""));
         assert!(html.contains("<strong>朋友</strong>"));
@@ -5690,14 +6136,15 @@ mod tests {
     }
 
     #[test]
-    fn translation_result_requires_one_safe_value_for_every_id() {
+    fn translation_result_accepts_only_safe_known_ids_and_preserves_valid_partial_items() {
         assert_eq!(
             parse_translation_envelope(
                 r#"{"translations":[{"id":1,"text":"二"},{"id":0,"text":"一"}]}"#,
                 2,
             )
-            .expect("complete result"),
-            vec!["一".to_owned(), "二".to_owned()]
+            .expect("complete result")
+            .translations,
+            vec![Some("一".to_owned()), Some("二".to_owned())]
         );
         assert!(
             parse_translation_envelope(
@@ -5713,6 +6160,54 @@ mod tests {
             )
             .is_err()
         );
+
+        let partial = parse_translation_envelope(
+            r#"{"translations":[{"id":0,"text":"一"},{"id":2,"text":"三"}]}"#,
+            3,
+        )
+        .expect("valid partial translation must be retained");
+        assert_eq!(partial.translated_count, 2);
+        assert_eq!(
+            partial.translations,
+            vec![Some("一".to_owned()), None, Some("三".to_owned())]
+        );
+
+        let blank_item = parse_translation_envelope(
+            r#"{"translations":[{"id":0,"text":"一"},{"id":1,"text":""}]}"#,
+            2,
+        )
+        .expect("blank output must be preserved as an untranslated position");
+        assert_eq!(blank_item.translated_count, 1);
+        assert_eq!(blank_item.translations, vec![Some("一".to_owned()), None]);
+
+        let empty = parse_translation_envelope(r#"{"translations":[]}"#, 2)
+            .expect_err("empty translation must be rejected");
+        assert_eq!(empty.outcome, "count_mismatch");
+        assert_eq!(empty.actual_count, Some(0));
+
+        let malformed = parse_translation_envelope(r#"{"translations":["#, 1)
+            .expect_err("truncated JSON must be rejected");
+        assert_eq!(malformed.outcome, "invalid_json");
+        assert!(malformed.user_message.contains("提前结束"));
+        assert_eq!(malformed.json_error.map(|error| error.0), Some("eof"));
+    }
+
+    #[test]
+    fn partial_html_translation_keeps_missing_nodes_in_the_original_language() {
+        let parts = vec![AiTranslationPartRequest {
+            id: "body-html".to_owned(),
+            format: AiTranslationFormat::Html,
+            content: "<p>Hello <strong>friend</strong> today</p>".to_owned(),
+        }];
+        let translated = apply_translation_units(
+            &parts,
+            &[Some("你好".to_owned()), None, Some("今天".to_owned())],
+        )
+        .expect("partial HTML translation");
+        let html = &translated[0].content;
+        assert!(html.contains("你好"));
+        assert!(html.contains("<strong>friend</strong>"));
+        assert!(html.contains("今天"));
     }
 
     #[test]
@@ -5808,6 +6303,34 @@ mod tests {
         );
         let events = decoder.push(&source[split + 1..]).expect("second");
         assert_eq!(events, vec![r#"{"delta":"你好"}"#, "[DONE]"]);
+    }
+
+    #[test]
+    fn sse_decoder_flushes_an_unterminated_final_event_at_eof() {
+        let mut decoder = super::SseDecoder::default();
+        assert!(
+            decoder
+                .push(br#"data: {"delta":"final"}"#)
+                .expect("push")
+                .is_empty()
+        );
+        assert_eq!(
+            decoder.finish().expect("finish"),
+            vec![r#"{"delta":"final"}"#]
+        );
+        assert!(decoder.finish().expect("second finish").is_empty());
+    }
+
+    #[test]
+    fn sse_decoder_flushes_data_lines_without_a_trailing_blank_line() {
+        let mut decoder = super::SseDecoder::default();
+        assert!(
+            decoder
+                .push(b"data: first\ndata: second\n")
+                .expect("push")
+                .is_empty()
+        );
+        assert_eq!(decoder.finish().expect("finish"), vec!["first\nsecond"]);
     }
 
     #[test]
@@ -6037,6 +6560,103 @@ mod tests {
                     .all(|pair| model_size_priority(pair[0]) <= model_size_priority(pair[1]))
             );
         }
+    }
+
+    #[test]
+    fn mimo_translation_transport_is_detected_for_presets_official_urls_and_model_names() {
+        let official = validate_base_url("https://api.xiaomimimo.com/v1").expect("official URL");
+        let token_plan =
+            validate_base_url("https://token-plan-cn.xiaomimimo.com/v1").expect("Token Plan URL");
+        let relay = validate_base_url("https://relay.example.com/v1").expect("relay URL");
+
+        assert!(is_mimo_compatible_provider("mimo", &relay, "alias"));
+        assert!(is_mimo_compatible_provider("custom", &official, "alias"));
+        assert!(is_mimo_compatible_provider("custom", &token_plan, "alias"));
+        assert!(is_mimo_compatible_provider(
+            "custom",
+            &relay,
+            "MiMo-V2.5-Pro"
+        ));
+        assert!(!is_mimo_compatible_provider(
+            "custom",
+            &relay,
+            "deepseek-chat"
+        ));
+    }
+
+    #[test]
+    fn mimo_token_plan_hosts_are_recognized_without_matching_lookalikes() {
+        for host in [
+            "token-plan-cn.xiaomimimo.com",
+            "token-plan-sgp.xiaomimimo.com",
+            "token-plan-ams.xiaomimimo.com",
+        ] {
+            let url = validate_base_url(&format!("https://{host}/v1")).expect("Token Plan URL");
+            assert!(is_mimo_token_plan_url(&url));
+        }
+        let pay_as_you_go =
+            validate_base_url("https://api.xiaomimimo.com/v1").expect("official URL");
+        let lookalike =
+            validate_base_url("https://token-plan-cn.example.com/v1").expect("lookalike URL");
+        assert!(!is_mimo_token_plan_url(&pay_as_you_go));
+        assert!(!is_mimo_token_plan_url(&lookalike));
+    }
+
+    #[test]
+    fn mimo_compatible_payloads_use_completion_token_limits() {
+        let mut payload = json!({ "max_tokens": 8_192, "stream": true });
+        use_completion_token_limit(&mut payload);
+        assert_eq!(payload["max_completion_tokens"], 8_192);
+        assert!(payload.get("max_tokens").is_none());
+    }
+
+    #[test]
+    fn mimo_translation_stream_payload_disables_thinking_and_uses_completion_tokens() {
+        let messages = vec![json!({ "role": "user", "content": "translate" })];
+        let payload = openai_stream_payload("mimo-v2.5", &messages, &[], true);
+
+        assert_eq!(payload["stream"], true);
+        assert_eq!(payload["thinking"]["type"], "disabled");
+        assert_eq!(payload["max_completion_tokens"], 8_192);
+        assert_eq!(payload["response_format"]["type"], "json_object");
+        assert!(payload.get("max_tokens").is_none());
+        assert!(payload.get("stream_options").is_none());
+
+        let ordinary = openai_stream_payload("deepseek-chat", &messages, &[], false);
+        assert_eq!(ordinary["max_tokens"], 8_192);
+        assert_eq!(ordinary["stream_options"]["include_usage"], true);
+        assert!(ordinary.get("thinking").is_none());
+    }
+
+    #[test]
+    fn provider_response_read_failures_have_precise_diagnostics_and_user_messages() {
+        assert_eq!(
+            ProviderResponseReadFailure::Timeout.outcome(),
+            "response_timeout"
+        );
+        assert!(
+            ProviderResponseReadFailure::Timeout
+                .user_message(90)
+                .contains("90 秒")
+        );
+        assert_eq!(
+            ProviderResponseReadFailure::Body.outcome(),
+            "response_body_interrupted"
+        );
+        assert!(
+            ProviderResponseReadFailure::Body
+                .user_message(90)
+                .contains("传输过程中中断")
+        );
+        assert_eq!(
+            ProviderResponseReadFailure::Decode.outcome(),
+            "response_decode_failed"
+        );
+        assert!(
+            ProviderResponseReadFailure::Decode
+                .user_message(90)
+                .contains("无法解码")
+        );
     }
 
     #[test]

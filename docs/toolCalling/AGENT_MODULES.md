@@ -24,8 +24,13 @@
 ## Provider 与开发调试
 
 - Rust 直接调用已配置的 Provider，不经过本机 MCP。OpenAI 兼容供应商使用
-  `chat/completions` SSE，Anthropic 使用原生 Messages SSE；独立优化和翻译保持
-  非流式。
+  `chat/completions` SSE，Anthropic 使用原生 Messages SSE；独立优化保持非流式。
+  翻译在前端仍只展示校验后的完整或部分结果；MiMo 翻译在 Rust 内使用 SSE 接收、
+  关闭思考模式并使用翻译专用超时，避免等待整包响应阻塞到通用超时。
+- SSE 连接正常结束时会刷新尚未以空行终止的最后一个数据事件，兼容尾帧省略空行的
+  OpenAI 与 Anthropic 网关，避免最后一个工具参数被截断。自定义配置使用 MiMo
+  Token Plan 官方中国、新加坡或欧洲地址时，Rust 使用其 `api-key` 认证头，并按 MiMo
+  接口使用 `max_completion_tokens`。
 - Debug 构建会尝试读取仓库根目录中被 Git 忽略的 `.env`。`API_KEY` 是必需项，
   `MODEL_NAME` 未填写时使用 `deepseek-v4-pro`，`AI_BASE_URL` 未填写时使用 DeepSeek
   官方地址。
@@ -232,6 +237,12 @@ Provider 读取和后续工具执行，丢弃未完成工作副本。
 - `ai_provider_stream_connected`
 - `ai_provider_first_delta`
 - `ai_provider_stream_completed`
+- `ai_provider_response_read_failed`，区分完整响应超时、传输中断和响应解码失败
+- `ai_translation_transport_selected`，记录 MiMo 翻译采用关闭思考的内部流式传输
+- `ai_provider_stream_idle_timeout`，记录 MiMo 翻译流超过空闲时限未收到新数据
+- `ai_translation_failed`，翻译结果校验失败时区分 JSON、片段数量、编号与字符问题；
+  片段数量异常只记录预期数、实际数和差值，不记录邮件文本
+- `ai_translation_completed`，`partially_completed` 结果记录已翻译与保留原文的片段数
 - `ai_tool_started`
 - `ai_tool_completed`
 - `ai_result_validated`

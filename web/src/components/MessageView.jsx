@@ -583,6 +583,7 @@ export function MessageView({
     translatedMessage: null,
     showTranslated: false,
     error: null,
+    notice: null,
   });
   const [translationPreference, setTranslationPreference] = useState({
     status: "idle",
@@ -612,6 +613,7 @@ export function MessageView({
       translatedMessage: null,
       showTranslated: false,
       error: null,
+      notice: null,
     });
   }, [translationMessageKey]);
 
@@ -740,6 +742,7 @@ export function MessageView({
       translatedMessage: null,
       showTranslated: false,
       error: null,
+      notice: null,
     }));
     try {
       const config = await onChangeTranslationLanguage(nextLanguage);
@@ -775,6 +778,7 @@ export function MessageView({
       translatedMessage: null,
       showTranslated: false,
       error: null,
+      notice: null,
     });
     try {
       const requestParts = translationPartsForMessage(message, bodyRenderMode);
@@ -789,12 +793,21 @@ export function MessageView({
         throw new Error("AI 翻译结果不完整，请重试。");
       }
       const translated = applyTranslatedParts(message, resultParts);
+      const translatedCount = Number(result?.translatedCount);
+      const totalCount = Number(result?.totalCount);
+      const partial = Number.isInteger(translatedCount)
+        && Number.isInteger(totalCount)
+        && totalCount > 0
+        && translatedCount < totalCount;
       setTranslationState({
         status: "completed",
         messageKey: translationMessageKey,
         translatedMessage: translated,
         showTranslated: true,
         error: null,
+        notice: partial
+          ? `部分翻译完成：已翻译 ${translatedCount}/${totalCount} 个片段，未完成部分保留原文。`
+          : null,
       });
     } catch (translationError) {
       if (translationRequestRef.current !== requestId) return;
@@ -811,6 +824,7 @@ export function MessageView({
               translationError,
               "AI 翻译失败，请检查 Agent 配置后重试",
             ),
+        notice: null,
       });
     }
   };
@@ -1025,6 +1039,11 @@ export function MessageView({
         || translationPreference.error ? (
           <div className="reader-translation-error" role="alert">
             {translationState.error || translationPreference.error}
+          </div>
+        ) : null}
+        {translationIsCurrent && translationState.notice ? (
+          <div className="reader-translation-notice" role="status">
+            {translationState.notice}
           </div>
         ) : null}
         <div className="message-header">
