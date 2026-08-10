@@ -15,15 +15,13 @@ function selectedIndex(options, value) {
   );
 }
 
-export function ReaderTranslationControl({
+export function ReaderTranslationLanguageSelect({
   value,
   options,
-  onRun,
   onValueChange,
-  runDisabled = false,
-  selectDisabled = false,
-  translating = false,
-  retry = false,
+  disabled = false,
+  busy = false,
+  className = "",
 }) {
   const listboxId = `${useId()}-reader-translation-languages`;
   const rootRef = useRef(null);
@@ -83,7 +81,7 @@ export function ReaderTranslationControl({
   };
 
   const handleTriggerKeyDown = (event) => {
-    if (selectDisabled) return;
+    if (disabled) return;
     if (event.key === "Escape" && open) {
       event.preventDefault();
       setOpen(false);
@@ -114,27 +112,12 @@ export function ReaderTranslationControl({
   return (
     <div
       ref={rootRef}
-      className="reader-translation-control"
+      className={["reader-translation-language-select", className]
+        .filter(Boolean)
+        .join(" ")}
       data-open={open || undefined}
-      data-translating={translating || undefined}
+      data-busy={busy || undefined}
     >
-      <TooltipTarget label={`${retry ? "重试翻译" : "翻译"}为${selected?.label || "所选语言"}`}>
-        <button
-          type="button"
-          className="reader-translation-run"
-          aria-label="AI 翻译"
-          aria-busy={translating}
-          disabled={runDisabled}
-          onClick={onRun}
-        >
-          {translating ? (
-            <SpinnerGap className="spin" size={16} aria-hidden="true" />
-          ) : (
-            <Translate size={16} aria-hidden="true" />
-          )}
-        </button>
-      </TooltipTarget>
-
       <button
         ref={triggerRef}
         type="button"
@@ -147,12 +130,16 @@ export function ReaderTranslationControl({
         aria-activedescendant={
           open ? `${listboxId}-option-${activeIndex}` : undefined
         }
-        disabled={selectDisabled}
+        disabled={disabled}
         onClick={() => setOpen((current) => !current)}
         onKeyDown={handleTriggerKeyDown}
       >
         <span>{selected?.label || "选择语言"}</span>
-        <CaretDown size={13} weight="bold" aria-hidden="true" />
+        {busy ? (
+          <SpinnerGap className="spin" size={13} aria-hidden="true" />
+        ) : (
+          <CaretDown size={13} weight="bold" aria-hidden="true" />
+        )}
       </button>
 
       {open ? (
@@ -190,7 +177,53 @@ export function ReaderTranslationControl({
         </div>
       ) : null}
 
-      {translating ? <span className="sr-only" role="status">AI 翻译中</span> : null}
+      {busy ? <span className="sr-only" role="status">AI 翻译中</span> : null}
+    </div>
+  );
+}
+
+export function ReaderTranslationControl({
+  value,
+  options,
+  onRun,
+  onValueChange,
+  runDisabled = false,
+  selectDisabled = false,
+  translating = false,
+  retry = false,
+}) {
+  const selected =
+    options.find((option) => String(option.value) === String(value))
+    || options[0];
+
+  return (
+    <div
+      className="reader-translation-control"
+      data-translating={translating || undefined}
+    >
+      <TooltipTarget label={`${retry ? "重试翻译" : "翻译"}为${selected?.label || "所选语言"}`}>
+        <button
+          type="button"
+          className="reader-translation-run"
+          aria-label="AI 翻译"
+          aria-busy={translating}
+          disabled={runDisabled}
+          onClick={onRun}
+        >
+          {translating ? (
+            <SpinnerGap className="spin" size={16} aria-hidden="true" />
+          ) : (
+            <Translate size={16} aria-hidden="true" />
+          )}
+        </button>
+      </TooltipTarget>
+      <ReaderTranslationLanguageSelect
+        value={value}
+        options={options}
+        disabled={selectDisabled}
+        busy={translating}
+        onValueChange={onValueChange}
+      />
     </div>
   );
 }

@@ -31,6 +31,8 @@ const fallbackTranslationLanguages = Object.freeze([
 
 const initialConfiguration = Object.freeze({
   providerId: "custom",
+  protocolId: "auto",
+  resolvedProtocolId: "openai_chat_completions",
   baseUrl: "",
   modelName: "",
   apiKey: "",
@@ -63,6 +65,7 @@ function normalizeConfiguration(config) {
 function configurationRequest(form) {
   return {
     providerId: form.providerId,
+    protocolId: form.protocolId,
     baseUrl: form.baseUrl.trim(),
     modelName: form.modelName.trim(),
     useEnvironmentKey: form.useEnvironmentKey,
@@ -97,6 +100,8 @@ function canSaveConfiguration(form) {
 
 function providerFields(form) {
   return {
+    protocolId: form.protocolId,
+    resolvedProtocolId: form.resolvedProtocolId,
     baseUrl: form.baseUrl,
     modelName: form.modelName,
     useEnvironmentKey: form.useEnvironmentKey,
@@ -105,13 +110,54 @@ function providerFields(form) {
   };
 }
 
+function resolvedProtocolId(preset, protocolId) {
+  if (!preset) return "openai_chat_completions";
+  return protocolId === "auto"
+    ? preset.recommendedProtocolId
+    : protocolId;
+}
+
+function providerDraftKey(providerId, protocolId, preset) {
+  return `${providerId}:${resolvedProtocolId(preset, protocolId)}`;
+}
+
+function protocolOptions(preset) {
+  if (!preset) return [];
+  const recommended = preset.protocols?.find(
+    (protocol) => protocol.id === preset.recommendedProtocolId,
+  );
+  return [
+    {
+      value: "auto",
+      label: `自动（推荐：${recommended?.label || "供应商默认"}）`,
+    },
+    ...(preset.protocols || []).map((protocol) => ({
+      value: protocol.id,
+      label: protocol.recommended
+        ? `${protocol.label}（推荐）`
+        : protocol.label,
+    })),
+  ];
+}
+
 function providerForm(current, preset, remembered = null) {
-  const configuration = remembered || preset.configuration;
+  const protocolId = preset.protocolId ?? remembered?.protocolId ?? "auto";
+  const resolved = resolvedProtocolId(preset, protocolId);
+  const protocol = preset.protocols?.find((candidate) => candidate.id === resolved);
+  const configuration = remembered
+    || preset.configurations?.find((candidate) => candidate.protocolId === resolved)
+    || preset.configuration;
   return {
     ...current,
     providerId: preset.id,
-    baseUrl: configuration?.baseUrl ?? preset.baseUrl,
-    modelName: configuration?.modelName ?? preset.models?.[0] ?? "",
+    protocolId,
+    resolvedProtocolId: resolved,
+    baseUrl: configuration?.baseUrl ?? protocol?.baseUrl ?? preset.baseUrl,
+    modelName:
+      configuration?.modelName
+      ?? protocol?.models?.[0]
+      ?? preset.models?.[0]
+      ?? "",
     apiKey: "",
     useEnvironmentKey: configuration?.useEnvironmentKey ?? false,
     environmentVariable: preset.environmentVariable,
@@ -207,7 +253,17 @@ function AgentSettingsContent({
     () => form.presets.find((preset) => preset.id === form.providerId),
     [form.presets, form.providerId],
   );
-  const models = selectedPreset?.models || [];
+  const selectedProtocol = useMemo(
+    () => selectedPreset?.protocols?.find(
+      (protocol) => protocol.id === form.resolvedProtocolId,
+    ),
+    [form.resolvedProtocolId, selectedPreset],
+  );
+  const models = selectedProtocol?.models || selectedPreset?.models || [];
+  const availableProtocolOptions = useMemo(
+    () => protocolOptions(selectedPreset),
+    [selectedPreset],
+  );
   const busy = ["saving", "switching", "models", "testing"].includes(actionState);
 
   const resetModelResults = () => {
@@ -245,9 +301,13 @@ function AgentSettingsContent({
           await client.saveAiConfig(configurationRequest(form)),
         );
         savedRevisionRef.current = editRevisionRef.current;
-        delete providerDraftsRef.current[form.providerId];
+        delete providerDraftsRef.current[
+          providerDraftKey(form.providerId, form.protocolId, selectedPreset)
+        ];
       } else if (editRevisionRef.current > savedRevisionRef.current) {
-        providerDraftsRef.current[form.providerId] = providerFields(form);
+        providerDraftsRef.current[
+          providerDraftKey(form.providerId, form.protocolId, selectedPreset)
+        ] = providerFields(form);
       }
 
       const currentPreset = source.presets.find(
@@ -256,7 +316,13 @@ function AgentSettingsContent({
       const next = providerForm(
         source,
         currentPreset,
-        providerDraftsRef.current[preset.id],
+        providerDraftsRef.current[
+          providerDraftKey(
+            preset.id,
+            currentPreset.protocolId ?? "auto",
+            currentPreset,
+          )
+        ],
       );
       setEditingStoredApiKey(false);
       setForm(next);
@@ -270,7 +336,9 @@ function AgentSettingsContent({
         const activated = normalizeConfiguration(
           await client.saveAiConfig(configurationRequest(next)),
         );
-        delete providerDraftsRef.current[preset.id];
+        delete providerDraftsRef.current[
+          providerDraftKey(preset.id, next.protocolId, currentPreset)
+        ];
         setForm(activated);
         setFeedback({
           tone: "success",
@@ -292,6 +360,33 @@ function AgentSettingsContent({
     }
   };
 
+  const chooseProtocol = (protocolId) => {
+    if (busy || protocolId === form.protocolId || !selectedPreset) return;
+    const currentKey = providerDraftKey(
+      form.providerId,
+      form.protocolId,
+      selectedPreset,
+    );
+    if (editRevisionRef.current > savedRevisionRef.current) {
+      providerDraftsRef.current[currentKey] = providerFields(form);
+    }
+    const targetKey = providerDraftKey(
+      form.providerId,
+      protocolId,
+      selectedPreset,
+    );
+    const next = providerForm(
+      form,
+      { ...selectedPreset, protocolId },
+      providerDraftsRef.current[targetKey],
+    );
+    setForm(next);
+    setEditingStoredApiKey(false);
+    resetModelResults();
+    markConfigurationEdited();
+    setFeedback(null);
+  };
+
   const retrieveModels = async () => {
     setActionState("models");
     setFeedback(null);
@@ -303,7 +398,15 @@ function AgentSettingsContent({
         modelName: current.modelName || availableModels[0] || "",
         presets: current.presets.map((preset) =>
           preset.id === current.providerId
-            ? { ...preset, models: availableModels }
+            ? {
+                ...preset,
+                models: availableModels,
+                protocols: (preset.protocols || []).map((protocol) =>
+                  protocol.id === current.resolvedProtocolId
+                    ? { ...protocol, models: availableModels }
+                    : protocol,
+                ),
+              }
             : preset,
         ),
       }));
@@ -363,7 +466,16 @@ function AgentSettingsContent({
     );
     try {
       const saved = await client.saveAiConfig(request);
-      delete providerDraftsRef.current[saved.providerId ?? form.providerId];
+      const savedPreset = saved.presets?.find(
+        (preset) => preset.id === (saved.providerId ?? form.providerId),
+      );
+      delete providerDraftsRef.current[
+        providerDraftKey(
+          saved.providerId ?? form.providerId,
+          saved.protocolId ?? form.protocolId,
+          savedPreset ?? selectedPreset,
+        )
+      ];
       savedRevisionRef.current = Math.max(savedRevisionRef.current, revision);
       blockedAutomaticRevisionRef.current = null;
       if (editRevisionRef.current === revision) {
@@ -503,6 +615,21 @@ function AgentSettingsContent({
                 </fieldset>
 
                 <div className="agent-config-fields">
+                  <div className="settings-field agent-protocol-field">
+                    <label htmlFor="agent-api-protocol">API 协议</label>
+                    <ThemedSelect
+                      id="agent-api-protocol"
+                      label="API 协议"
+                      value={form.protocolId}
+                      options={availableProtocolOptions}
+                      disabled={busy || availableProtocolOptions.length === 0}
+                      onValueChange={chooseProtocol}
+                    />
+                    <small>
+                      自动会跟随当前供应商的推荐协议；切换协议后会分别保留地址、模型和检索结果。
+                    </small>
+                  </div>
+
                   <label className="settings-field">
                     <span>BASE_URL</span>
                     <span className="settings-input-shell settings-input-shell--text">

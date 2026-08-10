@@ -10,6 +10,16 @@ const presets = [
     baseUrl: "",
     environmentVariable: "AI_API_KEY",
     models: [],
+    protocolId: "auto",
+    recommendedProtocolId: "openai_chat_completions",
+    protocols: [{
+      id: "openai_chat_completions",
+      label: "OpenAI Chat Completions",
+      baseUrl: "",
+      recommended: true,
+      models: [],
+    }],
+    configurations: [],
   },
   {
     id: "deepseek",
@@ -17,6 +27,16 @@ const presets = [
     baseUrl: "https://api.deepseek.com",
     environmentVariable: "DEEPSEEK_API_KEY",
     models: ["deepseek-v4-flash", "deepseek-v4-pro"],
+    protocolId: "auto",
+    recommendedProtocolId: "openai_chat_completions",
+    protocols: [{
+      id: "openai_chat_completions",
+      label: "OpenAI Chat Completions",
+      baseUrl: "https://api.deepseek.com",
+      recommended: true,
+      models: ["deepseek-v4-flash", "deepseek-v4-pro"],
+    }],
+    configurations: [],
   },
   {
     id: "kimi",
@@ -24,12 +44,24 @@ const presets = [
     baseUrl: "https://api.moonshot.cn/v1",
     environmentVariable: "MOONSHOT_API_KEY",
     models: ["kimi-k2.6", "kimi-k3"],
+    protocolId: "auto",
+    recommendedProtocolId: "openai_chat_completions",
+    protocols: [{
+      id: "openai_chat_completions",
+      label: "OpenAI Chat Completions",
+      baseUrl: "https://api.moonshot.cn/v1",
+      recommended: true,
+      models: ["kimi-k2.6", "kimi-k3"],
+    }],
+    configurations: [],
   },
 ];
 
 function configuration(overrides = {}) {
   return {
     providerId: "deepseek",
+    protocolId: "auto",
+    resolvedProtocolId: "openai_chat_completions",
     baseUrl: "https://api.deepseek.com",
     modelName: "deepseek-v4-pro",
     useEnvironmentKey: false,
@@ -290,6 +322,72 @@ describe("AgentSettings", () => {
     expect(within(options).queryByRole("option", { name: "kimi-k2.6" })).toBeNull();
     await user.click(within(options).getByRole("option", { name: "kimi-k2.7" }));
     expect(screen.getByLabelText("MODEL_NAME").value).toBe("kimi-k2.7");
+  });
+
+  it("switches API protocols and restores protocol-specific connection fields", async () => {
+    const user = userEvent.setup();
+    const protocolPresets = presets.map((preset) =>
+      preset.id === "deepseek"
+        ? {
+            ...preset,
+            protocols: [
+              ...preset.protocols,
+              {
+                id: "openai_responses",
+                label: "OpenAI Responses",
+                baseUrl: "https://responses.example.com/v1",
+                recommended: false,
+                models: ["responses-mail-model"],
+              },
+            ],
+            configurations: [
+              {
+                protocolId: "openai_chat_completions",
+                baseUrl: "https://api.deepseek.com",
+                modelName: "deepseek-v4-pro",
+                useEnvironmentKey: false,
+                hasStoredApiKey: true,
+                hasEnvironmentApiKey: false,
+              },
+              {
+                protocolId: "openai_responses",
+                baseUrl: "https://responses.example.com/v1",
+                modelName: "responses-mail-model",
+                useEnvironmentKey: false,
+                hasStoredApiKey: true,
+                hasEnvironmentApiKey: false,
+              },
+            ],
+          }
+        : preset,
+    );
+    const api = client({
+      getAiConfig: vi.fn().mockResolvedValue(
+        configuration({ presets: protocolPresets }),
+      ),
+    });
+    render(<AgentSettings client={api} />);
+    await expandModelConfiguration(user);
+
+    const protocol = screen.getByRole("combobox", { name: "API 协议" });
+    expect(protocol.textContent).toContain("自动（推荐：OpenAI Chat Completions）");
+    await user.click(protocol);
+    await user.click(screen.getByRole("option", { name: "OpenAI Responses" }));
+
+    expect(screen.getByLabelText("BASE_URL").value).toBe(
+      "https://responses.example.com/v1",
+    );
+    expect(screen.getByLabelText("MODEL_NAME").value).toBe("responses-mail-model");
+    await waitFor(
+      () => expect(api.saveAiConfig).toHaveBeenCalledWith(
+        expect.objectContaining({
+          protocolId: "openai_responses",
+          baseUrl: "https://responses.example.com/v1",
+          modelName: "responses-mail-model",
+        }),
+      ),
+      { timeout: 1800 },
+    );
   });
 
   it("ignores the key field in environment mode and reports test latency", async () => {

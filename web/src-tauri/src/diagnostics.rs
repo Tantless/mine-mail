@@ -85,6 +85,8 @@ pub(crate) struct Fields {
     #[serde(skip_serializing_if = "Option::is_none")]
     provider: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    protocol: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     model_ref: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool: Option<&'static str>,
@@ -121,6 +123,10 @@ pub(crate) struct Fields {
     #[serde(skip_serializing_if = "Option::is_none")]
     attempt_count: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    batch_index: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    batch_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     suppressed_count: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     draft_version: Option<u64>,
@@ -138,6 +144,20 @@ pub(crate) struct Fields {
     input_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     output_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stream_chunk_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stream_event_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    terminal_event_seen: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    json_depth: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    json_complete: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     json_error_kind: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -190,6 +210,11 @@ impl Fields {
 
     pub(crate) fn provider(mut self, value: &'static str) -> Self {
         self.provider = Some(value);
+        self
+    }
+
+    pub(crate) fn protocol(mut self, value: &'static str) -> Self {
+        self.protocol = Some(value);
         self
     }
 
@@ -272,6 +297,17 @@ impl Fields {
         self
     }
 
+    pub(crate) fn batches(mut self, value: usize) -> Self {
+        self.batch_count = Some(value);
+        self
+    }
+
+    pub(crate) fn batch(mut self, index: usize, count: usize) -> Self {
+        self.batch_index = Some(index);
+        self.batch_count = Some(count);
+        self
+    }
+
     pub(crate) fn changes(mut self, value: usize) -> Self {
         self.changed_count = Some(value);
         self
@@ -301,6 +337,26 @@ impl Fields {
     pub(crate) fn tokens(mut self, input: u64, output: u64) -> Self {
         self.input_tokens = Some(input);
         self.output_tokens = Some(output);
+        self
+    }
+
+    pub(crate) fn stream_state(
+        mut self,
+        chunks: usize,
+        events: usize,
+        content_bytes: u64,
+        reasoning_bytes: u64,
+        terminal_event_seen: bool,
+        json_depth: i64,
+        json_complete: bool,
+    ) -> Self {
+        self.stream_chunk_count = Some(chunks);
+        self.stream_event_count = Some(events);
+        self.content_bytes = Some(content_bytes);
+        self.reasoning_bytes = Some(reasoning_bytes);
+        self.terminal_event_seen = Some(terminal_event_seen);
+        self.json_depth = Some(json_depth);
+        self.json_complete = Some(json_complete);
         self
     }
 
@@ -938,6 +994,11 @@ mod tests {
                 .operation("schema_test")
                 .trigger("test")
                 .mode("offline")
+                .provider("mimo")
+                .protocol("openai_responses")
+                .model("mimo-v2.5")
+                .tool("replace_draft_body")
+                .finish_reason("tool_calls")
                 .outcome("degraded")
                 .error(ErrorKind::Runtime)
                 .force(true)
@@ -949,12 +1010,23 @@ mod tests {
                 .inbox_counts(4, 5, 6)
                 .conflicts(1)
                 .draft_version(9)
+                .batch(2, 4)
+                .stream_state(10, 20, 30, 40, false, 2, false)
                 .json_error("syntax", 2, 17),
         );
         let parsed: serde_json::Value = serde_json::from_str(&line).unwrap();
         assert_eq!(parsed["json_error_kind"], "syntax");
         assert_eq!(parsed["json_error_line"], 2);
         assert_eq!(parsed["json_error_column"], 17);
+        assert_eq!(parsed["batch_index"], 2);
+        assert_eq!(parsed["batch_count"], 4);
+        assert_eq!(parsed["stream_chunk_count"], 10);
+        assert_eq!(parsed["stream_event_count"], 20);
+        assert_eq!(parsed["content_bytes"], 30);
+        assert_eq!(parsed["reasoning_bytes"], 40);
+        assert_eq!(parsed["terminal_event_seen"], false);
+        assert_eq!(parsed["json_depth"], 2);
+        assert_eq!(parsed["json_complete"], false);
         let allowed = [
             "schema_version",
             "timestamp_utc_ms",
@@ -969,6 +1041,11 @@ mod tests {
             "operation",
             "trigger",
             "mode",
+            "provider",
+            "protocol",
+            "model_ref",
+            "tool",
+            "finish_reason",
             "outcome",
             "error_kind",
             "force",
@@ -983,11 +1060,20 @@ mod tests {
             "removed_count",
             "conflict_count",
             "attempt_count",
+            "batch_index",
+            "batch_count",
             "suppressed_count",
             "draft_version",
             "cleanup_removed_files",
             "cleanup_removed_bytes",
             "moved_bytes",
+            "stream_chunk_count",
+            "stream_event_count",
+            "content_bytes",
+            "reasoning_bytes",
+            "terminal_event_seen",
+            "json_depth",
+            "json_complete",
             "json_error_kind",
             "json_error_line",
             "json_error_column",

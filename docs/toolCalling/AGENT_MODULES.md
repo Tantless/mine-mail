@@ -23,14 +23,34 @@
 
 ## Provider 与开发调试
 
-- Rust 直接调用已配置的 Provider，不经过本机 MCP。OpenAI 兼容供应商使用
-  `chat/completions` SSE，Anthropic 使用原生 Messages SSE；独立优化保持非流式。
-  翻译在前端仍只展示校验后的完整或部分结果；MiMo 翻译在 Rust 内使用 SSE 接收、
-  关闭思考模式并使用翻译专用超时，避免等待整包响应阻塞到通用超时。
+- Rust 直接调用已配置的 Provider，不经过本机 MCP。模型配置可选择 OpenAI
+  Responses、OpenAI Chat Completions 或 Anthropic Messages；供应商支持范围、推荐协议、
+  地址和认证差异见 [`API_PROTOCOLS.md`](API_PROTOCOLS.md)。**自动**只解析为当前供应商
+  的推荐协议，不在失败后静默换协议重试。
+- 对话 Agent 通过当前协议适配器使用 SSE，独立优化通过同一适配器保持非流式，邮件
+  翻译也通过同一适配器请求并在 Rust 校验完整结果。因此切换协议会同时影响三类功能，
+  但不会改变各模块的工具白名单、输出校验、超时或正文审阅规则。
+- OpenAI Responses 适配器把每轮 assistant 工具调用与工具结果分别转换为
+  `function_call` 和 `function_call_output`，保持同一个 `call_id`；手动管理上下文时会
+  带回供应商返回的 reasoning item。OpenAI 官方与 OpenRouter 请求额外包含加密推理项，
+  以支持 `store: false` 下的连续工具轮次。Anthropic 适配器使用 content block 转换工具
+  调用，Chat Completions 适配器继续保存需要回传的推理协议状态。
+- 翻译在前端仍只展示校验后的完整或部分结果；MiMo 翻译在 Rust 内使用 SSE 接收、
+  关闭思考模式并使用翻译专用超时，避免等待整包响应阻塞到通用超时。翻译片段按每批
+  最多 6 个且通常不超过 800 个 UTF-8 字节拆分，同时最多请求 2 批；单个超长片段不会
+  被截断，而是独立成批。失败批次保留原文，其他批次的有效结果仍按全局编号写回。
+  阅读器在应用运行期按邮件保留任务和最新译文，最多同时翻译 2 封邮件；切换邮件不会
+  丢弃任务或结果，退出应用后清除。阅读器选择其他语言只覆盖当前邮件并立即重新翻译，
+  不修改设置中的默认语言；新结果失败时继续保留上一份译文。MiMo 每批输出上限按请求
+  大小动态约束，避免小批次无意义地持续生成。
 - SSE 连接正常结束时会刷新尚未以空行终止的最后一个数据事件，兼容尾帧省略空行的
-  OpenAI 与 Anthropic 网关，避免最后一个工具参数被截断。自定义配置使用 MiMo
-  Token Plan 官方中国、新加坡或欧洲地址时，Rust 使用其 `api-key` 认证头，并按 MiMo
-  接口使用 `max_completion_tokens`。
+  OpenAI 与 Anthropic 网关。自定义配置使用 MiMo Token Plan 官方中国、新加坡或欧洲
+  地址时，Rust 使用其 `api-key` 认证头，并按 MiMo 接口使用
+  `max_completion_tokens`。
+- MiMo v2.5 系列按供应商声明采用串行工具调用：请求明确关闭并行工具调用；若兼容
+  网关仍在同一轮返回多个工具，Rust 只保留第一个并在下一轮继续，工具轮次上限相应
+  放宽。模型返回不完整 JSON 时，带回供应商的历史会替换为有效空对象，并附带失败的
+  工具结果要求模型只重试该工具，避免非法历史触发下一轮 HTTP 400。
 - Debug 构建会尝试读取仓库根目录中被 Git 忽略的 `.env`。`API_KEY` 是必需项，
   `MODEL_NAME` 未填写时使用 `deepseek-v4-pro`，`AI_BASE_URL` 未填写时使用 DeepSeek
   官方地址。
@@ -240,9 +260,17 @@ Provider 读取和后续工具执行，丢弃未完成工作副本。
 - `ai_provider_response_read_failed`，区分完整响应超时、传输中断和响应解码失败
 - `ai_translation_transport_selected`，记录 MiMo 翻译采用关闭思考的内部流式传输
 - `ai_provider_stream_idle_timeout`，记录 MiMo 翻译流超过空闲时限未收到新数据
+- `ai_provider_stream_progress`，每约 10 秒记录 MiMo 翻译流累计数据块、SSE 事件、
+  正文与思考字节数、终止事件状态和 JSON 结构状态，不记录生成文本
+- `ai_provider_stream_interrupted`，流读取失败时记录同一组最终结构计数，便于区分
+  持续生成、空闲超时和未闭合 JSON
+- `ai_translation_batch_started`、`ai_translation_batch_completed`、
+  `ai_translation_batch_failed`，记录批次序号、批次数、片段数、耗时和结果类别
 - `ai_translation_failed`，翻译结果校验失败时区分 JSON、片段数量、编号与字符问题；
   片段数量异常只记录预期数、实际数和差值，不记录邮件文本
 - `ai_translation_completed`，`partially_completed` 结果记录已翻译与保留原文的片段数
+- `ai_tool_calls_serialized`，记录串行兼容模式延后了多少个同轮工具，不记录参数
+- `ai_tool_arguments_invalid`，只记录参数大小与 JSON 错误类别、行列位置
 - `ai_tool_started`
 - `ai_tool_completed`
 - `ai_result_validated`

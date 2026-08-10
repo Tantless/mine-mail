@@ -1,6 +1,10 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  createReaderTranslationQueue,
+  translationSourceFingerprint,
+} from "../services/readerTranslationQueue.js";
 import { MessageView } from "./MessageView.jsx";
 
 vi.mock("./ReaderIdleExperience.jsx", () => ({
@@ -142,7 +146,7 @@ describe("MessageView body hydration", () => {
 });
 
 describe("MessageView AI translation", () => {
-  it("uses a split capsule and persists a language selected from the reader", async () => {
+  it("uses a split capsule and keeps a reader language selection local", async () => {
     const user = userEvent.setup();
     const onLoadTranslationConfig = vi.fn().mockResolvedValue({
       translationLanguage: "zh-Hans",
@@ -151,20 +155,16 @@ describe("MessageView AI translation", () => {
         { value: "ja", label: "日本語" },
       ],
     });
-    const onChangeTranslationLanguage = vi.fn().mockResolvedValue({
-      translationLanguage: "ja",
-      translationLanguages: [
-        { value: "zh-Hans", label: "中文（简体）" },
-        { value: "ja", label: "日本語" },
-      ],
+    const onTranslateMessage = vi.fn().mockResolvedValue({
+      language: "ja",
+      parts: [{ id: "body-text", content: "日本語の本文" }],
     });
     const { container } = render(
       <MessageView
         message={messageFixture()}
         onClose={vi.fn()}
-        onTranslateMessage={vi.fn()}
+        onTranslateMessage={onTranslateMessage}
         onLoadTranslationConfig={onLoadTranslationConfig}
-        onChangeTranslationLanguage={onChangeTranslationLanguage}
       />,
     );
 
@@ -179,10 +179,13 @@ describe("MessageView AI translation", () => {
 
     await user.click(languageSelect);
     await user.click(screen.getByRole("option", { name: "日本語" }));
-    await waitFor(() =>
-      expect(onChangeTranslationLanguage).toHaveBeenCalledWith("ja"),
-    );
     expect(languageSelect.textContent).toContain("日本語");
+    await user.click(screen.getByRole("button", { name: "AI 翻译" }));
+    await screen.findByText("日本語の本文");
+    expect(onTranslateMessage).toHaveBeenCalledWith(
+      [{ id: "body-text", format: "plain", content: "完整正文" }],
+      "ja",
+    );
   });
 
   it("translates safe HTML and switches between the original and translated body", async () => {
@@ -211,14 +214,17 @@ describe("MessageView AI translation", () => {
 
     await user.click(screen.getByRole("button", { name: "AI 翻译" }));
     await screen.findByRole("group", { name: "邮件正文显示语言" });
-    expect(onTranslateMessage).toHaveBeenCalledWith([
-      {
-        id: "body-html",
-        format: "html",
-        content:
-          '<section data-layout="kept"><p><strong>Hello, friend</strong></p></section>',
-      },
-    ]);
+    expect(onTranslateMessage).toHaveBeenCalledWith(
+      [
+        {
+          id: "body-html",
+          format: "html",
+          content:
+            '<section data-layout="kept"><p><strong>Hello, friend</strong></p></section>',
+        },
+      ],
+      "zh-Hans",
+    );
     expect(screen.getByText("你好，朋友")).toBeTruthy();
     expect(screen.getByRole("button", { name: "译文" }).getAttribute("aria-pressed")).toBe(
       "true",
@@ -227,6 +233,95 @@ describe("MessageView AI translation", () => {
     await user.click(screen.getByRole("button", { name: "原文" }));
     expect(screen.getByText("Hello, friend")).toBeTruthy();
     expect(screen.queryByText("你好，朋友")).toBeNull();
+  });
+
+  it("keeps an in-flight and completed translation when the reader changes mail", async () => {
+    const user = userEvent.setup();
+    const translationQueue = createReaderTranslationQueue();
+    let resolveTranslation;
+    const onTranslateMessage = vi.fn(() => new Promise((resolve) => {
+      resolveTranslation = resolve;
+    }));
+    const firstMessage = messageFixture({ id: "first", body_text: "First body" });
+    const secondMessage = messageFixture({ id: "second", body_text: "Second body" });
+    const commonProps = {
+      onClose: vi.fn(),
+      onTranslateMessage,
+      translationQueue,
+    };
+    const { rerender } = render(
+      <MessageView key="first" message={firstMessage} {...commonProps} />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "AI 翻译" }));
+    expect(screen.getByRole("button", { name: "AI 翻译" }).getAttribute("aria-busy"))
+      .toBe("true");
+
+    rerender(<MessageView key="second" message={secondMessage} {...commonProps} />);
+    expect(screen.getByText("Second body")).toBeTruthy();
+    resolveTranslation({
+      language: "zh-Hans",
+      parts: [{ id: "body-text", content: "第一封译文" }],
+    });
+    const firstSource = translationSourceFingerprint([
+      { id: "body-text", format: "plain", content: "First body" },
+    ]);
+    await waitFor(() =>
+      expect(translationQueue.getSnapshot("message:first", firstSource)?.status)
+        .toBe("completed"),
+    );
+
+    rerender(<MessageView key="first" message={firstMessage} {...commonProps} />);
+    expect(await screen.findByText("第一封译文")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "译文" }).getAttribute("aria-pressed"))
+      .toBe("true");
+  });
+
+  it("keeps the previous result visible until a newly selected language completes", async () => {
+    const user = userEvent.setup();
+    let resolveJapanese;
+    const onTranslateMessage = vi
+      .fn()
+      .mockResolvedValueOnce({
+        language: "zh-Hans",
+        parts: [{ id: "body-text", content: "中文译文" }],
+      })
+      .mockImplementationOnce(() => new Promise((resolve) => {
+        resolveJapanese = resolve;
+      }));
+    render(
+      <MessageView
+        message={messageFixture({ id: "language-switch" })}
+        onClose={vi.fn()}
+        onTranslateMessage={onTranslateMessage}
+        onLoadTranslationConfig={vi.fn().mockResolvedValue({
+          translationLanguage: "zh-Hans",
+          translationLanguages: [
+            { value: "zh-Hans", label: "中文（简体）" },
+            { value: "ja", label: "日本語" },
+          ],
+        })}
+      />,
+    );
+
+    await screen.findByRole("combobox", { name: "AI 翻译语言" });
+    await user.click(screen.getByRole("button", { name: "AI 翻译" }));
+    expect(await screen.findByText("中文译文")).toBeTruthy();
+
+    await user.click(screen.getByRole("combobox", { name: "AI 翻译语言" }));
+    await user.click(screen.getByRole("option", { name: "日本語" }));
+    expect(screen.getByText("中文译文")).toBeTruthy();
+    expect(onTranslateMessage).toHaveBeenLastCalledWith(
+      [{ id: "body-text", format: "plain", content: "完整正文" }],
+      "ja",
+    );
+
+    resolveJapanese({
+      language: "ja",
+      parts: [{ id: "body-text", content: "日本語の翻訳" }],
+    });
+    expect(await screen.findByText("日本語の翻訳")).toBeTruthy();
+    expect(screen.queryByText("中文译文")).toBeNull();
   });
 
   it("shows valid partial translations and explains that missing fragments stay original", async () => {

@@ -185,17 +185,22 @@ All app-owned color and material decisions flow through custom properties in
   to `docs/MAIL_RENDERING.md`.
 - Incoming Inbox, Starred, Archive, and Trash mail exposes one compact split
   **AI 翻译** capsule in the reader toolbar after the body is ready. Its left
-  icon runs translation and its right, content-width language trigger changes
-  the persisted **AI 翻译语言** through a reader-specific bounded popup rather
-  than reusing the settings-field presentation. A minimized compose bar is
+  icon runs translation and its right, content-width language trigger selects
+  a language for that message without changing the persisted **AI 翻译语言**.
+  The trigger uses a reader-specific bounded popup rather than reusing the
+  settings-field presentation. A minimized compose bar is
   always treated as the lower popup boundary. Opening or focusing the control
   never draws a primary-colored outer selection ring around the whole capsule;
   keyboard focus is shown only as restrained inset feedback on the active
   segment. Its language popup uses an opaque theme surface and stays above the
   mail body so sender text cannot show through or intercept its options. While
   translating, the icon alone shows progress. Success replaces the split
-  control with a low-profile **原文 / 译文** capsule; the selected half uses the
-  restrained primary tint and switching never reflows the toolbar. If the
+  control with a low-profile **原文 / 译文** capsule followed by a compact
+  language trigger that displays the current translated language. Selecting a
+  different language starts translation immediately, keeps the previous result
+  available until the replacement succeeds, and never changes the Agent default.
+  The selected half uses the restrained primary tint and switching never reflows
+  the toolbar. If the
   Provider returns only some valid text positions, the translated view fills
   those positions, leaves missing positions in the original language, and shows
   one compact warning with the completed and total position counts. Sent, Draft,
@@ -268,8 +273,18 @@ All app-owned color and material decisions flow through custom properties in
   provider without saved configuration starts from its preset `BASE_URL` and
   default model without hiding or locking either field. A fresh, unconfigured
   card selects **自定义** with empty connection fields. Each provider remembers
-  its own address, model, and key-source choice so switching providers never
-  clears another provider's configuration.
+  its selected protocol, while each provider/protocol pair remembers its address,
+  model, key-source choice, and discovered models. Switching either dimension
+  never clears another saved combination.
+- **API 协议** is the first connection field, before `BASE_URL`. It uses the
+  shared `ThemedSelect` at the standard settings-control height. **自动** names
+  the current Provider recommendation in its label; the same recommended
+  concrete option carries one restrained **（推荐）** suffix. Unsupported
+  protocols are absent rather than disabled. Selecting a protocol restores its
+  saved fields or applies that protocol's preset address and model. The menu is
+  bounded like the other settings popovers and never uses a browser-native
+  focus ring. Testing, model discovery, automatic save, and manual save always
+  operate on the visibly selected protocol.
 - `API_KEY` is a masked field with an adjacent **从系统环境变量获取** option.
   A successfully stored manual key remains visible as a fixed non-secret mask;
   focusing the field prepares it for replacement, and leaving it empty restores

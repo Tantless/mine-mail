@@ -170,8 +170,9 @@ product decision changes.
   explicit per-message action and does not alter the cached message, server
   content, search index, reply source, or forwarding source. A completed result
   remains a reader-only in-memory alternative that can be switched between
-  **原文** and **译文** while that message stays open. Sent, Draft, and Outbox
-  content does not expose this action.
+  **原文** and **译文** throughout the current application run. Switching mail
+  does not cancel or discard an active or completed translation. Sent, Draft,
+  and Outbox content does not expose this action.
 
 ## Folders, stars, and message actions
 
@@ -311,18 +312,28 @@ product decision changes.
   consumes it. After a successful save, React shows only a fixed non-secret mask
   derived from `has_stored_api_key`; Rust never returns a key to React, and the
   browser demo remains offline and deterministic.
-- Agent configuration supports custom OpenAI-compatible services plus presets
-  for DeepSeek, Kimi, OpenAI, Anthropic, Qwen, Xiaomi MiMo, MiniMax, ModelScope,
-  Doubao Seed, GLM, and OpenRouter. Anthropic uses its native Messages and Models
-  APIs; the other presets use their documented OpenAI-compatible interfaces. An
-  unconfigured installation starts on **自定义** with empty service and model
-  fields, and does not opt into reading an API Key from the environment. Existing
-  persisted provider and key-source choices continue to load unchanged.
+- Agent configuration supports custom services plus presets for DeepSeek, Kimi,
+  OpenAI, Anthropic, Qwen, Xiaomi MiMo, MiniMax, ModelScope, Doubao Seed, GLM,
+  and OpenRouter. Every preset exposes only the protocols implemented by both
+  that service and Mine Mail: OpenAI Responses, OpenAI Chat Completions, and/or
+  Anthropic Messages. **自动** resolves to the preset recommendation; an explicit
+  selection remains explicit. Mine Mail never silently retries a failed request
+  through another protocol because that could duplicate billed work or tool
+  effects. An unconfigured installation starts on **自定义** with empty service
+  and model fields, and does not opt into reading an API Key from the environment.
+  Existing provider configurations migrate to their previous wire protocol.
 - The same configured Provider powers reader translation. **AI 翻译语言** is a
   persisted reading preference, defaults to Simplified Chinese, and offers
-  common languages under their native display names. The reader toolbar may
-  update this preference directly without resubmitting or replacing the
-  Provider, model, or API credential configuration. When translation cannot
+  common languages under their native display names. It supplies the initial
+  language for a message, while the reader's language control is a per-message
+  override and never updates the persisted preference. A completed translation
+  keeps a language trigger beside **原文 / 译文**; choosing another language
+  immediately queues a replacement. The previous translation remains readable
+  until the replacement succeeds and remains available if it fails. Translation
+  tasks and the latest successful result are kept in a bounded runtime-only
+  cache, cleared on application exit. At most two messages translate at once;
+  further messages wait in order and duplicate active requests are reused.
+  When translation cannot
   start because the Agent Provider, model, or API credential configuration is
   incomplete, the reader keeps the original content visible and shows the
   bottom-right warning **请先前往设置界面完成AGENT配置** instead of an inline
@@ -332,21 +343,25 @@ product decision changes.
   total position counts. Duplicate, unknown, malformed, or unsafe positions
   remain a failed translation rather than being guessed into the message. MiMo
   translation disables thinking and receives its response through an internal
-  stream with translation-specific total and idle timeouts; the reader still
-  updates only after Rust validates the accumulated result.
+  stream with translation-specific total and idle timeouts. Rust translates at
+  most six numbered text positions and normally no more than 800 UTF-8 bytes per
+  batch, then runs no more than two batches concurrently. A single position over
+  that byte budget remains intact in its own batch. A failed or timed-out batch
+  retains its original positions while other valid batches remain usable; the
+  reader still updates only after Rust validates and merges the available results.
 - Valid Agent configuration edits persist automatically after a short quiet
   period. Incomplete transient input remains local and does not produce repeated
   failures. The manual save action remains available for immediate persistence
   and explicit retry after an automatic-save failure. Selecting an already
   configured Provider restores and activates that Provider in one action.
-- Rust persists the active provider and translation language plus each
-  Provider's base URL, model name, and environment-key preference in the AI
-  SQLite store. Each preset also provides a small built-in model list that is
-  immediately selectable; a
-  successful model-discovery request replaces the stored list for that provider
-  across restarts without changing other providers. Manually supplied keys are
-  kept per provider in the OS credential store. Environment-key mode ignores any
-  form value and reads the preset's documented variable after application startup.
+- Rust persists the active provider, its selected protocol, and translation
+  language. Each provider/protocol pair has independent base URL, model name,
+  environment-key preference, and discovered-model list in the AI SQLite store;
+  the Provider API Key remains Provider-scoped in the OS credential store. Each
+  preset also provides an immediately selectable built-in model list. A
+  successful model-discovery request replaces only the current pair's stored
+  list across restarts. Environment-key mode ignores any form value and reads
+  the preset's documented variable after application startup.
 - Provider base URLs must use HTTPS, except loopback-only HTTP for local
   development, and cannot contain embedded credentials, query parameters, or
   fragments. Model discovery and connection tests run in Rust with bounded
@@ -378,21 +393,27 @@ product decision changes.
   short opaque request revision sent to Rust is correlation metadata, not the
   serialized draft body. The user always reviews the result and clicks **发送**
   explicitly.
-- **邮件生成**、**聊天** and **自动** use Provider SSE streaming for both
-  OpenAI-compatible chat completions and Anthropic Messages. Safe Markdown is
+- **邮件生成**、**聊天** and **自动** use Provider SSE streaming through the
+  selected OpenAI Responses, OpenAI Chat Completions, or Anthropic Messages
+  adapter. Safe Markdown is
   rendered incrementally beneath an append-only execution trail. Each Provider
   reasoning round and tool call becomes its own ordered step. A Provider may
   supply visible reasoning deltas for the active step; that temporary detail is
   replaced by a bounded completion summary when the step ends and is never saved
   as Session message text. Hidden reasoning, tool arguments, and tool results are
   not exposed. Stop cancels the Provider stream and prevents later tools.
-  Standalone optimization remains non-streaming.
+  Standalone optimization remains non-streaming. Optimization, conversational
+  Agent turns, and reader translation share the same selected adapter, endpoint,
+  authentication policy, size limits, and privacy-safe diagnostics; protocol
+  selection cannot make one feature bypass those safeguards.
 - Proposal payloads, tool lifecycle metadata, and apply backups expire seven
   days after Session activity. Cleanup runs at startup no more than once per day;
   user and final assistant Markdown remain as plain Session history.
 - The canonical built-in tool protocol and per-mode permission matrix live in
   [`toolCalling/TOOLS.md`](toolCalling/TOOLS.md) and
-  [`toolCalling/AGENT_MODULES.md`](toolCalling/AGENT_MODULES.md).
+  [`toolCalling/AGENT_MODULES.md`](toolCalling/AGENT_MODULES.md). Provider wire
+  protocols and preset recommendations live in
+  [`toolCalling/API_PROTOCOLS.md`](toolCalling/API_PROTOCOLS.md).
 
 ## Sending and Outbox
 

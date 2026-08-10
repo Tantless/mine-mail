@@ -2787,10 +2787,20 @@ html[data-surface="new-mail-notification"] #root {
   background: color-mix(in srgb, var(--color-primary) 8%, var(--reader-toolbar-surface));
 }
 
-.reader-translation-control[data-open="true"] {
+.reader-translation-control:has(.reader-translation-language-select[data-open="true"]) {
   z-index: 34;
   border-color: color-mix(in srgb, var(--color-text-muted) 28%, var(--color-border));
   background: color-mix(in srgb, var(--reader-toolbar-surface) 72%, transparent);
+}
+
+.reader-translation-language-select {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.reader-translation-language-select[data-open="true"] {
+  z-index: 34;
 }
 
 .reader-translation-run {
@@ -2859,7 +2869,7 @@ html[data-surface="new-mail-notification"] #root {
 }
 
 .reader-translation-language-trigger:hover:not(:disabled),
-.reader-translation-control[data-open="true"] .reader-translation-language-trigger {
+.reader-translation-language-select[data-open="true"] .reader-translation-language-trigger {
   background: color-mix(in srgb, var(--color-primary) 7%, transparent);
   color: var(--color-text);
 }
@@ -2972,6 +2982,36 @@ html[data-surface="new-mail-notification"] #root {
 .reader-translation-toggle button[aria-pressed="true"] {
   background: color-mix(in srgb, var(--color-primary) 13%, var(--reader-toolbar-surface));
   color: var(--color-primary);
+}
+
+.reader-translation-result-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: 7px;
+}
+
+.reader-translation-result-control .reader-translation-toggle {
+  margin-right: 0;
+}
+
+.reader-translation-result-language {
+  height: 38px;
+  border: 1px solid color-mix(in srgb, var(--color-border) 76%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--reader-toolbar-surface) 58%, transparent);
+  transition: border-color var(--motion-fast), background var(--motion-fast);
+}
+
+.reader-translation-result-language:hover,
+.reader-translation-result-language[data-open="true"] {
+  border-color: color-mix(in srgb, var(--color-primary) 28%, var(--color-border));
+  background: color-mix(in srgb, var(--color-primary) 7%, var(--reader-toolbar-surface));
+}
+
+.reader-translation-result-language .reader-translation-language-trigger {
+  height: 36px;
+  border-radius: 999px;
 }
 
 .reader-toolbar .icon-button {
@@ -9287,6 +9327,16 @@ html[data-surface="new-mail-notification"] #root {
 .agent-config-fields input:disabled {
   cursor: not-allowed;
   opacity: 0.52;
+}
+
+.agent-protocol-field .themed-select {
+  width: 100%;
+}
+
+.agent-protocol-field .themed-select__trigger {
+  min-height: 40px;
+  border-color: color-mix(in srgb, var(--color-border) 88%, var(--surface-edge));
+  background: color-mix(in srgb, var(--compose-control-surface) 76%, transparent);
 }
 
 .agent-translation-language .themed-select {

@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
 import {
   Archive,
   ArrowBendUpLeft,
@@ -26,7 +26,10 @@ import {
 import { IconButton } from "./IconButton.jsx";
 import { HtmlMessageBody } from "./HtmlMessageBody.jsx";
 import { NativeHtmlMessageBody } from "./NativeHtmlMessageBody.jsx";
-import { ReaderTranslationControl } from "./ReaderTranslationControl.jsx";
+import {
+  ReaderTranslationControl,
+  ReaderTranslationLanguageSelect,
+} from "./ReaderTranslationControl.jsx";
 import { ReaderIdleExperience } from "./ReaderIdleExperience.jsx";
 import { SegmentedMessageBody } from "./SegmentedMessageBody.jsx";
 import { EditableProfileAvatar, ProfileAvatar } from "./ProfileAvatar.jsx";
@@ -34,6 +37,10 @@ import { TooltipTarget } from "./Tooltip.jsx";
 import { formatFullDate } from "../utils/formatters.js";
 import { messageNavigationKey } from "../utils/messageNavigation.js";
 import { userFacingErrorMessage } from "../utils/userFacingError.js";
+import {
+  createReaderTranslationQueue,
+  translationSourceFingerprint,
+} from "../services/readerTranslationQueue.js";
 
 const REMOTE_MAILBOX_ROLES = new Set(["inbox", "sent", "archive", "trash"]);
 const MOVE_TO_INBOX_ROLES = new Set(["archive", "trash"]);
@@ -70,6 +77,12 @@ function isAgentConfigurationError(error) {
     current = typeof current === "object" ? current.cause : null;
   }
   return false;
+}
+
+function readerTranslationTaskError(userMessage) {
+  const error = new Error("Reader translation task failed");
+  error.userMessage = userMessage;
+  return error;
 }
 
 function translationPartsForMessage(message, bodyRenderMode) {
@@ -568,23 +581,19 @@ export function MessageView({
   onSetSenderAvatar,
   onRemoveSenderAvatar,
   onTranslateMessage,
+  translationQueue,
   onLoadTranslationConfig,
-  onChangeTranslationLanguage,
   onAgentConfigurationRequired,
 }) {
   const recipientDetailsId = useId();
   const recipientToggleRef = useRef(null);
   const recipientRegionRef = useRef(null);
-  const translationRequestRef = useRef(0);
+  const fallbackTranslationQueueRef = useRef(null);
+  if (!fallbackTranslationQueueRef.current) {
+    fallbackTranslationQueueRef.current = createReaderTranslationQueue();
+  }
+  const activeTranslationQueue = translationQueue || fallbackTranslationQueueRef.current;
   const [recipientDetailsOpen, setRecipientDetailsOpen] = useState(false);
-  const [translationState, setTranslationState] = useState({
-    status: "idle",
-    messageKey: null,
-    translatedMessage: null,
-    showTranslated: false,
-    error: null,
-    notice: null,
-  });
   const [translationPreference, setTranslationPreference] = useState({
     status: "idle",
     language: "zh-Hans",
@@ -594,6 +603,21 @@ export function MessageView({
   const translationMessageKey = message
     ? messageNavigationKey(message) || String(message.id || "reader-message")
     : null;
+  const translationBodyRenderMode = message
+    ? message.body_render_mode || (message.body_html ? "isolated_html" : "plain")
+    : "plain";
+  const translationRequestParts = message
+    ? translationPartsForMessage(message, translationBodyRenderMode)
+    : [];
+  const translationSourceKey = translationSourceFingerprint(translationRequestParts);
+  const translationTask = useSyncExternalStore(
+    activeTranslationQueue.subscribe,
+    () => activeTranslationQueue.getSnapshot(
+      translationMessageKey,
+      translationSourceKey,
+    ),
+    () => null,
+  );
   const translationRole = message ? normalizedMailboxRole(message) : "";
   const translationEligible = Boolean(
     message
@@ -604,18 +628,6 @@ export function MessageView({
   useEffect(() => {
     setRecipientDetailsOpen(false);
   }, [message?.id]);
-
-  useEffect(() => {
-    translationRequestRef.current += 1;
-    setTranslationState({
-      status: "idle",
-      messageKey: translationMessageKey,
-      translatedMessage: null,
-      showTranslated: false,
-      error: null,
-      notice: null,
-    });
-  }, [translationMessageKey]);
 
   useEffect(() => {
     if (
@@ -700,17 +712,13 @@ export function MessageView({
       typeof message.body_html === "string" ||
       Boolean(message.body_segments?.length));
   const bodyIsPending = Boolean(isLoading) || (!error && !bodyPayloadHydrated);
-  const bodyRenderMode =
-    message.body_render_mode || (message.body_html ? "isolated_html" : "plain");
+  const bodyRenderMode = translationBodyRenderMode;
   const hasBodySegments = Boolean(message.body_segments?.length);
-  const translationIsCurrent =
-    translationState.messageKey === translationMessageKey;
-  const translatedMessage =
-    translationIsCurrent && translationState.translatedMessage
-      ? translationState.translatedMessage
-      : null;
+  const translatedMessage = Array.isArray(translationTask?.translatedParts)
+    ? applyTranslatedParts(message, translationTask.translatedParts)
+    : null;
   const showTranslated = Boolean(
-    translatedMessage && translationState.showTranslated,
+    translatedMessage && translationTask.showTranslated,
   );
   const displayedMessage = showTranslated ? translatedMessage : message;
   const displayedBody = bodyPayloadHydrated
@@ -720,113 +728,87 @@ export function MessageView({
   const translationLanguageBusy = ["loading", "saving"].includes(
     translationPreference.status,
   );
-  const changeTranslationLanguage = async (language) => {
-    const nextLanguage = String(language);
+  const translationTaskBusy = ["queued", "loading"].includes(
+    translationTask?.status,
+  );
+  const displayedTranslationLanguage = String(
+    translationTaskBusy
+      ? translationTask?.requestedLanguage || translationPreference.language
+      : translationTask?.language || translationPreference.language,
+  );
+  const startTranslation = (language = translationPreference.language) => {
     if (
-      translationLanguageBusy
-      || nextLanguage === translationPreference.language
-      || typeof onChangeTranslationLanguage !== "function"
+      !canTranslate
+      || bodyIsPending
+      || error
+      || translationLanguageBusy
+      || translationTaskBusy
     ) {
       return;
     }
-    const previousLanguage = translationPreference.language;
+    const requestedLanguage = String(language || "").trim();
+    if (!requestedLanguage) return;
+    activeTranslationQueue.enqueue({
+      key: translationMessageKey,
+      sourceFingerprint: translationSourceKey,
+      language: requestedLanguage,
+      run: async () => {
+        try {
+          const result = await onTranslateMessage(
+            translationRequestParts,
+            requestedLanguage,
+          );
+          const resultParts = Array.isArray(result?.parts) ? result.parts : [];
+          const returnedIds = new Set(resultParts.map((part) => part.id));
+          if (
+            resultParts.length !== translationRequestParts.length
+            || translationRequestParts.some((part) => !returnedIds.has(part.id))
+          ) {
+            throw new Error("AI 翻译结果不完整，请重试。");
+          }
+          const translatedCount = Number(result?.translatedCount);
+          const totalCount = Number(result?.totalCount);
+          const partial = Number.isInteger(translatedCount)
+            && Number.isInteger(totalCount)
+            && totalCount > 0
+            && translatedCount < totalCount;
+          return {
+            parts: resultParts,
+            notice: partial
+              ? `部分翻译完成：已翻译 ${translatedCount}/${totalCount} 个片段，未完成部分保留原文。`
+              : null,
+          };
+        } catch (translationError) {
+          const configurationRequired = isAgentConfigurationError(translationError);
+          if (configurationRequired) onAgentConfigurationRequired?.();
+          throw readerTranslationTaskError(
+            configurationRequired
+              ? null
+              : userFacingErrorMessage(
+                  translationError,
+                  "AI 翻译失败，请检查 Agent 配置后重试",
+                ),
+          );
+        }
+      },
+    });
+  };
+  const changeTranslationLanguage = (language) => {
+    const nextLanguage = String(language || "").trim();
+    if (
+      !nextLanguage
+      || translationLanguageBusy
+      || translationTaskBusy
+      || nextLanguage === displayedTranslationLanguage
+    ) {
+      return;
+    }
     setTranslationPreference((current) => ({
       ...current,
-      status: "saving",
       language: nextLanguage,
       error: null,
     }));
-    setTranslationState((current) => ({
-      ...current,
-      status: "idle",
-      translatedMessage: null,
-      showTranslated: false,
-      error: null,
-      notice: null,
-    }));
-    try {
-      const config = await onChangeTranslationLanguage(nextLanguage);
-      const options = Array.isArray(config?.translationLanguages)
-        && config.translationLanguages.length
-        ? config.translationLanguages
-        : translationPreference.options;
-      setTranslationPreference({
-        status: "ready",
-        language: String(config?.translationLanguage || nextLanguage),
-        options,
-        error: null,
-      });
-    } catch (languageError) {
-      setTranslationPreference((current) => ({
-        ...current,
-        status: "error",
-        language: previousLanguage,
-        error: userFacingErrorMessage(
-          languageError,
-          "AI 翻译语言保存失败，请重试",
-        ),
-      }));
-    }
-  };
-  const startTranslation = async () => {
-    if (!canTranslate || bodyIsPending || error || translationLanguageBusy) return;
-    const requestId = translationRequestRef.current + 1;
-    translationRequestRef.current = requestId;
-    setTranslationState({
-      status: "loading",
-      messageKey: translationMessageKey,
-      translatedMessage: null,
-      showTranslated: false,
-      error: null,
-      notice: null,
-    });
-    try {
-      const requestParts = translationPartsForMessage(message, bodyRenderMode);
-      const result = await onTranslateMessage(requestParts);
-      if (translationRequestRef.current !== requestId) return;
-      const resultParts = Array.isArray(result?.parts) ? result.parts : [];
-      const returnedIds = new Set(resultParts.map((part) => part.id));
-      if (
-        resultParts.length !== requestParts.length
-        || requestParts.some((part) => !returnedIds.has(part.id))
-      ) {
-        throw new Error("AI 翻译结果不完整，请重试。");
-      }
-      const translated = applyTranslatedParts(message, resultParts);
-      const translatedCount = Number(result?.translatedCount);
-      const totalCount = Number(result?.totalCount);
-      const partial = Number.isInteger(translatedCount)
-        && Number.isInteger(totalCount)
-        && totalCount > 0
-        && translatedCount < totalCount;
-      setTranslationState({
-        status: "completed",
-        messageKey: translationMessageKey,
-        translatedMessage: translated,
-        showTranslated: true,
-        error: null,
-        notice: partial
-          ? `部分翻译完成：已翻译 ${translatedCount}/${totalCount} 个片段，未完成部分保留原文。`
-          : null,
-      });
-    } catch (translationError) {
-      if (translationRequestRef.current !== requestId) return;
-      const configurationRequired = isAgentConfigurationError(translationError);
-      if (configurationRequired) onAgentConfigurationRequired?.();
-      setTranslationState({
-        status: "error",
-        messageKey: translationMessageKey,
-        translatedMessage: null,
-        showTranslated: false,
-        error: configurationRequired
-          ? null
-          : userFacingErrorMessage(
-              translationError,
-              "AI 翻译失败，请检查 Agent 配置后重试",
-            ),
-        notice: null,
-      });
-    }
+    if (translatedMessage) startTranslation(nextLanguage);
   };
   const outboxRecipientGroupsUnavailable =
     role === "outbox" &&
@@ -963,61 +945,70 @@ export function MessageView({
         </div>
         <div className="reader-toolbar__group">
           {canTranslate ? (
-            translationIsCurrent && translationState.status === "completed" ? (
-              <div
-                className="reader-translation-toggle"
-                role="group"
-                aria-label="邮件正文显示语言"
-              >
-                <button
-                  type="button"
-                  aria-pressed={!showTranslated}
-                  onClick={() =>
-                    setTranslationState((current) => ({
-                      ...current,
-                      showTranslated: false,
-                    }))
-                  }
+            translatedMessage ? (
+              <div className="reader-translation-result-control">
+                <div
+                  className="reader-translation-toggle"
+                  role="group"
+                  aria-label="邮件正文显示语言"
                 >
-                  原文
-                </button>
-                <button
-                  type="button"
-                  aria-pressed={showTranslated}
-                  onClick={() =>
-                    setTranslationState((current) => ({
-                      ...current,
-                      showTranslated: true,
-                    }))
-                  }
-                >
-                  译文
-                </button>
-                <span className="sr-only" role="status">
-                  AI 翻译已完成
-                </span>
+                  <button
+                    type="button"
+                    aria-pressed={!showTranslated}
+                    onClick={() =>
+                      activeTranslationQueue.setShowTranslated(
+                        translationMessageKey,
+                        translationSourceKey,
+                        false,
+                      )
+                    }
+                  >
+                    原文
+                  </button>
+                  <button
+                    type="button"
+                    aria-pressed={showTranslated}
+                    onClick={() =>
+                      activeTranslationQueue.setShowTranslated(
+                        translationMessageKey,
+                        translationSourceKey,
+                        true,
+                      )
+                    }
+                  >
+                    译文
+                  </button>
+                </div>
+                <ReaderTranslationLanguageSelect
+                  className="reader-translation-result-language"
+                  value={displayedTranslationLanguage}
+                  options={translationPreference.options}
+                  disabled={translationTaskBusy || translationLanguageBusy}
+                  busy={translationTaskBusy}
+                  onValueChange={changeTranslationLanguage}
+                />
+                {!translationTaskBusy ? (
+                  <span className="sr-only" role="status">AI 翻译已完成</span>
+                ) : null}
               </div>
             ) : (
               <ReaderTranslationControl
-                value={translationPreference.language}
+                value={displayedTranslationLanguage}
                 options={translationPreference.options}
-                translating={translationState.status === "loading"}
-                retry={translationState.status === "error"}
+                translating={translationTaskBusy}
+                retry={translationTask?.status === "error"}
                 runDisabled={
                   bodyIsPending
                   || Boolean(error)
-                  || translationState.status === "loading"
+                  || translationTaskBusy
                   || translationLanguageBusy
                 }
                 selectDisabled={
-                  translationState.status === "loading"
+                  translationTaskBusy
                   || translationLanguageBusy
-                  || typeof onChangeTranslationLanguage !== "function"
                 }
-                onRun={() => void startTranslation()}
-                onValueChange={(language) =>
-                  void changeTranslationLanguage(language)
-                }
+                onRun={() => startTranslation()}
+                onValueChange={changeTranslationLanguage}
               />
             )
           ) : null}
@@ -1035,15 +1026,14 @@ export function MessageView({
       </header>
 
       <div className="reader-scroll vertical-scroll-surface">
-        {(translationIsCurrent && translationState.error)
-        || translationPreference.error ? (
+        {translationTask?.error || translationPreference.error ? (
           <div className="reader-translation-error" role="alert">
-            {translationState.error || translationPreference.error}
+            {translationTask?.error || translationPreference.error}
           </div>
         ) : null}
-        {translationIsCurrent && translationState.notice ? (
+        {translationTask?.notice ? (
           <div className="reader-translation-notice" role="status">
-            {translationState.notice}
+            {translationTask.notice}
           </div>
         ) : null}
         <div className="message-header">

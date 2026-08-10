@@ -160,6 +160,7 @@ describe("mailApi desktop IPC contract", () => {
           environment_variable: "DEEPSEEK_API_KEY",
           models: ["deepseek-v4-flash", "deepseek-v4-pro"],
           configuration: {
+            protocol_id: "openai_chat_completions",
             base_url: "https://gateway.example.com/deepseek",
             model_name: "deepseek-v4-pro",
             use_environment_key: false,
@@ -185,6 +186,7 @@ describe("mailApi desktop IPC contract", () => {
     const { mailApi } = await import("./mailApi.js");
     const configuration = {
       providerId: "deepseek",
+      protocolId: "auto",
       baseUrl: "https://api.deepseek.com",
       modelName: "deepseek-v4-pro",
       useEnvironmentKey: false,
@@ -201,6 +203,7 @@ describe("mailApi desktop IPC contract", () => {
       "deepseek-v4-pro",
     ]);
     expect(loaded.presets[0].configuration).toEqual({
+      protocolId: "openai_chat_completions",
       baseUrl: "https://gateway.example.com/deepseek",
       modelName: "deepseek-v4-pro",
       useEnvironmentKey: false,
@@ -259,14 +262,14 @@ describe("mailApi desktop IPC contract", () => {
       { id: "body-html", format: "html", content: "<p>Hello</p>" },
     ];
 
-    await expect(mailApi.translateMailContent(parts)).resolves.toEqual({
+    await expect(mailApi.translateMailContent(parts, "ja")).resolves.toEqual({
       language: "zh-Hans",
       parts: [{ id: "body-html", content: "<p>你好</p>" }],
       translatedCount: 1,
       totalCount: 2,
     });
     expect(ipc.invoke).toHaveBeenCalledWith("translate_mail_content", {
-      request: { parts },
+      request: { languageId: "ja", parts },
     });
   });
 

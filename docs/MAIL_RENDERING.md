@@ -138,9 +138,23 @@ frontend code. An intentional threshold change must:
 - The translated representation is reader-only and in memory. Switching back to
   the original uses the unchanged cached representation; translation never
   rewrites MIME data, body cache rows, reply/forward sources, or search text.
+  Runtime translation tasks are keyed by the stable reader message identity and
+  an in-memory content-free fingerprint of the sanitized source parts. Switching
+  mail therefore keeps active work and the latest successful result available until
+  application exit. At most two messages run at once; additional messages wait
+  in order. A per-message language override is sent with the translation request
+  and does not change the persisted default. Re-translation keeps the previous
+  validated representation visible until a replacement succeeds; failure leaves
+  that previous result intact.
 - MiMo translation disables model thinking and uses its OpenAI-compatible SSE
   transport internally with a 180-second total request limit and a 45-second
-  between-chunk idle limit. The reader still receives only the final validated
+  between-chunk idle limit. Translation units are split into batches of at most
+  six and normally at most 800 UTF-8 bytes, with at most two Provider requests in
+  flight. A single larger unit stays intact in its own batch. Each batch retains
+  the original global unit IDs, and failed batches leave those positions
+  unchanged without discarding valid translations from other batches. MiMo
+  completion limits are bounded from the batch request size instead of always
+  requesting the maximum output. The reader still receives only the final validated
   representation; raw deltas are never rendered or persisted.
 
 ## Attachment indexing and extraction

@@ -13,6 +13,25 @@ const demoSyncRoles = new Set([
   "trash",
 ]);
 const creatableDemoRoles = new Set(["trash"]);
+const demoProtocolLabels = Object.freeze({
+  openai_responses: "OpenAI Responses",
+  openai_chat_completions: "OpenAI Chat Completions",
+  anthropic_messages: "Anthropic Messages",
+});
+const demoProviderProtocolIds = Object.freeze({
+  custom: ["openai_responses", "openai_chat_completions", "anthropic_messages"],
+  deepseek: ["openai_chat_completions", "anthropic_messages"],
+  kimi: ["openai_chat_completions"],
+  openai: ["openai_responses", "openai_chat_completions"],
+  anthropic: ["anthropic_messages"],
+  qwen: ["openai_responses", "openai_chat_completions"],
+  mimo: ["openai_responses", "openai_chat_completions", "anthropic_messages"],
+  minimax: ["anthropic_messages", "openai_chat_completions"],
+  modelscope: ["openai_chat_completions"],
+  doubaoseed: ["openai_responses", "openai_chat_completions"],
+  glm: ["openai_chat_completions", "anthropic_messages"],
+  openrouter: ["openai_chat_completions", "openai_responses"],
+});
 const demoAiPresets = [
   ["custom", "自定义", "", "AI_API_KEY", []],
   ["deepseek", "DeepSeek", "https://api.deepseek.com", "DEEPSEEK_API_KEY", ["deepseek-v4-flash", "deepseek-v4-pro"]],
@@ -26,13 +45,36 @@ const demoAiPresets = [
   ["doubaoseed", "豆包 Seed", "https://ark.cn-beijing.volces.com/api/v3", "ARK_API_KEY", ["doubao-seed-2-0-lite-260428", "doubao-seed-2-0-mini-260428", "doubao-seed-2-0-pro-260215"]],
   ["glm", "智谱 GLM", "https://open.bigmodel.cn/api/paas/v4", "ZAI_API_KEY", ["glm-4.7-flash", "glm-5-turbo", "glm-5.1"]],
   ["openrouter", "OpenRouter", "https://openrouter.ai/api/v1", "OPENROUTER_API_KEY", ["openrouter/auto", "~anthropic/claude-sonnet-latest", "~openai/gpt-latest"]],
-].map(([id, label, baseUrl, environmentVariable, models]) => ({
-  id,
-  label,
-  baseUrl,
-  environmentVariable,
-  models,
-}));
+].map(([id, label, baseUrl, environmentVariable, models]) => {
+  const ids = demoProviderProtocolIds[id];
+  const recommendedProtocolId = ids[0];
+  return {
+    id,
+    label,
+    baseUrl,
+    environmentVariable,
+    models,
+    protocolId: "auto",
+    recommendedProtocolId,
+    protocols: ids.map((protocolId) => ({
+      id: protocolId,
+      label: demoProtocolLabels[protocolId],
+      baseUrl:
+        id === "deepseek" && protocolId === "anthropic_messages"
+          ? "https://api.deepseek.com/anthropic"
+          : id === "mimo" && protocolId === "anthropic_messages"
+          ? "https://api.xiaomimimo.com/anthropic"
+          : id === "minimax" && protocolId === "anthropic_messages"
+          ? "https://api.minimaxi.com/anthropic"
+          : id === "glm" && protocolId === "anthropic_messages"
+            ? "https://open.bigmodel.cn/api/anthropic"
+            : baseUrl,
+      recommended: protocolId === recommendedProtocolId,
+      models,
+    })),
+    configurations: [],
+  };
+});
 const demoAiTranslationLanguages = [
   ["zh-Hans", "中文（简体）"],
   ["zh-Hant", "中文（繁體）"],
@@ -58,6 +100,8 @@ function createDemoState() {
     aiSessions: [],
     aiConfig: {
       providerId: "custom",
+      protocolId: "auto",
+      resolvedProtocolId: "openai_chat_completions",
       baseUrl: "",
       modelName: "",
       useEnvironmentKey: false,
@@ -550,6 +594,10 @@ function createDemoActions(
         throw new Error("请输入 API Key，或改为从系统环境变量读取");
       }
       const providerConfiguration = {
+        protocolId:
+          request.protocolId === "auto"
+            ? preset.recommendedProtocolId
+            : request.protocolId,
         baseUrl: request.baseUrl.trim(),
         modelName: request.modelName.trim(),
         useEnvironmentKey: Boolean(request.useEnvironmentKey),
@@ -561,6 +609,8 @@ function createDemoActions(
       state.aiConfig = {
         ...state.aiConfig,
         providerId: request.providerId,
+        protocolId: request.protocolId || "auto",
+        resolvedProtocolId: providerConfiguration.protocolId,
         ...providerConfiguration,
         translationLanguage: demoAiTranslationLanguages.some(
           (language) => language.value === request.translationLanguage,
@@ -570,7 +620,18 @@ function createDemoActions(
         environmentVariable: preset.environmentVariable,
         presets: state.aiConfig.presets.map((candidate) =>
           candidate.id === request.providerId
-            ? { ...candidate, configuration: providerConfiguration }
+            ? {
+                ...candidate,
+                protocolId: request.protocolId || "auto",
+                configuration: providerConfiguration,
+                configurations: [
+                  ...candidate.configurations.filter(
+                    (configuration) =>
+                      configuration.protocolId !== providerConfiguration.protocolId,
+                  ),
+                  providerConfiguration,
+                ],
+              }
             : candidate,
         ),
       };
@@ -596,7 +657,21 @@ function createDemoActions(
           ? ["deepseek-v4-flash", "deepseek-v4-pro"]
           : ["demo-model-fast", "demo-model-pro"];
       state.aiConfig.presets = state.aiConfig.presets.map((preset) =>
-        preset.id === request.providerId ? { ...preset, models } : preset,
+        preset.id === request.providerId
+          ? {
+              ...preset,
+              models,
+              protocols: preset.protocols.map((protocol) =>
+                protocol.id === (
+                  request.protocolId === "auto"
+                    ? preset.recommendedProtocolId
+                    : request.protocolId
+                )
+                  ? { ...protocol, models }
+                  : protocol,
+              ),
+            }
+          : preset,
       );
       return {
         models,
@@ -609,7 +684,7 @@ function createDemoActions(
     },
 
     translateMailContent(request) {
-      const language = state.aiConfig.translationLanguage || "zh-Hans";
+      const language = request.languageId || state.aiConfig.translationLanguage || "zh-Hans";
       let translatedCount = 0;
       const parts = (request.parts || []).map((part) => {
         if (part.format !== "html") {

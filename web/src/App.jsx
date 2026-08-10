@@ -15,6 +15,7 @@ import {
   isUnsupportedRuntime,
   mailApi,
 } from "./services/mailApi.js";
+import { createReaderTranslationQueue } from "./services/readerTranslationQueue.js";
 import { WindowTitlebar } from "./components/WindowTitlebar.jsx";
 import { Sidebar } from "./components/Sidebar.jsx";
 import { MailList } from "./components/MailList.jsx";
@@ -819,6 +820,13 @@ export function App() {
   const selectedMessageIdRef = useRef(null);
   const readerOpenRef = useRef(false);
   const messageBodyCacheRef = useRef(new Map());
+  const readerTranslationQueueRef = useRef(null);
+  if (!readerTranslationQueueRef.current) {
+    readerTranslationQueueRef.current = createReaderTranslationQueue({
+      maxConcurrent: 2,
+      maxEntries: 50,
+    });
+  }
   const accountViewsRef = useRef(new Map());
   const accountViewLoadsRef = useRef(new Map());
   const accountViewSnapshotLockRef = useRef(null);
@@ -7653,9 +7661,11 @@ export function App() {
           : selectedIndex >= 0 && selectedIndex < visibleMessages.length - 1
       }
       remoteImageMode={settings.remoteImageMode}
-      onTranslateMessage={(parts) => mailApi.translateMailContent(parts)}
+      translationQueue={readerTranslationQueueRef.current}
+      onTranslateMessage={(parts, languageId) =>
+        mailApi.translateMailContent(parts, languageId)
+      }
       onLoadTranslationConfig={mailApi.getAiConfig}
-      onChangeTranslationLanguage={mailApi.setAiTranslationLanguage}
       onAgentConfigurationRequired={() =>
         showToast("请先前往设置界面完成AGENT配置", "warning")
       }

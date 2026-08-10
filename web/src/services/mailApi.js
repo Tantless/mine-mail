@@ -415,9 +415,40 @@ function normalizeAiProposal(proposal = {}) {
   };
 }
 
+function normalizeAiProviderConfiguration(configuration = {}) {
+  return {
+    protocolId:
+      configuration.protocolId
+      ?? configuration.protocol_id
+      ?? "openai_chat_completions",
+    baseUrl: configuration.baseUrl ?? configuration.base_url ?? "",
+    modelName: configuration.modelName ?? configuration.model_name ?? "",
+    useEnvironmentKey: Boolean(
+      configuration.useEnvironmentKey
+      ?? configuration.use_environment_key
+      ?? false,
+    ),
+    hasStoredApiKey: Boolean(
+      configuration.hasStoredApiKey
+      ?? configuration.has_stored_api_key
+      ?? false,
+    ),
+    hasEnvironmentApiKey: Boolean(
+      configuration.hasEnvironmentApiKey
+      ?? configuration.has_environment_api_key
+      ?? false,
+    ),
+  };
+}
+
 function normalizeAiConfig(config = {}) {
   return {
     providerId: config.providerId ?? config.provider_id ?? "custom",
+    protocolId: config.protocolId ?? config.protocol_id ?? "auto",
+    resolvedProtocolId:
+      config.resolvedProtocolId
+      ?? config.resolved_protocol_id
+      ?? "openai_chat_completions",
     baseUrl: config.baseUrl ?? config.base_url ?? "",
     modelName: config.modelName ?? config.model_name ?? "",
     useEnvironmentKey: Boolean(
@@ -455,32 +486,27 @@ function normalizeAiConfig(config = {}) {
           models: Array.isArray(preset.models)
             ? preset.models.filter((model) => typeof model === "string")
             : [],
+          protocolId: preset.protocolId ?? preset.protocol_id ?? "auto",
+          recommendedProtocolId:
+            preset.recommendedProtocolId
+            ?? preset.recommended_protocol_id
+            ?? "openai_chat_completions",
+          protocols: Array.isArray(preset.protocols)
+            ? preset.protocols.map((protocol) => ({
+                id: protocol.id,
+                label: protocol.label,
+                baseUrl: protocol.baseUrl ?? protocol.base_url ?? "",
+                recommended: Boolean(protocol.recommended),
+                models: Array.isArray(protocol.models)
+                  ? protocol.models.filter((model) => typeof model === "string")
+                  : [],
+              }))
+            : [],
+          configurations: Array.isArray(preset.configurations)
+            ? preset.configurations.map(normalizeAiProviderConfiguration)
+            : [],
           configuration: preset.configuration
-            ? {
-                baseUrl:
-                  preset.configuration.baseUrl
-                  ?? preset.configuration.base_url
-                  ?? "",
-                modelName:
-                  preset.configuration.modelName
-                  ?? preset.configuration.model_name
-                  ?? "",
-                useEnvironmentKey: Boolean(
-                  preset.configuration.useEnvironmentKey
-                  ?? preset.configuration.use_environment_key
-                  ?? false,
-                ),
-                hasStoredApiKey: Boolean(
-                  preset.configuration.hasStoredApiKey
-                  ?? preset.configuration.has_stored_api_key
-                  ?? false,
-                ),
-                hasEnvironmentApiKey: Boolean(
-                  preset.configuration.hasEnvironmentApiKey
-                  ?? preset.configuration.has_environment_api_key
-                  ?? false,
-                ),
-              }
+            ? normalizeAiProviderConfiguration(preset.configuration)
             : null,
         }))
       : [],
@@ -490,6 +516,7 @@ function normalizeAiConfig(config = {}) {
 function aiConnectionRequest(config) {
   return {
     providerId: config.providerId,
+    protocolId: config.protocolId || "auto",
     baseUrl: config.baseUrl,
     modelName: config.modelName || "",
     useEnvironmentKey: Boolean(config.useEnvironmentKey),
@@ -551,8 +578,11 @@ export const mailApi = {
     };
   },
 
-  async translateMailContent(parts) {
+  async translateMailContent(parts, languageId = null) {
     const request = {
+      languageId: typeof languageId === "string" && languageId.trim()
+        ? languageId.trim()
+        : null,
       parts: Array.isArray(parts)
         ? parts.map((part) => ({
             id: part.id,
