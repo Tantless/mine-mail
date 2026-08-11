@@ -861,9 +861,15 @@ html[data-surface="new-mail-notification"] #root {
 .app-shell input,
 .app-shell textarea,
 .app-shell [contenteditable="true"],
-.reader-panel--message .reader-scroll {
+.reader-panel--message .reader-scroll,
+.compose-ai-conversation {
   -webkit-user-select: text;
   user-select: text;
+}
+
+.compose-ai-conversation :is(button, [role="button"], summary) {
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 .unsupported-runtime {

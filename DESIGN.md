@@ -147,8 +147,9 @@ All app-owned color and material decisions flow through custom properties in
   second card system.
 - Cached content stays mounted during background work. Loading and queued
   mutations do not replace usable rows or move the current selection.
-- App chrome and navigation are not text-selectable. Text fields and opened
-  message content remain selectable.
+- App chrome and navigation are not text-selectable. Text fields, opened message
+  content, and AI assistant conversation content remain selectable; controls
+  inside those regions stay inert to selection.
 - Use the shared portal tooltip for icon-only or unfamiliar actions. Dense
   frosted popups are shared by theme selection, account menus, recipient
   suggestions, and selects.

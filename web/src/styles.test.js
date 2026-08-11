@@ -34,18 +34,23 @@ function nestedBlockFor(header) {
 }
 
 describe("text selection policy", () => {
-  it("keeps app chrome inert while allowing text entry and opened mail content", () => {
+  it("keeps app chrome inert while allowing content selection", () => {
     expect(declarationsFor("\\.app-shell")).toMatch(
       /^\s*user-select:\s*none;/m,
     );
     expect(
       declarationsFor(
-        '\\.app-shell input,\\s*\\.app-shell textarea,\\s*\\.app-shell \\[contenteditable="true"\\],\\s*\\.reader-panel--message \\.reader-scroll',
+        '\\.app-shell input,\\s*\\.app-shell textarea,\\s*\\.app-shell \\[contenteditable="true"\\],\\s*\\.reader-panel--message \\.reader-scroll,\\s*\\.compose-ai-conversation',
       ),
     ).toMatch(/^\s*user-select:\s*text;/m);
     expect(
       declarationsFor(
         '\\.reader-panel--message :is\\(button, \\[role="button"\\], summary\\)',
+      ),
+    ).toMatch(/^\s*user-select:\s*none;/m);
+    expect(
+      declarationsFor(
+        '\\.compose-ai-conversation :is\\(button, \\[role="button"\\], summary\\)',
       ),
     ).toMatch(/^\s*user-select:\s*none;/m);
   });
@@ -763,6 +768,7 @@ describe("compose page and stationery policy", () => {
       "\\.compose-format-select--font \\.themed-select__menu",
     );
     expect(fontMenu).toMatch(/width:\s*190px/);
+
   });
 
   it("renders semantic italic text and a zero-width stored-format caret probe", () => {
