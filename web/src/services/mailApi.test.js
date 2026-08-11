@@ -253,20 +253,27 @@ describe("mailApi desktop IPC contract", () => {
   it("sends only bounded render parts through the AI translation command", async () => {
     ipc.invoke.mockResolvedValue({
       language: "zh-Hans",
-      parts: [{ id: "body-html", content: "<p>你好</p>" }],
-      translatedCount: 1,
-      totalCount: 2,
+      parts: [
+        { id: "message-subject", content: "问候" },
+        { id: "body-html", content: "<p>你好</p>" },
+      ],
+      translatedCount: 2,
+      totalCount: 3,
     });
     const { mailApi } = await import("./mailApi.js");
     const parts = [
+      { id: "message-subject", format: "plain", content: "Hello" },
       { id: "body-html", format: "html", content: "<p>Hello</p>" },
     ];
 
     await expect(mailApi.translateMailContent(parts, "ja")).resolves.toEqual({
       language: "zh-Hans",
-      parts: [{ id: "body-html", content: "<p>你好</p>" }],
-      translatedCount: 1,
-      totalCount: 2,
+      parts: [
+        { id: "message-subject", content: "问候" },
+        { id: "body-html", content: "<p>你好</p>" },
+      ],
+      translatedCount: 2,
+      totalCount: 3,
     });
     expect(ipc.invoke).toHaveBeenCalledWith("translate_mail_content", {
       request: { languageId: "ja", parts },

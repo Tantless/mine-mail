@@ -200,7 +200,9 @@ All app-owned color and material decisions flow through custom properties in
   different language starts translation immediately, keeps the previous result
   available until the replacement succeeds, and never changes the Agent default.
   The selected half uses the restrained primary tint and switching never reflows
-  the toolbar. If the
+  the toolbar. The toggle switches the header subject and body together while
+  each remains in its established region; any missing translated position keeps
+  its original text. If the
   Provider returns only some valid text positions, the translated view fills
   those positions, leaves missing positions in the original language, and shows
   one compact warning with the completed and total position counts. Sent, Draft,

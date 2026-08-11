@@ -157,7 +157,10 @@ describe("MessageView AI translation", () => {
     });
     const onTranslateMessage = vi.fn().mockResolvedValue({
       language: "ja",
-      parts: [{ id: "body-text", content: "日本語の本文" }],
+      parts: [
+        { id: "message-subject", content: "日本語の件名" },
+        { id: "body-text", content: "日本語の本文" },
+      ],
     });
     const { container } = render(
       <MessageView
@@ -183,16 +186,21 @@ describe("MessageView AI translation", () => {
     await user.click(screen.getByRole("button", { name: "AI 翻译" }));
     await screen.findByText("日本語の本文");
     expect(onTranslateMessage).toHaveBeenCalledWith(
-      [{ id: "body-text", format: "plain", content: "完整正文" }],
+      [
+        { id: "message-subject", format: "plain", content: "测试邮件" },
+        { id: "body-text", format: "plain", content: "完整正文" },
+      ],
       "ja",
     );
+    expect(screen.getByText("日本語の件名")).toBeTruthy();
   });
 
-  it("translates safe HTML and switches between the original and translated body", async () => {
+  it("translates safe HTML and switches the subject and body together", async () => {
     const user = userEvent.setup();
     const onTranslateMessage = vi.fn().mockResolvedValue({
       language: "zh-Hans",
       parts: [
+        { id: "message-subject", content: "问候" },
         {
           id: "body-html",
           content: '<section data-layout="kept"><p><strong>你好，朋友</strong></p></section>',
@@ -216,6 +224,7 @@ describe("MessageView AI translation", () => {
     await screen.findByRole("group", { name: "邮件正文显示语言" });
     expect(onTranslateMessage).toHaveBeenCalledWith(
       [
+        { id: "message-subject", format: "plain", content: "测试邮件" },
         {
           id: "body-html",
           format: "html",
@@ -225,12 +234,15 @@ describe("MessageView AI translation", () => {
       ],
       "zh-Hans",
     );
+    expect(screen.getByText("问候")).toBeTruthy();
     expect(screen.getByText("你好，朋友")).toBeTruthy();
     expect(screen.getByRole("button", { name: "译文" }).getAttribute("aria-pressed")).toBe(
       "true",
     );
 
     await user.click(screen.getByRole("button", { name: "原文" }));
+    expect(screen.getByText("测试邮件")).toBeTruthy();
+    expect(screen.queryByText("问候")).toBeNull();
     expect(screen.getByText("Hello, friend")).toBeTruthy();
     expect(screen.queryByText("你好，朋友")).toBeNull();
   });
@@ -261,9 +273,13 @@ describe("MessageView AI translation", () => {
     expect(screen.getByText("Second body")).toBeTruthy();
     resolveTranslation({
       language: "zh-Hans",
-      parts: [{ id: "body-text", content: "第一封译文" }],
+      parts: [
+        { id: "message-subject", content: "第一封主题译文" },
+        { id: "body-text", content: "第一封译文" },
+      ],
     });
     const firstSource = translationSourceFingerprint([
+      { id: "message-subject", format: "plain", content: "测试邮件" },
       { id: "body-text", format: "plain", content: "First body" },
     ]);
     await waitFor(() =>
@@ -272,6 +288,7 @@ describe("MessageView AI translation", () => {
     );
 
     rerender(<MessageView key="first" message={firstMessage} {...commonProps} />);
+    expect(await screen.findByText("第一封主题译文")).toBeTruthy();
     expect(await screen.findByText("第一封译文")).toBeTruthy();
     expect(screen.getByRole("button", { name: "译文" }).getAttribute("aria-pressed"))
       .toBe("true");
@@ -284,7 +301,10 @@ describe("MessageView AI translation", () => {
       .fn()
       .mockResolvedValueOnce({
         language: "zh-Hans",
-        parts: [{ id: "body-text", content: "中文译文" }],
+        parts: [
+          { id: "message-subject", content: "中文主题" },
+          { id: "body-text", content: "中文译文" },
+        ],
       })
       .mockImplementationOnce(() => new Promise((resolve) => {
         resolveJapanese = resolve;
@@ -312,13 +332,19 @@ describe("MessageView AI translation", () => {
     await user.click(screen.getByRole("option", { name: "日本語" }));
     expect(screen.getByText("中文译文")).toBeTruthy();
     expect(onTranslateMessage).toHaveBeenLastCalledWith(
-      [{ id: "body-text", format: "plain", content: "完整正文" }],
+      [
+        { id: "message-subject", format: "plain", content: "测试邮件" },
+        { id: "body-text", format: "plain", content: "完整正文" },
+      ],
       "ja",
     );
 
     resolveJapanese({
       language: "ja",
-      parts: [{ id: "body-text", content: "日本語の翻訳" }],
+      parts: [
+        { id: "message-subject", content: "日本語の件名" },
+        { id: "body-text", content: "日本語の翻訳" },
+      ],
     });
     expect(await screen.findByText("日本語の翻訳")).toBeTruthy();
     expect(screen.queryByText("中文译文")).toBeNull();
@@ -328,9 +354,10 @@ describe("MessageView AI translation", () => {
     const user = userEvent.setup();
     const onTranslateMessage = vi.fn().mockResolvedValue({
       language: "zh-Hans",
-      translatedCount: 1,
-      totalCount: 2,
+      translatedCount: 2,
+      totalCount: 3,
       parts: [
+        { id: "message-subject", content: "问候" },
         {
           id: "body-html",
           content: "<p>你好，<strong>friend</strong></p>",
@@ -354,7 +381,7 @@ describe("MessageView AI translation", () => {
     expect(await screen.findByText("你好，")).toBeTruthy();
     expect(screen.getByText("friend")).toBeTruthy();
     expect(
-      screen.getByText("部分翻译完成：已翻译 1/2 个片段，未完成部分保留原文。"),
+      screen.getByText("部分翻译完成：已翻译 2/3 个片段，未完成部分保留原文。"),
     ).toBeTruthy();
   });
 

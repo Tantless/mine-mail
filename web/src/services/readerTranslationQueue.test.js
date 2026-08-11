@@ -22,17 +22,26 @@ async function flushPromises() {
 describe("reader translation queue", () => {
   it("fingerprints the complete source without exposing it in the key", () => {
     const first = translationSourceFingerprint([
+      { id: "message-subject", format: "plain", content: "private subject" },
       { id: "body", format: "plain", content: "private message" },
     ]);
     const same = translationSourceFingerprint([
+      { id: "message-subject", format: "plain", content: "private subject" },
       { id: "body", format: "plain", content: "private message" },
     ]);
     const changed = translationSourceFingerprint([
+      { id: "message-subject", format: "plain", content: "changed subject" },
+      { id: "body", format: "plain", content: "private message" },
+    ]);
+    const changedBody = translationSourceFingerprint([
+      { id: "message-subject", format: "plain", content: "private subject" },
       { id: "body", format: "plain", content: "changed message" },
     ]);
 
     expect(first).toBe(same);
     expect(first).not.toBe(changed);
+    expect(first).not.toBe(changedBody);
+    expect(first).not.toContain("private subject");
     expect(first).not.toContain("private message");
   });
 

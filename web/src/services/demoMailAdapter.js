@@ -880,7 +880,9 @@ function createDemoActions(
           if (part.content.trim()) translatedCount += 1;
           return {
             id: part.id,
-            content: `【AI 译文】\n${part.content}`,
+            content: part.id === "message-subject"
+              ? `【AI 译文】${part.content}`
+              : `【AI 译文】\n${part.content}`,
           };
         }
         const template = document.createElement("template");

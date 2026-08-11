@@ -169,8 +169,9 @@ product decision changes.
   may be translated through the configured AI Provider. Translation is an
   explicit per-message action and does not alter the cached message, server
   content, search index, reply source, or forwarding source. A completed result
-  remains a reader-only in-memory alternative that can be switched between
-  **原文** and **译文** throughout the current application run. Switching mail
+  keeps the translated subject and body as one reader-only in-memory alternative
+  that can be switched between **原文** and **译文** throughout the current
+  application run. Switching mail
   does not cancel or discard an active or completed translation. Sent, Draft,
   and Outbox content does not expose this action.
 
@@ -364,14 +365,18 @@ product decision changes.
   bottom-right warning **请先前往设置界面完成AGENT配置** instead of an inline
   reader error. A structurally valid partial Provider result is still useful:
   valid numbered translations replace their matching text positions, missing
-  positions retain the original text, and the reader reports the completed and
-  total translation-unit counts. Duplicate, unknown, malformed, or unsafe positions
+  positions—including a missing translated subject—retain the original text,
+  and the reader reports the completed and total translation-unit counts.
+  Duplicate, unknown, malformed, or unsafe positions
   remain a failed translation rather than being guessed into the message. MiMo
   translation additionally disables thinking. Every protocol receives translation
   responses through its internal SSE adapter with a 180-second total limit and a
-  45-second between-chunk idle limit. Rust first splits a long plain-text body or
-  HTML text node at semantic boundaries into units of at most 800 UTF-8 bytes,
-  then creates batches of at most six units and normally 800 bytes. The scheduler
+  45-second between-chunk idle limit. The subject is translated through the same
+  numbered batch and retry path as the body rather than a separate serial request.
+  Rust supplies every batch with at most 256 UTF-8 bytes of the original subject
+  as read-only context, then splits a long subject, plain-text body, or HTML text
+  node at semantic boundaries into units of at most 800 UTF-8 bytes. It creates
+  batches of at most six units and normally 800 bytes. The scheduler
   starts with four requests, raises concurrency to at most six after consecutive
   successes, lowers it after partial or failed batches, and starts the next batch
   whenever any active batch completes. Missing retryable units receive one retry

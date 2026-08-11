@@ -46,6 +46,7 @@ const REMOTE_MAILBOX_ROLES = new Set(["inbox", "sent", "archive", "trash"]);
 const MOVE_TO_INBOX_ROLES = new Set(["archive", "trash"]);
 const MOVE_TO_TRASH_ROLES = new Set(["inbox", "sent", "archive"]);
 const MAX_OUTBOX_ATTEMPTS = 0xffffffff;
+const TRANSLATION_SUBJECT_PART_ID = "message-subject";
 const FALLBACK_TRANSLATION_LANGUAGES = [
   { value: "zh-Hans", label: "中文（简体）" },
   { value: "zh-Hant", label: "中文（繁體）" },
@@ -86,20 +87,32 @@ function readerTranslationTaskError(userMessage) {
 }
 
 function translationPartsForMessage(message, bodyRenderMode) {
+  const subjectPart = {
+    id: TRANSLATION_SUBJECT_PART_ID,
+    format: "plain",
+    content: String(message.subject || ""),
+  };
   if (Array.isArray(message.body_segments) && message.body_segments.length) {
-    return message.body_segments.map((segment, index) => ({
-      id: `segment-${index}`,
-      format: segment.render_mode === "plain" ? "plain" : "html",
-      content: String(segment.content || ""),
-    }));
+    return [
+      subjectPart,
+      ...message.body_segments.map((segment, index) => ({
+        id: `segment-${index}`,
+        format: segment.render_mode === "plain" ? "plain" : "html",
+        content: String(segment.content || ""),
+      })),
+    ];
   }
   if (
     (bodyRenderMode === "native_html" || bodyRenderMode === "isolated_html")
     && typeof message.body_html === "string"
   ) {
-    return [{ id: "body-html", format: "html", content: message.body_html }];
+    return [
+      subjectPart,
+      { id: "body-html", format: "html", content: message.body_html },
+    ];
   }
   return [
+    subjectPart,
     {
       id: "body-text",
       format: "plain",
@@ -112,9 +125,15 @@ function applyTranslatedParts(message, translatedParts) {
   const translatedById = new Map(
     translatedParts.map((part) => [part.id, part.content]),
   );
+  const translatedMessage = translatedById.has(TRANSLATION_SUBJECT_PART_ID)
+    ? {
+        ...message,
+        subject: translatedById.get(TRANSLATION_SUBJECT_PART_ID),
+      }
+    : message;
   if (Array.isArray(message.body_segments) && message.body_segments.length) {
     return {
-      ...message,
+      ...translatedMessage,
       body_segments: message.body_segments.map((segment, index) => ({
         ...segment,
         content: translatedById.get(`segment-${index}`) ?? segment.content,
@@ -122,12 +141,12 @@ function applyTranslatedParts(message, translatedParts) {
     };
   }
   if (translatedById.has("body-html")) {
-    return { ...message, body_html: translatedById.get("body-html") };
+    return { ...translatedMessage, body_html: translatedById.get("body-html") };
   }
   if (translatedById.has("body-text")) {
-    return { ...message, body_text: translatedById.get("body-text") };
+    return { ...translatedMessage, body_text: translatedById.get("body-text") };
   }
-  return message;
+  return translatedMessage;
 }
 
 const ROLE_LABELS = {
@@ -1042,7 +1061,7 @@ export function MessageView({
               ? "SENT"
               : ROLE_LABELS[role]}
           </p>
-          <h2>{message.subject || "（无主题）"}</h2>
+          <h2>{displayedMessage.subject || "（无主题）"}</h2>
 
           <div className="sender-card">
             {role !== "outbox" && primarySender.email && onSetSenderAvatar ? (
@@ -1242,7 +1261,7 @@ export function MessageView({
               html={displayedMessage.body_html}
               hasRemoteImages={displayedMessage.has_remote_images}
               remoteImageMode={remoteImageMode}
-              title={message.subject}
+              title={displayedMessage.subject}
               onOpenLink={onOpenExternalLink}
             />
           ) : (
