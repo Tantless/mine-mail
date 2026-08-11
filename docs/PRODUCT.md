@@ -417,11 +417,12 @@ product decision changes.
 - Once **邮件生成** determines that a request requires drafting or editing, it
   reads the sender, recipients, subject, complete authored body, immutable
   reply/forward context, and attachment metadata before any write. Rust rejects
-  a generation write until all six reads have succeeded. A precise local edit
-  remains conservative and scoped; a request to generate, rewrite, or broadly
-  transform the whole message may reorganize it more actively, but neither path
-  may alter established facts, intent, stance, or commitments. Translation,
-  continuation, and substantial additions require an explicit request.
+  a **邮件生成** or **自动** write until all six reads have succeeded. A precise
+  local edit remains conservative and scoped; a request to generate, rewrite,
+  or broadly transform the whole message may reorganize it more actively, but
+  neither path may alter established facts, intent, stance, or commitments.
+  Translation, continuation, and substantial additions require an explicit
+  request.
 - Generation uses current draft context before requesting information. It asks
   at most one consolidated set of necessary questions and does not create a
   speculative proposal while that answer is required. Clear requests prefer a
@@ -439,6 +440,31 @@ product decision changes.
   the final response must prominently warn the user to add it before sending.
   Existing stationery remains unchanged unless explicitly requested, and
   stationery is included in the sent message only on an explicit request.
+- **聊天** is a general read-only assistant rather than an email-only question
+  mode. It answers unrelated topics without reading draft data or forcing the
+  conversation back to email. When an answer depends on the current message, it
+  reads only the relevant sender, recipients, subject, body, immutable context,
+  contacts, or attachment data; a request for comprehensive message analysis
+  reads all six draft context categories. It distinguishes stated facts,
+  inference, and unknown information and specializes in message intent, tone,
+  obligations, communication risk, reply strategy, and alternative wording.
+- Chat may return complete email examples or multiple alternatives as Markdown,
+  but those remain conversation text and never become a proposal. If the user
+  expected the live draft to change, Chat explains that no change occurred and
+  points to **邮件生成**. It has no general web-search or live-information tool
+  and states when a time-sensitive external fact cannot be verified.
+- **自动** is the full general-purpose assistant and chooses its behavior again
+  for every user turn. General questions use no mail tools. Email explanation,
+  analysis, brainstorming, examples, and alternatives remain read-only unless
+  the user explicitly asks to generate or change a draft; ambiguous intent also
+  stays read-only. An explicit generation, rewrite, current-draft edit, or
+  acceptance of an earlier proposal enters the editing path and inherits the
+  complete generation rules, including full-context reads, conservative versus
+  active rewriting, one consolidated inquiry, fact preservation, attachment
+  warnings, stationery limits, and proposal-only writes. Multiple alternatives
+  requested only for comparison remain conversation text until the user selects
+  one to write. One request may ask for both analysis and editing, and a later
+  turn may select a different path.
 - **邮件生成** may replace recipients, subject, body, supported body formatting,
   and stationery. **聊天** has no write tools. **自动** combines those read and write
   tools according to the user's request. No built-in AI mode can switch the
