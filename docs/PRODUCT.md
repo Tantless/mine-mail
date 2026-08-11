@@ -414,6 +414,31 @@ product decision changes.
   ID within a size and type allowlist. PDF, Office, archive, executable, and
   other binary formats are not parsed. Image tools are registered only for a
   Provider/model with implemented multimodal support.
+- Once **邮件生成** determines that a request requires drafting or editing, it
+  reads the sender, recipients, subject, complete authored body, immutable
+  reply/forward context, and attachment metadata before any write. Rust rejects
+  a generation write until all six reads have succeeded. A precise local edit
+  remains conservative and scoped; a request to generate, rewrite, or broadly
+  transform the whole message may reorganize it more actively, but neither path
+  may alter established facts, intent, stance, or commitments. Translation,
+  continuation, and substantial additions require an explicit request.
+- Generation uses current draft context before requesting information. It asks
+  at most one consolidated set of necessary questions and does not create a
+  speculative proposal while that answer is required. Clear requests prefer a
+  natural complete message and neutral wording for nonessential omissions.
+  Visible underscore blanks are a narrow fallback for an explicitly requested
+  template or no-question draft, or after that one inquiry remains unanswered;
+  they cover only genuinely missing facts. Recipient identities, dates, times,
+  amounts, addresses, identifiers, attachment contents, and commitments are
+  never invented. Existing To/Cc/Bcc values remain unless the user explicitly
+  changes them, and a named contact must resolve to one reliable local match.
+- Generation lists attachments before editing and reads their contents only
+  when the requested work depends on them. It never infers content from a file
+  name or mutates attachments or quoted source. At the user's explicit request,
+  the authored body may mention an attachment that has not yet been added, but
+  the final response must prominently warn the user to add it before sending.
+  Existing stationery remains unchanged unless explicitly requested, and
+  stationery is included in the sent message only on an explicit request.
 - **邮件生成** may replace recipients, subject, body, supported body formatting,
   and stationery. **聊天** has no write tools. **自动** combines those read and write
   tools according to the user's request. No built-in AI mode can switch the
