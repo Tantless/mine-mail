@@ -717,10 +717,10 @@ it("creates an AI session from the fixed composer and honors the selected mode",
   });
   await waitFor(() => expect(modeSelect.disabled).toBe(false));
   await user.click(modeSelect);
-  await user.click(within(assistant).getByRole("option", { name: "邮件生成" }));
+  await user.click(within(assistant).getByRole("option", { name: "生成" }));
   await waitFor(() => {
     expect(modeSelect.getAttribute("aria-expanded")).toBe("false");
-    expect(modeSelect.textContent).toContain("邮件生成");
+    expect(modeSelect.textContent).toContain("生成");
     expect(document.activeElement).toBe(modeSelect);
   });
   const input = within(assistant).getByRole("textbox", { name: "向 AI 助理发送消息" });

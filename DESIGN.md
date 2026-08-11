@@ -399,9 +399,10 @@ All app-owned color and material decisions flow through custom properties in
   with reserved spacing so the controls never overlap it. Associated editable
   drafts sit immediately beneath as wrapping, low-profile pill buttons containing
   only the truncated subject and stable short display ID.
-  Conversation history owns the remaining scroll surface. **自动**、**邮件生成**
+  Conversation history owns the remaining scroll surface. **自动**、**生成**
   and **聊天** live in the fixed composer; optimization is not duplicated as an
-  agent mode.
+  agent mode. A user-authorized current-turn generation inside **聊天** does not
+  change the visible mode selection and expires when that turn ends.
 - The three conversational modes stream safe Markdown into the active assistant
   message. Each running assistant message owns an append-only activity trail:
   a thinking step, every tool call, and later thinking steps remain in execution

@@ -38,7 +38,7 @@ const ComposeAiMarkdown = lazy(() => import("./ComposeAiMarkdown.jsx"));
 
 const agentModeOptions = [
   { value: "auto", label: "自动" },
-  { value: "generate", label: "邮件生成" },
+  { value: "generate", label: "生成" },
   { value: "chat", label: "聊天" },
 ];
 

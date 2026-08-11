@@ -316,9 +316,11 @@ product decision changes.
   `stopped`, or `failed` state; stopping or failing keeps any received partial
   Markdown. Session and mode switching are locked only while that turn runs,
   while compose, collapse/minimize, and editing the next prompt remain usable.
-- The assistant provides **自动**、**邮件生成** and read-only **聊天** modes.
-  Optimization remains a separate high-frequency action. Rust selects a hard
-  tool allowlist for every mode; prompts alone never grant a capability.
+- The assistant provides default **自动**, divergent **生成**, and discussion-
+  first **聊天** modes. Optimization remains a separate high-frequency action.
+  Rust selects a hard tool allowlist for every mode and tool round; prompts
+  alone never grant a capability. Chat can expand that allowlist only through
+  its bounded current-turn generation tool after explicit user authorization.
 - Tool definitions and Rust execution share one typed argument contract. Invalid
   fields, types, and ranges are rejected without silent coercion; repeated
   contract failures are bounded so a model cannot loop indefinitely while
@@ -419,25 +421,30 @@ product decision changes.
   ID within a size and type allowlist. PDF, Office, archive, executable, and
   other binary formats are not parsed. Image tools are registered only for a
   Provider/model with implemented multimodal support.
-- Once **邮件生成** determines that a request requires drafting or editing, it
-  reads the sender, recipients, subject, complete authored body, immutable
-  reply/forward context, and attachment metadata before any write. Rust rejects
-  a **邮件生成** or **自动** write until all six reads have succeeded. A precise
-  local edit remains conservative and scoped; a request to generate, rewrite,
-  or broadly transform the whole message may reorganize it more actively, but
+- **生成** treats selecting the mode as an instruction to start drafting rather
+  than debate whether to write. The current user message is its primary creative
+  brief; existing draft structure, wording, tone, and session history are only
+  supporting context unless the user explicitly requests a reply, continuation,
+  rewrite, translation, local edit, or a previously discussed direction. It
+  still reads the sender, recipients, subject, complete authored body, immutable
+  reply/forward context, and attachment metadata before any write so it can
+  protect facts and the working copy without treating the draft as a template.
+  Rust rejects a **生成**, **自动**, or temporarily elevated **聊天** write until
+  all six reads have succeeded.
+- A precise local edit remains scoped; a request to generate, rewrite, freely
+  create, or broadly transform the whole message may reorganize it actively, but
   neither path may alter established facts, intent, stance, or commitments.
   Translation, continuation, and substantial additions require an explicit
-  request.
-- Generation uses current draft context before requesting information. It asks
-  at most one consolidated set of necessary questions and does not create a
-  speculative proposal while that answer is required. Clear requests prefer a
-  natural complete message and neutral wording for nonessential omissions.
-  Visible underscore blanks are a narrow fallback for an explicitly requested
-  template or no-question draft, or after that one inquiry remains unanswered;
-  they cover only genuinely missing facts. Recipient identities, dates, times,
-  amounts, addresses, identifiers, attachment contents, and commitments are
-  never invented. Existing To/Cc/Bcc values remain unless the user explicitly
-  changes them, and a named contact must resolve to one reliable local match.
+  request. A clear generation request proceeds without asking for preferences or
+  background that neutral wording can safely replace. At most one consolidated
+  inquiry is allowed only when an irreplaceable missing fact would make the
+  result unusable or misleading, and no speculative proposal is created while
+  that answer is required. Visible underscore blanks remain a narrow fallback
+  for an explicitly requested template or no-question draft, or after that one
+  inquiry remains unanswered. Recipient identities, dates, times, amounts,
+  addresses, identifiers, attachment contents, and commitments are never
+  invented. Existing To/Cc/Bcc values remain unless the user explicitly changes
+  them, and a named contact must resolve to one reliable local match.
 - Generation lists attachments before editing and reads their contents only
   when the requested work depends on them. It never infers content from a file
   name or mutates attachments or quoted source. At the user's explicit request,
@@ -445,36 +452,45 @@ product decision changes.
   the final response must prominently warn the user to add it before sending.
   Existing stationery remains unchanged unless explicitly requested, and
   stationery is included in the sent message only on an explicit request.
-- **聊天** is a general read-only assistant rather than an email-only question
-  mode. It answers unrelated topics without reading draft data or forcing the
-  conversation back to email. When an answer depends on the current message, it
-  reads only the relevant sender, recipients, subject, body, immutable context,
-  contacts, or attachment data; a request for comprehensive message analysis
-  reads all six draft context categories. It distinguishes stated facts,
-  inference, and unknown information and specializes in message intent, tone,
-  obligations, communication risk, reply strategy, and alternative wording.
-- Chat may return complete email examples or multiple alternatives as Markdown,
-  but those remain conversation text and never become a proposal. If the user
-  expected the live draft to change, Chat explains that no change occurred and
-  points to **邮件生成**. It has no general web-search or live-information tool
-  and states when a time-sensitive external fact cannot be verified.
-- **自动** is the full general-purpose assistant and chooses its behavior again
-  for every user turn. General questions use no mail tools. Email explanation,
+- **聊天** is a general discussion-first assistant rather than an email-only
+  question mode. It answers unrelated topics without reading draft data or
+  forcing the conversation back to email. When an answer depends on the current
+  message, it reads only the relevant sender, recipients, subject, body,
+  immutable context, contacts, or attachment data; a request for comprehensive
+  analysis reads all six draft context categories. Before generation is enabled,
+  it returns analysis, outlines, strategy, tradeoffs, and bounded wording examples
+  rather than a complete draft or proposal. It may ask whether the user wants a
+  concrete discussed direction generated.
+- Chat initially exposes only read tools plus `enable_generation`. It may call
+  that tool only when the current user message explicitly requests generation or
+  editing, or explicitly accepts the assistant's previously proposed direction.
+  Existing authorization must not trigger another confirmation. A successful
+  call exposes **生成** tools only to later model rounds inside that same user
+  turn; writes cannot be smuggled into the enabling tool batch. The full six-read
+  prerequisite and generation rules then apply. Completion, cancellation, or
+  failure ends the grant, the next user turn starts read-only again, and the UI
+  mode selector remains **聊天**. Chat has no general web-search or live-
+  information tool and states when a time-sensitive fact cannot be verified.
+- **自动** is the default full general-purpose assistant, encompasses discussion
+  and generation, and chooses its behavior again for every user turn. General
+  questions use no mail tools. Email explanation,
   analysis, brainstorming, examples, and alternatives remain read-only unless
   the user explicitly asks to generate or change a draft; ambiguous intent also
   stays read-only. An explicit generation, rewrite, current-draft edit, or
   acceptance of an earlier proposal enters the editing path and inherits the
   complete generation rules, including full-context reads, conservative versus
-  active rewriting, one consolidated inquiry, fact preservation, attachment
-  warnings, stationery limits, and proposal-only writes. Multiple alternatives
-  requested only for comparison remain conversation text until the user selects
-  one to write. One request may ask for both analysis and editing, and a later
-  turn may select a different path.
-- **邮件生成** may replace recipients, subject, body, supported body formatting,
-  and stationery. **聊天** has no write tools. **自动** combines those read and write
-  tools according to the user's request. No built-in AI mode can switch the
-  draft account, mutate immutable quoted context, manipulate attachments, send
-  mail, or operate Outbox.
+  active rewriting, bounded inquiry, fact preservation, attachment warnings,
+  stationery limits, and proposal-only writes. An explicit blank-slate or
+  divergent request uses the current message as the primary creative brief.
+  Multiple alternatives requested only for comparison remain conversation text
+  until the user selects one to write. One request may ask for both analysis and
+  editing, and a later turn may select a different path.
+- **生成** may replace recipients, subject, body, supported body formatting, and
+  stationery. **聊天** has no initial write tools and can gain the same proposal-
+  only writes for one explicitly authorized turn. **自动** exposes the complete
+  read and write set and uses it according to the user's request. No built-in AI
+  mode can switch the draft account, mutate immutable quoted context, manipulate
+  attachments, send mail, or operate Outbox.
 - Tool writes apply only to a Rust in-memory working copy. A successfully
   validated conversational write becomes one or two read-only proposal cards in
   the assistant message: recipients/Cc/Bcc/subject form one group, and
@@ -488,7 +504,7 @@ product decision changes.
   short opaque request revision sent to Rust is correlation metadata, not the
   serialized draft body. The user always reviews the result and clicks **发送**
   explicitly.
-- **邮件生成**、**聊天** and **自动** use Provider SSE streaming through the
+- **生成**、**聊天** and **自动** use Provider SSE streaming through the
   selected OpenAI Responses, OpenAI Chat Completions, or Anthropic Messages
   adapter. Safe Markdown is
   rendered incrementally beneath an append-only execution trail. Each Provider
