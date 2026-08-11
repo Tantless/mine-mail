@@ -769,6 +769,11 @@ describe("compose page and stationery policy", () => {
     );
     expect(fontMenu).toMatch(/width:\s*190px/);
 
+    const sizeMenu = declarationsFor(
+      "\\.compose-format-select--size \\.themed-select__menu",
+    );
+    expect(sizeMenu).toMatch(/width:\s*72px/);
+    expect(sizeMenu).toMatch(/min-width:\s*72px/);
   });
 
   it("renders semantic italic text and a zero-width stored-format caret probe", () => {
