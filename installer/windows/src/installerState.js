@@ -19,7 +19,7 @@ export function stepTone(state, index) {
 
 export function defaultPreviewInfo() {
   return {
-    version: "1.3.5",
+    version: "1.3.6",
     defaultInstallDir: "C:\\Users\\You\\AppData\\Local\\Mine Mail",
     payloadAvailable: true,
   };
