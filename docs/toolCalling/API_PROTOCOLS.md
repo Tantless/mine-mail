@@ -57,8 +57,11 @@ Completions 作为 **自动** 的兼容默认值；但当 `BASE_URL` 是 MiMo �
   compaction item）原样保存并用于后续请求，仍保持 `store: false`。兼容 Responses 端点
   不因协议名称被假定支持该能力。Chat Completions 带回供应商要求的思考状态。Anthropic Messages 在
   content blocks 中关联 `tool_use` 与 `tool_result`。
-- 所有独立优化请求都由 Rust 在首个 Provider 请求前通过受限工具读取正文和主题，并编码
-  为对应协议的标准工具历史；模型无需自行选择这两个必读工具，写入边界仍会验证读取结果。
+- 所有独立优化请求都由 Rust 在首个 Provider 请求前通过受限边界读取点击时快照中的正文和
+  主题，标记宿主必读条件已经满足，并将结果作为当前 user 消息内明确标注的不可信草稿数据；
+  不伪造 assistant 工具调用、tool 结果、reasoning、签名或其他 Provider 所有的历史状态。
+  模型无需且不能自行选择这两个读取工具，独立优化仅开放正文和主题写入工具，写入边界仍会
+  验证宿主读取结果。
 - Chat Completions 请求携带工具定义时不同时发送 `response_format`，避免兼容实现被 JSON
   Mode 诱导为提前返回简短终态而跳过写入工具；不携带工具的结构化任务仍可使用 JSON
   Mode。独立优化终态由提示词约束并由 Rust 做有界严格校验，首次格式错误只在原协议内

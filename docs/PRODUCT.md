@@ -440,8 +440,8 @@ product decision changes.
   presets with tested and runtime-observed support for structured output,
   streaming, and reasoning controls. They never contain credentials or mail
   content. A model list alone does not prove those capabilities.
-- Except for the user's instruction and visible Session history, draft data is
-  not placed in the initial model context. The model must use bounded tools to
+- Except for standalone optimization's bounded subject/body snapshot described
+  below, draft data is not placed in the initial model context. The model must use bounded tools to
   read the current subject, body, sender, recipients, immutable reply/forward
   text, contacts, or attachment metadata. Text attachments may be read by opaque
   ID within a size and type allowlist. PDF, Office, archive, executable, and
@@ -468,10 +468,14 @@ product decision changes.
   failure preserves the transcript and fails that turn without deleting or
   globally corrupting its Session.
 - Standalone optimization does not rely on a model's automatic tool selection
-  for mandatory context. Rust invokes the bounded body and subject read tools
-  against the click-time working copy before the first Provider request and
-  supplies their standard protocol history. The normal read-before-write
-  validation remains authoritative for every Provider and protocol.
+  for mandatory context. Rust invokes the bounded body and subject read boundary
+  against the click-time working copy before the first Provider request, marks
+  that host read as the authoritative write prerequisite, and supplies the
+  result as explicitly untrusted draft data in the initial user message. It does
+  not fabricate an assistant tool call, tool result, reasoning field, signature,
+  or other Provider-owned history. Standalone optimization exposes only subject
+  and body write tools; the normal read-before-write validation remains
+  authoritative for every Provider and protocol.
 - Standalone optimization completion is a bounded decision: `changed` must agree
   with an actual subject or body change, while `unchanged` is accepted only when
   the user supplied no extra optimization requirement. The first valid unchanged
