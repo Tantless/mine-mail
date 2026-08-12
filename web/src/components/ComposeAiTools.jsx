@@ -627,9 +627,13 @@ function finishRunningActivities(message, status) {
                 ? status === "stopped"
                   ? "思考已停止"
                   : "思考中断"
-                : status === "stopped"
-                  ? "工具调用已停止"
-                  : "工具调用未完成",
+                : activity.kind === "audit"
+                  ? status === "stopped"
+                    ? "复核已停止"
+                    : "回答复核未完成"
+                  : status === "stopped"
+                    ? "工具调用已停止"
+                    : "工具调用未完成",
             status,
             success: false,
           }
@@ -1144,6 +1148,48 @@ export function ComposeAiAssistant({
                       ? {
                           ...activity,
                           label: event.summary || "分析完成",
+                          detail: "",
+                          status: event.success ? "completed" : "failed",
+                          success: Boolean(event.success),
+                        }
+                      : activity,
+                  ),
+                }),
+              ),
+            );
+          } else if (event?.type === "audit_started") {
+            setSessions((current) =>
+              updateStreamingAssistant(
+                current,
+                streamingSessionIdRef.current,
+                (message) => ({
+                  ...message,
+                  activities: [
+                    ...(message.activities || []),
+                    {
+                      id: event.activity_id,
+                      kind: "audit",
+                      label: "正在复核回答…",
+                      detail: "",
+                      status: "running",
+                      success: null,
+                    },
+                  ],
+                }),
+              ),
+            );
+          } else if (event?.type === "audit_finished") {
+            setSessions((current) =>
+              updateStreamingAssistant(
+                current,
+                streamingSessionIdRef.current,
+                (message) => ({
+                  ...message,
+                  activities: (message.activities || []).map((activity) =>
+                    activity.id === event.activity_id
+                      ? {
+                          ...activity,
+                          label: event.summary || "回答已复核",
                           detail: "",
                           status: event.success ? "completed" : "failed",
                           success: Boolean(event.success),

@@ -738,7 +738,7 @@ it("switches between the application session list and a conversation", async () 
       ),
     ).toBeTruthy(),
   );
-  expect(within(assistant).getAllByText("答案整理完毕")).toHaveLength(1);
+  expect(within(assistant).getAllByText("回答已复核")).toHaveLength(1);
   expect(
     within(assistant).getByRole("button", { name: /版本化附件.*#[0-9A-F]{8}/ }),
   ).toBeTruthy();
@@ -986,7 +986,26 @@ it("keeps a streamed Markdown turn alive while the AI sidebar is collapsed", asy
   expect(within(assistant).getByText("草稿").tagName).toBe("STRONG");
   expect(input.disabled).toBe(false);
 
+  await act(async () => {
+    emit({
+      type: "audit_started",
+      request_id: "request-stream",
+      activity_id: "audit-1",
+    });
+  });
+  expect(within(assistant).getByText("正在复核回答…")).toBeTruthy();
+  await act(async () => {
+    emit({
+      type: "audit_finished",
+      request_id: "request-stream",
+      activity_id: "audit-1",
+      summary: "回答已复核",
+      success: true,
+    });
+  });
+  expect(within(assistant).getByText("回答已复核")).toBeTruthy();
   await user.click(within(assistant).getByRole("button", { name: "收起 AI 助理" }));
+
   expect(screen.queryByRole("complementary", { name: "AI 助理" })).toBeNull();
   const completedSession = {
     ...streamingSession,
@@ -1017,6 +1036,14 @@ it("keeps a streamed Markdown turn alive while the AI sidebar is collapsed", asy
             id: "thinking-2",
             kind: "thinking",
             label: "答案整理完毕",
+            status: "completed",
+            success: true,
+            detail: "",
+          },
+          {
+            id: "audit-1",
+            kind: "audit",
+            label: "回答已复核",
             status: "completed",
             success: true,
             detail: "",

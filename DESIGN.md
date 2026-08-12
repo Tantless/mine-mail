@@ -420,7 +420,12 @@ All app-owned color and material decisions flow through custom properties in
 - The three conversational modes stream safe Markdown into the active assistant
   message. Each running assistant message owns an append-only activity trail:
   a thinking step, every tool call, and later thinking steps remain in execution
-  order instead of competing for one transient row. Provider-supplied visible
+  order instead of competing for one transient row. A terminal response that
+  used none of the exposed tools is buffered before display and adds a compact
+  review step: **正在复核回答…** becomes **回答已复核** when accepted, or
+  **发现执行偏差，正在重新处理…** while the host performs its one allowed
+  correction. The unreviewed candidate never flashes in the Markdown area.
+  Provider-supplied visible
   reasoning deltas may stream only inside the current thinking step; completing
   that step replaces its temporary detail with **分析完成** or **答案整理完毕**.
   Tool arguments, tool results, and unavailable hidden reasoning are never shown.

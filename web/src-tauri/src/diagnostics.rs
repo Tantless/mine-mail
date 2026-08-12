@@ -91,6 +91,10 @@ pub(crate) struct Fields {
     #[serde(skip_serializing_if = "Option::is_none")]
     tool: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    tool_call_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    audit_reason_codes: Option<Vec<&'static str>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     finish_reason: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     outcome: Option<&'static str>,
@@ -231,6 +235,16 @@ impl Fields {
 
     pub(crate) fn tool(mut self, value: &'static str) -> Self {
         self.tool = Some(value);
+        self
+    }
+
+    pub(crate) fn tool_calls(mut self, value: usize) -> Self {
+        self.tool_call_count = Some(value);
+        self
+    }
+
+    pub(crate) fn audit_reasons(mut self, value: Vec<&'static str>) -> Self {
+        self.audit_reason_codes = Some(value);
         self
     }
 

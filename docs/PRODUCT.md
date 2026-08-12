@@ -441,8 +441,8 @@ product decision changes.
   streaming, and reasoning controls. They never contain credentials or mail
   content. A model list alone does not prove those capabilities.
 - Except for standalone optimization's bounded subject/body snapshot described
-  below, draft data is not placed in the initial model context. The model must use bounded tools to
-  read the current subject, body, sender, recipients, immutable reply/forward
+  below, draft data is not placed in the initial model context. The model must
+  use bounded tools to read the current subject, body, sender, recipients, immutable reply/forward
   text, contacts, or attachment metadata. Text attachments may be read by opaque
   ID within a size and type allowlist. PDF, Office, archive, executable, and
   other binary formats are not parsed. Image tools are registered only for a
@@ -585,6 +585,21 @@ product decision changes.
   running while its arguments continue to arrive; validation and execution update
   that same step rather than adding a duplicate. Hidden reasoning, tool arguments,
   and tool results are not exposed. Stop cancels the Provider stream and prevents later tools.
+  When a conversational turn exposes at least one tool yet reaches a normal text
+  terminal with zero tool calls across the whole user turn, Rust marks a
+  `zero_tool_terminal` anomaly and buffers that candidate instead of displaying
+  or completing it. A fresh stateless request to the exact selected Provider,
+  protocol, endpoint, and model independently reviews the original request,
+  bounded recent Session excerpts, exposed tool names and purposes, privacy-safe
+  draft-state metadata, and the untrusted candidate. It receives no tools and no
+  main-chain reasoning or tool history. A validated `accept` releases the buffered
+  answer; `retry_with_tools` discards it and gives the original main chain one
+  fixed host-authored correction containing only validated reason codes and
+  allowlisted recommended tool names. A second zero-tool terminal, invalid audit,
+  timeout, or audit transport failure fails conservatively and leaves the draft
+  unchanged. There is at most one audit and one correction per user turn. Turns
+  that selected any tool are outside this first audit scope, and standalone
+  optimization keeps its stricter existing completion checks.
   Standalone optimization remains non-streaming. Optimization, conversational
   Agent turns, and reader translation share the same selected adapter, endpoint,
   authentication policy, size limits, and privacy-safe diagnostics; protocol

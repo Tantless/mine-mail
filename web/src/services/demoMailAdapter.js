@@ -1187,6 +1187,49 @@ function createDemoActions(
           activity_id: finalThinkingId,
           delta: "正在整理最终回答。",
         });
+        if (!shouldWrite) {
+          await wait(28);
+          const thinking = assistantEntry.activities.find(
+            (activity) => activity.id === finalThinkingId,
+          );
+          if (thinking) {
+            thinking.label = "分析完成";
+            thinking.status = "completed";
+            thinking.success = true;
+          }
+          onEvent?.({
+            type: "thinking_finished",
+            request_id: requestId,
+            activity_id: finalThinkingId,
+            summary: "分析完成",
+            success: true,
+          });
+          const auditActivityId = `${requestId}:audit`;
+          assistantEntry.activities.push({
+            id: auditActivityId,
+            kind: "audit",
+            label: "正在复核回答…",
+            status: "running",
+            success: null,
+            detail: "",
+          });
+          onEvent?.({
+            type: "audit_started",
+            request_id: requestId,
+            activity_id: auditActivityId,
+          });
+          await wait(36);
+          assistantEntry.activities.at(-1).label = "回答已复核";
+          assistantEntry.activities.at(-1).status = "completed";
+          assistantEntry.activities.at(-1).success = true;
+          onEvent?.({
+            type: "audit_finished",
+            request_id: requestId,
+            activity_id: auditActivityId,
+            summary: "回答已复核",
+            success: true,
+          });
+        }
         const chunks = assistantMessage.match(/.{1,6}/gu) || [assistantMessage];
         for (const chunk of chunks) {
           await wait(24);
@@ -1217,18 +1260,20 @@ function createDemoActions(
           const thinking = assistantEntry.activities.find(
             (activity) => activity.id === finalThinkingId,
           );
-          if (thinking) {
+          if (thinking && shouldWrite) {
             thinking.label = "答案整理完毕";
             thinking.status = "completed";
             thinking.success = true;
           }
-          onEvent?.({
-            type: "thinking_finished",
-            request_id: requestId,
-            activity_id: finalThinkingId,
-            summary: "答案整理完毕",
-            success: true,
-          });
+          if (shouldWrite) {
+            onEvent?.({
+              type: "thinking_finished",
+              request_id: requestId,
+              activity_id: finalThinkingId,
+              summary: "答案整理完毕",
+              success: true,
+            });
+          }
           if (draft && changedFields.length) {
             const headerFields = new Set(["to", "cc", "bcc", "subject"]);
             const headerChanged = changedFields.some((field) => headerFields.has(field));

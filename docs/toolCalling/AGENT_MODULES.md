@@ -77,6 +77,15 @@
 - 非流式 Chat Completions 保留响应中的首轮工具调用，并把正常结束、工具调用、重复
   截断、结束字段缺失、`null`、非字符串和未知值分别归一化后写入隐私安全诊断。
   只有明确的正常结束可以完成无工具轮次；重复截断和无效结束状态继续按失败处理。
+- 生成、聊天和自动模式只要本轮实际暴露至少一个工具，却在整个用户轮次零工具调用时
+  直接正常返回文本，Rust 就标记 `zero_tool_terminal` 异常并缓冲候选答案。独立审计使用
+  同一已选 Provider、协议和模型发起全新的无状态、无工具请求；输入只包含原始需求、最近
+  四条会话消息的有界摘录、实际工具名称与用途、安全的草稿状态元数据和被标记为不可信的
+  候选答案，不带主链推理或工具历史。审计输出只接受严格枚举的 `accept` 或
+  `retry_with_tools`、原因码及白名单内工具名。接受后才展示并完成原答案；纠正时丢弃原
+  候选，不把它加入 Session 或重试上下文，只向原主链追加 Rust 固定生成的纠正要求。
+  每轮最多审计一次、纠正一次；再次零工具结束或审计失败即保守失败。已经选择过任意工具
+  的轮次不在这项首期审计范围，独立优化继续使用自身更严格的终态校验。
 - Debug 构建会尝试读取仓库根目录中被 Git 忽略的 `.env`。`API_KEY` 是必需项，
   `MODEL_NAME` 未填写时使用 `deepseek-v4-pro`，`AI_BASE_URL` 未填写时使用 DeepSeek
   官方地址。
@@ -343,6 +352,8 @@ System prompt：
 | `thinking_started` | 新一轮 Provider 思考开始，追加独立轨迹步骤 |
 | `reasoning_delta` | Provider 明确返回的可见推理文字增量，仅更新当前思考步骤 |
 | `thinking_finished` | 当前思考步骤结束，并用简短结果摘要替换临时推理文字 |
+| `audit_started` | 零工具终态候选进入独立回答复核，正文仍保持缓冲 |
+| `audit_finished` | 回答复核接受、要求重新处理，或复核失败/停止 |
 | `tool_started` | 某工具开始执行 |
 | `tool_finished` | 某工具已完成或失败 |
 | `content_delta` | 最终 Markdown 文字增量 |
@@ -356,7 +367,8 @@ System prompt：
 步骤。只有 Provider 明确通过 `reasoning_content` 或 `thinking_delta` 返回的可见
 推理增量可以在当前步骤中临时流式展示；阶段结束后替换为“分析完成”“答案整理
 完毕”等摘要，不作为会话正文长期保存。工具参数、工具结果以及 Provider 未公开的
-隐藏推理不展示。最终 Markdown 在轨迹下方独立流式输出。取消请求按请求编号终止
+隐藏推理不展示。零工具终态候选在独立复核接受前不发送 `content_delta`，因此不会先
+显示再撤回；普通工具链的最终 Markdown 仍在轨迹下方独立流式输出。取消请求按请求编号终止
 Provider 读取和后续工具执行，丢弃未完成工作副本。
 
 ## 结构化日志
@@ -387,6 +399,9 @@ Provider 读取和后续工具执行，丢弃未完成工作副本。
   片段数量异常只记录预期数、实际数和差值，不记录邮件文本
 - `ai_translation_completed`，`partially_completed` 结果记录已翻译与保留原文的片段数
 - `ai_tool_calls_serialized`，记录串行兼容模式延后了多少个同轮工具，不记录参数
+- `ai_zero_tool_anomaly_detected`、`ai_zero_tool_audit_completed`、
+  `ai_zero_tool_audit_failed`、`ai_zero_tool_retry_failed`，只记录异常类型、工具调用数、
+  结构化原因数量、结论与耗时，不记录原始需求、候选回答、会话摘录或审计自由文本
 - `ai_tool_arguments_invalid`，只记录参数大小与 JSON 错误类别、行列位置
 - `ai_tool_argument_retry_stopped`，记录同类非法参数达到有界重试上限，不记录参数
 - `ai_optimization_terminal_retry_started`、`ai_optimization_terminal_rejected`，仅记录优化
