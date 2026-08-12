@@ -149,6 +149,14 @@ it("opens the AI assistant when the compose preference requests it", async () =>
   ).toBeTruthy();
 });
 
+it("places the AI assistant entry beside the recipient controls", () => {
+  renderCompose();
+
+  const toggle = screen.getByRole("button", { name: "打开 AI 助理" });
+  expect(toggle.closest(".compose-recipient-actions")).toBeTruthy();
+  expect(toggle.closest(".compose-footer")).toBeNull();
+});
+
 it("coalesces drag and resize pointer samples into one geometry write per frame", () => {
   window.localStorage.setItem(
     "mine-mail-compose-geometry-v1",

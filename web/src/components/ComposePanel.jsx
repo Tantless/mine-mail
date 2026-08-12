@@ -1254,22 +1254,41 @@ export function ComposePanel({
                   contacts={contacts}
                   onChange={(recipients) => setRecipients("to", recipients)}
                 />
-                <IconButton
-                  className="compose-copy-toggle"
-                  label={showCopies ? "收起抄送和密送" : "展开抄送和密送"}
-                  aria-expanded={showCopies}
-                  aria-controls="compose-copy-fields"
-                  data-expanded={showCopies}
-                  onClick={() => setShowCopies((current) => !current)}
-                  disabled={controlsDisabled}
-                >
-                  <UserPlus size={15} />
-                  <CaretDown
-                    className="compose-copy-toggle__caret"
-                    size={11}
-                    weight="bold"
-                  />
-                </IconButton>
+                <div className="compose-recipient-actions">
+                  <IconButton
+                    className="compose-copy-toggle"
+                    label={showCopies ? "收起抄送和密送" : "展开抄送和密送"}
+                    aria-expanded={showCopies}
+                    aria-controls="compose-copy-fields"
+                    data-expanded={showCopies}
+                    onClick={() => setShowCopies((current) => !current)}
+                    disabled={controlsDisabled}
+                  >
+                    <UserPlus size={15} />
+                    <CaretDown
+                      className="compose-copy-toggle__caret"
+                      size={11}
+                      weight="bold"
+                    />
+                  </IconButton>
+                  <IconButton
+                    className="compose-ai-toggle"
+                    label={
+                      isAiAssistantOpen ? "收起 AI 助理" : "打开 AI 助理"
+                    }
+                    aria-pressed={isAiAssistantOpen}
+                    disabled={isBusy}
+                    onClick={() => {
+                      if (isAiAssistantOpen) collapseAiAssistant();
+                      else setIsAiAssistantOpen(true);
+                    }}
+                  >
+                    <ChatCircleDots
+                      size={18}
+                      weight={isAiAssistantOpen ? "fill" : "regular"}
+                    />
+                  </IconButton>
+                </div>
               </div>
               {showCopies ? (
                 <div id="compose-copy-fields" className="compose-copy-fields">
@@ -1683,23 +1702,6 @@ export function ComposePanel({
                   disabled={controlsDisabled}
                   onApply={onChange}
                 />
-                <IconButton
-                  className="compose-ai-toggle"
-                  label={
-                    isAiAssistantOpen ? "收起 AI 助理" : "打开 AI 助理"
-                  }
-                  aria-pressed={isAiAssistantOpen}
-                  disabled={isBusy}
-                  onClick={() => {
-                    if (isAiAssistantOpen) collapseAiAssistant();
-                    else setIsAiAssistantOpen(true);
-                  }}
-                >
-                  <ChatCircleDots
-                    size={18}
-                    weight={isAiAssistantOpen ? "fill" : "regular"}
-                  />
-                </IconButton>
               </div>
               <div className="compose-footer__right">
                 <StationeryControl

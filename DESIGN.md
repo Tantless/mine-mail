@@ -348,7 +348,7 @@ All app-owned color and material decisions flow through custom properties in
   Secondary icon controls in compose fields and the footer rest on transparent
   fills without a visible border. Selected state relies on icon color; the
   boundary and surface appear only during hover or press feedback.
-- The footer keeps AI editing and conversational work separate. The compact
+- Compose keeps AI editing and conversational work separate. The footer's compact
   optimization split control runs from its primary magic-wand action; its second
   segment opens a small upward prompt surface for optional instructions. While
   the request runs only the wand becomes a spinner; compose remains editable.
@@ -366,7 +366,8 @@ All app-owned color and material decisions flow through custom properties in
   Applying a side backs up the then-live subject, body, and format before atomic
   replacement and enables the adjacent icon-only undo action; undo restores that
   field group atomically and stays visible but disabled without a backup.
-  The adjacent AI assistant control opens or collapses the conversational panel.
+  The AI assistant control sits at the far right of the recipient row, beside the
+  Cc/Bcc disclosure, and opens or collapses the conversational panel.
 - A persisted **默认开启 AI 助理** preference controls the panel's initial state
   whenever a compose surface is opened. It defaults on; the compose control can
   still collapse or reopen the panel for the current surface.

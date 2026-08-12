@@ -4731,6 +4731,30 @@ html[data-surface="new-mail-notification"] #root {
   color: var(--color-text-muted);
 }
 
+.compose-recipient-actions {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+.compose-recipient-actions .compose-ai-toggle.icon-button {
+  width: 34px;
+  height: 32px;
+  border-color: transparent;
+  background: transparent;
+}
+
+.compose-recipient-actions .compose-ai-toggle.icon-button:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--color-primary) 30%, var(--compose-divider));
+  background: var(--compose-control-hover);
+}
+
+.compose-recipient-actions .compose-ai-toggle.icon-button:active:not(:disabled) {
+  border-color: color-mix(in srgb, var(--color-primary) 40%, var(--compose-divider));
+}
+
 .compose-field .compose-copy-toggle:hover:not(:disabled),
 .compose-field .compose-copy-toggle[data-expanded="true"] {
   border-color: color-mix(in srgb, var(--color-primary) 30%, var(--compose-divider));
@@ -10897,7 +10921,7 @@ html[data-surface="new-mail-notification"] #root {
   }
 
   .compose-field {
-    grid-template-columns: 62px minmax(0, 1fr) 48px;
+    grid-template-columns: 62px minmax(0, 1fr) 72px;
   }
 
   .compose-field--subject {
