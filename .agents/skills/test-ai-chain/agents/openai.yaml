@@ -1,0 +1,6 @@
+interface:
+  display_name: "手动测试 AI 链路"
+  short_description: "显式运行 DeepSeek 优化、Agent 与真实邮件翻译冒烟测试"
+  default_prompt: "使用 $test-ai-chain 手动测试 Mine Mail 的完整 AI 链路；我会先在应用中打开用于双向翻译的目标邮件。"
+policy:
+  allow_implicit_invocation: false

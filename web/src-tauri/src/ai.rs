@@ -25,6 +25,10 @@ use zeroize::{Zeroize, Zeroizing};
 
 use crate::diagnostics::{self, ErrorKind as DiagnosticErrorKind, Fields as DiagnosticFields};
 
+#[cfg(test)]
+#[path = "ai_manual_chain_tests.rs"]
+mod manual_chain_tests;
+
 const AI_DATABASE_NAME: &str = "desktop-ai.sqlite3";
 const AI_KEYRING_SERVICE: &str = "com.minemail.desktop";
 const AI_KEYRING_USERNAME_PREFIX: &str = "agent-api-";
