@@ -409,9 +409,11 @@ All app-owned color and material decisions flow through custom properties in
   no choices without blocking another. Duplicate names use Provider row order,
   while the configured exact default route is selected initially when available.
 - The fixed composer shows one muted, tabular context meter between the model
-  capsule and send action, formatted approximately as **≈20K/200K (10%)**. It
+  capsule and send action, formatted as **CTX 20K/200K (10%)**. It
   updates while the prompt changes, warns only at the 75% compaction threshold,
   and never grows into a progress card or steals the send action's alignment.
+  The mode capsule keeps its readable width while the model capsule yields first,
+  caps its footprint, and ellipsizes long model names.
 - The assistant header centers its text title without a leading AI mark. Its
   left-side actions begin with collapse and then a settings icon; settings is an
   inert entry point until configuration content is implemented, and there is no

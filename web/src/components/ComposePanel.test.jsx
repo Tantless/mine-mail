@@ -876,7 +876,7 @@ it("shows the selected model context usage beside the Agent composer", async () 
 
   await user.click(screen.getByRole("button", { name: "打开 AI 助理" }));
   const assistant = screen.getByRole("complementary", { name: "AI 助理" });
-  expect(await within(assistant).findByText("≈20K/200K (10%)")).toBeTruthy();
+  expect(await within(assistant).findByText("CTX 20K/200K (10%)")).toBeTruthy();
   expect(usage).toHaveBeenCalledWith(expect.objectContaining({
     providerInstanceId: "11111111-1111-4111-8111-111111111111",
     modelName: "gpt-5.6-terra",

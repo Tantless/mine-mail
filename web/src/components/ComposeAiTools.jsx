@@ -1482,8 +1482,7 @@ export function ComposeAiAssistant({
               data-warning={contextUsage.percent >= 75 || undefined}
               title={`上下文窗口来源：${contextUsage.contextWindowSource || "default"}，置信度 ${contextUsage.contextWindowConfidence || 1}`}
             >
-              {contextUsage.estimated ? "≈" : ""}
-              {compactTokenCount(contextUsage.inputTokens)}
+              CTX {compactTokenCount(contextUsage.inputTokens)}
               /{compactTokenCount(contextUsage.contextWindowTokens)}
               {` (${Math.min(999, Math.max(0, contextUsage.percent))}%)`}
             </span>

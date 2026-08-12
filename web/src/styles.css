@@ -6457,10 +6457,14 @@ html[data-surface="new-mail-notification"] #root {
   min-width: 136px;
 }
 
+.compose-ai-mode-select {
+  flex: 0 0 auto;
+}
+
 .compose-ai-model-select {
   min-width: 0;
-  max-width: calc(100% - 104px);
-  flex: 0 1 auto;
+  max-width: min(44%, 180px);
+  flex: 0 1 180px;
 }
 
 .compose-ai-model-select .themed-select__trigger > span {
