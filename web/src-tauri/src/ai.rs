@@ -325,7 +325,7 @@ const DEEPSEEK_ROUTES: &[ProviderRoute] = &[
 const KIMI_ROUTES: &[ProviderRoute] = &[
     ProviderRoute {
         protocol: ProviderProtocol::OpenAiChatCompletions,
-        base_url: "https://api.moonshot.cn/v1",
+        base_url: "https://api.moonshot.ai/v1",
         auth_scheme: AuthScheme::Bearer,
         maturity: ProtocolMaturity::Stable,
         recommendation_rank: 50,
@@ -335,7 +335,7 @@ const KIMI_ROUTES: &[ProviderRoute] = &[
     },
     ProviderRoute {
         protocol: ProviderProtocol::AnthropicMessages,
-        base_url: "https://api.moonshot.cn/anthropic",
+        base_url: "https://api.moonshot.ai/anthropic",
         auth_scheme: AuthScheme::Bearer,
         maturity: ProtocolMaturity::Compatibility,
         recommendation_rank: 30,
@@ -416,7 +416,7 @@ const MIMO_ROUTES: &[ProviderRoute] = &[
     ProviderRoute {
         protocol: ProviderProtocol::OpenAiResponses,
         base_url: "https://api.xiaomimimo.com/v1",
-        auth_scheme: AuthScheme::Bearer,
+        auth_scheme: AuthScheme::ApiKey,
         maturity: ProtocolMaturity::Stable,
         recommendation_rank: 100,
         compatible_model_prefixes: &[],
@@ -426,7 +426,7 @@ const MIMO_ROUTES: &[ProviderRoute] = &[
     ProviderRoute {
         protocol: ProviderProtocol::OpenAiChatCompletions,
         base_url: "https://api.xiaomimimo.com/v1",
-        auth_scheme: AuthScheme::Bearer,
+        auth_scheme: AuthScheme::ApiKey,
         maturity: ProtocolMaturity::Stable,
         recommendation_rank: 50,
         compatible_model_prefixes: &[],
@@ -492,12 +492,12 @@ const MODELSCOPE_ROUTES: &[ProviderRoute] = &[
     ProviderRoute {
         protocol: ProviderProtocol::AnthropicMessages,
         base_url: "https://api-inference.modelscope.cn",
-        auth_scheme: AuthScheme::Bearer,
+        auth_scheme: AuthScheme::AnthropicApiKey,
         maturity: ProtocolMaturity::Compatibility,
         recommendation_rank: 30,
         compatible_model_prefixes: &[],
         recommended_base_url_hosts: &[],
-        limitation: Some("模型支持范围以渠道返回为准"),
+        limitation: Some("仅部分模型提供 Anthropic 兼容入口，请先测试连接"),
     },
 ];
 
@@ -538,7 +538,7 @@ const GLM_ROUTES: &[ProviderRoute] = &[
     ProviderRoute {
         protocol: ProviderProtocol::AnthropicMessages,
         base_url: "https://open.bigmodel.cn/api/anthropic",
-        auth_scheme: AuthScheme::Bearer,
+        auth_scheme: AuthScheme::AnthropicApiKey,
         maturity: ProtocolMaturity::Stable,
         recommendation_rank: 30,
         compatible_model_prefixes: &[],
@@ -613,7 +613,7 @@ const PROVIDER_PRESETS: &[ProviderPreset] = &[
     ProviderPreset {
         id: "kimi",
         label: "Kimi",
-        base_url: "https://api.moonshot.cn/v1",
+        base_url: "https://api.moonshot.ai/v1",
         environment_variable: "MOONSHOT_API_KEY",
         routes: KIMI_ROUTES,
         supports_images: true,
@@ -752,6 +752,9 @@ pub(crate) struct AiProtocolOptionDto {
     pub maturity: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub limitation: Option<String>,
+    pub recommendation_rank: u8,
+    pub compatible_model_prefixes: Vec<String>,
+    pub recommended_base_url_hosts: Vec<String>,
     pub models: Vec<String>,
 }
 
@@ -792,6 +795,8 @@ pub(crate) struct AiProviderInstanceDto {
     pub protocol_maturity: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub protocol_limitation: Option<String>,
+    pub capability_status: String,
+    pub capability_evidence: String,
     pub base_url: String,
     pub model_name: String,
     pub use_environment_key: bool,
@@ -1081,6 +1086,10 @@ struct TranslationCapabilityProfile {
     structured_outputs: CapabilitySupport,
     streaming: CapabilitySupport,
     reasoning_control: CapabilitySupport,
+    #[serde(default = "unknown_capability_support")]
+    tool_calling: CapabilitySupport,
+    #[serde(default = "unknown_capability_support")]
+    multi_turn_tool_calling: CapabilitySupport,
     evidence: CapabilityEvidence,
     checked_at_ms: u64,
     latency_ms: Option<u64>,
@@ -1111,6 +1120,8 @@ impl TranslationCapabilityProfile {
             } else {
                 CapabilitySupport::Unknown
             },
+            tool_calling: CapabilitySupport::Unknown,
+            multi_turn_tool_calling: CapabilitySupport::Unknown,
             evidence: CapabilityEvidence::Preset,
             checked_at_ms: 0,
             latency_ms: None,
@@ -1120,6 +1131,68 @@ impl TranslationCapabilityProfile {
     fn is_fresh(&self, now_ms: u64) -> bool {
         self.checked_at_ms > 0
             && now_ms.saturating_sub(self.checked_at_ms) <= AI_CAPABILITY_PROFILE_TTL_MS
+    }
+}
+
+const fn unknown_capability_support() -> CapabilitySupport {
+    CapabilitySupport::Unknown
+}
+
+impl CapabilityEvidence {
+    const fn id(self) -> &'static str {
+        match self {
+            Self::Preset => "declared",
+            Self::Declared => "declared",
+            Self::Probed => "probed",
+            Self::Observed => "observed",
+        }
+    }
+}
+
+fn capability_status(profile: Option<&TranslationCapabilityProfile>) -> &'static str {
+    match profile {
+        Some(profile) if profile.is_fresh(now_ms()) => {
+            if matches!(
+                (
+                    profile.structured_outputs,
+                    profile.tool_calling,
+                    profile.multi_turn_tool_calling,
+                ),
+                (CapabilitySupport::Unsupported, _, _)
+                    | (_, CapabilitySupport::Unsupported, _)
+                    | (_, _, CapabilitySupport::Unsupported)
+            ) {
+                "limited"
+            } else if matches!(
+                (
+                    profile.structured_outputs,
+                    profile.tool_calling,
+                    profile.multi_turn_tool_calling,
+                ),
+                (CapabilitySupport::Unstable, _, _,)
+                    | (_, CapabilitySupport::Unstable, _,)
+                    | (_, _, CapabilitySupport::Unstable,)
+            ) {
+                "unstable"
+            } else if matches!(
+                (
+                    profile.structured_outputs,
+                    profile.tool_calling,
+                    profile.multi_turn_tool_calling,
+                ),
+                (
+                    CapabilitySupport::Supported,
+                    CapabilitySupport::Supported,
+                    CapabilitySupport::Supported,
+                )
+            ) {
+                "verified"
+            } else {
+                "tested"
+            }
+        }
+        Some(_) => "stale",
+        None => "untested",
     }
 }
 
@@ -1665,7 +1738,7 @@ impl AiRuntime {
             .load_provider_instances()
             .map_err(ai_store_error)?
             .into_iter()
-            .map(|instance| provider_instance_dto(&instance, models.get(&instance.id)))
+            .map(|instance| provider_instance_dto(&store, &instance, models.get(&instance.id)))
             .collect::<Result<Vec<_>, _>>()?;
         let default_provider_instance_id = providers
             .iter()
@@ -1831,6 +1904,13 @@ impl AiRuntime {
                 } else {
                     "created"
                 }),
+        );
+        log_protocol_route_resolved(
+            preset,
+            &instance.protocol_id,
+            &instance.base_url,
+            &instance.model_name,
+            "provider_saved",
         );
         self.get_provider_registry()
     }
@@ -2146,26 +2226,29 @@ impl AiRuntime {
         };
         let discovered = match provider.list_model_metadata().await {
             Ok(models) => models,
-            Err(error) => {
+            Err(error) if instance.model_name.trim().is_empty() => {
                 let _ = store.update_provider_instance_test_state(id, "unavailable", None);
                 return Err(error);
             }
+            Err(_) => Vec::new(),
         };
         let models = discovered
             .iter()
             .map(|model| model.id.clone())
             .collect::<Vec<_>>();
-        store
-            .save_provider_instance_models(id, &models)
-            .map_err(ai_store_error)?;
-        store
-            .save_discovered_context_windows(
-                id,
-                provider.protocol.id(),
-                &provider.base_url,
-                &discovered,
-            )
-            .map_err(ai_store_error)?;
+        if !models.is_empty() {
+            store
+                .save_provider_instance_models(id, &models)
+                .map_err(ai_store_error)?;
+            store
+                .save_discovered_context_windows(
+                    id,
+                    provider.protocol.id(),
+                    &provider.base_url,
+                    &discovered,
+                )
+                .map_err(ai_store_error)?;
+        }
         let test_model = if instance.model_name.trim().is_empty() {
             models
                 .first()
@@ -3549,12 +3632,20 @@ impl AiProvider {
         api_key: Zeroizing<String>,
     ) -> Result<Self, String> {
         let base_url = validate_base_url(&config.base_url)?;
-        let protocol = resolve_provider_protocol_for_configuration(
+        let route = resolve_provider_route_for_configuration(
             provider,
             &config.protocol_id,
             &config.base_url,
             &config.model_name,
         )?;
+        let protocol = route.protocol;
+        log_protocol_route_resolved(
+            provider,
+            &config.protocol_id,
+            &config.base_url,
+            &config.model_name,
+            "runtime_bound",
+        );
         let endpoint = match protocol {
             ProviderProtocol::OpenAiResponses => append_endpoint(&base_url, "responses")?,
             ProviderProtocol::OpenAiChatCompletions => {
@@ -3573,6 +3664,7 @@ impl AiProvider {
             api_key: Arc::new(api_key),
             provider,
             protocol,
+            route,
             base_url,
             endpoint,
             model: config.model_name.clone(),
@@ -3793,27 +3885,23 @@ impl AiProvider {
     }
 
     fn authenticate_openai_request(&self, request: RequestBuilder) -> RequestBuilder {
-        if is_mimo_token_plan_url(&self.base_url) {
-            request.header("api-key", self.api_key.as_str())
-        } else {
-            request.bearer_auth(self.api_key.as_str())
+        match self.route.auth_scheme {
+            AuthScheme::Bearer => request.bearer_auth(self.api_key.as_str()),
+            AuthScheme::ApiKey | AuthScheme::AnthropicApiKey => {
+                request.header("api-key", self.api_key.as_str())
+            }
         }
     }
 
     fn authenticate_anthropic_request(&self, request: RequestBuilder) -> RequestBuilder {
-        match self.provider.id {
-            // These compatibility endpoints document their own API-key headers.
-            "mimo" => request.header("api-key", self.api_key.as_str()),
-            "minimax" | "anthropic" => request
-                .header("x-api-key", self.api_key.as_str())
-                .header("anthropic-version", "2023-06-01"),
-            // GLM Coding Plan exposes an Anthropic-compatible endpoint through
-            // ANTHROPIC_AUTH_TOKEN, which maps to Bearer authentication.
-            "glm" => request
+        match self.route.auth_scheme {
+            AuthScheme::Bearer => request
                 .bearer_auth(self.api_key.as_str())
                 .header("anthropic-version", "2023-06-01"),
-            _ if self.is_mimo_compatible() => request.header("api-key", self.api_key.as_str()),
-            _ => request
+            AuthScheme::ApiKey => request
+                .header("api-key", self.api_key.as_str())
+                .header("anthropic-version", "2023-06-01"),
+            AuthScheme::AnthropicApiKey => request
                 .header("x-api-key", self.api_key.as_str())
                 .header("anthropic-version", "2023-06-01"),
         }
@@ -5922,6 +6010,9 @@ impl AiProvider {
             ),
         };
         profile.structured_outputs = support;
+        let (tool_calling, multi_turn_tool_calling) = self.probe_tool_calling_capability().await;
+        profile.tool_calling = tool_calling;
+        profile.multi_turn_tool_calling = multi_turn_tool_calling;
         let mut fields = DiagnosticFields::default()
             .operation("ai_capability_probe")
             .provider(self.provider.id)
@@ -5936,6 +6027,84 @@ impl AiProvider {
             diagnostics::info("ai_capability_probe_completed", fields);
         }
         profile
+    }
+
+    async fn probe_tool_calling_capability(&self) -> (CapabilitySupport, CapabilitySupport) {
+        let tool = ToolSpec {
+            name: "mine_mail_probe_value",
+            description: "读取连接测试中的固定模拟值。",
+            parameters: json!({
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": false,
+            }),
+        };
+        let trace = ProviderTrace {
+            operation_id: diagnostics::operation_id(),
+            operation: "ai_tool_capability_probe",
+            account_id: None,
+            draft_id: None,
+            mode: "probe",
+            provider: self.provider.id,
+            protocol: self.protocol.id(),
+            model: self.model.clone(),
+            round: 1,
+        };
+        let first_messages = vec![
+            json!({ "role": "system", "content": "这是无邮件数据的连接能力测试。你必须先调用唯一工具，再根据工具结果只回复 JSON：{\"ok\":true}。" }),
+            json!({ "role": "user", "content": "请读取模拟值。" }),
+        ];
+        let Ok(first) = self
+            .complete(&first_messages, std::slice::from_ref(&tool), trace.clone())
+            .await
+        else {
+            return (CapabilitySupport::Unstable, CapabilitySupport::Unknown);
+        };
+        let Some(call) = first
+            .message
+            .get("tool_calls")
+            .and_then(Value::as_array)
+            .and_then(|calls| calls.first())
+            .cloned()
+        else {
+            return (
+                CapabilitySupport::Unsupported,
+                CapabilitySupport::Unsupported,
+            );
+        };
+        let call_id = call
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or("mine-mail-probe-call");
+        let mut continuation = first_messages;
+        continuation.push(Value::Object(first.message));
+        continuation.push(json!({
+            "role": "tool",
+            "tool_call_id": call_id,
+            "content": "{\"value\":\"OK\"}",
+        }));
+        let mut second_trace = trace;
+        second_trace.round = 2;
+        match self
+            .complete(&continuation, std::slice::from_ref(&tool), second_trace)
+            .await
+        {
+            Ok(second)
+                if second.finish_reason == "stop"
+                    && second
+                        .message
+                        .get("content")
+                        .and_then(Value::as_str)
+                        .and_then(|content| serde_json::from_str::<Value>(content).ok())
+                        .and_then(|content| content.get("ok").and_then(Value::as_bool))
+                        == Some(true) =>
+            {
+                (CapabilitySupport::Supported, CapabilitySupport::Supported)
+            }
+            Ok(_) => (CapabilitySupport::Supported, CapabilitySupport::Unstable),
+            Err(_) => (CapabilitySupport::Supported, CapabilitySupport::Unstable),
+        }
     }
 }
 
@@ -6357,36 +6526,79 @@ fn resolve_provider_protocol(
     preset: ProviderPreset,
     protocol_id: &str,
 ) -> Result<ProviderProtocol, String> {
-    let protocol = if protocol_id == PROTOCOL_SELECTION_AUTO {
-        preset.recommended_protocol
+    let route = if protocol_id == PROTOCOL_SELECTION_AUTO {
+        recommended_route_for_configuration(preset, preset.base_url, "")
     } else {
-        ProviderProtocol::parse(protocol_id).ok_or_else(|| "请选择有效的 API 协议。".to_owned())?
+        let protocol = ProviderProtocol::parse(protocol_id)
+            .ok_or_else(|| "请选择有效的 API 协议。".to_owned())?;
+        preset
+            .routes
+            .iter()
+            .copied()
+            .find(|route| route.protocol == protocol)
+            .ok_or_else(|| "当前供应商不支持所选 API 协议。".to_owned())?
     };
+    Ok(route.protocol)
+}
+
+fn recommended_route_for_configuration(
+    preset: ProviderPreset,
+    base_url: &str,
+    model_name: &str,
+) -> ProviderRoute {
     preset
-        .supported_protocols
-        .contains(&protocol)
-        .then_some(protocol)
-        .ok_or_else(|| "当前供应商不支持所选 API 协议。".to_owned())
+        .routes
+        .iter()
+        .copied()
+        .filter(|route| route.supports_model(model_name))
+        .max_by_key(|route| route.recommendation_rank_for(base_url))
+        .unwrap_or(preset.routes[0])
 }
 
 fn recommended_protocol_for_configuration(
     preset: ProviderPreset,
     base_url: &str,
-    _model_name: &str,
+    model_name: &str,
 ) -> ProviderProtocol {
-    let official_mimo_endpoint = preset.id == "mimo"
-        || validate_base_url(base_url).ok().is_some_and(|base_url| {
-            base_url.host_str() == Some("api.xiaomimimo.com") || is_mimo_token_plan_url(&base_url)
-        });
-    if official_mimo_endpoint
-        && preset
-            .supported_protocols
-            .contains(&ProviderProtocol::OpenAiResponses)
-    {
-        ProviderProtocol::OpenAiResponses
-    } else {
-        preset.recommended_protocol
+    recommended_route_for_configuration(preset, base_url, model_name).protocol
+}
+
+fn resolve_provider_route_for_configuration(
+    preset: ProviderPreset,
+    protocol_id: &str,
+    base_url: &str,
+    model_name: &str,
+) -> Result<ProviderRoute, String> {
+    if protocol_id == PROTOCOL_SELECTION_AUTO {
+        return Ok(route_with_base_url_auth(
+            recommended_route_for_configuration(preset, base_url, model_name),
+            base_url,
+        ));
     }
+    let protocol =
+        ProviderProtocol::parse(protocol_id).ok_or_else(|| "请选择有效的 API 协议。".to_owned())?;
+    let route = preset
+        .routes
+        .iter()
+        .copied()
+        .find(|route| route.protocol == protocol)
+        .ok_or_else(|| "当前供应商不支持所选 API 协议。".to_owned())?;
+    if !route.supports_model(model_name) {
+        return Err(format!(
+            "当前模型不支持 {}，请切换协议或模型。",
+            protocol.label()
+        ));
+    }
+    Ok(route_with_base_url_auth(route, base_url))
+}
+
+fn route_with_base_url_auth(mut route: ProviderRoute, base_url: &str) -> ProviderRoute {
+    if validate_base_url(base_url).ok().is_some_and(|url| {
+        url.host_str() == Some("api.xiaomimimo.com") || is_mimo_token_plan_url(&url)
+    }) {
+        route.auth_scheme = AuthScheme::ApiKey;
+    }
+    route
 }
 
 fn resolve_provider_protocol_for_configuration(
@@ -6395,25 +6607,44 @@ fn resolve_provider_protocol_for_configuration(
     base_url: &str,
     model_name: &str,
 ) -> Result<ProviderProtocol, String> {
-    if protocol_id != PROTOCOL_SELECTION_AUTO {
-        return resolve_provider_protocol(preset, protocol_id);
-    }
-    let protocol = recommended_protocol_for_configuration(preset, base_url, model_name);
-    preset
-        .supported_protocols
-        .contains(&protocol)
-        .then_some(protocol)
-        .ok_or_else(|| "当前供应商不支持所选 API 协议。".to_owned())
+    resolve_provider_route_for_configuration(preset, protocol_id, base_url, model_name)
+        .map(|route| route.protocol)
 }
 
 fn provider_protocol_base_url(preset: ProviderPreset, protocol: ProviderProtocol) -> &'static str {
-    match (preset.id, protocol) {
-        ("deepseek", ProviderProtocol::AnthropicMessages) => "https://api.deepseek.com/anthropic",
-        ("mimo", ProviderProtocol::AnthropicMessages) => "https://api.xiaomimimo.com/anthropic",
-        ("minimax", ProviderProtocol::AnthropicMessages) => "https://api.minimaxi.com/anthropic",
-        ("glm", ProviderProtocol::AnthropicMessages) => "https://open.bigmodel.cn/api/anthropic",
-        _ => preset.base_url,
-    }
+    preset
+        .routes
+        .iter()
+        .find(|route| route.protocol == protocol)
+        .map_or(preset.base_url, |route| route.base_url)
+}
+
+fn log_protocol_route_resolved(
+    preset: ProviderPreset,
+    selection: &str,
+    base_url: &str,
+    model_name: &str,
+    outcome: &'static str,
+) {
+    let Ok(route) =
+        resolve_provider_route_for_configuration(preset, selection, base_url, model_name)
+    else {
+        return;
+    };
+    diagnostics::info(
+        "ai_protocol_route_resolved",
+        DiagnosticFields::default()
+            .operation("ai_protocol_route")
+            .trigger(if selection == PROTOCOL_SELECTION_AUTO {
+                "automatic"
+            } else {
+                "explicit"
+            })
+            .provider(preset.id)
+            .protocol(route.protocol.id())
+            .model(model_name)
+            .outcome(outcome),
+    );
 }
 
 fn default_translation_language() -> String {
@@ -6544,6 +6775,7 @@ fn resolve_model_context_profile(
 }
 
 fn provider_instance_dto(
+    store: &AiStore,
     instance: &StoredAiProviderInstance,
     models: Option<&Vec<String>>,
 ) -> Result<AiProviderInstanceDto, String> {
@@ -6555,6 +6787,22 @@ fn provider_instance_dto(
         &instance.base_url,
         &instance.model_name,
     )?;
+    let route = resolve_provider_route_for_configuration(
+        preset,
+        &instance.protocol_id,
+        &instance.base_url,
+        &instance.model_name,
+    )?;
+    let normalized_base_url = validate_base_url(&instance.base_url)?;
+    let profile = store
+        .load_translation_capabilities_for_route(
+            preset.id,
+            resolved_protocol.id(),
+            normalized_base_url.as_str(),
+            &instance.model_name,
+        )
+        .ok()
+        .flatten();
     Ok(AiProviderInstanceDto {
         id: instance.id.clone(),
         provider_id: instance.provider_id.clone(),
@@ -6563,6 +6811,13 @@ fn provider_instance_dto(
         protocol_id: instance.protocol_id.clone(),
         resolved_protocol_id: resolved_protocol.id().to_owned(),
         protocol_label: resolved_protocol.label().to_owned(),
+        protocol_maturity: route.maturity.id().to_owned(),
+        protocol_limitation: route.limitation.map(str::to_owned),
+        capability_status: capability_status(profile.as_ref()).to_owned(),
+        capability_evidence: profile
+            .as_ref()
+            .map_or("declared", |profile| profile.evidence.id())
+            .to_owned(),
         base_url: instance.base_url.clone(),
         model_name: instance.model_name.clone(),
         use_environment_key: instance.use_environment_key,
@@ -6627,18 +6882,21 @@ fn config_dto(
                 let selected_configuration = if preset.id == config.provider_id {
                     Some(config)
                 } else {
-                    preset.supported_protocols.iter().find_map(|protocol| {
-                        provider_configs.get(&(preset.id.to_owned(), protocol.id().to_owned()))
+                    preset.routes.iter().find_map(|route| {
+                        provider_configs
+                            .get(&(preset.id.to_owned(), route.protocol.id().to_owned()))
                     })
                 };
-                let recommended =
-                    selected_configuration.map_or(preset.recommended_protocol, |config| {
+                let recommended = selected_configuration.map_or_else(
+                    || recommended_protocol_for_configuration(*preset, preset.base_url, ""),
+                    |config| {
                         recommended_protocol_for_configuration(
                             *preset,
                             &config.base_url,
                             &config.model_name,
                         )
-                    });
+                    },
+                );
                 let active_protocol = selected_configuration
                     .and_then(|config| {
                         resolve_provider_protocol_for_configuration(
@@ -6674,9 +6932,10 @@ fn config_dto(
                     has_environment_api_key: environment_api_key(*preset).is_some(),
                 });
                 let configurations = preset
-                    .supported_protocols
+                    .routes
                     .iter()
-                    .filter_map(|protocol| {
+                    .filter_map(|route| {
+                        let protocol = route.protocol;
                         provider_configs
                             .get(&(preset.id.to_owned(), protocol.id().to_owned()))
                             .map(|config| AiProviderConfigurationDto {
@@ -6690,23 +6949,43 @@ fn config_dto(
                     })
                     .collect();
                 let protocols = preset
-                    .supported_protocols
+                    .routes
                     .iter()
-                    .map(|protocol| AiProtocolOptionDto {
-                        id: protocol.id().to_owned(),
-                        label: protocol.label().to_owned(),
-                        base_url: provider_protocol_base_url(*preset, *protocol).to_owned(),
-                        recommended: *protocol == recommended,
-                        models: provider_models
-                            .get(&(preset.id.to_owned(), protocol.id().to_owned()))
-                            .cloned()
-                            .unwrap_or_else(|| {
-                                preset
-                                    .default_models
-                                    .iter()
-                                    .map(|model| (*model).to_owned())
-                                    .collect()
-                            }),
+                    .map(|route| {
+                        let protocol = route.protocol;
+                        let compatible = selected_configuration
+                            .map(|config| route.supports_model(&config.model_name))
+                            .unwrap_or(true);
+                        AiProtocolOptionDto {
+                            id: protocol.id().to_owned(),
+                            label: protocol.label().to_owned(),
+                            base_url: route.base_url.to_owned(),
+                            recommended: protocol == recommended,
+                            compatible,
+                            maturity: route.maturity.id().to_owned(),
+                            limitation: route.limitation.map(str::to_owned),
+                            recommendation_rank: route.recommendation_rank,
+                            compatible_model_prefixes: route
+                                .compatible_model_prefixes
+                                .iter()
+                                .map(|prefix| (*prefix).to_owned())
+                                .collect(),
+                            recommended_base_url_hosts: route
+                                .recommended_base_url_hosts
+                                .iter()
+                                .map(|host| (*host).to_owned())
+                                .collect(),
+                            models: provider_models
+                                .get(&(preset.id.to_owned(), protocol.id().to_owned()))
+                                .cloned()
+                                .unwrap_or_else(|| {
+                                    preset
+                                        .default_models
+                                        .iter()
+                                        .map(|model| (*model).to_owned())
+                                        .collect()
+                                }),
+                        }
                     })
                     .collect();
                 AiProviderPresetDto {
@@ -6776,7 +7055,6 @@ fn validate_connection_config(
     let provider_id = provider_id.trim();
     let preset = provider_preset(provider_id).ok_or_else(|| "AI 供应商配置无效。".to_owned())?;
     let protocol_id = protocol_id.trim();
-    resolve_provider_protocol(preset, protocol_id)?;
     let base_url = base_url.trim();
     validate_base_url(base_url)?;
     let model_name = model_name.trim();
@@ -6786,6 +7064,7 @@ fn validate_connection_config(
     {
         return Err("AI 模型名称无效。".to_owned());
     }
+    resolve_provider_route_for_configuration(preset, protocol_id, base_url, model_name)?;
     Ok(StoredAiConfig {
         provider_id: provider_id.to_owned(),
         protocol_id: protocol_id.to_owned(),
@@ -11678,6 +11957,21 @@ impl AiStore {
         &self,
         provider: &AiProvider,
     ) -> rusqlite::Result<Option<TranslationCapabilityProfile>> {
+        self.load_translation_capabilities_for_route(
+            provider.provider.id,
+            provider.protocol.id(),
+            provider.base_url.as_str(),
+            &provider.model,
+        )
+    }
+
+    fn load_translation_capabilities_for_route(
+        &self,
+        provider_id: &str,
+        protocol_id: &str,
+        base_url: &str,
+        model_name: &str,
+    ) -> rusqlite::Result<Option<TranslationCapabilityProfile>> {
         let connection = self.connection()?;
         let profile_json = connection
             .query_row(
@@ -11685,12 +11979,7 @@ impl AiStore {
                  FROM ai_provider_capabilities
                  WHERE provider_id = ?1 AND protocol_id = ?2
                    AND base_url = ?3 AND model_name = ?4",
-                params![
-                    provider.provider.id,
-                    provider.protocol.id(),
-                    provider.base_url.as_str(),
-                    provider.model,
-                ],
+                params![provider_id, protocol_id, base_url, model_name,],
                 |row| row.get::<_, String>(0),
             )
             .optional()?;
@@ -13009,9 +13298,9 @@ mod tests {
     use super::{
         AI_TRANSLATION_SUBJECT_CONTEXT_MAX_BYTES, AI_TRANSLATION_SUBJECT_PART_ID,
         AiExecutionContext, AiMode, AiProvider, AiRuntime, AiStore, AiTranslationFormat,
-        AiTranslationPartRequest, AiTranslationRequest, DiscoveredModel, DraftWriteReadState,
-        EmptyToolArguments, ModelContextProfile, OptimizationCompletionIssue, OptimizationDecision,
-        OptimizationReadState, PROTOCOL_SELECTION_AUTO, ProviderProtocol,
+        AiTranslationPartRequest, AiTranslationRequest, AuthScheme, DiscoveredModel,
+        DraftWriteReadState, EmptyToolArguments, ModelContextProfile, OptimizationCompletionIssue,
+        OptimizationDecision, OptimizationReadState, PROTOCOL_SELECTION_AUTO, ProviderProtocol,
         ProviderResponseReadFailure, ProviderTrace, ReplaceDraftBodyArguments,
         SearchContactsArguments, StoredAiConfig, StoredAiProviderInstance, StoredHistoryMessage,
         ToolArgumentFailureTracker, ToolFailure, ToolPreparationTracker, TranslationBatchOutcome,
@@ -13032,12 +13321,13 @@ mod tests {
         parse_translation_envelope_for_ids, parse_zero_tool_audit_decision,
         partition_translation_units, provider_preset, provider_protocol_base_url,
         provider_safe_tool_calls, requires_draft_write_reads, resolve_model_context_profile,
-        resolve_provider_protocol, resolve_provider_protocol_for_configuration, session_title,
-        should_emit_turn_content, should_verify_unchanged, tool_spec, tool_specs,
-        translation_batch_payload, translation_completion_token_limit, translation_language,
-        translation_subject_excerpt, translation_system_prompt, truncate_utf8_bytes,
-        turn_tool_mode, use_completion_token_limit, validate_base_url,
-        validate_translation_request, zero_tool_audit_messages, zero_tool_retry_prompt,
+        resolve_provider_protocol, resolve_provider_protocol_for_configuration,
+        resolve_provider_route_for_configuration, session_title, should_emit_turn_content,
+        should_verify_unchanged, tool_spec, tool_specs, translation_batch_payload,
+        translation_completion_token_limit, translation_language, translation_subject_excerpt,
+        translation_system_prompt, truncate_utf8_bytes, turn_tool_mode, use_completion_token_limit,
+        validate_base_url, validate_translation_request, zero_tool_audit_messages,
+        zero_tool_retry_prompt,
     };
 
     #[test]
@@ -14498,7 +14788,7 @@ mod tests {
     fn provider_presets_keep_documented_connection_defaults() {
         let cases = [
             ("deepseek", "https://api.deepseek.com", "DEEPSEEK_API_KEY"),
-            ("kimi", "https://api.moonshot.cn/v1", "MOONSHOT_API_KEY"),
+            ("kimi", "https://api.moonshot.ai/v1", "MOONSHOT_API_KEY"),
             ("openai", "https://api.openai.com/v1", "OPENAI_API_KEY"),
             (
                 "anthropic",
@@ -14914,6 +15204,8 @@ mod tests {
             structured_outputs: super::CapabilitySupport::Unsupported,
             streaming: super::CapabilitySupport::Supported,
             reasoning_control: super::CapabilitySupport::Unknown,
+            tool_calling: super::CapabilitySupport::Supported,
+            multi_turn_tool_calling: super::CapabilitySupport::Supported,
             evidence: super::CapabilityEvidence::Probed,
             checked_at_ms: super::now_ms(),
             latency_ms: Some(23),
@@ -14990,15 +15282,110 @@ mod tests {
         assert_eq!(
             resolve_provider_protocol(deepseek, PROTOCOL_SELECTION_AUTO)
                 .expect("deepseek protocol"),
-            ProviderProtocol::OpenAiChatCompletions,
+            ProviderProtocol::OpenAiResponses,
         );
-        assert!(resolve_provider_protocol(deepseek, "openai_responses").is_err());
+        assert!(resolve_provider_protocol(deepseek, "openai_responses").is_ok());
         assert!(resolve_provider_protocol(deepseek, "anthropic_messages").is_ok());
         assert!(resolve_provider_protocol(mimo, "anthropic_messages").is_ok());
         assert_eq!(
             provider_protocol_base_url(mimo, ProviderProtocol::AnthropicMessages),
             "https://api.xiaomimimo.com/anthropic",
         );
+    }
+
+    #[test]
+    fn deepseek_auto_route_is_model_aware_and_explicit_incompatibility_is_rejected() {
+        let deepseek = provider_preset("deepseek").expect("deepseek preset");
+        assert_eq!(
+            resolve_provider_protocol_for_configuration(
+                deepseek,
+                PROTOCOL_SELECTION_AUTO,
+                "https://api.deepseek.com",
+                "deepseek-v4-flash",
+            )
+            .expect("Flash automatic protocol"),
+            ProviderProtocol::OpenAiResponses,
+        );
+        assert_eq!(
+            resolve_provider_protocol_for_configuration(
+                deepseek,
+                PROTOCOL_SELECTION_AUTO,
+                "https://api.deepseek.com",
+                "deepseek-v4-pro",
+            )
+            .expect("Pro automatic protocol"),
+            ProviderProtocol::OpenAiChatCompletions,
+        );
+        assert!(
+            resolve_provider_protocol_for_configuration(
+                deepseek,
+                "openai_responses",
+                "https://api.deepseek.com",
+                "deepseek-v4-pro",
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn added_provider_routes_keep_protocol_specific_urls_and_authentication() {
+        let cases = [
+            (
+                "kimi",
+                ProviderProtocol::AnthropicMessages,
+                "https://api.moonshot.ai/anthropic",
+                AuthScheme::Bearer,
+            ),
+            (
+                "qwen",
+                ProviderProtocol::AnthropicMessages,
+                "https://dashscope.aliyuncs.com/apps/anthropic",
+                AuthScheme::AnthropicApiKey,
+            ),
+            (
+                "minimax",
+                ProviderProtocol::OpenAiResponses,
+                "https://api.minimaxi.com/v1",
+                AuthScheme::Bearer,
+            ),
+            (
+                "modelscope",
+                ProviderProtocol::AnthropicMessages,
+                "https://api-inference.modelscope.cn",
+                AuthScheme::AnthropicApiKey,
+            ),
+            (
+                "openrouter",
+                ProviderProtocol::AnthropicMessages,
+                "https://openrouter.ai/api",
+                AuthScheme::Bearer,
+            ),
+        ];
+        for (provider_id, protocol, base_url, auth_scheme) in cases {
+            let preset = provider_preset(provider_id).expect("preset");
+            let route = preset
+                .routes
+                .iter()
+                .find(|route| route.protocol == protocol)
+                .expect("route");
+            assert_eq!(route.base_url, base_url);
+            assert_eq!(route.auth_scheme, auth_scheme);
+        }
+    }
+
+    #[test]
+    fn official_mimo_hosts_use_api_key_auth_even_for_custom_routes() {
+        let custom = provider_preset("custom").expect("custom preset");
+        for protocol_id in ["openai_responses", "openai_chat_completions"] {
+            let route = resolve_provider_route_for_configuration(
+                custom,
+                protocol_id,
+                "https://api.xiaomimimo.com/v1",
+                "mimo-v2.5-pro",
+            )
+            .expect("official MiMo route");
+            assert_eq!(route.auth_scheme, AuthScheme::ApiKey);
+        }
     }
 
     #[test]

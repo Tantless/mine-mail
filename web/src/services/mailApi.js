@@ -505,6 +505,21 @@ function normalizeAiConfig(config = {}) {
                 label: protocol.label,
                 baseUrl: protocol.baseUrl ?? protocol.base_url ?? "",
                 recommended: Boolean(protocol.recommended),
+                compatible: protocol.compatible !== false,
+                maturity: protocol.maturity ?? "stable",
+                limitation: protocol.limitation ?? null,
+                recommendationRank:
+                  protocol.recommendationRank
+                  ?? protocol.recommendation_rank
+                  ?? (protocol.recommended ? 100 : 0),
+                compatibleModelPrefixes:
+                  protocol.compatibleModelPrefixes
+                  ?? protocol.compatible_model_prefixes
+                  ?? [],
+                recommendedBaseUrlHosts:
+                  protocol.recommendedBaseUrlHosts
+                  ?? protocol.recommended_base_url_hosts
+                  ?? [],
                 models: Array.isArray(protocol.models)
                   ? protocol.models.filter((model) => typeof model === "string")
                   : [],
@@ -537,6 +552,22 @@ function normalizeAiProviderInstance(provider = {}) {
       provider.protocolLabel
       ?? provider.protocol_label
       ?? "OpenAI Chat Completions",
+    protocolMaturity:
+      provider.protocolMaturity
+      ?? provider.protocol_maturity
+      ?? "stable",
+    protocolLimitation:
+      provider.protocolLimitation
+      ?? provider.protocol_limitation
+      ?? null,
+    capabilityStatus:
+      provider.capabilityStatus
+      ?? provider.capability_status
+      ?? "untested",
+    capabilityEvidence:
+      provider.capabilityEvidence
+      ?? provider.capability_evidence
+      ?? "declared",
     baseUrl: provider.baseUrl ?? provider.base_url ?? "",
     modelName: provider.modelName ?? provider.model_name ?? "",
     useEnvironmentKey: Boolean(

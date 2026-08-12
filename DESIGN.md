@@ -288,11 +288,17 @@ All app-owned color and material decisions flow through custom properties in
   the shared add/edit detail surface. A back action returns one level without
   closing Settings. The detail surface contains the instance name, **API 协议**,
   `BASE_URL`, masked `API_KEY`, environment-key choice, and editable preferred
-  model. **自动** names the preset recommendation, unsupported protocols are
-  absent, and a manual key is never read back into React. **保存并测试** persists
-  the instance, retrieves its model list, performs one minimal model request,
-  and reports Rust-observed latency. **保存渠道** persists without starting a
-  network test. These are local actions, not a global Settings footer.
+  model. **自动（当前使用：…）** previews the protocol for the current
+  model; unsupported protocols are absent, model-incompatible choices are disabled,
+  and Beta or compatibility limits appear as compact helper copy. A customized
+  `BASE_URL` is never overwritten by later model or protocol changes. A manual key
+  is never read back into React. **保存并测试** persists the instance, retrieves
+  its model list, performs bounded text, structured-output, and side-effect-free
+  mock tool checks, and reports Rust-observed latency. **保存渠道** persists without
+  starting a network test. Rust remains authoritative when validating and binding
+  the route. The collapsed Provider row shows the resolved protocol
+  and a restrained capability state such as **能力未测试**、**能力已验证** or
+  **能力验证不稳定**. These are local actions, not a global Settings footer.
 - A custom Provider detail also exposes one native themed **上下文窗口** selector
   with 128K, 200K, 500K, 1M, and 2M options. It is a fallback setting rather
   than a model capability claim: a context size returned by that exact tested

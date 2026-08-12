@@ -16,12 +16,20 @@ const presets = [
       label: "OpenAI Chat Completions",
       baseUrl: "",
       recommended: true,
+      recommendationRank: 30,
+      compatibleModelPrefixes: [],
+      recommendedBaseUrlHosts: [],
+      maturity: "compatibility",
       models: [],
     }, {
       id: "openai_responses",
       label: "OpenAI Responses",
       baseUrl: "",
       recommended: false,
+      recommendationRank: 20,
+      compatibleModelPrefixes: [],
+      recommendedBaseUrlHosts: ["api.xiaomimimo.com"],
+      maturity: "compatibility",
       models: [],
     }],
   },
@@ -38,6 +46,10 @@ const presets = [
         label: "OpenAI Responses",
         baseUrl: "https://api.openai.com/v1",
         recommended: true,
+        recommendationRank: 100,
+        compatibleModelPrefixes: [],
+        recommendedBaseUrlHosts: [],
+        maturity: "stable",
         models: ["gpt-5.6-terra", "gpt-5.6-sol"],
       },
       {
@@ -45,6 +57,10 @@ const presets = [
         label: "OpenAI Chat Completions",
         baseUrl: "https://api.openai.com/v1",
         recommended: false,
+        recommendationRank: 50,
+        compatibleModelPrefixes: [],
+        recommendedBaseUrlHosts: [],
+        maturity: "stable",
         models: ["gpt-5.6-terra"],
       },
     ],
@@ -52,15 +68,19 @@ const presets = [
   {
     id: "kimi",
     label: "Kimi",
-    baseUrl: "https://api.moonshot.cn/v1",
+    baseUrl: "https://api.moonshot.ai/v1",
     environmentVariable: "MOONSHOT_API_KEY",
     models: ["kimi-k2.6", "kimi-k3"],
     recommendedProtocolId: "openai_chat_completions",
     protocols: [{
       id: "openai_chat_completions",
       label: "OpenAI Chat Completions",
-      baseUrl: "https://api.moonshot.cn/v1",
+      baseUrl: "https://api.moonshot.ai/v1",
       recommended: true,
+      recommendationRank: 50,
+      compatibleModelPrefixes: [],
+      recommendedBaseUrlHosts: [],
+      maturity: "stable",
       models: ["kimi-k2.6", "kimi-k3"],
     }],
   },
@@ -87,6 +107,9 @@ function configuredProvider(overrides = {}) {
     status: "available",
     latencyMs: 86,
     checkedAtMs: 1,
+    protocolMaturity: "stable",
+    capabilityStatus: "verified",
+    capabilityEvidence: "probed",
     ...overrides,
   };
 }
@@ -187,7 +210,7 @@ describe("AgentSettings", () => {
       id: null,
       providerId: "kimi",
       name: "Kimi Backup",
-      baseUrl: "https://api.moonshot.cn/v1",
+      baseUrl: "https://api.moonshot.ai/v1",
       apiKey: "demo-key",
     });
   });
@@ -204,8 +227,61 @@ describe("AgentSettings", () => {
     await user.type(baseUrl, "https://api.xiaomimimo.com/v1");
 
     expect(screen.getByRole("combobox", { name: "API 协议" }).textContent).toContain(
-      "自动（推荐：OpenAI Responses）",
+      "自动（当前使用：OpenAI Responses）",
     );
+  });
+
+  it("switches the automatic DeepSeek route by model and blocks an incompatible explicit route", async () => {
+    const user = userEvent.setup();
+    const deepseek = {
+      id: "deepseek",
+      label: "DeepSeek",
+      baseUrl: "https://api.deepseek.com",
+      environmentVariable: "DEEPSEEK_API_KEY",
+      models: ["deepseek-v4-flash", "deepseek-v4-pro"],
+      recommendedProtocolId: "openai_responses",
+      protocols: [{
+        id: "openai_responses",
+        label: "OpenAI Responses",
+        baseUrl: "https://api.deepseek.com",
+        recommended: true,
+        recommendationRank: 100,
+        compatibleModelPrefixes: ["deepseek-v4-flash"],
+        recommendedBaseUrlHosts: [],
+        maturity: "stable",
+        limitation: "当前仅 DeepSeek V4 Flash 支持",
+        models: ["deepseek-v4-flash", "deepseek-v4-pro"],
+      }, {
+        id: "openai_chat_completions",
+        label: "OpenAI Chat Completions",
+        baseUrl: "https://api.deepseek.com",
+        recommended: false,
+        recommendationRank: 50,
+        compatibleModelPrefixes: [],
+        recommendedBaseUrlHosts: [],
+        maturity: "stable",
+        models: ["deepseek-v4-flash", "deepseek-v4-pro"],
+      }],
+    };
+    render(<AgentSettings client={client({
+      getAiProviderRegistry: vi.fn().mockResolvedValue(registry({ presets: [...presets, deepseek] })),
+    })} />);
+    await expandModelConfiguration(user);
+    await user.click(screen.getByRole("button", { name: "添加 AI 渠道" }));
+    await user.type(screen.getByPlaceholderText("搜索渠道"), "DeepSeek");
+    await user.click(screen.getByRole("listitem", { name: /DeepSeek/ }));
+
+    expect(screen.getByRole("combobox", { name: "API 协议" }).textContent).toContain(
+      "自动（当前使用：OpenAI Responses）",
+    );
+    await user.clear(screen.getByLabelText("首选模型"));
+    await user.type(screen.getByLabelText("首选模型"), "deepseek-v4-pro");
+    expect(screen.getByRole("combobox", { name: "API 协议" }).textContent).toContain(
+      "自动（当前使用：OpenAI Chat Completions）",
+    );
+
+    await user.click(screen.getByRole("combobox", { name: "API 协议" }));
+    expect(screen.getByRole("option", { name: /OpenAI Responses/ }).disabled).toBe(true);
   });
 
   it("persists the manually selected context window for a custom channel", async () => {

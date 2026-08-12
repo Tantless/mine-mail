@@ -138,29 +138,37 @@ function ProviderMark({ providerId, baseUrl, label, className = "" }) {
   );
 }
 
-function officialMimoConfiguration(preset, form) {
-  if (preset?.id === "mimo") return true;
+function protocolSupportsModel(protocol, modelName) {
+  const prefixes = protocol?.compatibleModelPrefixes || [];
+  const normalized = String(modelName || "").trim().toLowerCase();
+  return !normalized || !prefixes.length || prefixes.some(
+    (prefix) => normalized.startsWith(String(prefix).toLowerCase()),
+  );
+}
+
+function protocolRecommendationRank(protocol, baseUrl) {
+  let score = Number(protocol?.recommendationRank || 0);
   try {
-    const host = new URL(form?.baseUrl || "").hostname;
-    return host === "api.xiaomimimo.com"
-      || [
-        "token-plan-cn.xiaomimimo.com",
-        "token-plan-sgp.xiaomimimo.com",
-        "token-plan-ams.xiaomimimo.com",
-      ].includes(host);
+    const host = new URL(baseUrl || "").hostname.toLowerCase();
+    if ((protocol?.recommendedBaseUrlHosts || []).some(
+      (candidate) => String(candidate).toLowerCase() === host,
+    )) score += 100;
   } catch {
-    return false;
+    // An incomplete custom URL cannot supply a host-specific recommendation.
   }
+  return score;
 }
 
 function recommendedProtocolId(preset, form) {
-  if (
-    officialMimoConfiguration(preset, form)
-    && preset?.protocols?.some((protocol) => protocol.id === "openai_responses")
-  ) {
-    return "openai_responses";
-  }
-  return preset?.recommendedProtocolId;
+  const compatible = (preset?.protocols || [])
+    .filter((protocol) => protocolSupportsModel(protocol, form?.modelName));
+  if (!compatible.length) return preset?.recommendedProtocolId;
+  return compatible.reduce((best, protocol) => (
+    protocolRecommendationRank(protocol, form?.baseUrl)
+      > protocolRecommendationRank(best, form?.baseUrl)
+      ? protocol
+      : best
+  )).id;
 }
 
 function protocolOptions(preset, form) {
@@ -172,15 +180,35 @@ function protocolOptions(preset, form) {
   return [
     {
       value: "auto",
-      label: `自动（推荐：${recommended?.label || "渠道默认"}）`,
+      label: `自动（当前使用：${recommended?.label || "渠道默认"}）`,
     },
     ...(preset.protocols || []).map((protocol) => ({
       value: protocol.id,
-      label: protocol.id === recommendation
-        ? `${protocol.label}（推荐）`
-        : protocol.label,
+      disabled: !protocolSupportsModel(protocol, form?.modelName),
+      label: [
+        protocol.label,
+        protocol.maturity === "beta" ? "Beta" : null,
+        protocol.id === recommendation ? "推荐" : null,
+      ].filter(Boolean).join(" · "),
     })),
   ];
+}
+
+function resolvedProtocol(preset, form) {
+  const protocolId = form?.protocolId === "auto"
+    ? recommendedProtocolId(preset, form)
+    : form?.protocolId;
+  return preset?.protocols?.find((protocol) => protocol.id === protocolId) || null;
+}
+
+function routeCapabilityCopy(provider) {
+  const status = provider.capabilityStatus || "untested";
+  if (status === "verified") return "能力已验证";
+  if (status === "limited") return "部分能力受限";
+  if (status === "unstable") return "能力验证不稳定";
+  if (status === "stale") return "能力验证已过期";
+  if (status === "tested") return "连接已验证";
+  return "能力未测试";
 }
 
 function providerForm(preset, provider = null) {
@@ -206,6 +234,12 @@ function providerForm(preset, provider = null) {
     environmentVariable: preset.environmentVariable || "AI_API_KEY",
     models: provider?.models || [],
     manualContextWindowTokens: provider?.manualContextWindowTokens || 128000,
+    baseUrlCustomized: Boolean(
+      provider
+      && !(preset.protocols || []).some(
+        (candidate) => candidate.baseUrl === provider.baseUrl,
+      ),
+    ),
   };
 }
 
@@ -581,8 +615,15 @@ function AgentSettingsContent({
                   {provider.baseUrl}
                 </span>
                 <span className="agent-provider-meta">
-                  <small>{provider.protocolLabel}</small>
+                  <small>
+                    {provider.protocolId === "auto" ? "自动 · " : ""}
+                    {provider.protocolLabel}
+                    {provider.protocolMaturity === "beta" ? " · Beta" : ""}
+                  </small>
                   <small data-status={provider.status}>{statusCopy(provider)}</small>
+                  <small data-capability={provider.capabilityStatus || "untested"}>
+                    {routeCapabilityCopy(provider)}
+                  </small>
                   {provider.modelName ? <small>首选：{provider.modelName}</small> : null}
                 </span>
                 {providerErrors[provider.id] ? (
@@ -698,6 +739,9 @@ function AgentSettingsContent({
   const renderProviderEditor = () => {
     if (!form || !selectedPreset) return null;
     const options = protocolOptions(selectedPreset, form);
+    const route = resolvedProtocol(selectedPreset, form);
+    const explicitIncompatible = form.protocolId !== "auto"
+      && !protocolSupportsModel(route, form.modelName);
     return (
       <section className="agent-provider-flow" aria-labelledby="agent-provider-editor-title">
         <header className="agent-provider-flow__heading">
@@ -754,10 +798,20 @@ function AgentSettingsContent({
                 setForm((current) => ({
                   ...current,
                   protocolId,
-                  baseUrl: protocol?.baseUrl || current.baseUrl,
+                  baseUrl: current.baseUrlCustomized
+                    ? current.baseUrl
+                    : protocol?.baseUrl || current.baseUrl,
                 }));
               }}
             />
+            <small className="agent-provider-route-note" data-tone={
+              explicitIncompatible ? "danger" : route?.maturity === "beta" ? "warning" : undefined
+            }>
+              {explicitIncompatible
+                ? `当前模型不支持 ${route?.label || "所选协议"}，请切换协议或模型。`
+                : route?.limitation
+                  || (route?.maturity === "beta" ? "该协议仍处于 Beta，请先测试连接。" : "协议由 Rust 按当前模型解析。")}
+            </small>
           </div>
 
           <label className="settings-field agent-provider-editor-wide">
@@ -771,7 +825,11 @@ function AgentSettingsContent({
                 spellCheck="false"
                 placeholder="https://api.example.com/v1"
                 onChange={(event) =>
-                  setForm((current) => ({ ...current, baseUrl: event.target.value }))
+                  setForm((current) => ({
+                    ...current,
+                    baseUrl: event.target.value,
+                    baseUrlCustomized: true,
+                  }))
                 }
               />
             </span>
@@ -865,9 +923,17 @@ function AgentSettingsContent({
                 autoCorrect="off"
                 spellCheck="false"
                 placeholder="测试连接后可自动选择"
-                onChange={(event) =>
-                  setForm((current) => ({ ...current, modelName: event.target.value }))
-                }
+                onChange={(event) => setForm((current) => {
+                  const next = { ...current, modelName: event.target.value };
+                  if (!current.baseUrlCustomized && current.protocolId === "auto") {
+                    const nextRouteId = recommendedProtocolId(selectedPreset, next);
+                    const nextRoute = selectedPreset.protocols?.find(
+                      (candidate) => candidate.id === nextRouteId,
+                    );
+                    next.baseUrl = nextRoute?.baseUrl || current.baseUrl;
+                  }
+                  return next;
+                })}
               />
             </span>
             {form.models.length ? (
@@ -877,9 +943,17 @@ function AgentSettingsContent({
                     key={model}
                     type="button"
                     data-selected={model === form.modelName || undefined}
-                    onClick={() =>
-                      setForm((current) => ({ ...current, modelName: model }))
-                    }
+                    onClick={() => setForm((current) => {
+                      const next = { ...current, modelName: model };
+                      if (!current.baseUrlCustomized && current.protocolId === "auto") {
+                        const nextRouteId = recommendedProtocolId(selectedPreset, next);
+                        const nextRoute = selectedPreset.protocols?.find(
+                          (candidate) => candidate.id === nextRouteId,
+                        );
+                        next.baseUrl = nextRoute?.baseUrl || current.baseUrl;
+                      }
+                      return next;
+                    })}
                   >
                     {model}
                   </button>
@@ -924,7 +998,7 @@ function AgentSettingsContent({
           <button
             type="button"
             className="secondary-button"
-            disabled={busy || !canSaveProvider(form)}
+            disabled={busy || explicitIncompatible || !canSaveProvider(form)}
             onClick={() => void saveProvider({ testAfter: true })}
           >
             {actionState === "saving-for-test" || actionState === "testing" ? (
@@ -937,7 +1011,7 @@ function AgentSettingsContent({
           <button
             type="button"
             className="send-button"
-            disabled={busy || !canSaveProvider(form)}
+            disabled={busy || explicitIncompatible || !canSaveProvider(form)}
             onClick={() => void saveProvider()}
           >
             {actionState === "saving" ? <SpinnerGap size={15} className="spin" /> : null}

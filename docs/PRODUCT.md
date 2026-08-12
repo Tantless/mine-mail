@@ -349,10 +349,14 @@ product decision changes.
   OpenAI, Anthropic, Qwen, Xiaomi MiMo, MiniMax, ModelScope, Doubao Seed, GLM,
   and OpenRouter. Every preset exposes only the protocols implemented by both
   that service and Mine Mail: OpenAI Responses, OpenAI Chat Completions, and/or
-  Anthropic Messages. **自动** resolves to that instance's preset recommendation;
-  for a custom instance using an official MiMo pay-as-you-go or Token Plan URL it
-  resolves to Responses, while unknown custom endpoints retain Chat Completions
-  as the compatibility default. An explicit protocol remains explicit. Mine Mail never retries a failed request
+  Anthropic Messages. Rust resolves **自动** from the Provider, current model and
+  recognized official endpoint: DeepSeek V4 Flash selects Responses while V4 Pro
+  selects Chat Completions; an official MiMo pay-as-you-go or Token Plan URL selects
+  Responses; unknown custom endpoints retain Chat Completions as the compatibility
+  default. Rust publishes route metadata so React can preview the decision while the
+  user edits, then validates and resolves it authoritatively at save and runtime. An explicit protocol remains
+  explicit, and an explicitly incompatible model/protocol pair is rejected before
+  saving. Mine Mail never retries a failed request
   through another protocol or Provider because that could duplicate billed work
   or tool effects. Standalone optimization over MiMo-compatible Chat Completions
   disables thinking, uses serial tool calls, and preserves tool calls from the
@@ -411,6 +415,15 @@ product decision changes.
   key mode ignores any form value and reads the preset's documented variable
   after application startup. React receives only a fixed non-secret credential
   mask state.
+- Provider protocol choices carry a route-specific default BASE_URL, authentication
+  scheme, maturity and model restriction. Changing an automatic route updates the
+  default address only while the user has not customized it. The editor labels the
+  current automatic protocol and Beta or compatibility limitations; the collapsed
+  row shows the resolved protocol and its latest capability state. Saving never
+  makes a network request. **测试连接** and **保存并测试** are the only routine UI
+  actions that may run the bounded capability probe: a minimal text request,
+  structured-output request, and side-effect-free mock tool round trip. They never
+  provide real mail, draft, contact, attachment or account content.
 - Every model route has a context-window profile. Unknown models default to
   128,000 tokens at confidence level 1. A value maintained from current official
   model documentation, or the explicit 128K/200K/500K/1M/2M override available
@@ -433,12 +446,14 @@ product decision changes.
   responses and privacy-safe logs. An explicit instance test first refreshes the
   model list, then performs one minimal request with the preferred model or first
   returned model, reports that request's Rust-observed latency, and performs a
-  best-effort structured-output capability probe whose failure does not turn a
-  successful connection test into a failure. Capability profiles are scoped by
+  best-effort structured-output and mock tool-round-trip capability probe whose
+  failure does not turn a successful connection test into a failure. Capability
+  profiles are scoped by
   Provider instance configuration, protocol, base URL, and model, cached for
   seven days, and combine
-  presets with tested and runtime-observed support for structured output,
-  streaming, and reasoning controls. They never contain credentials or mail
+  declarations with tested and runtime-observed support for structured output,
+  streaming, tool calling, multi-turn tool continuation, and reasoning controls.
+  They never contain credentials or mail
   content. A model list alone does not prove those capabilities.
 - Except for standalone optimization's bounded subject/body snapshot described
   below, draft data is not placed in the initial model context. The model must

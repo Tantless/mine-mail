@@ -9925,6 +9925,16 @@ html[data-surface="new-mail-notification"] #root {
   color: var(--color-success);
 }
 
+.agent-provider-meta small[data-capability="verified"] {
+  color: var(--color-success);
+}
+
+.agent-provider-meta small[data-capability="limited"],
+.agent-provider-meta small[data-capability="unstable"],
+.agent-provider-meta small[data-capability="stale"] {
+  color: var(--color-warning);
+}
+
 .agent-provider-meta small[data-status="unavailable"],
 .agent-provider-inline-error {
   color: var(--color-danger);
@@ -10124,6 +10134,14 @@ html[data-surface="new-mail-notification"] #root {
 
 .agent-provider-editor-wide {
   grid-column: 1 / -1;
+}
+
+.agent-provider-route-note[data-tone="warning"] {
+  color: var(--color-warning);
+}
+
+.agent-provider-route-note[data-tone="danger"] {
+  color: var(--color-danger);
 }
 
 .agent-provider-model-suggestions {

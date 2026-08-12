@@ -11,7 +11,10 @@
 | `openai_chat_completions` | OpenAI Chat Completions | `BASE_URL/chat/completions` | Chat messages、tool calls 和 SSE chunks |
 | `anthropic_messages` | Anthropic Messages | `BASE_URL/v1/messages` | Anthropic content blocks、tool use 和 SSE 事件 |
 
-**自动**不是第四种传输协议。对话 Agent 与独立优化使用供应商推荐协议；邮件翻译会在
+**自动**不是第四种传输协议。Rust 会按供应商、当前模型和用户填写的官方地址解析实际
+协议；Rust 将模型限制和推荐顺序一并返回，设置页据此即时预览 **自动（当前使用：…）**，
+保存与运行时仍以 Rust 的再次校验和解析为准。对话
+Agent 与独立优化使用该解析结果；邮件翻译会在
 发起请求前比较同一供应商、同一模型下已经配置且具有新鲜能力档案的协议，只有其他
 协议的已验证能力严格更好时才改走该协议。请求一旦发出，不会因为失败换协议重试。
 显式选择会一直保留，直到用户再次修改。
@@ -21,17 +24,17 @@
 | 供应商 | 推荐 | 其他可选协议 | 推荐 BASE_URL |
 | --- | --- | --- | --- |
 | 自定义 | OpenAI Chat Completions | Responses、Anthropic Messages | 用户填写 |
-| DeepSeek | OpenAI Chat Completions | Anthropic Messages | `https://api.deepseek.com`；Anthropic 为 `https://api.deepseek.com/anthropic` |
-| Kimi | OpenAI Chat Completions | — | `https://api.moonshot.cn/v1` |
+| DeepSeek | V4 Flash 为 Responses；其他模型为 Chat Completions | Chat Completions、Anthropic Messages；Responses 当前限 V4 Flash | `https://api.deepseek.com`；Anthropic 为 `https://api.deepseek.com/anthropic` |
+| Kimi | OpenAI Chat Completions | Anthropic Messages（兼容） | `https://api.moonshot.ai/v1`；Anthropic 为 `https://api.moonshot.ai/anthropic` |
 | OpenAI | OpenAI Responses | Chat Completions | `https://api.openai.com/v1` |
 | Anthropic | Anthropic Messages | — | `https://api.anthropic.com` |
-| 通义千问 | OpenAI Responses | Chat Completions | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
+| 通义千问 | OpenAI Responses | Chat Completions、Anthropic Messages | OpenAI 协议为 `https://dashscope.aliyuncs.com/compatible-mode/v1`；Anthropic 为 `https://dashscope.aliyuncs.com/apps/anthropic` |
 | Xiaomi MiMo | OpenAI Responses | Chat Completions、Anthropic Messages | 按量为 `https://api.xiaomimimo.com/v1`；Anthropic 为 `https://api.xiaomimimo.com/anthropic` |
-| MiniMax | Anthropic Messages | Chat Completions | `https://api.minimaxi.com/anthropic` |
-| ModelScope | OpenAI Chat Completions | — | `https://api-inference.modelscope.cn/v1` |
+| MiniMax | Anthropic Messages | Chat Completions、Responses | Anthropic 为 `https://api.minimaxi.com/anthropic`；OpenAI 协议为 `https://api.minimaxi.com/v1` |
+| ModelScope | OpenAI Chat Completions | Anthropic Messages（兼容，需按模型测试） | Chat 为 `https://api-inference.modelscope.cn/v1`；Anthropic 为 `https://api-inference.modelscope.cn` |
 | 豆包 Seed | OpenAI Responses | Chat Completions | `https://ark.cn-beijing.volces.com/api/v3` |
 | 智谱 GLM | OpenAI Chat Completions | Anthropic Messages | `https://open.bigmodel.cn/api/paas/v4`；Anthropic 为 `https://open.bigmodel.cn/api/anthropic` |
-| OpenRouter | OpenAI Chat Completions | Responses（Beta） | `https://openrouter.ai/api/v1` |
+| OpenRouter | OpenAI Chat Completions | Anthropic Messages、Responses（Beta） | OpenAI 协议为 `https://openrouter.ai/api/v1`；Anthropic 为 `https://openrouter.ai/api` |
 
 MiMo Token Plan 用户把对应区域的地址作为 `BASE_URL`：OpenAI 协议使用地址末尾的
 `/v1`，Anthropic 协议使用地址末尾的 `/anthropic`。例如中国区分别是
@@ -80,11 +83,15 @@ Completions 作为 **自动** 的兼容默认值；但当 `BASE_URL` 是 MiMo �
   Completions 使用无工具 JSON mode，Responses 与 Anthropic Messages 由提示词限定 JSON，
   三种协议都必须通过同一 Rust 严格反序列化和工具名白名单校验。审计候选不写入主链协议
   历史；需要纠正时，原链只收到宿主固定生成的原因码与推荐工具名，不接收审计自由文本。
-- API Key 仍按供应商存入系统凭据库；地址、模型、环境变量选择与模型检索结果按
+- API Key 仍按供应商存入系统凭据库；每条供应商协议路由独立声明 BASE_URL、Bearer、
+  `api-key` 或 `x-api-key` 鉴权以及 Stable、Beta 或兼容成熟度；地址、模型、环境变量选择与模型检索结果按
   “供应商 + 协议”分别保存。切换协议不会清除其他组合。
 - 模型检索、连接测试、自动保存和手动保存都只针对当前可见协议。模型列表接口不可用
-  时，用户仍可手动填写模型名称。连接测试成功后还会尽力探测该模型是否接受协议原生
-  的严格 JSON Schema；探测失败不推翻连接测试结果。
+  时，用户仍可手动填写模型名称；已填写模型的渠道在模型列表检索失败后，**测试连接**
+  仍会直接验证该模型与当前协议，不能让辅助列表接口阻断真实能力测试。只有用户点击 **测试连接** 或 **保存并测试** 才发起
+  探测；除最小文本请求和严格 JSON Schema 外，还用固定模拟值验证一次工具调用和一次
+  多轮工具续接，不读取邮件、草稿或联系人。任一能力探测失败不推翻基础连接测试结果，
+  但会在渠道行标出能力受限或不稳定；保存渠道、启动、构建和例行测试都不自动探测。
 - 模型检索除 `id` 外会识别 `context_window`、`context_length`、
   `max_context_length`、`input_token_limit` 等常见数值字段及受支持的嵌套等价字段；只有
   1,024 到 2,000,000 之间的结构化正整数才可成为三级置信度窗口。缺少该字段时按
@@ -94,8 +101,9 @@ Completions 作为 **自动** 的兼容默认值；但当 `BASE_URL` 是 MiMo �
   官方 compact 调用失败时，使用同一模型生成九段式本地摘要。压缩只覆盖较早完整轮次，
   最近两轮保持原文；完整可见 Session 继续留在本地 SQLite。摘要与 Responses opaque
   state 都严格绑定 Provider 实例、协议、BASE_URL、模型和 Session，不能跨路由复用。
-- 能力档案按“供应商 + 协议 + BASE_URL + 模型”保存七天，来源可以是内置预设、连接
-  测试探测或真实请求观察，当前记录结构化输出、流式响应与思考控制三类能力。模型列表
+- 能力档案按“供应商 + 协议 + BASE_URL + 模型”保存七天，来源可以是内置声明、连接
+  测试探测或真实请求观察，当前记录结构化输出、流式响应、工具调用、多轮工具续接与
+  思考控制能力。界面区分能力未测试、已验证、受限、不稳定和已过期。模型列表
   只能声明可用模型，不能替代能力探测。严格 JSON Schema 被兼容端点以 400、404、405、
   415 或 422 拒绝时，同一次翻译只在原协议内降级为 JSON object 或提示词 JSON，不会
   切换端点或协议。
@@ -113,13 +121,20 @@ Completions 作为 **自动** 的兼容默认值；但当 `BASE_URL` 是 MiMo �
 - [OpenAI 模型与 Responses API](https://developers.openai.com/api/docs/models)
 - [OpenAI Responses 上下文压缩](https://developers.openai.com/api/docs/guides/compaction)
 - [DeepSeek Anthropic API](https://api-docs.deepseek.com/guides/anthropic_api)
+- [DeepSeek Responses 与 V4 Flash 说明](https://api-docs.deepseek.com/quick_start/agent_integrations/codex/)
+- [Kimi API 概览](https://platform.kimi.ai/docs/api/overview)
+- [Kimi Claude Code 接入](https://platform.kimi.ai/docs/guide/claude-code-kimi)
 - [通义千问 OpenAI Responses](https://help.aliyun.com/zh/model-studio/qwen-api-via-openai-responses)
+- [通义千问 Anthropic Messages](https://help.aliyun.com/en/model-studio/anthropic-api-messages)
 - [Xiaomi MiMo 工具接入概览](https://mimo.mi.com/docs/integration/tools-overview)
 - [Xiaomi MiMo 模型与上下文窗口](https://mimo.mi.com/docs/quick-start/summary/model)
 - [MiniMax 文本生成与推荐协议](https://platform.minimaxi.com/docs/guides/text-generation)
+- [MiniMax Responses](https://platform.minimaxi.com/docs/api-reference/responses-create)
+- [ModelScope API-Inference](https://modelscope.cn/docs/model-service/API-Inference/intro)
 - [豆包 Seed Responses 工具调用](https://www.volcengine.com/docs/82379/1958524)
 - [智谱 GLM Claude Code 接入](https://docs.bigmodel.cn/cn/guide/develop/claude)
 - [OpenRouter Responses API](https://openrouter.ai/docs/api/reference/responses/overview)
+- [OpenRouter Anthropic Messages](https://openrouter.ai/docs/api/api-reference/anthropic-messages/create-messages)
 
 供应商文档、模型能力或兼容层发生变化时，应先更新适配和测试，再更新此矩阵；不能只
 改下拉选项而让未实现的协议进入生产路径。

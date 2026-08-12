@@ -250,6 +250,38 @@ describe("mailApi desktop IPC contract", () => {
     );
   });
 
+  it("normalizes protocol route and capability metadata from the desktop registry", async () => {
+    ipc.invoke.mockResolvedValue({
+      providers: [{
+        id: "provider-1",
+        provider_id: "deepseek",
+        provider_label: "DeepSeek",
+        name: "工作模型",
+        protocol_id: "auto",
+        resolved_protocol_id: "openai_responses",
+        protocol_label: "OpenAI Responses",
+        protocol_maturity: "stable",
+        protocol_limitation: "当前仅 DeepSeek V4 Flash 支持",
+        capability_status: "verified",
+        capability_evidence: "probed",
+        base_url: "https://api.deepseek.com",
+        model_name: "deepseek-v4-flash",
+      }],
+      presets: [],
+    });
+    const { mailApi } = await import("./mailApi.js");
+
+    const registry = await mailApi.getAiProviderRegistry();
+
+    expect(registry.providers[0]).toEqual(expect.objectContaining({
+      protocolMaturity: "stable",
+      protocolLimitation: "当前仅 DeepSeek V4 Flash 支持",
+      capabilityStatus: "verified",
+      capabilityEvidence: "probed",
+    }));
+    expect(ipc.invoke).toHaveBeenCalledWith("get_ai_provider_registry", undefined);
+  });
+
   it("sends only bounded render parts through the AI translation command", async () => {
     ipc.invoke.mockResolvedValue({
       language: "zh-Hans",

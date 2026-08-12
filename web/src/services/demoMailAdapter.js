@@ -21,22 +21,22 @@ const demoProtocolLabels = Object.freeze({
 });
 const demoProviderProtocolIds = Object.freeze({
   custom: ["openai_responses", "openai_chat_completions", "anthropic_messages"],
-  deepseek: ["openai_chat_completions", "anthropic_messages"],
-  kimi: ["openai_chat_completions"],
+  deepseek: ["openai_responses", "openai_chat_completions", "anthropic_messages"],
+  kimi: ["openai_chat_completions", "anthropic_messages"],
   openai: ["openai_responses", "openai_chat_completions"],
   anthropic: ["anthropic_messages"],
-  qwen: ["openai_responses", "openai_chat_completions"],
+  qwen: ["openai_responses", "openai_chat_completions", "anthropic_messages"],
   mimo: ["openai_responses", "openai_chat_completions", "anthropic_messages"],
-  minimax: ["anthropic_messages", "openai_chat_completions"],
-  modelscope: ["openai_chat_completions"],
+  minimax: ["anthropic_messages", "openai_chat_completions", "openai_responses"],
+  modelscope: ["openai_chat_completions", "anthropic_messages"],
   doubaoseed: ["openai_responses", "openai_chat_completions"],
   glm: ["openai_chat_completions", "anthropic_messages"],
-  openrouter: ["openai_chat_completions", "openai_responses"],
+  openrouter: ["openai_chat_completions", "anthropic_messages", "openai_responses"],
 });
 const demoAiPresets = [
   ["custom", "自定义", "", "AI_API_KEY", []],
   ["deepseek", "DeepSeek", "https://api.deepseek.com", "DEEPSEEK_API_KEY", ["deepseek-v4-flash", "deepseek-v4-pro"]],
-  ["kimi", "Kimi", "https://api.moonshot.cn/v1", "MOONSHOT_API_KEY", ["kimi-k2.6", "kimi-k3"]],
+  ["kimi", "Kimi", "https://api.moonshot.ai/v1", "MOONSHOT_API_KEY", ["kimi-k2.6", "kimi-k3"]],
   ["openai", "OpenAI", "https://api.openai.com/v1", "OPENAI_API_KEY", ["gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"]],
   ["anthropic", "Anthropic", "https://api.anthropic.com", "ANTHROPIC_API_KEY", ["claude-haiku-4-5", "claude-sonnet-5", "claude-opus-4-8", "claude-fable-5"]],
   ["qwen", "通义千问", "https://dashscope.aliyuncs.com/compatible-mode/v1", "DASHSCOPE_API_KEY", ["qwen3.6-flash", "qwen3.7-plus", "qwen3.7-max"]],
@@ -69,8 +69,40 @@ const demoAiPresets = [
           ? "https://api.minimaxi.com/anthropic"
           : id === "glm" && protocolId === "anthropic_messages"
             ? "https://open.bigmodel.cn/api/anthropic"
+          : id === "kimi" && protocolId === "anthropic_messages"
+            ? "https://api.moonshot.ai/anthropic"
+          : id === "qwen" && protocolId === "anthropic_messages"
+            ? "https://dashscope.aliyuncs.com/apps/anthropic"
+          : id === "modelscope" && protocolId === "anthropic_messages"
+            ? "https://api-inference.modelscope.cn"
+          : id === "openrouter" && protocolId === "anthropic_messages"
+            ? "https://openrouter.ai/api"
             : baseUrl,
       recommended: protocolId === recommendedProtocolId,
+      recommendationRank: protocolId === recommendedProtocolId ? 100 : 30,
+      compatibleModelPrefixes:
+        id === "deepseek" && protocolId === "openai_responses"
+          ? ["deepseek-v4-flash"]
+          : [],
+      recommendedBaseUrlHosts:
+        id === "custom" && protocolId === "openai_responses"
+          ? ["api.xiaomimimo.com", "token-plan-cn.xiaomimimo.com", "token-plan-sgp.xiaomimimo.com", "token-plan-ams.xiaomimimo.com"]
+          : [],
+      maturity:
+        id === "openrouter" && protocolId === "openai_responses"
+          ? "beta"
+          : ["custom", "kimi", "modelscope"].includes(id)
+            && protocolId === "anthropic_messages"
+            ? "compatibility"
+            : "stable",
+      limitation:
+        id === "deepseek" && protocolId === "openai_responses"
+          ? "当前仅 DeepSeek V4 Flash 支持"
+          : id === "openrouter" && protocolId === "openai_responses"
+            ? "OpenRouter 当前标记为 Beta"
+            : id === "modelscope" && protocolId === "anthropic_messages"
+              ? "仅部分模型提供 Anthropic 兼容入口，请先测试连接"
+            : null,
       models,
     })),
     configurations: [],
@@ -93,6 +125,26 @@ const demoAiTranslationLanguages = [
 
 const wait = (milliseconds) =>
   new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+
+function demoProtocolSupportsModel(protocol, modelName) {
+  const model = String(modelName || "").trim().toLowerCase();
+  return !model
+    || !(protocol.compatibleModelPrefixes || []).length
+    || protocol.compatibleModelPrefixes.some(
+      (prefix) => model.startsWith(String(prefix).toLowerCase()),
+    );
+}
+
+function demoResolvedProtocolId(preset, request) {
+  if (request.protocolId && request.protocolId !== "auto") return request.protocolId;
+  return preset.protocols
+    .filter((protocol) => demoProtocolSupportsModel(protocol, request.modelName))
+    .reduce((best, protocol) => (
+      Number(protocol.recommendationRank || 0) > Number(best.recommendationRank || 0)
+        ? protocol
+        : best
+    ), preset.protocols[0]).id;
+}
 
 function demoModelContext(provider, modelName) {
   if (provider?.manualContextWindowTokens) {
@@ -153,6 +205,10 @@ function createDemoState() {
           protocolId: "auto",
           resolvedProtocolId: "openai_responses",
           protocolLabel: "OpenAI Responses",
+          protocolMaturity: "stable",
+          protocolLimitation: null,
+          capabilityStatus: "verified",
+          capabilityEvidence: "probed",
           baseUrl: "https://api.openai.com/v1",
           modelName: "gpt-5.6-terra",
           useEnvironmentKey: false,
@@ -662,9 +718,7 @@ function createDemoActions(
       ) {
         throw new Error("请输入 API Key，或改为从系统环境变量读取");
       }
-      const resolvedProtocolId = request.protocolId === "auto"
-        ? preset.recommendedProtocolId
-        : request.protocolId;
+      const resolvedProtocolId = demoResolvedProtocolId(preset, request);
       const protocol = preset.protocols.find(
         (candidate) => candidate.id === resolvedProtocolId,
       );
@@ -678,6 +732,10 @@ function createDemoActions(
         protocolId: request.protocolId || "auto",
         resolvedProtocolId,
         protocolLabel: protocol.label,
+        protocolMaturity: protocol.maturity,
+        protocolLimitation: protocol.limitation,
+        capabilityStatus: existing?.capabilityStatus || "untested",
+        capabilityEvidence: existing?.capabilityEvidence || "declared",
         baseUrl: request.baseUrl.trim(),
         modelName: request.modelName?.trim() || "",
         useEnvironmentKey: Boolean(request.useEnvironmentKey),
@@ -767,6 +825,8 @@ function createDemoActions(
         status: "available",
         latencyMs: 128,
         checkedAtMs: Date.now(),
+        capabilityStatus: "verified",
+        capabilityEvidence: "probed",
       };
       state.aiProviderRegistry.providers = state.aiProviderRegistry.providers.map(
         (candidate) => candidate.id === providerInstanceId ? next : candidate,
@@ -844,10 +904,7 @@ function createDemoActions(
         throw new Error("请输入 API Key，或改为从系统环境变量读取");
       }
       const providerConfiguration = {
-        protocolId:
-          request.protocolId === "auto"
-            ? preset.recommendedProtocolId
-            : request.protocolId,
+        protocolId: demoResolvedProtocolId(preset, request),
         baseUrl: request.baseUrl.trim(),
         modelName: request.modelName.trim(),
         useEnvironmentKey: Boolean(request.useEnvironmentKey),
