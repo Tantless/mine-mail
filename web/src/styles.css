@@ -6049,6 +6049,14 @@ html[data-surface="new-mail-notification"] #root {
   white-space: nowrap;
 }
 
+.compose-ai-inline-notice {
+  max-width: 230px;
+  color: var(--color-text-muted);
+  font-size: 9px;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
 .compose-ai-toggle.icon-button[aria-pressed="true"] {
   border-color: transparent;
   background: transparent;

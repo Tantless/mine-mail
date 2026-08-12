@@ -39,6 +39,11 @@ MiMo Token Plan 用户把对应区域的地址作为 `BASE_URL`：OpenAI 协议�
 `https://token-plan-cn.xiaomimimo.com/anthropic`。Mine Mail 不根据 Key 前缀偷偷改写用户
 填写的地址或协议。
 
+自定义渠道无法在缺少能力声明时假设任意端点实现了 Responses，因此一般仍以 Chat
+Completions 作为 **自动** 的兼容默认值；但当 `BASE_URL` 是 MiMo 官方按量或 Token Plan
+地址时，Mine Mail 可可靠识别供应商能力，**自动** 改为推荐并解析到 Responses。用户显式
+选择的 Chat Completions 始终保持显式，不会被自动改写。
+
 ## 统一运行边界
 
 - 写信对话 Agent、独立优化和邮件翻译都从同一份已解析配置创建 Rust Provider；前端
@@ -49,6 +54,21 @@ MiMo Token Plan 用户把对应区域的地址作为 `BASE_URL`：OpenAI 协议�
 - OpenAI Responses 使用 `store: false` 并手动带回消息、函数调用、工具结果和必要的
   reasoning item。Chat Completions 带回供应商要求的思考状态。Anthropic Messages 在
   content blocks 中关联 `tool_use` 与 `tool_result`。
+- 所有独立优化请求都由 Rust 在首个 Provider 请求前通过受限工具读取正文和主题，并编码
+  为对应协议的标准工具历史；模型无需自行选择这两个必读工具，写入边界仍会验证读取结果。
+- Chat Completions 请求携带工具定义时不同时发送 `response_format`，避免兼容实现被 JSON
+  Mode 诱导为提前返回简短终态而跳过写入工具；不携带工具的结构化任务仍可使用 JSON
+  Mode。独立优化终态由提示词约束并由 Rust 做有界严格校验，首次格式错误只在原协议内
+  进行一次格式纠正，不重放已经成功的工具。响应只要包含非空 `tool_calls` 就按工具轮
+  处理，即使兼容网关错误返回 `finish_reason: stop`。
+- MiMo-compatible Chat Completions 的独立非流式优化请求关闭 thinking，并关闭并行工具
+  调用。响应保留首轮 `tool_calls`；`finish_reason` 将 repetition truncation、缺失、`null`、
+  非字符串和未知值分别归类到隐私安全日志，只有明确的 stop 才能结束无工具轮次，重复
+  截断不能伪装成正常完成。MiMo 当前只实际支持自动 `tool_choice`，不能用 `required` 或
+  指定函数假装获得供应商没有实现的强制选择能力。
+  优化终态还必须声明 `changed` 或 `unchanged`。明确用户要求却没有形成实际修改时，
+  Rust 进行一次定向纠正请求；仍未修改则失败，不能把自动工具选择的短路输出展示成
+  “无需改进”。没有额外要求时，第一次 `unchanged` 还要经过一次独立复核才可完成。
 - API Key 仍按供应商存入系统凭据库；地址、模型、环境变量选择与模型检索结果按
   “供应商 + 协议”分别保存。切换协议不会清除其他组合。
 - 模型检索、连接测试、自动保存和手动保存都只针对当前可见协议。模型列表接口不可用

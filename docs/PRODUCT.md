@@ -279,10 +279,14 @@ product decision changes.
   Forwarded ordinary attachments are visible and removable before sending.
 - Compose exposes a dedicated optimization action for the authored subject and
   body. The agent must read the full body and subject before any write. Without
-  optional user instructions it conservatively corrects the body without
-  changing its core meaning, facts, stance, intended tone, or commitments. With
-  explicit instructions it may rewrite more actively; translation, continuation,
-  or substantial additions require an explicit request and may not invent facts.
+  optional user instructions it actively makes meaningful improvements to
+  clarity, naturalness, concision, sentence flow, and wording without changing
+  the core meaning, facts, stance, intended tone, or commitments. It must not
+  return an unchanged draft merely because the text is already readable, though
+  it may leave the draft unchanged when no safe, meaningful improvement exists.
+  With explicit instructions it may rewrite more actively; translation,
+  continuation, or substantial additions require an explicit request and may
+  not invent facts.
   An empty subject is generated from the full body. A non-empty subject changes
   only when explicitly requested or when it is clearly misleading, severely
   malformed, ambiguous, or a placeholder. Sender, recipients, attachments,
@@ -290,12 +294,19 @@ product decision changes.
   fields are ignored while permitted subject/body work continues.
 - Optimization may use supported safe rich-text formatting and is instructed to
   adapt paragraphing, lists, emphasis, indentation, spacing, and sign-off to the
-  language and context without imposing a fixed layout. The request captures the
-  subject, body, formatting, and instructions at click time and runs without
-  locking compose. Completion does not modify the live draft: the user reopens
-  two editable complete versions, with subject and body in visibly separate
-  regions on each side. Body text differences are highlighted; subject and
-  formatting changes are preserved, but formatting-only changes are not marked.
+  language and context without imposing a fixed layout. Unless the user requests
+  another language or translation, optimization preserves the draft's primary
+  language. AI-authored plain text uses one newline between ordinary paragraphs;
+  Rust removes blank and whitespace-only lines from AI body writes before they
+  become proposals, while user-authored editor spacing remains untouched. The
+  request captures the subject, body, formatting, and instructions at click time
+  and runs without locking compose. Completion does not modify the live draft.
+  When the validated result has no subject, body, or formatting difference, no
+  comparison is created and compose shows **您的邮件已经很通顺了，不需要再改进**.
+  Otherwise, the user reopens two editable complete versions, with subject and
+  body in visibly separate regions on each side. Body text differences are
+  highlighted; subject and formatting changes are preserved, but formatting-only
+  changes are not marked.
   Choosing either side atomically applies that side's subject and body after an
   explicit side-named confirmation. Mine Mail backs up the then-live subject,
   body, and formatting immediately before replacement and exposes one icon-only
@@ -339,10 +350,17 @@ product decision changes.
   and OpenRouter. Every preset exposes only the protocols implemented by both
   that service and Mine Mail: OpenAI Responses, OpenAI Chat Completions, and/or
   Anthropic Messages. **自动** resolves to that instance's preset recommendation;
-  an explicit protocol remains explicit. Mine Mail never retries a failed request
+  for a custom instance using an official MiMo pay-as-you-go or Token Plan URL it
+  resolves to Responses, while unknown custom endpoints retain Chat Completions
+  as the compatibility default. An explicit protocol remains explicit. Mine Mail never retries a failed request
   through another protocol or Provider because that could duplicate billed work
-  or tool effects. A fresh installation has an empty Provider list and does not
-  opt into reading an API Key from the environment.
+  or tool effects. Standalone optimization over MiMo-compatible Chat Completions
+  disables thinking, uses serial tool calls, and preserves tool calls from the
+  first non-streaming response. Provider finish states distinguish stop, tool
+  use, repetition truncation, missing, null, invalid, and unknown values in
+  privacy-safe diagnostics; only a genuine stop is accepted as a final no-tool
+  turn. A fresh installation has an empty Provider list and does not opt into
+  reading an API Key from the environment.
 - Exactly zero or one Provider instance is the default route. The default binds
   one exact instance, protocol, and preferred model, powers reader translation
   and standalone compose optimization, and initializes a newly opened compose
@@ -421,6 +439,20 @@ product decision changes.
   ID within a size and type allowlist. PDF, Office, archive, executable, and
   other binary formats are not parsed. Image tools are registered only for a
   Provider/model with implemented multimodal support.
+- Standalone optimization does not rely on a model's automatic tool selection
+  for mandatory context. Rust invokes the bounded body and subject read tools
+  against the click-time working copy before the first Provider request and
+  supplies their standard protocol history. The normal read-before-write
+  validation remains authoritative for every Provider and protocol.
+- Standalone optimization completion is a bounded decision: `changed` must agree
+  with an actual subject or body change, while `unchanged` is accepted only when
+  the user supplied no extra optimization requirement. The first valid unchanged
+  decision receives one independent review round and is accepted only when that
+  review also finds no executable improvement. An explicit requirement that
+  produces no change receives one corrective Provider round and then fails with
+  an actionable message instead of being presented as "already clear".
+  Diagnostics may record this bounded decision verbatim plus reasoning and token
+  counts, but never free-form model output or mail content.
 - **生成** treats selecting the mode as an instruction to start drafting rather
   than debate whether to write. The current user message is its primary creative
   brief; existing draft structure, wording, tone, and session history are only
@@ -444,7 +476,12 @@ product decision changes.
   inquiry remains unanswered. Recipient identities, dates, times, amounts,
   addresses, identifiers, attachment contents, and commitments are never
   invented. Existing To/Cc/Bcc values remain unless the user explicitly changes
-  them, and a named contact must resolve to one reliable local match.
+  them, and a named contact must resolve to one reliable local match. When a
+  non-empty draft exists and the user does not request another language or
+  translation, generated edits preserve the draft's primary language; blank
+  drafts naturally follow the language of the instruction. AI-authored plain
+  text uses one newline between ordinary paragraphs and no blank or
+  whitespace-only lines; rich text uses adjacent blocks without empty blocks.
 - Generation lists attachments before editing and reads their contents only
   when the requested work depends on them. It never infers content from a file
   name or mutates attachments or quoted source. At the user's explicit request,

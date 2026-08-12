@@ -1198,6 +1198,12 @@ function createDemoActions(
         request_id: requestId,
         session,
         assistant_message: assistantMessage,
+        optimization_decision:
+          request.mode === "optimize"
+            ? changedFields.length
+              ? "changed"
+              : "unchanged"
+            : undefined,
         draft_revision: request.draft_revision,
         draft,
         changed_fields: changedFields,

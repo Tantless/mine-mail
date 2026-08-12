@@ -17,6 +17,12 @@ const presets = [
       baseUrl: "",
       recommended: true,
       models: [],
+    }, {
+      id: "openai_responses",
+      label: "OpenAI Responses",
+      baseUrl: "",
+      recommended: false,
+      models: [],
     }],
   },
   {
@@ -184,6 +190,22 @@ describe("AgentSettings", () => {
       baseUrl: "https://api.moonshot.cn/v1",
       apiKey: "demo-key",
     });
+  });
+
+  it("recommends Responses when a custom automatic channel uses an official MiMo endpoint", async () => {
+    const user = userEvent.setup();
+    render(<AgentSettings client={client()} />);
+    await expandModelConfiguration(user);
+
+    await user.click(screen.getByRole("button", { name: "添加 AI 渠道" }));
+    await user.type(screen.getByPlaceholderText("搜索渠道"), "自定义");
+    await user.click(screen.getByRole("listitem", { name: /自定义/ }));
+    const baseUrl = screen.getByLabelText("BASE_URL");
+    await user.type(baseUrl, "https://api.xiaomimimo.com/v1");
+
+    expect(screen.getByRole("combobox", { name: "API 协议" }).textContent).toContain(
+      "自动（推荐：OpenAI Responses）",
+    );
   });
 
   it("saves before an explicit test and keeps a failed test inside its provider row", async () => {

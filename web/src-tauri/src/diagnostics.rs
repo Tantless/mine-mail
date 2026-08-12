@@ -153,6 +153,12 @@ pub(crate) struct Fields {
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning_bytes: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    optimization_decision: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    output_shape: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     terminal_event_seen: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     json_depth: Option<i64>,
@@ -337,6 +343,22 @@ impl Fields {
     pub(crate) fn tokens(mut self, input: u64, output: u64) -> Self {
         self.input_tokens = Some(input);
         self.output_tokens = Some(output);
+        self
+    }
+
+    pub(crate) fn reasoning(mut self, bytes: u64, tokens: u64) -> Self {
+        self.reasoning_bytes = Some(bytes);
+        self.reasoning_tokens = Some(tokens);
+        self
+    }
+
+    pub(crate) fn optimization_decision(mut self, value: &'static str) -> Self {
+        self.optimization_decision = Some(value);
+        self
+    }
+
+    pub(crate) fn output_shape(mut self, value: &'static str) -> Self {
+        self.output_shape = Some(value);
         self
     }
 
@@ -1012,6 +1034,9 @@ mod tests {
                 .draft_version(9)
                 .batch(2, 4)
                 .stream_state(10, 20, 30, 40, false, 2, false)
+                .reasoning(40, 6)
+                .optimization_decision("changed")
+                .output_shape("markdown_fence")
                 .json_error("syntax", 2, 17),
         );
         let parsed: serde_json::Value = serde_json::from_str(&line).unwrap();
@@ -1024,6 +1049,9 @@ mod tests {
         assert_eq!(parsed["stream_event_count"], 20);
         assert_eq!(parsed["content_bytes"], 30);
         assert_eq!(parsed["reasoning_bytes"], 40);
+        assert_eq!(parsed["reasoning_tokens"], 6);
+        assert_eq!(parsed["optimization_decision"], "changed");
+        assert_eq!(parsed["output_shape"], "markdown_fence");
         assert_eq!(parsed["terminal_event_seen"], false);
         assert_eq!(parsed["json_depth"], 2);
         assert_eq!(parsed["json_complete"], false);
@@ -1071,6 +1099,9 @@ mod tests {
             "stream_event_count",
             "content_bytes",
             "reasoning_bytes",
+            "reasoning_tokens",
+            "optimization_decision",
+            "output_shape",
             "terminal_event_seen",
             "json_depth",
             "json_complete",

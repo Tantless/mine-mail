@@ -548,6 +548,45 @@ it("includes a generated subject in the review when the submitted subject is emp
   );
 });
 
+it("shows the fixed no-change status without creating an optimization review", async () => {
+  vi.spyOn(mailApi, "runAiTurn").mockResolvedValueOnce({
+    request_id: "ai-review-unchanged",
+    draft: baseValue,
+    changed_fields: [],
+    optimization_decision: "unchanged",
+  });
+  const user = userEvent.setup();
+  renderCompose();
+
+  await user.click(screen.getByRole("button", { name: "优化当前邮件" }));
+
+  const notice = await screen.findByText(
+    "您的邮件已经很通顺了，不需要再改进",
+  );
+  expect(notice.getAttribute("role")).toBe("status");
+  expect(screen.queryByRole("button", { name: "查看优化结果" })).toBeNull();
+  expect(screen.queryByRole("dialog", { name: "优化结果对比" })).toBeNull();
+});
+
+it("rejects a zero-change optimization without a validated unchanged decision", async () => {
+  vi.spyOn(mailApi, "runAiTurn").mockResolvedValueOnce({
+    request_id: "ai-review-ambiguous",
+    draft: baseValue,
+    changed_fields: [],
+  });
+  const user = userEvent.setup();
+  renderCompose();
+
+  await user.click(screen.getByRole("button", { name: "优化当前邮件" }));
+
+  expect(
+    await screen.findByText("AI 没有返回可验证的优化结果，请重试或更换模型"),
+  ).toBeTruthy();
+  expect(
+    screen.queryByText("您的邮件已经很通顺了，不需要再改进"),
+  ).toBeNull();
+});
+
 it("keeps compose interactive while optimization runs and only signals the finished result", async () => {
   let finishTurn;
   const pendingTurn = new Promise((resolve) => {
@@ -645,7 +684,7 @@ it("uses a bounded revision identifier when optimizing a long body", async () =>
 
   const request = runTurn.mock.calls[0][0];
   expect(request.instruction).toBe(
-    "用户未提供额外优化要求。请对当前邮件正文进行保守润色。",
+    "用户未提供额外优化要求。请在保持原意、事实、立场、语气意图和承诺的前提下，对当前邮件正文进行有意义的优化。",
   );
   expect(request.draft.compose.body_text).toBe(longBody);
   expect(request.draft_revision.length).toBeLessThanOrEqual(128);

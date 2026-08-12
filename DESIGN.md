@@ -352,8 +352,11 @@ All app-owned color and material decisions flow through custom properties in
   optimization split control runs from its primary magic-wand action; its second
   segment opens a small upward prompt surface for optional instructions. While
   the request runs only the wand becomes a spinner; compose remains editable.
-  Completion adds a small danger-colored notice dot to the wand without changing
-  the draft. Reopening it shows a large, theme-owned two-pane comparison: the
+  A completion with no validated subject, body, or formatting difference keeps
+  the wand idle, creates no comparison, and shows the nearby muted status
+  **您的邮件已经很通顺了，不需要再改进**. A changed completion adds a small
+  danger-colored notice dot to the wand without changing the draft. Reopening it
+  shows a large, theme-owned two-pane comparison: the
   submitted snapshot on the left and AI result on the right. Each pane presents
   its subject and body as clearly separated editable regions so the pane reads as
   one complete mail version. Subject changes use a restrained side-colored field

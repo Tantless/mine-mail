@@ -170,6 +170,11 @@ export function ComposeOptimizeControl({
     "errorMessage",
     "",
   );
+  const [noticeMessage, setNoticeMessage] = useOptimizationCacheState(
+    cacheRef,
+    "noticeMessage",
+    "",
+  );
   const [reviewResult, setReviewResult] = useOptimizationCacheState(
     cacheRef,
     "reviewResult",
@@ -246,13 +251,14 @@ export function ComposeOptimizeControl({
       format: copyFormat(value.format),
     };
     setErrorMessage("");
+    setNoticeMessage("");
     setStatus("running");
     try {
       const result = await mailApi.runAiTurn({
         mode: "optimize",
         instruction: trimmedInstruction
           ? `用户提供了以下优化要求：\n<user_instruction>\n${trimmedInstruction}\n</user_instruction>`
-          : "用户未提供额外优化要求。请对当前邮件正文进行保守润色。",
+          : "用户未提供额外优化要求。请在保持原意、事实、立场、语气意图和承诺的前提下，对当前邮件正文进行有意义的优化。",
         session_id: null,
         draft_revision: createAiDraftRevision(),
         draft: { ...aiDraft, compose: value },
@@ -262,6 +268,19 @@ export function ComposeOptimizeControl({
         body_text: result.draft?.body_text ?? submitted.body_text,
         format: copyFormat(result.draft?.format || submitted.format),
       };
+      if (editableDraftFingerprint(optimized) === editableDraftFingerprint(submitted)) {
+        if (result.optimization_decision !== "unchanged") {
+          throw new Error("AI 没有返回可验证的优化结果，请重试或更换模型");
+        }
+        setReviewResult(null);
+        setReviewOpen(false);
+        setNoticeMessage("您的邮件已经很通顺了，不需要再改进");
+        setStatus("idle");
+        return;
+      }
+      if (result.optimization_decision === "unchanged") {
+        throw new Error("AI 返回的优化决策与实际草稿变化不一致，请重试或更换模型");
+      }
       const annotations = buildOptimizationAnnotations(
         submitted.body_text,
         optimized.body_text,
@@ -388,7 +407,10 @@ export function ComposeOptimizeControl({
             rows={3}
             value={instruction}
             placeholder="例如：更简洁、更正式，保留原有信息"
-            onChange={(event) => setInstruction(event.target.value)}
+            onChange={(event) => {
+              setInstruction(event.target.value);
+              setNoticeMessage("");
+            }}
             onKeyDown={(event) => {
               if (event.key === "Escape") {
                 event.preventDefault();
@@ -416,6 +438,11 @@ export function ComposeOptimizeControl({
       {errorMessage ? (
         <small className="compose-ai-inline-error" role="status">
           {errorMessage}
+        </small>
+      ) : null}
+      {noticeMessage ? (
+        <small className="compose-ai-inline-notice" role="status">
+          {noticeMessage}
         </small>
       ) : null}
 

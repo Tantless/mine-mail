@@ -136,10 +136,36 @@ function ProviderMark({ providerId, baseUrl, label, className = "" }) {
   );
 }
 
-function protocolOptions(preset) {
+function officialMimoConfiguration(preset, form) {
+  if (preset?.id === "mimo") return true;
+  try {
+    const host = new URL(form?.baseUrl || "").hostname;
+    return host === "api.xiaomimimo.com"
+      || [
+        "token-plan-cn.xiaomimimo.com",
+        "token-plan-sgp.xiaomimimo.com",
+        "token-plan-ams.xiaomimimo.com",
+      ].includes(host);
+  } catch {
+    return false;
+  }
+}
+
+function recommendedProtocolId(preset, form) {
+  if (
+    officialMimoConfiguration(preset, form)
+    && preset?.protocols?.some((protocol) => protocol.id === "openai_responses")
+  ) {
+    return "openai_responses";
+  }
+  return preset?.recommendedProtocolId;
+}
+
+function protocolOptions(preset, form) {
   if (!preset) return [];
+  const recommendation = recommendedProtocolId(preset, form);
   const recommended = preset.protocols?.find(
-    (protocol) => protocol.id === preset.recommendedProtocolId,
+    (protocol) => protocol.id === recommendation,
   );
   return [
     {
@@ -148,7 +174,7 @@ function protocolOptions(preset) {
     },
     ...(preset.protocols || []).map((protocol) => ({
       value: protocol.id,
-      label: protocol.recommended
+      label: protocol.id === recommendation
         ? `${protocol.label}（推荐）`
         : protocol.label,
     })),
@@ -158,7 +184,7 @@ function protocolOptions(preset) {
 function providerForm(preset, provider = null) {
   const protocolId = provider?.protocolId || "auto";
   const resolvedProtocolId = protocolId === "auto"
-    ? preset.recommendedProtocolId
+    ? recommendedProtocolId(preset, provider)
     : protocolId;
   const protocol = preset.protocols?.find(
     (candidate) => candidate.id === resolvedProtocolId,
@@ -660,7 +686,7 @@ function AgentSettingsContent({
 
   const renderProviderEditor = () => {
     if (!form || !selectedPreset) return null;
-    const options = protocolOptions(selectedPreset);
+    const options = protocolOptions(selectedPreset, form);
     return (
       <section className="agent-provider-flow" aria-labelledby="agent-provider-editor-title">
         <header className="agent-provider-flow__heading">
@@ -709,7 +735,7 @@ function AgentSettingsContent({
               disabled={busy || !options.length}
               onValueChange={(protocolId) => {
                 const resolved = protocolId === "auto"
-                  ? selectedPreset.recommendedProtocolId
+                  ? recommendedProtocolId(selectedPreset, form)
                   : protocolId;
                 const protocol = selectedPreset.protocols?.find(
                   (candidate) => candidate.id === resolved,
