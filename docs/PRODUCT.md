@@ -411,6 +411,14 @@ product decision changes.
   key mode ignores any form value and reads the preset's documented variable
   after application startup. React receives only a fixed non-secret credential
   mask state.
+- Every model route has a context-window profile. Unknown models default to
+  128,000 tokens at confidence level 1. A value maintained from current official
+  model documentation, or the explicit 128K/200K/500K/1M/2M override available
+  only to a custom Provider, is confidence level 2. A structurally valid context
+  size returned by the exact Provider instance, protocol, base URL, and model
+  during model discovery is confidence level 3 and wins over both fallbacks.
+  Changing any element of that route prevents the observed profile from being
+  reused. Model-list APIs that expose only an ID do not prove a window size.
 - Provider order is persisted and resolves duplicate exact model names in the
   compose catalog: the highest successfully refreshed instance wins. Opening
   compose requests model lists from every configured instance independently and
@@ -439,6 +447,26 @@ product decision changes.
   ID within a size and type allowlist. PDF, Office, archive, executable, and
   other binary formats are not parsed. Image tools are registered only for a
   Provider/model with implemented multimodal support.
+- Conversational context is budgeted against the selected model rather than a
+  fixed message count. Rust estimates the rendered system prompt, complete local
+  Session history, current prompt, protocol framing, and tool definitions; the
+  composer presents the estimate as `used/window (percent)` and refreshes it as
+  the prompt changes. Below 75% of the resolved window, the complete applicable
+  history is sent. At or above 75%, older complete turns are compacted while the
+  latest two complete user/assistant turns remain verbatim. The full visible
+  transcript always remains in local SQLite and is never replaced by a summary.
+- For an official OpenAI Responses route, Mine Mail first uses the stateless,
+  `store: false` Responses compact endpoint and persists its canonical opaque
+  output only for the exact Provider instance, protocol, base URL, model, and
+  Session. Other protocols, custom compatibility routes, and native-compaction
+  failures use a local model-generated nine-section summary covering user goals
+  and preferences, confirmed facts, people and objects, decisions, completed
+  work, draft/mail state, unresolved questions, constraints and risks, and next
+  steps. The persisted context state records its source message count, estimated
+  tokens before and after compaction, and resulting compression percentage.
+  Subsequent threshold crossings repeat the same bounded process; a compaction
+  failure preserves the transcript and fails that turn without deleting or
+  globally corrupting its Session.
 - Standalone optimization does not rely on a model's automatic tool selection
   for mandatory context. Rust invokes the bounded body and subject read tools
   against the click-time working copy before the first Provider request and

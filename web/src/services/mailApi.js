@@ -80,6 +80,7 @@ const commandFailureMessages = Object.freeze({
   reorder_ai_provider_instances: "AI 渠道排序保存没有完成",
   set_default_ai_provider: "默认 AI 模型设置没有完成",
   get_ai_session: "AI 会话读取没有完成",
+  get_ai_context_usage: "AI 上下文占用读取没有完成",
   add_draft_attachments: "添加附件没有完成",
   archive_message: "归档邮件没有完成",
   assign_archive_folder: "归档文件夹设置没有完成",
@@ -569,6 +570,14 @@ function normalizeAiProviderInstance(provider = {}) {
     )
       ? Number(provider.checkedAtMs ?? provider.checked_at_ms)
       : null,
+    manualContextWindowTokens: (() => {
+      const value =
+        provider.manualContextWindowTokens
+        ?? provider.manual_context_window_tokens;
+      return value != null && Number.isFinite(Number(value))
+        ? Number(value)
+        : null;
+    })(),
   };
 }
 
@@ -585,6 +594,11 @@ function normalizeAiProviderRegistry(registry = {}) {
       ?? null,
     translationLanguage: normalizedConfig.translationLanguage,
     translationLanguages: normalizedConfig.translationLanguages,
+    contextWindowOptions: Array.isArray(
+      registry.contextWindowOptions ?? registry.context_window_options,
+    )
+      ? (registry.contextWindowOptions ?? registry.context_window_options)
+      : [128000, 200000, 500000, 1000000, 2000000],
   };
 }
 
@@ -599,6 +613,14 @@ function normalizeAiModelCatalog(catalog = {}) {
             model.providerName ?? model.provider_name ?? "未命名渠道",
           modelName: model.modelName ?? model.model_name ?? "",
           isDefault: Boolean(model.isDefault ?? model.is_default ?? false),
+          contextWindowTokens: Number(
+            model.contextWindowTokens ?? model.context_window_tokens ?? 128000,
+          ),
+          contextWindowSource:
+            model.contextWindowSource ?? model.context_window_source ?? "default",
+          contextWindowConfidence: Number(
+            model.contextWindowConfidence ?? model.context_window_confidence ?? 1,
+          ),
         })).filter((model) => model.providerInstanceId && model.modelName)
       : [],
     successfulProviderCount: Number(
@@ -656,6 +678,7 @@ export const mailApi = {
       modelName: provider.modelName || "",
       useEnvironmentKey: Boolean(provider.useEnvironmentKey),
       apiKey: provider.useEnvironmentKey ? null : provider.apiKey || null,
+      manualContextWindowTokens: provider.manualContextWindowTokens || null,
     };
     const response = isTauri
       ? await desktopInvoke("save_ai_provider_instance", { request })
@@ -795,6 +818,33 @@ export const mailApi = {
       );
     }
     return callDemo("getAiSession", sessionId);
+  },
+
+  async getAiContextUsage(request) {
+    const response = isTauri
+      ? await desktopInvoke("get_ai_context_usage", { request })
+      : await callDemo("getAiContextUsage", request);
+    return {
+      inputTokens: Number(response?.inputTokens ?? response?.input_tokens ?? 0),
+      contextWindowTokens: Number(
+        response?.contextWindowTokens ?? response?.context_window_tokens ?? 128000,
+      ),
+      compactionThresholdTokens: Number(
+        response?.compactionThresholdTokens
+        ?? response?.compaction_threshold_tokens
+        ?? 96000,
+      ),
+      percent: Number(response?.percent ?? 0),
+      contextWindowSource:
+        response?.contextWindowSource ?? response?.context_window_source ?? "default",
+      contextWindowConfidence: Number(
+        response?.contextWindowConfidence ?? response?.context_window_confidence ?? 1,
+      ),
+      estimated: Boolean(response?.estimated ?? true),
+      compactionNeeded: Boolean(
+        response?.compactionNeeded ?? response?.compaction_needed ?? false,
+      ),
+    };
   },
 
   async runAiTurn(request, onEvent = null) {

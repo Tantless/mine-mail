@@ -6494,10 +6494,24 @@ html[data-surface="new-mail-notification"] #root {
   text-overflow: clip;
 }
 
+.compose-ai-context-usage {
+  min-width: max-content;
+  margin-left: auto;
+  color: var(--color-text-muted);
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.compose-ai-context-usage[data-warning="true"] {
+  color: var(--color-warning);
+}
+
 .compose-ai-send.icon-button {
   width: 34px;
   height: 34px;
-  margin-left: auto;
+  margin-left: 4px;
   border-color: var(--color-primary);
   border-radius: 999px;
   background: var(--color-primary);

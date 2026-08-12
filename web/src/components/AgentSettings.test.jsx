@@ -208,6 +208,30 @@ describe("AgentSettings", () => {
     );
   });
 
+  it("persists the manually selected context window for a custom channel", async () => {
+    const user = userEvent.setup();
+    const api = client();
+    render(<AgentSettings client={api} />);
+    await expandModelConfiguration(user);
+
+    await user.click(screen.getByRole("button", { name: "添加 AI 渠道" }));
+    await user.type(screen.getByPlaceholderText("搜索渠道"), "自定义");
+    await user.click(screen.getByRole("listitem", { name: /自定义/ }));
+    await user.type(screen.getByLabelText("渠道名称"), "内部模型");
+    await user.type(screen.getByLabelText("BASE_URL"), "https://ai.example.com/v1");
+    await user.type(screen.getByLabelText("API_KEY"), "demo-key");
+    await user.type(screen.getByLabelText("首选模型"), "internal-model");
+    await user.click(screen.getByRole("combobox", { name: "上下文窗口" }));
+    await user.click(screen.getByRole("option", { name: "500K" }));
+    await user.click(screen.getByRole("button", { name: "保存渠道" }));
+
+    await waitFor(() => expect(api.saveAiProviderInstance).toHaveBeenCalledTimes(1));
+    expect(api.saveAiProviderInstance.mock.calls[0][0]).toMatchObject({
+      providerId: "custom",
+      manualContextWindowTokens: 500000,
+    });
+  });
+
   it("saves before an explicit test and keeps a failed test inside its provider row", async () => {
     const user = userEvent.setup();
     const api = client({

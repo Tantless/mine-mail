@@ -59,6 +59,7 @@ function emptyRegistry() {
     defaultProviderInstanceId: null,
     translationLanguage: "zh-Hans",
     translationLanguages: fallbackTranslationLanguages,
+    contextWindowOptions: [128000, 200000, 500000, 1000000, 2000000],
   };
 }
 
@@ -114,6 +115,7 @@ function legacyRegistry(config) {
     defaultProviderInstanceId: provider?.id || null,
     translationLanguage: config?.translationLanguage || "zh-Hans",
     translationLanguages: config?.translationLanguages || fallbackTranslationLanguages,
+    contextWindowOptions: [128000, 200000, 500000, 1000000, 2000000],
   });
 }
 
@@ -203,8 +205,17 @@ function providerForm(preset, provider = null) {
     hasEnvironmentApiKey: provider?.hasEnvironmentApiKey || false,
     environmentVariable: preset.environmentVariable || "AI_API_KEY",
     models: provider?.models || [],
+    manualContextWindowTokens: provider?.manualContextWindowTokens || 128000,
   };
 }
+
+const contextWindowLabels = new Map([
+  [128000, "128K"],
+  [200000, "200K"],
+  [500000, "500K"],
+  [1000000, "1M"],
+  [2000000, "2M"],
+]);
 
 function canSaveProvider(form) {
   if (!form?.name?.trim() || !form?.baseUrl?.trim()) return false;
@@ -839,10 +850,15 @@ function AgentSettingsContent({
             ) : null}
           </div>
 
-          <label className="settings-field agent-provider-editor-wide">
+          <label
+            className="settings-field agent-provider-editor-wide"
+            htmlFor="agent-provider-model-name"
+          >
             <span>首选模型</span>
             <span className="settings-input-shell settings-input-shell--text">
               <input
+                id="agent-provider-model-name"
+                aria-label="首选模型"
                 value={form.modelName}
                 disabled={busy}
                 autoCapitalize="none"
@@ -873,6 +889,28 @@ function AgentSettingsContent({
               <small>测试连接会检索可用模型；也可以先手动填写。</small>
             )}
           </label>
+
+          {selectedPreset.id === "custom" ? (
+            <div className="settings-field agent-provider-editor-wide">
+              <label htmlFor="agent-provider-context-window">上下文窗口</label>
+              <ThemedSelect
+                id="agent-provider-context-window"
+                label="上下文窗口"
+                value={String(form.manualContextWindowTokens || 128000)}
+                options={(registry.contextWindowOptions || [128000, 200000, 500000, 1000000, 2000000])
+                  .map((tokens) => ({
+                    value: String(tokens),
+                    label: contextWindowLabels.get(tokens) || `${tokens} tokens`,
+                  }))}
+                disabled={busy}
+                onValueChange={(value) => setForm((current) => ({
+                  ...current,
+                  manualContextWindowTokens: Number(value),
+                }))}
+              />
+              <small>用于 API 未返回窗口大小时的高置信度回退；测试返回值会优先覆盖。</small>
+            </div>
+          ) : null}
         </div>
 
         <footer className="agent-provider-flow__actions">

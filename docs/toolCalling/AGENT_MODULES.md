@@ -38,6 +38,12 @@
   带回供应商返回的 reasoning item。OpenAI 官方与 OpenRouter 请求额外包含加密推理项，
   以支持 `store: false` 下的连续工具轮次。Anthropic 适配器使用 content block 转换工具
   调用，Chat Completions 适配器继续保存需要回传的推理协议状态。
+- 对话上下文不再按固定消息条数截断。Rust 按选中模型的三级窗口档案估算完整 Session
+  历史和当前输入，75% 以下传入完整适用历史；达到阈值后只压缩较早轮次并原样保留最近
+  两轮。OpenAI 官方 Responses 优先保存 `/responses/compact` 的 canonical opaque output，
+  其他路径生成“目标偏好、事实、人物对象、决定、已完成、草稿状态、未决问题、约束风险、
+  下一步”九段式摘要。压缩状态按 Session 和精确 Provider 路由隔离，完整可见消息仍保留
+  在 SQLite。
 - 翻译在前端仍只展示校验后的完整或部分结果；主题作为普通纯文本部件与正文共用编号、
   分批、并发、重试和回填链路，不额外发起串行请求。三种协议都在 Rust 内使用 SSE 接收
   并使用 180 秒总超时与 45 秒流空闲超时，MiMo 额外关闭思考模式。每批只附带按字符边界

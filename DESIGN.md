@@ -293,6 +293,11 @@ All app-owned color and material decisions flow through custom properties in
   the instance, retrieves its model list, performs one minimal model request,
   and reports Rust-observed latency. **保存渠道** persists without starting a
   network test. These are local actions, not a global Settings footer.
+- A custom Provider detail also exposes one native themed **上下文窗口** selector
+  with 128K, 200K, 500K, 1M, and 2M options. It is a fallback setting rather
+  than a model capability claim: a context size returned by that exact tested
+  endpoint and model takes precedence. Preset Providers derive documented model
+  windows in Rust and do not expose this manual override.
 - Provider marks are bundled local assets or the existing deterministic local
   fallback. Mine Mail never fetches a logo at runtime. Marks are optically
   centered on a transparent field; do not force them into avatar tiles or add a
@@ -396,6 +401,10 @@ All app-owned color and material decisions flow through custom properties in
   exact model results appear progressively and one failed Provider contributes
   no choices without blocking another. Duplicate names use Provider row order,
   while the configured exact default route is selected initially when available.
+- The fixed composer shows one muted, tabular context meter between the model
+  capsule and send action, formatted approximately as **≈20K/200K (10%)**. It
+  updates while the prompt changes, warns only at the 75% compaction threshold,
+  and never grows into a progress card or steals the send action's alignment.
 - The assistant header centers its text title without a leading AI mark. Its
   left-side actions begin with collapse and then a settings icon; settings is an
   inert entry point until configuration content is implemented, and there is no

@@ -52,7 +52,10 @@ Completions 作为 **自动** 的兼容默认值；但当 `BASE_URL` 是 MiMo �
   Completions SSE 或 Anthropic Messages SSE 适配器读取，再按自身批次、JSON 校验与
   超时规则运行。协议只改变线上请求与响应的编码方式，不改变工具权限和应用规则。
 - OpenAI Responses 使用 `store: false` 并手动带回消息、函数调用、工具结果和必要的
-  reasoning item。Chat Completions 带回供应商要求的思考状态。Anthropic Messages 在
+  reasoning item。官方 OpenAI Responses 在会话达到已解析上下文窗口的 75% 时，优先
+  调用无状态 `/responses/compact`；其返回的完整 canonical output（包括 opaque encrypted
+  compaction item）原样保存并用于后续请求，仍保持 `store: false`。兼容 Responses 端点
+  不因协议名称被假定支持该能力。Chat Completions 带回供应商要求的思考状态。Anthropic Messages 在
   content blocks 中关联 `tool_use` 与 `tool_result`。
 - 所有独立优化请求都由 Rust 在首个 Provider 请求前通过受限工具读取正文和主题，并编码
   为对应协议的标准工具历史；模型无需自行选择这两个必读工具，写入边界仍会验证读取结果。
@@ -74,6 +77,15 @@ Completions 作为 **自动** 的兼容默认值；但当 `BASE_URL` 是 MiMo �
 - 模型检索、连接测试、自动保存和手动保存都只针对当前可见协议。模型列表接口不可用
   时，用户仍可手动填写模型名称。连接测试成功后还会尽力探测该模型是否接受协议原生
   的严格 JSON Schema；探测失败不推翻连接测试结果。
+- 模型检索除 `id` 外会识别 `context_window`、`context_length`、
+  `max_context_length`、`input_token_limit` 等常见数值字段及受支持的嵌套等价字段；只有
+  1,024 到 2,000,000 之间的结构化正整数才可成为三级置信度窗口。缺少该字段时按
+  “API 返回值（三级） > 官方资料或自定义手选（二级） > 128K 默认（一级）”解析，不能
+  通过最小请求成功或模型列表中存在一个 ID 猜测窗口。
+- Chat Completions、Anthropic Messages、不支持原生压缩的 Responses 兼容端点，以及
+  官方 compact 调用失败时，使用同一模型生成九段式本地摘要。压缩只覆盖较早完整轮次，
+  最近两轮保持原文；完整可见 Session 继续留在本地 SQLite。摘要与 Responses opaque
+  state 都严格绑定 Provider 实例、协议、BASE_URL、模型和 Session，不能跨路由复用。
 - 能力档案按“供应商 + 协议 + BASE_URL + 模型”保存七天，来源可以是内置预设、连接
   测试探测或真实请求观察，当前记录结构化输出、流式响应与思考控制三类能力。模型列表
   只能声明可用模型，不能替代能力探测。严格 JSON Schema 被兼容端点以 400、404、405、
@@ -91,9 +103,11 @@ Completions 作为 **自动** 的兼容默认值；但当 `BASE_URL` 是 MiMo �
 每个协议。主要官方资料：
 
 - [OpenAI 模型与 Responses API](https://developers.openai.com/api/docs/models)
+- [OpenAI Responses 上下文压缩](https://developers.openai.com/api/docs/guides/compaction)
 - [DeepSeek Anthropic API](https://api-docs.deepseek.com/guides/anthropic_api)
 - [通义千问 OpenAI Responses](https://help.aliyun.com/zh/model-studio/qwen-api-via-openai-responses)
 - [Xiaomi MiMo 工具接入概览](https://mimo.mi.com/docs/integration/tools-overview)
+- [Xiaomi MiMo 模型与上下文窗口](https://mimo.mi.com/docs/quick-start/summary/model)
 - [MiniMax 文本生成与推荐协议](https://platform.minimaxi.com/docs/guides/text-generation)
 - [豆包 Seed Responses 工具调用](https://www.volcengine.com/docs/82379/1958524)
 - [智谱 GLM Claude Code 接入](https://docs.bigmodel.cn/cn/guide/develop/claude)

@@ -52,6 +52,15 @@ function displaySubject(subject) {
   return subject?.trim() || "无主题";
 }
 
+function compactTokenCount(tokens) {
+  const value = Number(tokens) || 0;
+  if (value >= 1_000_000) {
+    return `${(value / 1_000_000).toFixed(value % 1_000_000 ? 1 : 0)}M`;
+  }
+  if (value >= 1_000) return `${Math.round(value / 1_000)}K`;
+  return String(Math.round(value));
+}
+
 export function shortDraftDisplayId(value) {
   const source = String(value || "new-draft");
   let hash = 2166136261;
@@ -888,6 +897,7 @@ export function ComposeAiAssistant({
   });
   const [modelCatalogState, setModelCatalogState] = useState("loading");
   const [selectedModelValue, setSelectedModelValue] = useState("");
+  const [contextUsage, setContextUsage] = useState(null);
   const isSubmitting = Boolean(activeRequest);
   latestValueRef.current = value;
   const availableModeOptions = useMemo(
@@ -902,6 +912,11 @@ export function ComposeAiAssistant({
     () => sessions.find((session) => session.id === activeSessionId) || null,
     [activeSessionId, sessions],
   );
+  const activeSessionContextRevision = useMemo(() => {
+    const messages = activeSession?.messages || [];
+    const last = messages.at(-1);
+    return `${messages.length}:${last?.status || ""}:${last?.content?.length || 0}`;
+  }, [activeSession]);
   const modelOptions = useMemo(
     () => modelCatalog.models.map((model) => ({
       value: `${model.providerInstanceId}\u001f${model.modelName}`,
@@ -939,6 +954,38 @@ export function ComposeAiAssistant({
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (!selectedModel || typeof mailApi.getAiContextUsage !== "function") {
+      setContextUsage(null);
+      return undefined;
+    }
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      mailApi.getAiContextUsage({
+        sessionId: activeSession?.id || null,
+        providerInstanceId: selectedModel.providerInstanceId,
+        modelName: selectedModel.modelName,
+        pendingInstruction: input,
+        mode,
+      }).then((usage) => {
+        if (!cancelled) setContextUsage(usage);
+      }).catch(() => {
+        if (!cancelled) {
+          setContextUsage({
+            inputTokens: 0,
+            contextWindowTokens: selectedModel.contextWindowTokens || 128000,
+            percent: 0,
+            estimated: true,
+          });
+        }
+      });
+    }, 250);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [activeSession?.id, activeSessionContextRevision, input, mode, selectedModel]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1383,6 +1430,18 @@ export function ComposeAiAssistant({
             preferredMaxHeight={204}
             onValueChange={setSelectedModelValue}
           />
+          {contextUsage ? (
+            <span
+              className="compose-ai-context-usage"
+              data-warning={contextUsage.percent >= 75 || undefined}
+              title={`上下文窗口来源：${contextUsage.contextWindowSource || "default"}，置信度 ${contextUsage.contextWindowConfidence || 1}`}
+            >
+              {contextUsage.estimated ? "≈" : ""}
+              {compactTokenCount(contextUsage.inputTokens)}
+              /{compactTokenCount(contextUsage.contextWindowTokens)}
+              {` (${Math.min(999, Math.max(0, contextUsage.percent))}%)`}
+            </span>
+          ) : null}
           <IconButton
             className="compose-ai-send"
             label={isSubmitting ? "停止 AI 助理" : "发送给 AI 助理"}

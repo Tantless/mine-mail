@@ -33,12 +33,12 @@ use account::{
     RemoveAccountRequest, RemoveAccountResultDto,
 };
 use ai::{
-    AiConfigDto, AiConnectionTestDto, AiContact, AiExecutionContext, AiModelCatalogDto,
-    AiModelListDto, AiProviderRegistryDto, AiProviderTestResultDto, AiRuntime, AiSessionDto,
-    AiSessionListItemDto, AiTranslationRequest, AiTranslationResultDto, AiTurnEvent, AiTurnRequest,
-    AiTurnResultDto, CheckAiConnectionRequest, ReorderAiProviderInstancesRequest,
-    ResolveAiProposalRequest, ResolveAiProposalResultDto, SaveAiConfigRequest,
-    SaveAiProviderInstanceRequest, record_patch_outcome,
+    AiConfigDto, AiConnectionTestDto, AiContact, AiContextUsageDto, AiContextUsageRequest,
+    AiExecutionContext, AiModelCatalogDto, AiModelListDto, AiProviderRegistryDto,
+    AiProviderTestResultDto, AiRuntime, AiSessionDto, AiSessionListItemDto, AiTranslationRequest,
+    AiTranslationResultDto, AiTurnEvent, AiTurnRequest, AiTurnResultDto, CheckAiConnectionRequest,
+    ReorderAiProviderInstancesRequest, ResolveAiProposalRequest, ResolveAiProposalResultDto,
+    SaveAiConfigRequest, SaveAiProviderInstanceRequest, record_patch_outcome,
 };
 use contacts::{ContactDirectoryDto, ContactRuntime};
 use desktop::{
@@ -1265,6 +1265,16 @@ fn list_ai_sessions(ai: State<'_, AiRuntime>) -> CommandResult<Vec<AiSessionList
 fn get_ai_session(ai: State<'_, AiRuntime>, session_id: String) -> CommandResult<AiSessionDto> {
     diagnostics::command("get_ai_session", DiagnosticFields::default(), || {
         ai.get_session(&session_id)
+    })
+}
+
+#[tauri::command]
+fn get_ai_context_usage(
+    ai: State<'_, AiRuntime>,
+    request: AiContextUsageRequest,
+) -> CommandResult<AiContextUsageDto> {
+    diagnostics::command("get_ai_context_usage", DiagnosticFields::default(), || {
+        ai.context_usage(request)
     })
 }
 
@@ -3156,6 +3166,7 @@ pub fn run() {
             list_contacts,
             list_ai_sessions,
             get_ai_session,
+            get_ai_context_usage,
             get_ai_config,
             get_ai_provider_registry,
             save_ai_provider_instance,

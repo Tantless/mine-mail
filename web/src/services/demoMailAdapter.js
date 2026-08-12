@@ -94,6 +94,36 @@ const demoAiTranslationLanguages = [
 const wait = (milliseconds) =>
   new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 
+function demoModelContext(provider, modelName) {
+  if (provider?.manualContextWindowTokens) {
+    return {
+      contextWindowTokens: provider.manualContextWindowTokens,
+      contextWindowSource: "manual",
+      contextWindowConfidence: 2,
+    };
+  }
+  const model = String(modelName || "").toLowerCase();
+  let contextWindowTokens = null;
+  if (provider?.providerId === "openai" && /^gpt-5\.(6|4)/.test(model)) {
+    contextWindowTokens = 1050000;
+  } else if (provider?.providerId === "openai" && model.startsWith("gpt-5")) {
+    contextWindowTokens = 400000;
+  } else if (provider?.providerId === "deepseek" && model.startsWith("deepseek-v4")) {
+    contextWindowTokens = 1000000;
+  } else if (provider?.providerId === "anthropic" && model.startsWith("claude-")) {
+    contextWindowTokens = 200000;
+  } else if (provider?.providerId === "mimo" && /^mimo-v2\.5(?:$|-pro)/.test(model)) {
+    contextWindowTokens = 1000000;
+  } else if (provider?.providerId === "minimax" && /^minimax-m2(?:$|\.(1|5|7))/.test(model)) {
+    contextWindowTokens = 204800;
+  } else if (provider?.providerId === "glm" && /^glm-(5|4\.7)/.test(model)) {
+    contextWindowTokens = 202752;
+  }
+  return contextWindowTokens
+    ? { contextWindowTokens, contextWindowSource: "official", contextWindowConfidence: 2 }
+    : { contextWindowTokens: 128000, contextWindowSource: "default", contextWindowConfidence: 1 };
+}
+
 function createDemoState() {
   return {
     messages: structuredClone(demoMessages),
@@ -135,12 +165,14 @@ function createDemoState() {
           status: "available",
           latencyMs: 128,
           checkedAtMs: Date.now(),
+          manualContextWindowTokens: null,
         },
       ],
       presets: structuredClone(demoAiPresets),
       defaultProviderInstanceId: demoAiProviderId,
       translationLanguage: "zh-Hans",
       translationLanguages: structuredClone(demoAiTranslationLanguages),
+      contextWindowOptions: [128000, 200000, 500000, 1000000, 2000000],
     },
     outbox: [],
     settings: {
@@ -660,6 +692,10 @@ function createDemoActions(
         status: existing ? "untested" : "untested",
         latencyMs: null,
         checkedAtMs: null,
+        manualContextWindowTokens:
+          preset.id === "custom"
+            ? Number(request.manualContextWindowTokens || 128000)
+            : null,
       };
       state.aiProviderRegistry.providers = [
         ...state.aiProviderRegistry.providers.filter(
@@ -751,12 +787,14 @@ function createDemoActions(
         for (const modelName of available) {
           if (seen.has(modelName)) continue;
           seen.add(modelName);
+          const context = demoModelContext(provider, modelName);
           models.push({
             providerInstanceId: provider.id,
             providerId: provider.providerId,
             providerName: provider.name,
             modelName,
             isDefault: provider.isDefault && provider.modelName === modelName,
+            ...context,
           });
         }
       }
@@ -764,6 +802,30 @@ function createDemoActions(
         models,
         successfulProviderCount: state.aiProviderRegistry.providers.length,
         totalProviderCount: state.aiProviderRegistry.providers.length,
+      };
+    },
+
+    getAiContextUsage(request) {
+      const provider = state.aiProviderRegistry.providers.find(
+        (candidate) => candidate.id === request.providerInstanceId,
+      );
+      const context = demoModelContext(provider, request.modelName);
+      const windowTokens = context.contextWindowTokens;
+      const session = state.aiSessions.find((candidate) => candidate.id === request.sessionId);
+      const text = [
+        ...(session?.messages || []).map((message) => message.content || ""),
+        request.pendingInstruction || "",
+      ].join("\n");
+      const inputTokens = Math.max(1, Math.ceil(text.length / 3.2) + 2048);
+      return {
+        inputTokens,
+        contextWindowTokens: windowTokens,
+        compactionThresholdTokens: Math.floor(windowTokens * 0.75),
+        percent: Math.ceil((inputTokens * 100) / windowTokens),
+        contextWindowSource: context.contextWindowSource,
+        contextWindowConfidence: context.contextWindowConfidence,
+        estimated: true,
+        compactionNeeded: inputTokens >= windowTokens * 0.75,
       };
     },
 

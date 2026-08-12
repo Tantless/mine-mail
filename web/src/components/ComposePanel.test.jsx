@@ -846,6 +846,43 @@ it("routes an Agent turn through the model selected beside the mode", async () =
   );
 });
 
+it("shows the selected model context usage beside the Agent composer", async () => {
+  vi.spyOn(mailApi, "refreshAiModelCatalog").mockResolvedValue({
+    models: [
+      {
+        providerInstanceId: "11111111-1111-4111-8111-111111111111",
+        providerName: "Work OpenAI",
+        providerId: "openai",
+        modelName: "gpt-5.6-terra",
+        isDefault: true,
+        contextWindowTokens: 200000,
+      },
+    ],
+    successfulProviderCount: 1,
+    totalProviderCount: 1,
+  });
+  const usage = vi.spyOn(mailApi, "getAiContextUsage").mockResolvedValue({
+    inputTokens: 20000,
+    contextWindowTokens: 200000,
+    compactionThresholdTokens: 150000,
+    percent: 10,
+    contextWindowSource: "api",
+    contextWindowConfidence: 3,
+    estimated: true,
+    compactionNeeded: false,
+  });
+  const user = userEvent.setup();
+  renderCompose();
+
+  await user.click(screen.getByRole("button", { name: "打开 AI 助理" }));
+  const assistant = screen.getByRole("complementary", { name: "AI 助理" });
+  expect(await within(assistant).findByText("≈20K/200K (10%)")).toBeTruthy();
+  expect(usage).toHaveBeenCalledWith(expect.objectContaining({
+    providerInstanceId: "11111111-1111-4111-8111-111111111111",
+    modelName: "gpt-5.6-terra",
+  }));
+});
+
 it("keeps a streamed Markdown turn alive while the AI sidebar is collapsed", async () => {
   let emit;
   let finish;
