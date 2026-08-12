@@ -23,6 +23,27 @@ describe("native HTML message body", () => {
     expect(container.querySelector(".native-html-message__content")).toBeTruthy();
   });
 
+  it("keeps bounded typography and alignment on the native surface", () => {
+    const { container } = render(
+      <NativeHtmlMessageBody
+        html={
+          '<p align="center"><font face="SimSun" size="6">大号居中文字</font></p>' +
+          '<p style="text-indent:2em"><strong>缩进正文</strong></p>' +
+          '<p align="right">右对齐正文</p>'
+        }
+      />,
+    );
+
+    const font = screen.getByText("大号居中文字");
+    expect(font.tagName).toBe("FONT");
+    expect(font.getAttribute("face")).toBe("SimSun");
+    expect(font.getAttribute("size")).toBe("6");
+    expect(font.closest("p").getAttribute("align")).toBe("center");
+    expect(screen.getByText("缩进正文").closest("p").style.textIndent).toBe("2em");
+    expect(screen.getByText("右对齐正文").closest("p").getAttribute("align")).toBe("right");
+    expect(container.querySelector("iframe")).toBeNull();
+  });
+
   it("removes remote sources before insertion when images are not allowed", () => {
     const html = prepareNativeHtml(
       '<img alt="remote" src="https://images.example/avatar.png"><img alt="inline" src="data:image/png;base64,AQID">',

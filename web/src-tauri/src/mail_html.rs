@@ -244,6 +244,7 @@ struct HtmlAnalysis {
     merged_table_cells: usize,
     has_sizing_layout: bool,
     has_blocking_layout: bool,
+    has_text_presentation: bool,
     has_background_attribute: bool,
 }
 
@@ -349,6 +350,11 @@ pub(crate) fn sanitize_mail_html(source: &str) -> SanitizedMailHtml {
     let table_requires_isolation = analysis.tables > 0 && !degradable_table;
     let layout_requires_isolation =
         analysis.has_blocking_layout || (analysis.has_sizing_layout && !degradable_table);
+    // Bounded font face/size, alignment, and indentation can remain on the
+    // native surface after the dedicated sanitizer narrows their values. They
+    // are still presentation worth preserving, so they must not degrade to the
+    // plain-text alternative merely because the surrounding tags are wrappers.
+    let has_native_text_presentation = analysis.has_text_presentation;
     // A number of notification and person-to-person templates wrap a few
     // lines of text in styled divs, sometimes with an avatar in a one-row
     // table. Their CSS is ornamental rather than necessary for understanding
@@ -387,6 +393,7 @@ pub(crate) fn sanitize_mail_html(source: &str) -> SanitizedMailHtml {
         && !has_hard_source_tag
         && analysis.tables == 0
         && !layout_requires_isolation
+        && !has_native_text_presentation
         && !style_dependent_layout;
     let structure = if has_mine_mail_stationery {
         MailHtmlStructure::Isolated
@@ -402,7 +409,7 @@ pub(crate) fn sanitize_mail_html(source: &str) -> SanitizedMailHtml {
         || analysis.images > MAX_NATIVE_IMAGES
     {
         MailHtmlStructure::Isolated
-    } else if analysis.has_meaningful_semantics {
+    } else if analysis.has_meaningful_semantics || has_native_text_presentation {
         MailHtmlStructure::Native
     } else {
         MailHtmlStructure::PlainEquivalent
@@ -477,6 +484,7 @@ fn sanitize_native_mail_html(source: &str) -> String {
             "del",
             "div",
             "em",
+            "font",
             "h1",
             "h2",
             "h3",
@@ -517,9 +525,13 @@ fn sanitize_native_mail_html(source: &str) -> String {
         ]))
         .tag_attributes(HashMap::from([
             ("a", HashSet::from(["href", "name"])),
+            ("div", HashSet::from(["align", "style"])),
+            ("font", HashSet::from(["face", "size"])),
             ("img", HashSet::from(["src", "alt"])),
             ("ol", HashSet::from(["start", "reversed"])),
             ("li", HashSet::from(["value"])),
+            ("p", HashSet::from(["align", "style"])),
+            ("span", HashSet::from(["style"])),
             ("td", HashSet::from(["colspan", "rowspan", "headers"])),
             (
                 "th",
@@ -535,6 +547,18 @@ fn sanitize_native_mail_html(source: &str) -> String {
         .link_rel(Some("noopener noreferrer"))
         .strip_comments(true)
         .attribute_filter(|element, attribute, value| {
+            if attribute == "align" {
+                return normalize_native_alignment(value).map(Cow::Borrowed);
+            }
+            if attribute == "style" {
+                return sanitize_native_text_style(element, value).map(Cow::Owned);
+            }
+            if (element, attribute) == ("font", "face") && !is_safe_native_font_family(value) {
+                return None;
+            }
+            if (element, attribute) == ("font", "size") && !is_safe_legacy_font_size(value) {
+                return None;
+            }
             if (element, attribute) == ("img", "src")
                 && is_data_url(value)
                 && !is_safe_image_data_url(value)
@@ -547,6 +571,104 @@ fn sanitize_native_mail_html(source: &str) -> String {
             Some(value.into())
         });
     builder.clean(source).to_string()
+}
+
+fn normalize_native_alignment(value: &str) -> Option<&'static str> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "left" => Some("left"),
+        "center" => Some("center"),
+        "right" => Some("right"),
+        "justify" => Some("justify"),
+        _ => None,
+    }
+}
+
+fn is_safe_legacy_font_size(value: &str) -> bool {
+    matches!(value.trim(), "1" | "2" | "3" | "4" | "5" | "6" | "7")
+}
+
+fn is_safe_native_font_family(value: &str) -> bool {
+    let value = value.trim();
+    !value.is_empty()
+        && value.len() <= 256
+        && value.chars().all(|character| {
+            character.is_alphanumeric()
+                || character.is_whitespace()
+                || matches!(character, '-' | '_' | ',' | '\'' | '"')
+        })
+}
+
+fn normalize_native_font_size(value: &str) -> Option<String> {
+    let value = value.trim().to_ascii_lowercase();
+    if matches!(
+        value.as_str(),
+        "xx-small"
+            | "x-small"
+            | "small"
+            | "medium"
+            | "large"
+            | "x-large"
+            | "xx-large"
+            | "smaller"
+            | "larger"
+    ) {
+        return Some(value);
+    }
+
+    for (unit, minimum, maximum) in [
+        ("px", 8.0_f32, 48.0_f32),
+        ("pt", 6.0_f32, 36.0_f32),
+        ("rem", 0.5_f32, 3.0_f32),
+        ("em", 0.5_f32, 3.0_f32),
+        ("%", 50.0_f32, 300.0_f32),
+    ] {
+        let Some(number) = value.strip_suffix(unit) else {
+            continue;
+        };
+        if number.len() > 12 {
+            return None;
+        }
+        let Ok(number) = number.parse::<f32>() else {
+            return None;
+        };
+        if number.is_finite() && (minimum..=maximum).contains(&number) {
+            return Some(value);
+        }
+        return None;
+    }
+    None
+}
+
+fn sanitize_native_text_style(element: &str, style: &str) -> Option<String> {
+    let mut declarations = Vec::new();
+    for declaration in style.split(';') {
+        let Some((property, value)) = declaration.split_once(':') else {
+            continue;
+        };
+        let property = property.trim().to_ascii_lowercase();
+        let value = value.trim();
+        let normalized = match property.as_str() {
+            "font-family" if is_safe_native_font_family(value) => {
+                Some(format!("font-family:{value}"))
+            }
+            "font-size" => {
+                normalize_native_font_size(value).map(|value| format!("font-size:{value}"))
+            }
+            "text-align" if matches!(element, "div" | "p") => {
+                normalize_native_alignment(value).map(|value| format!("text-align:{value}"))
+            }
+            "text-indent"
+                if matches!(element, "div" | "p") && value.eq_ignore_ascii_case("2em") =>
+            {
+                Some("text-indent:2em".to_owned())
+            }
+            _ => None,
+        };
+        if let Some(normalized) = normalized {
+            declarations.push(normalized);
+        }
+    }
+    (!declarations.is_empty()).then(|| declarations.join(";"))
 }
 
 fn analyze_html(fragment: &str) -> HtmlAnalysis {
@@ -617,6 +739,17 @@ fn analyze_html(fragment: &str) -> HtmlAnalysis {
         if name == "style" {
             analysis.style_blocks += 1;
         }
+        if name == "font" {
+            analysis.has_text_presentation |= attribute_value(token, "face")
+                .is_some_and(is_safe_native_font_family)
+                || attribute_value(token, "size").is_some_and(is_safe_legacy_font_size);
+        }
+        if attribute_value(token, "align")
+            .and_then(normalize_native_alignment)
+            .is_some()
+        {
+            analysis.has_text_presentation = true;
+        }
         if attribute_value(token, "class").is_some() || attribute_value(token, "id").is_some() {
             analysis.has_styling_hooks = true;
         }
@@ -639,9 +772,10 @@ fn analyze_html(fragment: &str) -> HtmlAnalysis {
                 analysis.has_sizing_layout = true;
             }
             if let Some(style) = attribute_value(token, "style") {
-                let style = analyze_inline_style(style);
+                let style = analyze_inline_style(&name, style);
                 analysis.has_sizing_layout |= style.has_sizing_layout;
                 analysis.has_blocking_layout |= style.has_blocking_layout;
+                analysis.has_text_presentation |= style.has_text_presentation;
             }
         }
 
@@ -695,24 +829,25 @@ fn attribute_value<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
 struct InlineStyleAnalysis {
     has_sizing_layout: bool,
     has_blocking_layout: bool,
+    has_text_presentation: bool,
 }
 
-fn analyze_inline_style(style: &str) -> InlineStyleAnalysis {
+fn analyze_inline_style(element: &str, style: &str) -> InlineStyleAnalysis {
     let mut analysis = InlineStyleAnalysis::default();
     for declaration in style.split(';') {
         let Some((property, value)) = declaration.split_once(':') else {
             continue;
         };
-        let property = property.trim();
-        let value = value.trim();
+        let property = property.trim().to_ascii_lowercase();
+        let value = value.trim().to_ascii_lowercase();
         if matches!(
-            property,
+            property.as_str(),
             "width" | "min-width" | "max-width" | "height" | "min-height" | "max-height"
         ) {
             analysis.has_sizing_layout = true;
         }
         if matches!(
-            property,
+            property.as_str(),
             "background"
                 | "background-color"
                 | "background-image"
@@ -727,13 +862,14 @@ fn analyze_inline_style(style: &str) -> InlineStyleAnalysis {
                 | "flex-flow"
         ) || (property == "display"
             && matches!(
-                value,
+                value.as_str(),
                 "flex" | "inline-flex" | "grid" | "inline-grid" | "table" | "inline-table"
             ))
         {
             analysis.has_blocking_layout = true;
         }
     }
+    analysis.has_text_presentation = sanitize_native_text_style(element, style).is_some();
     analysis
 }
 
@@ -1809,6 +1945,44 @@ mod tests {
         assert!(!native.contains("width="));
         assert!(!native.contains("onclick"));
         assert!(!native.contains("image/svg+xml"));
+    }
+
+    #[test]
+    fn bounded_typography_alignment_and_indentation_stay_native() {
+        let legacy = sanitize_mail_html(
+            r#"<p align="center"><font face="SimSun" size="6">Large centered text</font></p>
+               <p><strong>Bold text</strong></p><p align="right">Right aligned text</p>"#,
+        );
+
+        assert_eq!(legacy.structure, MailHtmlStructure::Native);
+        let native = legacy.native_fragment.expect("native formatted fragment");
+        assert!(native.contains("align=\"center\""));
+        assert!(native.contains("face=\"SimSun\""));
+        assert!(native.contains("size=\"6\""));
+        assert!(native.contains("align=\"right\""));
+
+        for source in [
+            r#"<p align="right">Right aligned text</p>"#,
+            r#"<p><font face="SimSun">Serif text</font></p>"#,
+            r#"<p><font size="5">Large text</font></p>"#,
+            r#"<p style="font-size:22px">Large text</p>"#,
+            r#"<p style="FONT-FAMILY:SimSun; TEXT-ALIGN:center">Centered serif text</p>"#,
+            r#"<p style="text-indent:2em">Indented text</p>"#,
+        ] {
+            assert_eq!(
+                sanitize_mail_html(source).structure,
+                MailHtmlStructure::Native,
+                "bounded text presentation should remain native: {source}"
+            );
+        }
+
+        let narrowed = sanitize_mail_html(
+            r#"<p style="font-size:999px;color:red;text-align:center">Safe text</p>"#,
+        );
+        let native = narrowed.native_fragment.expect("narrowed native fragment");
+        assert!(native.contains("text-align:center"));
+        assert!(!native.contains("999px"));
+        assert!(!native.contains("color:red"));
     }
 
     #[test]

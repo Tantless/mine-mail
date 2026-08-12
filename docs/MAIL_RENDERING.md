@@ -50,8 +50,10 @@ removing sender layout and styling.
   and an eligible small flat table.
 - Compact, text-dominant notification/profile templates may use this mode when
   their ornamental styling is unnecessary for understanding.
-- Strip sender styles, class/id hooks, sizing/layout attributes, unsafe URLs,
-  event handlers, and unsupported embedded content.
+- Preserve the compose contract's bounded font face/size, text alignment, and
+  first-line indentation after validating and narrowing their values.
+- Strip every other sender style, class/id hook, sizing/layout attribute, unsafe
+  URL, event handler, and unsupported embedded content.
 - Do not describe the eligible table as “signature-only”; eligibility is based on
   bounded structure and readable meaning.
 
