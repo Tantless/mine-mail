@@ -272,9 +272,11 @@ All app-owned color and material decisions flow through custom properties in
 - **Agent 配置** is its own category between feature preferences and About. Its
   **模型配置** card is a compact accordion, collapsed by default. Expanding it
   shows configured Provider instances rather than raw connection fields. Each
-  row contains a local brand mark, user-defined name, base URL, protocol,
-  preferred model, instance-local availability and measured latency, plus
-  **设为默认**、**测试连接**、编辑 and 删除 actions. The active default row uses
+  row contains a local brand mark, user-defined name, base URL, preferred model,
+  instance-local availability and measured latency, plus **设为默认**、连接测试、编辑 and
+  删除 actions. The row-level connection action only reruns the bounded connectivity
+  test; protocol and capability results stay in the detail surface rather
+  than adding diagnostic density to the list. The active default row uses
   a restrained primary edge and **使用中** badge. An unavailable or expired row
   owns its error copy; it never produces a page-wide failure or prevents another
   row from working.
@@ -293,13 +295,13 @@ All app-owned color and material decisions flow through custom properties in
   and Beta or compatibility limits appear as compact, right-aligned helper copy
   in the **API 协议** field heading. A customized
   `BASE_URL` is never overwritten by later model or protocol changes. A manual key
-  is never read back into React. **保存并测试** persists the instance, retrieves
-  its model list, performs bounded text, structured-output, and side-effect-free
-  mock tool checks, and reports Rust-observed latency. **保存渠道** persists without
-  starting a network test. Rust remains authoritative when validating and binding
-  the route. The collapsed Provider row shows the resolved protocol
-  and a restrained capability state such as **能力未测试**、**能力已验证** or
-  **能力验证不稳定**. These are local actions, not a global Settings footer.
+  is never read back into React. Beside **保存渠道**, **测试连接** first persists
+  the current form, retrieves its model list, performs a bounded minimal text
+  request, and reports Rust-observed latency; **测试能力** first persists the form
+  and independently probes structured output, tool calling, and multi-turn tool
+  continuation. Either action stays in the detail surface and reports its own
+  result there. **保存渠道** persists without starting a network test. Rust remains
+  authoritative when validating and binding the route.
 - A custom Provider detail also exposes one native themed **上下文窗口** selector
   with 128K, 200K, 500K, 1M, and 2M options. It is a fallback setting rather
   than a model capability claim: a context size returned by that exact tested

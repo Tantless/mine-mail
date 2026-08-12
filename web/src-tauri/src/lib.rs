@@ -1405,6 +1405,24 @@ async fn test_ai_provider_instance(
 }
 
 #[tauri::command]
+async fn test_ai_provider_capabilities(
+    ai: State<'_, AiRuntime>,
+    provider_instance_id: String,
+) -> CommandResult<AiProviderTestResultDto> {
+    diagnostics::command_async(
+        "test_ai_provider_capabilities",
+        DiagnosticFields::default(),
+        async {
+            ai.inner()
+                .clone()
+                .test_provider_capabilities(&provider_instance_id)
+                .await
+        },
+    )
+    .await
+}
+
+#[tauri::command]
 async fn refresh_ai_model_catalog(ai: State<'_, AiRuntime>) -> CommandResult<AiModelCatalogDto> {
     diagnostics::command_async(
         "refresh_ai_model_catalog",
@@ -3178,6 +3196,7 @@ pub fn run() {
             list_ai_models,
             test_ai_connection,
             test_ai_provider_instance,
+            test_ai_provider_capabilities,
             refresh_ai_model_catalog,
             translate_mail_content,
             run_ai_turn,

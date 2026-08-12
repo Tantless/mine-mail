@@ -110,6 +110,9 @@ function configuredProvider(overrides = {}) {
     protocolMaturity: "stable",
     capabilityStatus: "verified",
     capabilityEvidence: "probed",
+    structuredOutputStatus: "supported",
+    toolCallingStatus: "supported",
+    multiTurnToolCallingStatus: "supported",
     ...overrides,
   };
 }
@@ -135,6 +138,10 @@ function client(overrides = {}) {
     getAiProviderRegistry: vi.fn().mockResolvedValue(current),
     saveAiProviderInstance: vi.fn().mockResolvedValue(current),
     testAiProviderInstance: vi.fn().mockResolvedValue({
+      provider: configuredProvider(),
+      modelCount: 2,
+    }),
+    testAiProviderCapabilities: vi.fn().mockResolvedValue({
       provider: configuredProvider(),
       modelCount: 2,
     }),
@@ -175,7 +182,7 @@ describe("AgentSettings", () => {
     expect(screen.getByRole("checkbox", { name: /默认开启 AI 助理/ })).toBeTruthy();
   });
 
-  it("renders ordered provider details, the active badge, latency, and row actions", async () => {
+  it("keeps protocol, capability, and test actions out of the provider list", async () => {
     const user = userEvent.setup();
     render(<AgentSettings client={client()} />);
     await expandModelConfiguration(user);
@@ -184,7 +191,9 @@ describe("AgentSettings", () => {
     expect(within(list).getByText("Work OpenAI")).toBeTruthy();
     expect(within(list).getByText("使用中")).toBeTruthy();
     expect(within(list).getByText(/86 ms · 2 个模型/)).toBeTruthy();
-    expect(within(list).getByRole("button", { name: /测试 Work OpenAI/ })).toBeTruthy();
+    expect(within(list).queryByText("OpenAI Responses")).toBeNull();
+    expect(within(list).queryByText("能力已验证")).toBeNull();
+    expect(within(list).getByRole("button", { name: "测试 Work OpenAI 连接" })).toBeTruthy();
     expect(within(list).getByRole("button", { name: "编辑 Work OpenAI" })).toBeTruthy();
     expect(within(list).getByRole("button", { name: "删除 Work OpenAI" })).toBeTruthy();
   });
@@ -308,7 +317,7 @@ describe("AgentSettings", () => {
     });
   });
 
-  it("saves before an explicit test and keeps a failed test inside its provider row", async () => {
+  it("keeps a failed connection test inside the provider editor", async () => {
     const user = userEvent.setup();
     const api = client({
       testAiProviderInstance: vi.fn().mockRejectedValue(new Error("API Key 已失效")),
@@ -316,14 +325,31 @@ describe("AgentSettings", () => {
     render(<AgentSettings client={api} />);
     await expandModelConfiguration(user);
 
-    await user.click(screen.getByRole("button", { name: /测试 Work OpenAI/ }));
+    await user.click(screen.getByRole("button", { name: "编辑 Work OpenAI" }));
+    await user.click(screen.getByRole("button", { name: "测试连接" }));
 
     expect(await screen.findByText("API Key 已失效")).toBeTruthy();
-    expect(screen.getByText("API Key 已失效").closest(".agent-provider-row")).toBeTruthy();
+    expect(screen.getByText("API Key 已失效").closest(".agent-provider-flow")).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Agent 配置" })).toBeTruthy();
   });
 
-  it("returns to the saved provider row when save-and-test finds an expired channel", async () => {
+  it("tests only connectivity from the provider list action", async () => {
+    const user = userEvent.setup();
+    const api = client();
+    render(<AgentSettings client={api} />);
+    await expandModelConfiguration(user);
+
+    await user.click(screen.getByRole("button", { name: "测试 Work OpenAI 连接" }));
+
+    await waitFor(() => expect(api.testAiProviderInstance).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+    ));
+    expect(api.testAiProviderCapabilities).not.toHaveBeenCalled();
+    expect(api.saveAiProviderInstance).not.toHaveBeenCalled();
+    expect(screen.getByRole("list", { name: "已配置 AI 渠道" })).toBeTruthy();
+  });
+
+  it("stays in the editor when a connection test finds an expired channel", async () => {
     const user = userEvent.setup();
     const api = client({
       testAiProviderInstance: vi.fn().mockRejectedValue(new Error("渠道凭据已过期")),
@@ -331,15 +357,34 @@ describe("AgentSettings", () => {
     render(<AgentSettings client={api} />);
     await expandModelConfiguration(user);
     await user.click(screen.getByRole("button", { name: "编辑 Work OpenAI" }));
-    await user.click(screen.getByRole("button", { name: "保存并测试" }));
+    await user.click(screen.getByRole("button", { name: "测试连接" }));
 
     await waitFor(() => expect(api.saveAiProviderInstance).toHaveBeenCalledTimes(1));
     expect(api.testAiProviderInstance).toHaveBeenCalledWith(
       "11111111-1111-4111-8111-111111111111",
     );
     const error = await screen.findByText("渠道凭据已过期");
-    expect(error.closest(".agent-provider-row")).toBeTruthy();
-    expect(screen.queryByRole("heading", { name: /编辑 Work OpenAI/ })).toBeNull();
+    expect(error.closest(".agent-provider-flow")).toBeTruthy();
+    expect(screen.getByText(/编辑 Work OpenAI/)).toBeTruthy();
+  });
+
+  it("runs capability testing separately and shows its detail only in the editor", async () => {
+    const user = userEvent.setup();
+    const api = client();
+    render(<AgentSettings client={api} />);
+    await expandModelConfiguration(user);
+    await user.click(screen.getByRole("button", { name: "编辑 Work OpenAI" }));
+
+    expect(screen.getByRole("region", { name: "连接与能力" })).toBeTruthy();
+    expect(screen.getByText("结构化输出")).toBeTruthy();
+    expect(screen.getByText("多轮工具续接")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "测试能力" }));
+
+    await waitFor(() => expect(api.testAiProviderCapabilities).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+    ));
+    expect(api.testAiProviderInstance).not.toHaveBeenCalled();
+    expect(await screen.findByText(/能力测试完成/)).toBeTruthy();
   });
 
   it("edits a provider without reading the stored key back into React", async () => {
@@ -352,7 +397,8 @@ describe("AgentSettings", () => {
     expect(key.value).toBe("••••••••••••");
     await user.click(key);
     expect(key.value).toBe("");
-    expect(screen.getByRole("button", { name: "保存并测试" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "测试连接" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "测试能力" })).toBeTruthy();
   });
 
   it("requires the shared confirmation before deleting a default provider", async () => {

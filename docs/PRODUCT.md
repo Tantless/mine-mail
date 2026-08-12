@@ -409,7 +409,8 @@ product decision changes.
   unit retains its original text while other valid units remain usable; the reader
   still updates only after Rust validates and merges the available results.
 - Provider add/edit is an embedded Settings child flow with local **保存渠道**
-  and **保存并测试** actions. Incomplete input remains local. Rust persists
+  plus separate **测试连接** and **测试能力** actions. Incomplete input remains local.
+  Rust persists
   non-secret instance data in the AI SQLite store, while a manual API Key is
   scoped by stable Provider-instance ID in the OS credential store. Environment-
   key mode ignores any form value and reads the preset's documented variable
@@ -418,12 +419,14 @@ product decision changes.
 - Provider protocol choices carry a route-specific default BASE_URL, authentication
   scheme, maturity and model restriction. Changing an automatic route updates the
   default address only while the user has not customized it. The editor labels the
-  current automatic protocol and Beta or compatibility limitations; the collapsed
-  row shows the resolved protocol and its latest capability state. Saving never
-  makes a network request. **测试连接** and **保存并测试** are the only routine UI
-  actions that may run the bounded capability probe: a minimal text request,
-  structured-output request, and side-effect-free mock tool round trip. They never
-  provide real mail, draft, contact, attachment or account content.
+  current automatic protocol and Beta or compatibility limitations. The collapsed
+  row does not show protocol or capability results; its connection icon reruns only
+  the saved instance's bounded connectivity test. Saving never makes a network
+  request. In the detail surface, **测试连接** first persists
+  the current form, refreshes model discovery, and runs a minimal text request;
+  **测试能力** first persists the form and separately probes structured output,
+  tool calling, and multi-turn tool continuation. Both remain manual actions and
+  never provide real mail, draft, contact, attachment or account content.
 - Every model route has a context-window profile. Unknown models default to
   128,000 tokens at confidence level 1. A value maintained from current official
   model documentation, or the explicit 128K/200K/500K/1M/2M override available
@@ -443,11 +446,11 @@ product decision changes.
 - Provider base URLs must use HTTPS, except loopback-only HTTP for local
   development, and cannot contain embedded credentials, query parameters, or
   fragments. Model discovery and connection tests run in Rust with bounded
-  responses and privacy-safe logs. An explicit instance test first refreshes the
+  responses and privacy-safe logs. An explicit connection test first refreshes the
   model list, then performs one minimal request with the preferred model or first
-  returned model, reports that request's Rust-observed latency, and performs a
-  best-effort structured-output and mock tool-round-trip capability probe whose
-  failure does not turn a successful connection test into a failure. Capability
+  returned model and reports that request's Rust-observed latency. An explicit
+  capability test separately performs best-effort structured-output and mock
+  tool-round-trip probes whose result never rewrites the connection result. Capability
   profiles are scoped by
   Provider instance configuration, protocol, base URL, and model, cached for
   seven days, and combine

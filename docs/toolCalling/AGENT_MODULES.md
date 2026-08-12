@@ -397,7 +397,10 @@ Provider 读取和后续工具执行，丢弃未完成工作副本。
 - `ai_translation_scheduler_started`、`ai_translation_concurrency_adjusted`、
   `ai_translation_scheduler_completed`，记录动态并发的起点、升降与最终批次结果
 - `ai_translation_retry_started`、`ai_translation_retry_completed`，记录缺片重试数和恢复数
-- `ai_capability_probe_started`、`ai_capability_probe_completed`，记录结构化输出能力探测
+- `ai_capability_probe_started`、`ai_structured_output_probe_completed`、
+  `ai_tool_capability_probe_completed`、`ai_multi_turn_tool_probe_completed`、
+  `ai_capability_probe_completed`，使用同一 `operation_id` 分别记录结构化输出、
+  首轮工具调用、多轮工具续接和汇总结论
 - `ai_translation_protocol_routed`、`ai_translation_structured_output_downgraded`，记录自动
   路由依据和同协议内的输出格式兼容降级
 - `ai_translation_failed`，翻译结果校验失败时区分 JSON、片段数量、编号与字符问题；

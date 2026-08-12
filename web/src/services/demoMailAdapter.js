@@ -208,6 +208,9 @@ function createDemoState() {
           protocolMaturity: "stable",
           protocolLimitation: null,
           capabilityStatus: "verified",
+          structuredOutputStatus: "supported",
+          toolCallingStatus: "supported",
+          multiTurnToolCallingStatus: "supported",
           capabilityEvidence: "probed",
           baseUrl: "https://api.openai.com/v1",
           modelName: "gpt-5.6-terra",
@@ -735,6 +738,9 @@ function createDemoActions(
         protocolMaturity: protocol.maturity,
         protocolLimitation: protocol.limitation,
         capabilityStatus: existing?.capabilityStatus || "untested",
+        structuredOutputStatus: existing?.structuredOutputStatus || "unknown",
+        toolCallingStatus: existing?.toolCallingStatus || "unknown",
+        multiTurnToolCallingStatus: existing?.multiTurnToolCallingStatus || "unknown",
         capabilityEvidence: existing?.capabilityEvidence || "declared",
         baseUrl: request.baseUrl.trim(),
         modelName: request.modelName?.trim() || "",
@@ -825,13 +831,31 @@ function createDemoActions(
         status: "available",
         latencyMs: 128,
         checkedAtMs: Date.now(),
-        capabilityStatus: "verified",
-        capabilityEvidence: "probed",
       };
       state.aiProviderRegistry.providers = state.aiProviderRegistry.providers.map(
         (candidate) => candidate.id === providerInstanceId ? next : candidate,
       );
       return { provider: structuredClone(next), modelCount: models.length };
+    },
+
+    testAiProviderCapabilities(providerInstanceId) {
+      const provider = state.aiProviderRegistry.providers.find(
+        (candidate) => candidate.id === providerInstanceId,
+      );
+      if (!provider) throw new Error("要测试的 AI 渠道不存在");
+      if (!provider.modelName) throw new Error("请先测试连接并选择首选模型，再测试能力");
+      const next = {
+        ...provider,
+        capabilityStatus: "verified",
+        structuredOutputStatus: "supported",
+        toolCallingStatus: "supported",
+        multiTurnToolCallingStatus: "supported",
+        capabilityEvidence: "probed",
+      };
+      state.aiProviderRegistry.providers = state.aiProviderRegistry.providers.map(
+        (candidate) => candidate.id === providerInstanceId ? next : candidate,
+      );
+      return { provider: structuredClone(next), modelCount: next.models.length };
     },
 
     refreshAiModelCatalog() {

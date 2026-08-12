@@ -211,6 +211,13 @@ function routeCapabilityCopy(provider) {
   return "能力未测试";
 }
 
+function capabilitySupportCopy(status) {
+  if (status === "supported") return "支持";
+  if (status === "unsupported") return "不支持";
+  if (status === "unstable") return "验证不稳定";
+  return "未验证";
+}
+
 function providerForm(preset, provider = null) {
   const protocolId = provider?.protocolId || "auto";
   const resolvedProtocolId = protocolId === "auto"
@@ -368,7 +375,7 @@ function AgentSettingsContent({
     setView("edit");
   };
 
-  const saveProvider = async ({ testAfter = false } = {}) => {
+  const saveProvider = async ({ testKind = null } = {}) => {
     if (!canSaveProvider(form)) {
       setFlowFeedback({
         tone: "danger",
@@ -380,7 +387,7 @@ function AgentSettingsContent({
       setFlowFeedback({ tone: "danger", text: "当前客户端不支持多渠道配置。" });
       return;
     }
-    setActionState(testAfter ? "saving-for-test" : "saving");
+    setActionState(testKind ? `saving-for-${testKind}` : "saving");
     setFlowFeedback(null);
     try {
       let next = normalizeRegistry(await client.saveAiProviderInstance(form));
@@ -390,20 +397,44 @@ function AgentSettingsContent({
         (provider) => provider.name === form.name.trim()
           && provider.providerId === form.providerId,
       );
-      if (testAfter && saved) {
-        setActionState("testing");
+      if (testKind && saved) {
+        setActionState(`testing-${testKind}`);
         try {
-          await client.testAiProviderInstance(saved.id);
+          const result = testKind === "capabilities"
+            ? await client.testAiProviderCapabilities(saved.id)
+            : await client.testAiProviderInstance(saved.id);
           next = await loadRegistry();
+          const tested = next.providers.find((provider) => provider.id === saved.id)
+            || result?.provider
+            || saved;
+          setRegistry(next);
+          setForm(providerForm(selectedPreset, tested));
+          setEditingStoredApiKey(false);
+          setFlowFeedback({
+            tone: "success",
+            text: testKind === "capabilities"
+              ? `能力测试完成：${routeCapabilityCopy(tested)}。`
+              : `连接测试完成：${statusCopy(tested)}。`,
+          });
+          setView("edit");
+          return;
         } catch (error) {
           next = await loadRegistry().catch(() => next);
-          setProviderErrors((current) => ({
-            ...current,
-            [saved.id]: userFacingErrorMessage(
+          const failed = next.providers.find((provider) => provider.id === saved.id) || saved;
+          setRegistry(next);
+          setForm(providerForm(selectedPreset, failed));
+          setEditingStoredApiKey(false);
+          setFlowFeedback({
+            tone: "danger",
+            text: userFacingErrorMessage(
               error,
-              "连接失败，请编辑并检查该渠道。",
+              testKind === "capabilities"
+                ? "能力测试失败，请检查当前协议和模型。"
+                : "连接失败，请检查当前渠道配置。",
             ),
-          }));
+          });
+          setView("edit");
+          return;
         }
       }
       setRegistry(next);
@@ -415,27 +446,6 @@ function AgentSettingsContent({
         tone: "danger",
         text: userFacingErrorMessage(error, "渠道配置保存失败，请检查后重试。"),
       });
-    } finally {
-      setActionState("idle");
-    }
-  };
-
-  const testProvider = async (provider) => {
-    if (typeof client?.testAiProviderInstance !== "function") return;
-    setActionState(`testing:${provider.id}`);
-    setProviderErrors((current) => ({ ...current, [provider.id]: null }));
-    try {
-      await client.testAiProviderInstance(provider.id);
-      setRegistry(await loadRegistry());
-    } catch (error) {
-      setRegistry(await loadRegistry().catch(() => registry));
-      setProviderErrors((current) => ({
-        ...current,
-        [provider.id]: userFacingErrorMessage(
-          error,
-          "连接失败，请编辑并检查该渠道。",
-        ),
-      }));
     } finally {
       setActionState("idle");
     }
@@ -453,6 +463,27 @@ function AgentSettingsContent({
         [provider.id]: userFacingErrorMessage(
           error,
           "默认模型设置失败，请检查该渠道。",
+        ),
+      }));
+    } finally {
+      setActionState("idle");
+    }
+  };
+
+  const testProviderConnection = async (provider) => {
+    if (typeof client?.testAiProviderInstance !== "function") return;
+    setActionState(`testing-connection:${provider.id}`);
+    setProviderErrors((current) => ({ ...current, [provider.id]: null }));
+    try {
+      await client.testAiProviderInstance(provider.id);
+      setRegistry(await loadRegistry());
+    } catch (error) {
+      setRegistry(await loadRegistry().catch(() => registry));
+      setProviderErrors((current) => ({
+        ...current,
+        [provider.id]: userFacingErrorMessage(
+          error,
+          "连接失败，请编辑并检查该渠道。",
         ),
       }));
     } finally {
@@ -615,15 +646,7 @@ function AgentSettingsContent({
                   {provider.baseUrl}
                 </span>
                 <span className="agent-provider-meta">
-                  <small>
-                    {provider.protocolId === "auto" ? "自动 · " : ""}
-                    {provider.protocolLabel}
-                    {provider.protocolMaturity === "beta" ? " · Beta" : ""}
-                  </small>
                   <small data-status={provider.status}>{statusCopy(provider)}</small>
-                  <small data-capability={provider.capabilityStatus || "untested"}>
-                    {routeCapabilityCopy(provider)}
-                  </small>
                   {provider.modelName ? <small>首选：{provider.modelName}</small> : null}
                 </span>
                 {providerErrors[provider.id] ? (
@@ -647,11 +670,11 @@ function AgentSettingsContent({
                   </button>
                 ) : null}
                 <IconButton
-                  label={`测试 ${provider.name} 并刷新模型`}
+                  label={`测试 ${provider.name} 连接`}
                   disabled={busy}
-                  onClick={() => void testProvider(provider)}
+                  onClick={() => void testProviderConnection(provider)}
                 >
-                  {actionState === `testing:${provider.id}` ? (
+                  {actionState === `testing-connection:${provider.id}` ? (
                     <SpinnerGap size={17} className="spin" />
                   ) : (
                     <Pulse size={17} />
@@ -742,6 +765,9 @@ function AgentSettingsContent({
     const route = resolvedProtocol(selectedPreset, form);
     const explicitIncompatible = form.protocolId !== "auto"
       && !protocolSupportsModel(route, form.modelName);
+    const editingProvider = form.id
+      ? registry.providers.find((provider) => provider.id === form.id) || null
+      : null;
     return (
       <section className="agent-provider-flow" aria-labelledby="agent-provider-editor-title">
         <header className="agent-provider-flow__heading">
@@ -987,6 +1013,48 @@ function AgentSettingsContent({
               <small>用于 API 未返回窗口大小时的高置信度回退；测试返回值会优先覆盖。</small>
             </div>
           ) : null}
+
+          {editingProvider ? (
+            <section
+              className="agent-provider-test-result agent-provider-editor-wide"
+              aria-label="连接与能力"
+            >
+              <header>
+                <strong>连接与能力</strong>
+                <small>{routeCapabilityCopy(editingProvider)} · 仅在手动测试后更新</small>
+              </header>
+              <dl>
+                <div>
+                  <dt>当前协议</dt>
+                  <dd>{editingProvider.protocolLabel}</dd>
+                </div>
+                <div>
+                  <dt>连接状态</dt>
+                  <dd data-status={editingProvider.status}>
+                    {statusCopy(editingProvider)}
+                  </dd>
+                </div>
+                <div>
+                  <dt>结构化输出</dt>
+                  <dd data-capability={editingProvider.structuredOutputStatus || "unknown"}>
+                    {capabilitySupportCopy(editingProvider.structuredOutputStatus)}
+                  </dd>
+                </div>
+                <div>
+                  <dt>工具调用</dt>
+                  <dd data-capability={editingProvider.toolCallingStatus || "unknown"}>
+                    {capabilitySupportCopy(editingProvider.toolCallingStatus)}
+                  </dd>
+                </div>
+                <div>
+                  <dt>多轮工具续接</dt>
+                  <dd data-capability={editingProvider.multiTurnToolCallingStatus || "unknown"}>
+                    {capabilitySupportCopy(editingProvider.multiTurnToolCallingStatus)}
+                  </dd>
+                </div>
+              </dl>
+            </section>
+          ) : null}
         </div>
 
         <footer className="agent-provider-flow__actions">
@@ -1001,14 +1069,33 @@ function AgentSettingsContent({
             type="button"
             className="secondary-button"
             disabled={busy || explicitIncompatible || !canSaveProvider(form)}
-            onClick={() => void saveProvider({ testAfter: true })}
+            onClick={() => void saveProvider({ testKind: "connection" })}
           >
-            {actionState === "saving-for-test" || actionState === "testing" ? (
+            {actionState === "saving-for-connection" || actionState === "testing-connection" ? (
               <SpinnerGap size={15} className="spin" />
             ) : (
               <Pulse size={15} />
             )}
-            保存并测试
+            测试连接
+          </button>
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={
+              busy
+              || explicitIncompatible
+              || !canSaveProvider(form)
+              || typeof client?.testAiProviderCapabilities !== "function"
+            }
+            onClick={() => void saveProvider({ testKind: "capabilities" })}
+          >
+            {actionState === "saving-for-capabilities"
+              || actionState === "testing-capabilities" ? (
+                <SpinnerGap size={15} className="spin" />
+              ) : (
+                <Pulse size={15} />
+              )}
+            测试能力
           </button>
           <button
             type="button"

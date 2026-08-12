@@ -128,6 +128,7 @@ const commandFailureMessages = Object.freeze({
   switch_account: "邮箱账户切换没有完成",
   test_ai_connection: "AI 连接测试没有完成",
   test_ai_provider_instance: "AI 渠道连接测试没有完成",
+  test_ai_provider_capabilities: "AI 渠道能力测试没有完成",
   refresh_ai_model_catalog: "可用模型刷新没有完成",
   translate_mail_content: "AI 翻译没有完成",
   sync_all: "邮箱同步没有完成",
@@ -568,6 +569,18 @@ function normalizeAiProviderInstance(provider = {}) {
       provider.capabilityEvidence
       ?? provider.capability_evidence
       ?? "declared",
+    structuredOutputStatus:
+      provider.structuredOutputStatus
+      ?? provider.structured_output_status
+      ?? "unknown",
+    toolCallingStatus:
+      provider.toolCallingStatus
+      ?? provider.tool_calling_status
+      ?? "unknown",
+    multiTurnToolCallingStatus:
+      provider.multiTurnToolCallingStatus
+      ?? provider.multi_turn_tool_calling_status
+      ?? "unknown",
     baseUrl: provider.baseUrl ?? provider.base_url ?? "",
     modelName: provider.modelName ?? provider.model_name ?? "",
     useEnvironmentKey: Boolean(
@@ -749,6 +762,18 @@ export const mailApi = {
           providerInstanceId,
         })
       : await callDemo("testAiProviderInstance", providerInstanceId);
+    return {
+      provider: normalizeAiProviderInstance(response?.provider),
+      modelCount: Number(response?.modelCount ?? response?.model_count ?? 0),
+    };
+  },
+
+  async testAiProviderCapabilities(providerInstanceId) {
+    const response = isTauri
+      ? await desktopInvoke("test_ai_provider_capabilities", {
+          providerInstanceId,
+        })
+      : await callDemo("testAiProviderCapabilities", providerInstanceId);
     return {
       provider: normalizeAiProviderInstance(response?.provider),
       modelCount: Number(response?.modelCount ?? response?.model_count ?? 0),

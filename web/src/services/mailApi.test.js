@@ -264,6 +264,9 @@ describe("mailApi desktop IPC contract", () => {
         protocol_limitation: "当前仅 DeepSeek V4 Flash 支持",
         capability_status: "verified",
         capability_evidence: "probed",
+        structured_output_status: "supported",
+        tool_calling_status: "supported",
+        multi_turn_tool_calling_status: "supported",
         base_url: "https://api.deepseek.com",
         model_name: "deepseek-v4-flash",
       }],
@@ -278,6 +281,9 @@ describe("mailApi desktop IPC contract", () => {
       protocolLimitation: "当前仅 DeepSeek V4 Flash 支持",
       capabilityStatus: "verified",
       capabilityEvidence: "probed",
+      structuredOutputStatus: "supported",
+      toolCallingStatus: "supported",
+      multiTurnToolCallingStatus: "supported",
     }));
     expect(ipc.invoke).toHaveBeenCalledWith("get_ai_provider_registry", undefined);
   });

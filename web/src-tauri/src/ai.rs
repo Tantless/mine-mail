@@ -797,6 +797,9 @@ pub(crate) struct AiProviderInstanceDto {
     pub protocol_limitation: Option<String>,
     pub capability_status: String,
     pub capability_evidence: String,
+    pub structured_output_status: String,
+    pub tool_calling_status: String,
+    pub multi_turn_tool_calling_status: String,
     pub base_url: String,
     pub model_name: String,
     pub use_environment_key: bool,
@@ -1070,6 +1073,17 @@ enum CapabilitySupport {
     Supported,
     Unsupported,
     Unstable,
+}
+
+impl CapabilitySupport {
+    const fn id(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Supported => "supported",
+            Self::Unsupported => "unsupported",
+            Self::Unstable => "unstable",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -1832,6 +1846,7 @@ impl AiRuntime {
             instance.provider_id != config.provider_id
                 || instance.protocol_id != config.protocol_id
                 || instance.base_url != config.base_url
+                || instance.model_name != config.model_name
                 || instance.use_environment_key != config.use_environment_key
                 || supplied_key.is_some()
         });
@@ -2265,19 +2280,6 @@ impl AiRuntime {
                 return Err(error);
             }
         };
-        let profile = provider.probe_translation_capabilities().await;
-        if let Err(error) = store.save_translation_capabilities(&provider, &profile) {
-            diagnostics::warn(
-                "ai_capability_profile_save_failed",
-                DiagnosticFields::default()
-                    .operation("ai_capability_probe")
-                    .provider(provider.provider.id)
-                    .protocol(provider.protocol.id())
-                    .model(&provider.model)
-                    .error(DiagnosticErrorKind::Database),
-            );
-            let _ = error;
-        }
         if instance.model_name.trim().is_empty() {
             store
                 .update_provider_instance_model(id, &test_model)
@@ -2310,6 +2312,60 @@ impl AiRuntime {
         Ok(AiProviderTestResultDto {
             provider,
             model_count: models.len(),
+        })
+    }
+
+    pub(crate) async fn test_provider_capabilities(
+        &self,
+        id: &str,
+    ) -> Result<AiProviderTestResultDto, String> {
+        validate_provider_instance_id(id)?;
+        let store = self.store()?;
+        let instance = store
+            .load_provider_instance(id)
+            .map_err(ai_store_error)?
+            .ok_or_else(|| "要测试的 AI 渠道不存在。".to_owned())?;
+        if instance.model_name.trim().is_empty() {
+            return Err("请先测试连接并选择首选模型，再测试能力。".to_owned());
+        }
+        let provider = AiProvider::from_provider_instance(&instance, None)?;
+        let profile = provider.probe_translation_capabilities().await;
+        store
+            .save_translation_capabilities(&provider, &profile)
+            .map_err(ai_store_error)?;
+        if let Ok(state) = self.provider_state.read()
+            && let Some(active) = state.provider.as_ref()
+            && active.provider_instance_id.as_deref() == Some(id)
+            && active.protocol == provider.protocol
+            && active.base_url == provider.base_url
+            && active.model == provider.model
+            && let Ok(mut active_profile) = active.translation_capabilities.write()
+        {
+            *active_profile = profile;
+        }
+        diagnostics::info(
+            "ai_provider_capability_test_completed",
+            DiagnosticFields::default()
+                .operation("ai_provider_capability_test")
+                .provider(provider.provider.id)
+                .protocol(provider.protocol.id())
+                .model(&provider.model)
+                .outcome("completed"),
+        );
+        let model_count = store
+            .load_provider_instance_models()
+            .map_err(ai_store_error)?
+            .get(id)
+            .map_or(0, Vec::len);
+        let registry = self.get_provider_registry()?;
+        let provider = registry
+            .providers
+            .into_iter()
+            .find(|provider| provider.id == id)
+            .ok_or_else(|| "测试后的 AI 渠道状态无法读取。".to_owned())?;
+        Ok(AiProviderTestResultDto {
+            provider,
+            model_count,
         })
     }
 
@@ -5894,12 +5950,14 @@ impl AiProvider {
 
     async fn probe_translation_capabilities(&self) -> TranslationCapabilityProfile {
         let started = Instant::now();
+        let operation_id = diagnostics::operation_id();
         let mut profile = TranslationCapabilityProfile::preset(self.provider, self.protocol);
         profile.checked_at_ms = now_ms();
         profile.evidence = CapabilityEvidence::Probed;
         diagnostics::info(
             "ai_capability_probe_started",
             DiagnosticFields::default()
+                .operation_id(operation_id.clone())
                 .operation("ai_capability_probe")
                 .provider(self.provider.id)
                 .protocol(self.protocol.id())
@@ -5970,17 +6028,31 @@ impl AiProvider {
         .timeout(Duration::from_secs(30));
         let result = request.send().await;
         profile.latency_ms = Some(started.elapsed().as_millis().min(u64::MAX as u128) as u64);
-        let (support, outcome, error_kind) = match result {
+        let (support, outcome, error_kind, output_shape) = match result {
             Ok(response) if response.status().is_success() => match response.bytes().await {
-                Ok(bytes) if capability_probe_output_valid(self.protocol, &bytes) => (
-                    CapabilitySupport::Supported,
-                    "structured_output_supported",
-                    None,
-                ),
-                _ => (
+                Ok(bytes) => {
+                    let output_shape = capability_probe_output_shape(self.protocol, &bytes);
+                    if output_shape == "valid" {
+                        (
+                            CapabilitySupport::Supported,
+                            "structured_output_supported",
+                            None,
+                            output_shape,
+                        )
+                    } else {
+                        (
+                            CapabilitySupport::Unstable,
+                            "structured_output_not_enforced",
+                            Some(DiagnosticErrorKind::Serialization),
+                            output_shape,
+                        )
+                    }
+                }
+                Err(_) => (
                     CapabilitySupport::Unstable,
                     "structured_output_not_enforced",
                     Some(DiagnosticErrorKind::Serialization),
+                    "response_read_failed",
                 ),
             },
             Ok(response) if matches!(response.status().as_u16(), 400 | 404 | 405 | 415 | 422) => {
@@ -5989,6 +6061,7 @@ impl AiProvider {
                     CapabilitySupport::Unsupported,
                     "structured_output_unsupported",
                     None,
+                    "http_rejected",
                 )
             }
             Ok(response) => {
@@ -5997,6 +6070,7 @@ impl AiProvider {
                     CapabilitySupport::Unstable,
                     "structured_output_inconclusive",
                     Some(DiagnosticErrorKind::Runtime),
+                    "http_error",
                 )
             }
             Err(error) => (
@@ -6007,13 +6081,33 @@ impl AiProvider {
                 } else {
                     DiagnosticErrorKind::Runtime
                 }),
+                "transport_error",
             ),
         };
         profile.structured_outputs = support;
-        let (tool_calling, multi_turn_tool_calling) = self.probe_tool_calling_capability().await;
+        let structured_fields = DiagnosticFields::default()
+            .operation_id(operation_id.clone())
+            .operation("ai_capability_probe")
+            .provider(self.provider.id)
+            .protocol(self.protocol.id())
+            .model(&self.model)
+            .output_shape(output_shape)
+            .outcome(outcome);
+        if let Some(error_kind) = error_kind {
+            diagnostics::warn(
+                "ai_structured_output_probe_completed",
+                structured_fields.error(error_kind).degraded(true),
+            );
+        } else {
+            diagnostics::info("ai_structured_output_probe_completed", structured_fields);
+        }
+        let (tool_calling, multi_turn_tool_calling) = self
+            .probe_tool_calling_capability(operation_id.clone())
+            .await;
         profile.tool_calling = tool_calling;
         profile.multi_turn_tool_calling = multi_turn_tool_calling;
         let mut fields = DiagnosticFields::default()
+            .operation_id(operation_id)
             .operation("ai_capability_probe")
             .provider(self.provider.id)
             .protocol(self.protocol.id())
@@ -6029,7 +6123,10 @@ impl AiProvider {
         profile
     }
 
-    async fn probe_tool_calling_capability(&self) -> (CapabilitySupport, CapabilitySupport) {
+    async fn probe_tool_calling_capability(
+        &self,
+        operation_id: diagnostics::OperationId,
+    ) -> (CapabilitySupport, CapabilitySupport) {
         let tool = ToolSpec {
             name: "mine_mail_probe_value",
             description: "读取连接测试中的固定模拟值。",
@@ -6041,7 +6138,7 @@ impl AiProvider {
             }),
         };
         let trace = ProviderTrace {
-            operation_id: diagnostics::operation_id(),
+            operation_id,
             operation: "ai_tool_capability_probe",
             account_id: None,
             draft_id: None,
@@ -6055,11 +6152,23 @@ impl AiProvider {
             json!({ "role": "system", "content": "这是无邮件数据的连接能力测试。你必须先调用唯一工具，再根据工具结果只回复 JSON：{\"ok\":true}。" }),
             json!({ "role": "user", "content": "请读取模拟值。" }),
         ];
-        let Ok(first) = self
+        let first = match self
             .complete(&first_messages, std::slice::from_ref(&tool), trace.clone())
             .await
-        else {
-            return (CapabilitySupport::Unstable, CapabilitySupport::Unknown);
+        {
+            Ok(first) => first,
+            Err(_) => {
+                diagnostics::warn(
+                    "ai_tool_capability_probe_completed",
+                    trace
+                        .fields()
+                        .attempt(1)
+                        .outcome("first_round_failed")
+                        .error(DiagnosticErrorKind::Runtime)
+                        .degraded(true),
+                );
+                return (CapabilitySupport::Unstable, CapabilitySupport::Unknown);
+            }
         };
         let Some(call) = first
             .message
@@ -6068,11 +6177,27 @@ impl AiProvider {
             .and_then(|calls| calls.first())
             .cloned()
         else {
+            diagnostics::info(
+                "ai_tool_capability_probe_completed",
+                trace
+                    .fields()
+                    .attempt(1)
+                    .tool_calls(0)
+                    .outcome("tool_call_missing"),
+            );
             return (
                 CapabilitySupport::Unsupported,
                 CapabilitySupport::Unsupported,
             );
         };
+        diagnostics::info(
+            "ai_tool_capability_probe_completed",
+            trace
+                .fields()
+                .attempt(1)
+                .tool_calls(1)
+                .outcome("tool_call_supported"),
+        );
         let call_id = call
             .get("id")
             .and_then(Value::as_str)
@@ -6084,27 +6209,41 @@ impl AiProvider {
             "tool_call_id": call_id,
             "content": "{\"value\":\"OK\"}",
         }));
-        let mut second_trace = trace;
+        let mut second_trace = trace.clone();
         second_trace.round = 2;
-        match self
+        let (result, output_shape) = match self
             .complete(&continuation, std::slice::from_ref(&tool), second_trace)
             .await
         {
-            Ok(second)
-                if second.finish_reason == "stop"
-                    && second
-                        .message
-                        .get("content")
-                        .and_then(Value::as_str)
-                        .and_then(|content| serde_json::from_str::<Value>(content).ok())
-                        .and_then(|content| content.get("ok").and_then(Value::as_bool))
-                        == Some(true) =>
-            {
-                (CapabilitySupport::Supported, CapabilitySupport::Supported)
+            Ok(second) => {
+                let output_shape = tool_continuation_output_shape(&second);
+                if output_shape == "valid" {
+                    (CapabilitySupport::Supported, output_shape)
+                } else {
+                    (CapabilitySupport::Unstable, output_shape)
+                }
             }
-            Ok(_) => (CapabilitySupport::Supported, CapabilitySupport::Unstable),
-            Err(_) => (CapabilitySupport::Supported, CapabilitySupport::Unstable),
+            Err(_) => (CapabilitySupport::Unstable, "request_failed"),
+        };
+        let mut fields = trace
+            .fields()
+            .attempt(2)
+            .tool_calls(1)
+            .output_shape(output_shape)
+            .outcome(if result == CapabilitySupport::Supported {
+                "multi_turn_supported"
+            } else {
+                "multi_turn_unstable"
+            });
+        if result == CapabilitySupport::Unstable {
+            fields = fields
+                .error(DiagnosticErrorKind::Serialization)
+                .degraded(true);
+            diagnostics::warn("ai_multi_turn_tool_probe_completed", fields);
+        } else {
+            diagnostics::info("ai_multi_turn_tool_probe_completed", fields);
         }
+        (CapabilitySupport::Supported, result)
     }
 }
 
@@ -6818,6 +6957,18 @@ fn provider_instance_dto(
             .as_ref()
             .map_or("declared", |profile| profile.evidence.id())
             .to_owned(),
+        structured_output_status: profile
+            .as_ref()
+            .map_or("unknown", |profile| profile.structured_outputs.id())
+            .to_owned(),
+        tool_calling_status: profile
+            .as_ref()
+            .map_or("unknown", |profile| profile.tool_calling.id())
+            .to_owned(),
+        multi_turn_tool_calling_status: profile
+            .as_ref()
+            .map_or("unknown", |profile| profile.multi_turn_tool_calling.id())
+            .to_owned(),
         base_url: instance.base_url.clone(),
         model_name: instance.model_name.clone(),
         use_environment_key: instance.use_environment_key,
@@ -7436,19 +7587,19 @@ fn translation_json_schema() -> Value {
     })
 }
 
-fn capability_probe_output_valid(protocol: ProviderProtocol, response: &[u8]) -> bool {
+fn capability_probe_output_shape(protocol: ProviderProtocol, response: &[u8]) -> &'static str {
     let Ok(value) = serde_json::from_slice::<Value>(response) else {
-        return false;
+        return "invalid_response_json";
     };
     let content = match protocol {
-        ProviderProtocol::OpenAiResponses => {
-            parse_openai_responses_turn(&value).ok().and_then(|turn| {
-                turn.message
-                    .get("content")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned)
-            })
-        }
+        ProviderProtocol::OpenAiResponses => match parse_openai_responses_turn(&value) {
+            Ok(turn) => turn
+                .message
+                .get("content")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            Err(_) => return "invalid_response_shape",
+        },
         ProviderProtocol::OpenAiChatCompletions => value
             .pointer("/choices/0/message/content")
             .and_then(Value::as_str)
@@ -7463,9 +7614,38 @@ fn capability_probe_output_valid(protocol: ProviderProtocol, response: &[u8]) ->
             .collect::<String>()
             .into(),
     };
-    content
-        .and_then(|content| serde_json::from_str::<Value>(&content).ok())
-        .is_some_and(|json| json.get("ok").and_then(Value::as_bool) == Some(true))
+    let Some(content) = content else {
+        return "missing_content";
+    };
+    let Ok(json) = serde_json::from_str::<Value>(&content) else {
+        return "invalid_content_json";
+    };
+    if json.as_object().is_some_and(|object| {
+        object.len() == 1 && object.get("ok").and_then(Value::as_bool) == Some(true)
+    }) {
+        "valid"
+    } else {
+        "schema_mismatch"
+    }
+}
+
+fn tool_continuation_output_shape(turn: &ProviderTurn) -> &'static str {
+    if turn.finish_reason != "stop" {
+        return "unexpected_finish_reason";
+    }
+    let Some(content) = turn.message.get("content").and_then(Value::as_str) else {
+        return "missing_content";
+    };
+    let Ok(json) = serde_json::from_str::<Value>(content) else {
+        return "invalid_content_json";
+    };
+    if json.as_object().is_some_and(|object| {
+        object.len() == 1 && object.get("ok").and_then(Value::as_bool) == Some(true)
+    }) {
+        "valid"
+    } else {
+        "schema_mismatch"
+    }
 }
 
 fn parse_openai_responses_turn(response: &Value) -> Result<ProviderTurn, String> {
