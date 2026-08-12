@@ -10132,6 +10132,29 @@ html[data-surface="new-mail-notification"] #root {
   width: 100%;
 }
 
+.agent-provider-field-heading {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.agent-provider-field-heading > label {
+  flex: 0 0 auto;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  font-weight: 640;
+}
+
+.agent-provider-field-heading .agent-provider-route-note {
+  min-width: 0;
+  overflow: hidden;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .agent-provider-editor-wide {
   grid-column: 1 / -1;
 }

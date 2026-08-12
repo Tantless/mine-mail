@@ -290,7 +290,8 @@ All app-owned color and material decisions flow through custom properties in
   `BASE_URL`, masked `API_KEY`, environment-key choice, and editable preferred
   model. **自动（当前使用：…）** previews the protocol for the current
   model; unsupported protocols are absent, model-incompatible choices are disabled,
-  and Beta or compatibility limits appear as compact helper copy. A customized
+  and Beta or compatibility limits appear as compact, right-aligned helper copy
+  in the **API 协议** field heading. A customized
   `BASE_URL` is never overwritten by later model or protocol changes. A manual key
   is never read back into React. **保存并测试** persists the instance, retrieves
   its model list, performs bounded text, structured-output, and side-effect-free

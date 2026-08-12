@@ -781,7 +781,17 @@ function AgentSettingsContent({
           </label>
 
           <div className="settings-field">
-            <label htmlFor="agent-provider-protocol">API 协议</label>
+            <div className="agent-provider-field-heading">
+              <label htmlFor="agent-provider-protocol">API 协议</label>
+              <small className="agent-provider-route-note" data-tone={
+                explicitIncompatible ? "danger" : route?.maturity === "beta" ? "warning" : undefined
+              }>
+                {explicitIncompatible
+                  ? `当前模型不支持 ${route?.label || "所选协议"}，请切换协议或模型。`
+                  : route?.limitation
+                    || (route?.maturity === "beta" ? "该协议仍处于 Beta，请先测试连接。" : "协议由 Rust 按当前模型解析。")}
+              </small>
+            </div>
             <ThemedSelect
               id="agent-provider-protocol"
               label="API 协议"
@@ -804,14 +814,6 @@ function AgentSettingsContent({
                 }));
               }}
             />
-            <small className="agent-provider-route-note" data-tone={
-              explicitIncompatible ? "danger" : route?.maturity === "beta" ? "warning" : undefined
-            }>
-              {explicitIncompatible
-                ? `当前模型不支持 ${route?.label || "所选协议"}，请切换协议或模型。`
-                : route?.limitation
-                  || (route?.maturity === "beta" ? "该协议仍处于 Beta，请先测试连接。" : "协议由 Rust 按当前模型解析。")}
-            </small>
           </div>
 
           <label className="settings-field agent-provider-editor-wide">
