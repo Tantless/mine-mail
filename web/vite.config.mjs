@@ -21,6 +21,9 @@ export default defineConfig({
           if (normalizedId.includes("/node_modules/simple-icons/")) {
             return "brand-icons";
           }
+          if (normalizedId.includes("/node_modules/@phosphor-icons/react/")) {
+            return "phosphor-icons";
+          }
           return undefined;
         },
       },
