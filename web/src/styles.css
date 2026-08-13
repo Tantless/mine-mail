@@ -674,9 +674,9 @@ html[data-surface="new-mail-notification"] #root {
 
 .new-mail-notification {
   position: relative;
-  width: calc(100% - 16px);
-  height: calc(100% - 16px);
-  margin: 8px;
+  width: calc(100% - 8px);
+  height: calc(100% - 8px);
+  margin: 8px 0 0 8px;
   overflow: hidden;
   border: 1px solid color-mix(in srgb, var(--surface-edge) 72%, white 12%);
   border-radius: 18px;

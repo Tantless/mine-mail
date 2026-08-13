@@ -683,7 +683,9 @@ product decision changes.
   通知** uses the operating-system banner and notification center. The two
   surfaces never present the same arrival together, and a failed or
   system-blocked Windows delivery does not silently switch to the Mine Mail
-  surface.
+  surface. The app-owned card aligns its visible right and bottom edges with the
+  current monitor work area, so it remains flush with the screen edge and the
+  taskbar edge without covering the taskbar.
 - Windows notification delivery is local and depends on Mine Mail remaining
   open or in the tray. It does not use a Mine Mail cloud mailbox proxy or a
   Windows push service. Windows notification, lock-screen, and do-not-disturb

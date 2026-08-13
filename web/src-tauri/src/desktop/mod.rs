@@ -52,7 +52,6 @@ const MONITOR_RECONNECT_BACKOFF_SECONDS: [u64; 7] = [2, 5, 15, 30, 60, 120, 300]
 const EXIT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(35);
 const SETTINGS_DATABASE_NAME: &str = "desktop-runtime.sqlite3";
 const NEW_MAIL_NOTIFICATION_WINDOW: &str = "new-mail-notification";
-const NEW_MAIL_NOTIFICATION_MARGIN: i32 = 18;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct McpAccess {
@@ -2927,19 +2926,28 @@ fn position_notification_window(app: &AppHandle, window: &WebviewWindow) {
         return;
     };
     let work_area = monitor.work_area();
-    let x = work_area.position.x + work_area.size.width as i32
-        - window_size.width as i32
-        - NEW_MAIL_NOTIFICATION_MARGIN;
-    let y = work_area.position.y + work_area.size.height as i32
-        - window_size.height as i32
-        - NEW_MAIL_NOTIFICATION_MARGIN;
+    let x = align_notification_axis(
+        work_area.position.x,
+        work_area.size.width,
+        window_size.width,
+    );
+    let y = align_notification_axis(
+        work_area.position.y,
+        work_area.size.height,
+        window_size.height,
+    );
     observe_window_action(
         "notification_window_position",
-        window.set_position(PhysicalPosition::new(
-            x.max(work_area.position.x),
-            y.max(work_area.position.y),
-        )),
+        window.set_position(PhysicalPosition::new(x, y)),
     );
+}
+
+fn align_notification_axis(work_area_start: i32, work_area_length: u32, window_length: u32) -> i32 {
+    let work_area_start = i64::from(work_area_start);
+    let aligned = work_area_start + i64::from(work_area_length) - i64::from(window_length);
+    aligned
+        .max(work_area_start)
+        .clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
 }
 
 #[cfg(target_os = "windows")]
@@ -3340,12 +3348,12 @@ mod tests {
     };
     use super::{
         BeforeExitEvent, DesktopRuntime, EXIT_HANDSHAKE_TIMEOUT, SyncAllReport,
-        available_optional_mailbox_roles, consume_open_new_mail_notification,
-        effective_notification_delivery, is_seen, notification_candidates, notification_sender,
-        notification_sender_email, optional_role_participates_periodically,
-        prioritize_active_account, sanitize_notification_text,
-        should_deliver_new_mail_notification, trigger_discovers_mailbox_roles,
-        windows_notification_content,
+        align_notification_axis, available_optional_mailbox_roles,
+        consume_open_new_mail_notification, effective_notification_delivery, is_seen,
+        notification_candidates, notification_sender, notification_sender_email,
+        optional_role_participates_periodically, prioritize_active_account,
+        sanitize_notification_text, should_deliver_new_mail_notification,
+        trigger_discovers_mailbox_roles, windows_notification_content,
     };
 
     fn message(flags: Vec<String>) -> InboxMessage {
@@ -3377,6 +3385,17 @@ mod tests {
             raw_rfc822: vec![],
             synced_at: "2026-07-14T00:00:00Z".to_owned(),
         }
+    }
+
+    #[test]
+    fn notification_axis_sits_flush_with_the_work_area_end() {
+        assert_eq!(align_notification_axis(0, 1920, 388), 1532);
+        assert_eq!(align_notification_axis(-1920, 1920, 388), -388);
+    }
+
+    #[test]
+    fn notification_axis_stays_inside_a_work_area_smaller_than_the_window() {
+        assert_eq!(align_notification_axis(320, 300, 388), 320);
     }
 
     #[tokio::test(flavor = "current_thread")]

@@ -499,7 +499,8 @@ All app-owned color and material decisions flow through custom properties in
 
 - The Mine Mail new-mail surface is a compact, always-readable lower-right card.
   It uses the local-first sender avatar, subject, and receiving-account identity,
-  never body preview text.
+  never body preview text. Its visible right edge sits flush with the monitor's
+  right work-area edge, and its bottom edge sits flush with the taskbar edge.
 - On Windows, the user may instead select the operating-system notification
   surface. Windows owns its banner and notification-center geometry, material,
   app-name attribution, icon treatment, dismissal, and do-not-disturb behavior;
