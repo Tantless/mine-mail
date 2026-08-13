@@ -120,6 +120,10 @@ All app-owned color and material decisions flow through custom properties in
 - Hover changes surface or edge; pressed movement is at most 1 px. Keyboard
   focus uses the shared high-contrast ring. Disabled controls remain
   recognizable and distinct from ordinary off states.
+- Composite inputs and search fields own focus feedback on their outer shell;
+  their editable child never draws a second ring. Unless a surface-specific rule
+  explicitly requires the accent, that shell uses restrained neutral inset
+  feedback and never a primary-colored outer glow.
 - Primary actions use the theme accent, secondary actions use neutral material,
   and destructive actions use semantic danger.
 - Use `ThemedSelect`, Mine Mail dialogs, and inline validation. Never expose
@@ -396,7 +400,26 @@ All app-owned color and material decisions flow through custom properties in
   show only the truncated session title and its last-active time. Rows stack
   tightly, with a low-profile capsule surface appearing on hover or focus. That
   surface carries a stronger primary tint in every non-night theme so the active
-  target remains unmistakable against pale panel backgrounds.
+  target remains unmistakable against pale panel backgrounds. The default list
+  shows at most four recent sessions plus one low-emphasis **查看全部** action.
+  **查看全部** replaces the assistant panel's compact list in place with a
+  theme-owned, same-level framed surface. It starts directly below the assistant
+  header, uses the original session-list column, and never moves into or covers
+  the compose editor. It does not create a page-level modal layer or dim the
+  workspace. Its lower edge follows its visible results instead of stretching to
+  the assistant composer. The frame adds search and a result viewport that
+  shrinks to the current result count, up to a maximum of eight compact rows;
+  additional rows scroll internally. Filtering must never stretch one or a few
+  results to fill that maximum height. A pointer press outside its frame, Escape,
+  or its close action dismisses it and restores the unchanged four-row list plus
+  focus to **查看全部**. Its search follows the composite-input rule: restrained
+  neutral inset feedback on the shell, with no primary outer glow or second ring
+  on the input. The assistant composer remains independently pinned to the panel
+  bottom in both compact and full-list states; changing the list frame height
+  never moves or resizes that composer.
+  Hovering or focusing a row replaces its trailing time with a transparent,
+  icon-only delete action; permanent deletion uses the shared consequential
+  confirmation surface.
 - The AI prompt indicates focus only on its rounded outer composer surface; the
   inner textarea never adds a second rectangular focus ring. Its mode trigger
   has no fixed width: the capsule follows the active label, with the caret placed

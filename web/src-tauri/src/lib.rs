@@ -1269,6 +1269,13 @@ fn get_ai_session(ai: State<'_, AiRuntime>, session_id: String) -> CommandResult
 }
 
 #[tauri::command]
+fn delete_ai_session(ai: State<'_, AiRuntime>, session_id: String) -> CommandResult<()> {
+    diagnostics::command("delete_ai_session", DiagnosticFields::default(), || {
+        ai.delete_session(&session_id)
+    })
+}
+
+#[tauri::command]
 fn get_ai_context_usage(
     ai: State<'_, AiRuntime>,
     request: AiContextUsageRequest,
@@ -3184,6 +3191,7 @@ pub fn run() {
             list_contacts,
             list_ai_sessions,
             get_ai_session,
+            delete_ai_session,
             get_ai_context_usage,
             get_ai_config,
             get_ai_provider_registry,

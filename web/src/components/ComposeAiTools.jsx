@@ -17,6 +17,7 @@ import {
   CheckCircle,
   Gear,
   MagicWand,
+  MagnifyingGlass,
   PaperPlaneRight,
   SidebarSimple,
   Sparkle,
@@ -27,6 +28,7 @@ import {
 import { IconButton } from "./IconButton.jsx";
 import { ThemedSelect } from "./ThemedSelect.jsx";
 import { ConsequentialConfirmDialog } from "./ConsequentialConfirmDialog.jsx";
+import { useConfirmDialogFocus } from "./ConfirmDialogPrimitives.jsx";
 import {
   buildOptimizationAnnotations,
   ComposeOptimizationReviewDialog,
@@ -534,28 +536,253 @@ function DraftPills({ drafts, onOpenDraft }) {
   );
 }
 
-function SessionList({ disabled, onOpenSession, sessions }) {
+const collapsedSessionCount = 4;
+const expandedSessionViewportCount = 8;
+
+function SessionList({
+  disabled,
+  onDeleteSession,
+  onOpenSession,
+  sessions,
+}) {
+  const rowsRef = useRef(null);
+  const viewAllButtonRef = useRef(null);
+  const searchInputRef = useRef(null);
+  const deleteButtonRef = useRef(null);
+  const [allSessionsOpen, setAllSessionsOpen] = useState(false);
+  const [deleteReturnTarget, setDeleteReturnTarget] = useState("collapsed");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deletePending, setDeletePending] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
+  const normalizedQuery = searchQuery.trim().toLocaleLowerCase("zh-CN");
+  const filteredSessions = useMemo(
+    () => normalizedQuery
+      ? sessions.filter((session) =>
+          session.title.toLocaleLowerCase("zh-CN").includes(normalizedQuery))
+      : sessions,
+    [normalizedQuery, sessions],
+  );
+  const collapsedSessions = sessions.slice(0, collapsedSessionCount);
+  const closeAllSessions = useCallback(() => {
+    setAllSessionsOpen(false);
+    setSearchQuery("");
+    window.requestAnimationFrame(() => viewAllButtonRef.current?.focus());
+  }, []);
+  const allSessionsFocus = useConfirmDialogFocus({
+    open: allSessionsOpen,
+    initialFocusRef: searchInputRef,
+    returnFocusRef: viewAllButtonRef,
+    onCancel: closeAllSessions,
+  });
+
+  useEffect(() => {
+    if (!allSessionsOpen || deleteTarget) return undefined;
+    const dismissOutsideFrame = (event) => {
+      if (
+        allSessionsFocus.dialogRef.current?.contains(event.target) ||
+        viewAllButtonRef.current?.contains(event.target)
+      ) {
+        return;
+      }
+      closeAllSessions();
+    };
+    document.addEventListener("pointerdown", dismissOutsideFrame, true);
+    return () => document.removeEventListener("pointerdown", dismissOutsideFrame, true);
+  }, [allSessionsFocus.dialogRef, allSessionsOpen, closeAllSessions, deleteTarget]);
+
+  useEffect(() => {
+    if (sessions.length > collapsedSessionCount || !allSessionsOpen) return;
+    setAllSessionsOpen(false);
+    setSearchQuery("");
+  }, [allSessionsOpen, sessions.length]);
+
+  const openAllSessions = () => {
+    setSearchQuery("");
+    setAllSessionsOpen(true);
+  };
+
+  const requestDelete = (event, session) => {
+    event.stopPropagation();
+    deleteButtonRef.current = event.currentTarget;
+    setDeleteReturnTarget(allSessionsOpen ? "dialog" : "collapsed");
+    setDeleteTarget(session);
+    setDeleteError("");
+  };
+
+  const cancelDelete = () => {
+    if (deletePending) return;
+    setDeleteTarget(null);
+    setDeleteError("");
+  };
+
+  const confirmDelete = async () => {
+    if (!deleteTarget || deletePending) return;
+    setDeletePending(true);
+    setDeleteError("");
+    try {
+      await onDeleteSession(deleteTarget.id);
+      setDeleteTarget(null);
+      window.requestAnimationFrame(() => {
+        if (deleteReturnTarget === "dialog" && allSessionsOpen) {
+          searchInputRef.current?.focus();
+          return;
+        }
+        rowsRef.current?.querySelector(".compose-ai-session-row__open")?.focus();
+      });
+    } catch (error) {
+      setDeleteError(error?.message || "AI 会话删除没有完成");
+    } finally {
+      setDeletePending(false);
+    }
+  };
+
   return (
-    <div className="compose-ai-session-list vertical-scroll-surface">
-      <h3>会话</h3>
-      <div className="compose-ai-session-list__rows">
-        {sessions.map((session) => (
-          <button
-            key={session.id}
-            className="compose-ai-session-row"
-            type="button"
-            disabled={disabled}
-            onClick={() => onOpenSession(session.id)}
+    <div
+      className="compose-ai-session-list"
+      data-expanded={allSessionsOpen || undefined}
+    >
+      {!allSessionsOpen ? (
+        <>
+          <div className="compose-ai-session-list__heading">
+            <h3>会话</h3>
+          </div>
+
+          <div
+            ref={rowsRef}
+            className="compose-ai-session-list__rows"
+            data-viewport-rows={collapsedSessionCount}
           >
-            <strong className="compose-ai-session-row__title">
-              {session.title}
-            </strong>
-            <time className="compose-ai-session-row__time">
-              {session.lastActive}
-            </time>
-          </button>
-        ))}
-      </div>
+            {collapsedSessions.map((session) => (
+              <div key={session.id} className="compose-ai-session-row">
+                <button
+                  className="compose-ai-session-row__open"
+                  type="button"
+                  disabled={disabled}
+                  onClick={() => onOpenSession(session.id)}
+                >
+                  <strong className="compose-ai-session-row__title">
+                    {session.title}
+                  </strong>
+                  <time className="compose-ai-session-row__time">
+                    {session.lastActive}
+                  </time>
+                </button>
+                <IconButton
+                  className="compose-ai-session-row__delete"
+                  label="删除会话"
+                  title={`删除会话：${session.title}`}
+                  tone="danger"
+                  disabled={disabled}
+                  onClick={(event) => requestDelete(event, session)}
+                >
+                  <Trash size={15} />
+                </IconButton>
+              </div>
+            ))}
+          </div>
+
+          {sessions.length > collapsedSessionCount ? (
+            <button
+              ref={viewAllButtonRef}
+              className="compose-ai-session-list__view-all"
+              type="button"
+              onClick={openAllSessions}
+            >
+              查看全部（{sessions.length}）
+            </button>
+          ) : null}
+        </>
+      ) : (
+        <div
+          className="compose-ai-session-dialog-layer"
+          onPointerDown={allSessionsFocus.onBackdropPointerDown}
+        >
+          <section
+            ref={allSessionsFocus.dialogRef}
+            className="compose-ai-session-dialog"
+            role="dialog"
+            tabIndex={-1}
+            aria-labelledby="compose-ai-session-dialog-title"
+            onKeyDown={allSessionsFocus.onDialogKeyDown}
+          >
+            <label className="compose-ai-session-search">
+              <MagnifyingGlass size={17} aria-hidden="true" />
+              <input
+                ref={searchInputRef}
+                type="search"
+                value={searchQuery}
+                placeholder="搜索最近会话"
+                aria-label="搜索最近会话"
+                onChange={(event) => setSearchQuery(event.target.value)}
+              />
+            </label>
+
+            <div className="compose-ai-session-list__heading">
+              <h2 id="compose-ai-session-dialog-title">全部会话</h2>
+              <button type="button" onClick={closeAllSessions}>关闭</button>
+            </div>
+
+            <div
+              className="compose-ai-session-list__rows vertical-scroll-surface"
+              data-viewport-rows={expandedSessionViewportCount}
+            >
+              {filteredSessions.map((session) => (
+                <div key={session.id} className="compose-ai-session-row">
+                  <button
+                    className="compose-ai-session-row__open"
+                    type="button"
+                    disabled={disabled}
+                    onClick={() => {
+                      closeAllSessions();
+                      onOpenSession(session.id);
+                    }}
+                  >
+                    <strong className="compose-ai-session-row__title">
+                      {session.title}
+                    </strong>
+                    <time className="compose-ai-session-row__time">
+                      {session.lastActive}
+                    </time>
+                  </button>
+                  <IconButton
+                    className="compose-ai-session-row__delete"
+                    label="删除会话"
+                    title={`删除会话：${session.title}`}
+                    tone="danger"
+                    disabled={disabled}
+                    onClick={(event) => requestDelete(event, session)}
+                  >
+                    <Trash size={15} />
+                  </IconButton>
+                </div>
+              ))}
+              {!filteredSessions.length ? (
+                <p className="compose-ai-session-list__empty">没有匹配的会话</p>
+              ) : null}
+            </div>
+          </section>
+        </div>
+      )}
+
+      {createPortal(
+        <ConsequentialConfirmDialog
+          open={Boolean(deleteTarget)}
+          title="删除这个会话？"
+          description="删除后，会话记录将永久移除，关联草稿不会受到影响。此操作无法撤销。"
+          icon={<Trash size={23} weight="duotone" />}
+          tone="danger"
+          confirmLabel="删除"
+          pendingLabel="正在删除…"
+          isPending={deletePending}
+          errorMessage={deleteError}
+          closeLabel="取消删除会话"
+          returnFocusRef={deleteButtonRef}
+          onCancel={cancelDelete}
+          onConfirm={() => void confirmDelete()}
+        />,
+        document.body,
+      )}
     </div>
   );
 }
@@ -1060,6 +1287,13 @@ export function ComposeAiAssistant({
     }
   };
 
+  const deleteSession = async (sessionId) => {
+    await mailApi.deleteAiSession(sessionId);
+    setSessions((current) =>
+      current.filter((session) => session.id !== sessionId),
+    );
+  };
+
   const submit = async () => {
     const request = input.trim();
     if (
@@ -1399,6 +1633,7 @@ export function ComposeAiAssistant({
         <SessionList
           disabled={isSubmitting}
           sessions={sessions}
+          onDeleteSession={deleteSession}
           onOpenSession={(id) => void openSession(id)}
         />
       )}

@@ -321,7 +321,18 @@ product decision changes.
   every editable draft from which the user sends a prompt. The association uses
   the stable draft ID, or the live compose identity before the first save, appears
   as a subject plus short display-ID pill, and is removed after that draft is sent
-  or deleted; session history remains.
+  or deleted; session history remains. The assistant's default session list shows
+  at most four recent sessions. **查看全部** replaces that compact list in place
+  with a searchable framed surface in the assistant's original session-list
+  region. Its result area shrinks to the number of visible matches, up to an
+  eight-row maximum with internal scrolling, instead of filling the assistant's
+  available height, and creates no application-level modal layer;
+  the AI prompt composer remains independently fixed at the panel bottom;
+  clicking outside the frame or pressing Escape returns to the unchanged
+  four-session view. Deleting
+  a session requires explicit confirmation,
+  permanently removes that session and its messages, and never deletes or edits
+  an associated draft.
 - Sending a conversational prompt immediately persists the user message and an
   assistant placeholder. Assistant messages carry `streaming`, `completed`,
   `stopped`, or `failed` state; stopping or failing keeps any received partial

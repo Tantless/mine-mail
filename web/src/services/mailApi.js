@@ -876,6 +876,13 @@ export const mailApi = {
     return callDemo("getAiSession", sessionId);
   },
 
+  async deleteAiSession(sessionId) {
+    if (isTauri) {
+      return desktopInvoke("delete_ai_session", { sessionId });
+    }
+    return callDemo("deleteAiSession", sessionId);
+  },
+
   async getAiContextUsage(request) {
     const response = isTauri
       ? await desktopInvoke("get_ai_context_usage", { request })

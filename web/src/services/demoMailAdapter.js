@@ -1072,6 +1072,16 @@ function createDemoActions(
       return { ...structuredClone(session), loaded: true };
     },
 
+    deleteAiSession(sessionId) {
+      const existing = state.aiSessions.some(
+        (candidate) => candidate.id === sessionId,
+      );
+      if (!existing) throw new Error("找不到这个 AI 会话");
+      state.aiSessions = state.aiSessions.filter(
+        (candidate) => candidate.id !== sessionId,
+      );
+    },
+
     async runAiTurn(request, onEvent) {
       const requestId = crypto.randomUUID();
       const initial = structuredClone(request.draft.compose);

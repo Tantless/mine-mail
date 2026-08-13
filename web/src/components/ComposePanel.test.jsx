@@ -751,6 +751,95 @@ it("switches between the application session list and a conversation", async () 
   expect(within(assistant).getAllByText("讨论项目交付时间").length).toBeGreaterThan(0);
 });
 
+it("opens the full session list in the assistant's original list area", async () => {
+  const sessions = Array.from({ length: 10 }, (_, index) => ({
+    id: `session-${index + 1}`,
+    title: `测试会话 ${index + 1}`,
+    lastActive: `${index + 1} 小时前`,
+    drafts: [],
+    loaded: false,
+  }));
+  vi.spyOn(mailApi, "listAiSessions").mockResolvedValue(sessions);
+  const user = userEvent.setup();
+  renderCompose();
+
+  await user.click(screen.getByRole("button", { name: "打开 AI 助理" }));
+  const assistant = screen.getByRole("complementary", { name: "AI 助理" });
+  await within(assistant).findByText("测试会话 4");
+  expect(within(assistant).queryByText("测试会话 5")).toBeNull();
+
+  await user.click(
+    within(assistant).getByRole("button", { name: "查看全部（10）" }),
+  );
+  const dialog = screen.getByRole("dialog", { name: "全部会话" });
+  expect(dialog.getAttribute("aria-modal")).toBeNull();
+  expect(dialog.closest(".compose-ai-assistant")).toBe(assistant);
+  expect(dialog.closest(".compose-ai-session-list")).toBeTruthy();
+  expect(within(dialog).getByRole("searchbox", { name: "搜索最近会话" }))
+    .toBeTruthy();
+  expect(within(dialog).getByText("测试会话 10")).toBeTruthy();
+  expect(
+    dialog.querySelector("[data-viewport-rows='8']"),
+  ).toBeTruthy();
+  expect(dialog.closest(".compose-ai-session-list")?.dataset.expanded).toBe(
+    "true",
+  );
+  expect(assistant.querySelector(".compose-ai-composer")).toBeTruthy();
+  expect(dialog.contains(assistant.querySelector(".compose-ai-composer"))).toBe(
+    false,
+  );
+  expect(within(assistant).getAllByText(/测试会话/)).toHaveLength(10);
+  expect(document.activeElement).toBe(
+    within(dialog).getByRole("searchbox", { name: "搜索最近会话" }),
+  );
+
+  fireEvent.pointerDown(within(assistant).getByText("AI 助理"));
+  expect(screen.queryByRole("dialog", { name: "全部会话" })).toBeNull();
+  await waitFor(() =>
+    expect(document.activeElement).toBe(
+      within(assistant).getByRole("button", { name: "查看全部（10）" }),
+    ),
+  );
+  expect(within(assistant).getByText("测试会话 4")).toBeTruthy();
+  expect(within(assistant).queryByText("测试会话 5")).toBeNull();
+});
+
+it("confirms before permanently deleting an AI session", async () => {
+  const sessions = Array.from({ length: 5 }, (_, index) => ({
+    id: `delete-session-${index + 1}`,
+    title: `待删除会话 ${index + 1}`,
+    lastActive: "刚刚",
+    drafts: [],
+    loaded: false,
+  }));
+  vi.spyOn(mailApi, "listAiSessions").mockResolvedValue(sessions);
+  const deleteSession = vi
+    .spyOn(mailApi, "deleteAiSession")
+    .mockResolvedValue(undefined);
+  const user = userEvent.setup();
+  renderCompose();
+
+  await user.click(screen.getByRole("button", { name: "打开 AI 助理" }));
+  const assistant = screen.getByRole("complementary", { name: "AI 助理" });
+  await within(assistant).findByText("待删除会话 1");
+  await user.click(within(assistant).getAllByRole("button", { name: "删除会话" })[0]);
+
+  const confirmation = screen.getByRole("alertdialog", { name: "删除这个会话？" });
+  expect(
+    within(confirmation).getByText(
+      "删除后，会话记录将永久移除，关联草稿不会受到影响。此操作无法撤销。",
+    ),
+  ).toBeTruthy();
+  await user.click(within(confirmation).getByRole("button", { name: "删除" }));
+
+  await waitFor(() =>
+    expect(deleteSession).toHaveBeenCalledWith("delete-session-1"),
+  );
+  await waitFor(() =>
+    expect(within(assistant).queryByText("待删除会话 1")).toBeNull(),
+  );
+});
+
 it("creates an AI session from the fixed composer and honors the selected mode", async () => {
   const onChange = vi.fn();
   const runAiTurn = vi.spyOn(mailApi, "runAiTurn");

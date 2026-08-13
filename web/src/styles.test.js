@@ -93,6 +93,46 @@ describe("compose AI conversation header", () => {
   });
 });
 
+describe("compose AI session list layout", () => {
+  it("keeps the full-list frame independent from the bottom composer", () => {
+    expect(
+      declarationsFor('\\.compose-ai-session-list\\[data-expanded="true"\\]'),
+    ).toMatch(/flex:\s*1 1 auto/);
+    expect(declarationsFor("\\.compose-ai-session-dialog-layer")).toMatch(
+      /flex:\s*0 0 auto/,
+    );
+    expect(declarationsFor("\\.compose-ai-composer")).toMatch(
+      /flex:\s*0 0 auto/,
+    );
+  });
+
+  it("shrinks filtered session results below the eight-row maximum", () => {
+    const expandedRows = declarationsFor(
+      "\\.compose-ai-session-dialog \\.compose-ai-session-list__rows",
+    );
+
+    expect(expandedRows).toMatch(/height:\s*auto/);
+    expect(expandedRows).toMatch(/max-height:\s*calc\(32px \* 8\)/);
+    expect(expandedRows).toMatch(/grid-auto-rows:\s*32px/);
+    expect(expandedRows).toMatch(/align-content:\s*start/);
+  });
+
+  it("keeps session search focus neutral and confined to one shell", () => {
+    const searchFocus = declarationsFor(
+      "\\.compose-ai-session-search:focus-within",
+    );
+    const searchInputFocus = declarationsFor(
+      "\\.compose-ai-session-search input:focus,\\s*\\.compose-ai-session-search input:focus-visible",
+    );
+
+    expect(searchFocus).not.toMatch(/var\(--color-primary\)/);
+    expect(searchFocus).not.toMatch(/0 0 0 3px/);
+    expect(searchFocus).toMatch(/box-shadow:\s*inset/);
+    expect(searchInputFocus).toMatch(/outline:\s*none/);
+    expect(searchInputFocus).toMatch(/box-shadow:\s*none/);
+  });
+});
+
 describe("compose AI mode and model selector alignment", () => {
   it("keeps the model trigger on the same adaptive flat capsule as mode", () => {
     const sharedTrigger = declarationsFor(

@@ -2650,6 +2650,11 @@ impl AiRuntime {
         self.store()?.get_session(session_id)
     }
 
+    pub(crate) fn delete_session(&self, session_id: &str) -> Result<(), String> {
+        validate_opaque_id(session_id, "会话")?;
+        self.store()?.delete_session(session_id)
+    }
+
     pub(crate) fn context_usage(
         &self,
         request: AiContextUsageRequest,
@@ -12839,6 +12844,18 @@ impl AiStore {
         })
     }
 
+    fn delete_session(&self, session_id: &str) -> Result<(), String> {
+        let deleted = self
+            .connection()
+            .map_err(ai_store_error)?
+            .execute("DELETE FROM ai_sessions WHERE id = ?1", [session_id])
+            .map_err(ai_store_error)?;
+        if deleted == 0 {
+            return Err("找不到这个 AI 会话。".to_owned());
+        }
+        Ok(())
+    }
+
     fn history(&self, session_id: &str) -> Result<Vec<StoredHistoryMessage>, String> {
         let connection = self.connection().map_err(ai_store_error)?;
         let exists = connection
@@ -14629,6 +14646,40 @@ mod tests {
                 .drafts
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn store_deletes_sessions_and_cascades_their_owned_state() {
+        let directory = tempdir().expect("tempdir");
+        let store = AiStore::open(directory.path().join("ai.sqlite3")).expect("store");
+        let prepared = store
+            .begin_turn(
+                None,
+                "request-delete",
+                "需要删除的会话",
+                Some(super::AiDraftBindingDto {
+                    id: "draft-delete".to_owned(),
+                    subject: "保留草稿".to_owned(),
+                }),
+                "account-1",
+            )
+            .expect("begin");
+        let session_id = prepared.session.summary.id;
+
+        store.delete_session(&session_id).expect("delete session");
+
+        assert!(store.list_sessions().expect("list").is_empty());
+        assert!(store.get_session(&session_id).is_err());
+        let connection = store.connection().expect("connection");
+        for table in ["ai_messages", "ai_session_drafts"] {
+            let count = connection
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .expect("related row count");
+            assert_eq!(count, 0, "{table} should be deleted with the session");
+        }
+        assert!(store.delete_session(&session_id).is_err());
     }
 
     #[test]
