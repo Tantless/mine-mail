@@ -63,6 +63,7 @@ function RecipientHarness({
   autoFocus = false,
   initialRecipients = [],
   onRecipientsChange = vi.fn(),
+  onContactSelected,
 }) {
   const [recipients, setRecipients] = useState(initialRecipients);
   return (
@@ -72,6 +73,7 @@ function RecipientHarness({
       autoFocus={autoFocus}
       recipients={recipients}
       contacts={contacts}
+      onContactSelected={onContactSelected}
       onChange={(next) => {
         setRecipients(next);
         onRecipientsChange(next);
@@ -128,7 +130,13 @@ describe("RecipientInput", () => {
   it("filters by name or email and selects a contact into an avatar token", async () => {
     const user = userEvent.setup();
     const onRecipientsChange = vi.fn();
-    render(<RecipientHarness onRecipientsChange={onRecipientsChange} />);
+    const onContactSelected = vi.fn();
+    render(
+      <RecipientHarness
+        onRecipientsChange={onRecipientsChange}
+        onContactSelected={onContactSelected}
+      />,
+    );
     const input = screen.getByRole("combobox", { name: "收件人" });
 
     await user.type(input, "nora");
@@ -139,8 +147,10 @@ describe("RecipientInput", () => {
     await user.click(option);
 
     expect(onRecipientsChange).toHaveBeenLastCalledWith(["nora@example.com"]);
+    expect(onContactSelected).toHaveBeenCalledOnce();
     expect(screen.getByText("nora@example.com").closest(".recipient-token")).toBeTruthy();
     expect(document.querySelector(".recipient-token__avatar")).toBeTruthy();
+    expect(screen.queryByRole("listbox")).toBeNull();
   });
 
   it("turns a manually confirmed email into a token and removes it with Backspace", async () => {

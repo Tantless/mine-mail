@@ -353,7 +353,9 @@ All app-owned color and material decisions flow through custom properties in
   bounds. The default is a broad centered correspondence page.
 - To, Cc, Bcc, subject, recipient tokens, suggestions, editor, attachment state,
   and footer share the same divider and focus language. Collapsing Cc/Bcc does
-  not clear values.
+  not clear values. Choosing a recipient suggestion closes the suggestion
+  surface and moves focus to Subject; pressing unmodified Enter in Subject moves
+  focus to the body editor.
 - The compact format row supports the current fonts, size, emphasis, lists,
   alignment, links, and clear formatting. Controls reflect the active range or
   caret; an empty editor has no instructional body placeholder.

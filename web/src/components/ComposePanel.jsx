@@ -1023,6 +1023,16 @@ export function ComposePanel({
     document.getElementById("compose-subject")?.focus();
   }, [currentDraftForAi.id]);
 
+  const focusSubject = useCallback(() => {
+    document.getElementById("compose-subject")?.focus();
+  }, []);
+
+  const focusBody = useCallback(() => {
+    dialogRef.current
+      ?.querySelector('[role="textbox"][aria-label="邮件正文"]')
+      ?.focus();
+  }, []);
+
   useEffect(() => {
     const onKeyDown = (event) => {
       if (event.defaultPrevented) return;
@@ -1253,6 +1263,7 @@ export function ComposePanel({
                   recipients={value.to}
                   contacts={contacts}
                   onChange={(recipients) => setRecipients("to", recipients)}
+                  onContactSelected={focusSubject}
                 />
                 <div className="compose-recipient-actions">
                   <IconButton
@@ -1301,6 +1312,7 @@ export function ComposePanel({
                       recipients={value.cc}
                       contacts={contacts}
                       onChange={(recipients) => setRecipients("cc", recipients)}
+                      onContactSelected={focusSubject}
                     />
                   </div>
                   <div className="compose-field">
@@ -1312,6 +1324,7 @@ export function ComposePanel({
                       recipients={value.bcc}
                       contacts={contacts}
                       onChange={(recipients) => setRecipients("bcc", recipients)}
+                      onContactSelected={focusSubject}
                     />
                   </div>
                 </div>
@@ -1328,6 +1341,20 @@ export function ComposePanel({
                     onChange={(event) =>
                       onChange((current) => ({ ...current, subject: event.target.value }))
                     }
+                    onKeyDown={(event) => {
+                      if (
+                        event.key !== "Enter" ||
+                        event.altKey ||
+                        event.ctrlKey ||
+                        event.metaKey ||
+                        event.shiftKey ||
+                        event.nativeEvent.isComposing
+                      ) {
+                        return;
+                      }
+                      event.preventDefault();
+                      focusBody();
+                    }}
                     placeholder="写一个简洁的主题"
                   />
                 </div>

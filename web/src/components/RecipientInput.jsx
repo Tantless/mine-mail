@@ -101,6 +101,7 @@ export function RecipientInput({
   recipients = [],
   contacts = [],
   onChange,
+  onContactSelected,
   disabled = false,
   autoFocus = false,
   placeholder = "name@example.com",
@@ -299,13 +300,8 @@ export function RecipientInput({
     if (!contact?.email) return;
     addRecipients([contact.email]);
     setQuery("");
-    setExpanded(false);
-    openSuggestions();
-    if (window.requestAnimationFrame) {
-      window.requestAnimationFrame(() => inputRef.current?.focus());
-    } else {
-      inputRef.current?.focus();
-    }
+    closeSuggestions();
+    onContactSelected?.();
   };
 
   const handleInputChange = (event) => {

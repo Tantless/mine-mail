@@ -358,6 +358,31 @@ it("traps focus inside the open composer and restores the invoking control", () 
   opener.remove();
 });
 
+it("moves from a selected recipient to subject, then from subject to body with Enter", async () => {
+  const user = userEvent.setup();
+  renderCompose({
+    value: { ...baseValue, to: [] },
+    contacts: [
+      {
+        email: "contact@example.com",
+        displayName: "联系人",
+      },
+    ],
+  });
+  const recipientInput = screen.getByRole("combobox", { name: "收件人" });
+  const subjectInput = screen.getByRole("textbox", { name: "主题" });
+  const bodyEditor = await screen.findByRole("textbox", { name: "邮件正文" });
+
+  await user.click(recipientInput);
+  await user.click(screen.getByRole("option", { name: /联系人/ }));
+
+  expect(screen.queryByRole("listbox")).toBeNull();
+  expect(document.activeElement).toBe(subjectInput);
+
+  await user.keyboard("{Enter}");
+  expect(document.activeElement).toBe(bodyEditor);
+});
+
 it("lets recipient and link popups consume Escape before the composer", async () => {
   const user = userEvent.setup();
   const onClose = vi.fn();
