@@ -4683,6 +4683,73 @@ describe("Mine Mail desktop state bridge", () => {
     ).toBeTruthy();
   });
 
+  it("keeps a selected moved message actionable after background reconciliation", async () => {
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: 600,
+    });
+    const selected = {
+      ...summary("stable-moved-message", "Moved message before reconciliation"),
+      uid: undefined,
+      displayed_role: "archive",
+      flags: ["\\Seen"],
+      body_text: "Reader remains actionable",
+      body_fetched: true,
+    };
+    let archiveRows = [selected];
+    desktop.mailApi.listMailboxPage.mockImplementation(async (_, role) =>
+      mailboxPage(role === "archive" ? archiveRows : [], role),
+    );
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: /^归档$/ }));
+    await user.click(
+      await screen.findByRole("button", {
+        name: /打开邮件：.*Moved message before reconciliation/,
+      }),
+    );
+    expect(await screen.findByText("Reader remains actionable")).toBeTruthy();
+
+    archiveRows = [
+      {
+        ...selected,
+        subject: "Moved message after reconciliation",
+        pending_mutation: null,
+      },
+    ];
+    await waitFor(() =>
+      expect(desktop.listeners.has("mail:mailbox-updated")).toBe(true),
+    );
+    await act(async () => {
+      desktop.listeners.get("mail:mailbox-updated")?.({
+        payload: {
+          account_id: "desktop-account",
+          role: "archive",
+        },
+      });
+    });
+
+    const refreshedOpen = await screen.findByRole("button", {
+      name: /打开邮件：.*Moved message after reconciliation/,
+    });
+    expect(refreshedOpen.closest(".mail-row")?.dataset.selected).toBe("true");
+    const reader = screen.getByLabelText("邮件阅读区");
+    expect(
+      within(reader).getByRole("heading", {
+        name: "Moved message after reconciliation",
+      }),
+    ).toBeTruthy();
+    await user.click(
+      within(reader).getByRole("button", { name: "移到收件箱" }),
+    );
+    await waitFor(() =>
+      expect(desktop.mailApi.moveMessageToInbox).toHaveBeenCalledWith(
+        "stable-moved-message",
+      ),
+    );
+  });
+
   it("renders a reply as native authored text with collapsed quoted history", async () => {
     const replySummary = {
       ...summary(9, "Reply mail"),

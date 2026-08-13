@@ -151,6 +151,10 @@ product decision changes.
 - New arrivals merge by account, mailbox, and server identity without duplicating
   rows or invalidating a usable history cursor. A mailbox identity epoch change
   starts a fresh bounded listing only after safe reconciliation.
+- A message moved between semantic mailboxes keeps the same account-scoped
+  opaque product identity after server confirmation and destination
+  reconciliation. An open reader, its list selection, and later actions must
+  not become detached merely because the provider assigned a new mailbox UID.
 - Remote deletion is applied to the cache only after a fresh, consistent server
   view confirms it. An empty, partial, or contradictory snapshot leaves cached
   mail readable and retries later.

@@ -594,6 +594,7 @@ impl Repository {
         migrate_message_contact_emails_v19(&connection)?;
         migrate_starred_history_v20(&connection)?;
         migrate_move_to_inbox_v21(&connection)?;
+        migrate_message_public_id_aliases_v22(&connection)?;
         connection.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_drafts_remote_identity
                  ON drafts(account_id, remote_mailbox, remote_uid);
@@ -603,7 +604,7 @@ impl Repository {
              CREATE INDEX IF NOT EXISTS idx_messages_body_cache_lru
                  ON messages(account_id, body_last_accessed_at, id)
                  WHERE body_fetched = 1;
-             PRAGMA user_version = 21;",
+             PRAGMA user_version = 22;",
         )?;
         Ok(repository)
     }
@@ -2711,24 +2712,55 @@ impl Repository {
             transaction.commit()?;
             return Ok(false);
         };
-        let destination_matches: u32 = transaction.query_row(
-            "SELECT COUNT(*)
-             FROM messages
-             WHERE account_id = ?1 AND mailbox = ?2
-               AND message_id = ?3 AND internal_date = ?4 AND size_bytes = ?5",
-            params![
-                account_id,
-                destination_mailbox,
-                source_message_id,
-                source_internal_date,
-                source_size_bytes,
-            ],
-            |row| row.get(0),
-        )?;
-        if destination_matches != 1 {
+        let destination_matches = {
+            let mut statement = transaction.prepare(
+                "SELECT id
+                 FROM messages
+                 WHERE account_id = ?1 AND mailbox = ?2
+                   AND message_id = ?3 AND internal_date = ?4 AND size_bytes = ?5",
+            )?;
+            statement
+                .query_map(
+                    params![
+                        account_id,
+                        destination_mailbox,
+                        source_message_id,
+                        source_internal_date,
+                        source_size_bytes,
+                    ],
+                    |row| row.get::<_, i64>(0),
+                )?
+                .collect::<std::result::Result<Vec<_>, _>>()?
+        };
+        if destination_matches.len() != 1 {
             transaction.commit()?;
             return Ok(false);
         }
+        let destination_message_id = destination_matches[0];
+        let source: Option<(i64, String)> = transaction
+            .query_row(
+                "SELECT id, public_id
+                 FROM messages
+                 WHERE account_id = ?1 AND mailbox = ?2 AND uid = ?3",
+                params![account_id, source_mailbox, source_uid],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let Some((source_message_row_id, source_public_id)) = source else {
+            transaction.commit()?;
+            return Ok(false);
+        };
+        transaction.execute(
+            "UPDATE message_public_id_aliases
+             SET message_id = ?3
+             WHERE account_id = ?1 AND message_id = ?2",
+            params![account_id, source_message_row_id, destination_message_id],
+        )?;
+        transaction.execute(
+            "INSERT INTO message_public_id_aliases (public_id, account_id, message_id)
+             VALUES (?1, ?2, ?3)",
+            params![source_public_id, account_id, destination_message_id],
+        )?;
         let changed = if source_cleanup_pending {
             transaction.execute(
                 "UPDATE pending_message_actions
@@ -3180,7 +3212,16 @@ impl Repository {
     ) -> Result<Vec<ContactMessageSource>> {
         let connection = self.connection()?;
         let sql = format!(
-            "SELECT {CONTACT_MESSAGE_SUMMARY_COLUMNS}, public_id FROM messages
+            "SELECT {CONTACT_MESSAGE_SUMMARY_COLUMNS},
+                    COALESCE((
+                        SELECT alias.public_id
+                        FROM message_public_id_aliases alias
+                        WHERE alias.account_id = messages.account_id
+                          AND alias.message_id = messages.id
+                        ORDER BY alias.id
+                        LIMIT 1
+                    ), messages.public_id)
+             FROM messages
              WHERE account_id = ?1
              ORDER BY COALESCE(internal_date, sent_at, synced_at) DESC, uid DESC, id DESC"
         );
@@ -3206,7 +3247,16 @@ impl Repository {
     ) -> Result<Vec<ContactMessageSource>> {
         let connection = self.connection()?;
         let sql = format!(
-            "SELECT {CONTACT_MESSAGE_SUMMARY_COLUMNS}, public_id FROM messages
+            "SELECT {CONTACT_MESSAGE_SUMMARY_COLUMNS},
+                    COALESCE((
+                        SELECT alias.public_id
+                        FROM message_public_id_aliases alias
+                        WHERE alias.account_id = messages.account_id
+                          AND alias.message_id = messages.id
+                        ORDER BY alias.id
+                        LIMIT 1
+                    ), messages.public_id)
+             FROM messages
              WHERE id IN (
                  SELECT message_id FROM message_contact_emails
                  WHERE account_id = ?1 AND email = ?2
@@ -3249,7 +3299,19 @@ impl Repository {
         let connection = self.connection()?;
         let sql = format!(
             "SELECT {MESSAGE_COLUMNS} FROM messages
-             WHERE account_id = ?1 AND public_id = ?2"
+             WHERE account_id = ?1
+               AND (
+                   public_id = ?2
+                   OR EXISTS (
+                       SELECT 1
+                       FROM message_public_id_aliases alias
+                       WHERE alias.account_id = messages.account_id
+                         AND alias.message_id = messages.id
+                         AND alias.public_id = ?2
+                   )
+               )
+             ORDER BY public_id = ?2
+             LIMIT 1"
         );
         connection
             .query_row(
@@ -3281,7 +3343,16 @@ impl Repository {
         let connection = self.connection()?;
         connection
             .query_row(
-                "SELECT public_id FROM messages WHERE account_id = ?1 AND id = ?2",
+                "SELECT COALESCE((
+                            SELECT alias.public_id
+                            FROM message_public_id_aliases alias
+                            WHERE alias.account_id = messages.account_id
+                              AND alias.message_id = messages.id
+                            ORDER BY alias.id
+                            LIMIT 1
+                        ), messages.public_id)
+                 FROM messages
+                 WHERE account_id = ?1 AND id = ?2",
                 params![expected_account_id, local_id],
                 |row| row.get(0),
             )
@@ -3412,7 +3483,16 @@ impl Repository {
     ) -> Result<Vec<(String, u32)>> {
         let connection = self.connection()?;
         let mut statement = connection.prepare(
-            "SELECT public_id, size_bytes FROM messages
+            "SELECT COALESCE((
+                        SELECT alias.public_id
+                        FROM message_public_id_aliases alias
+                        WHERE alias.account_id = messages.account_id
+                          AND alias.message_id = messages.id
+                        ORDER BY alias.id
+                        LIMIT 1
+                    ), messages.public_id),
+                    size_bytes
+             FROM messages
              WHERE account_id = ?1
                AND mailbox = ?2
                AND body_fetched = 0
@@ -6864,6 +6944,46 @@ fn migrate_move_to_inbox_v21(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn migrate_message_public_id_aliases_v22(connection: &Connection) -> Result<()> {
+    connection.execute_batch(
+        "CREATE TABLE IF NOT EXISTS message_public_id_aliases (
+             id INTEGER PRIMARY KEY AUTOINCREMENT,
+             public_id TEXT NOT NULL UNIQUE CHECK (length(public_id) = 36),
+             account_id TEXT NOT NULL,
+             message_id INTEGER NOT NULL,
+             FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
+             FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE
+         );
+         CREATE INDEX IF NOT EXISTS idx_message_public_id_aliases_message
+             ON message_public_id_aliases(account_id, message_id, id);
+         CREATE TRIGGER IF NOT EXISTS trg_message_public_id_aliases_validate_insert
+         BEFORE INSERT ON message_public_id_aliases
+         WHEN NOT EXISTS (
+             SELECT 1 FROM messages
+             WHERE id = NEW.message_id AND account_id = NEW.account_id
+         )
+         BEGIN
+             SELECT RAISE(ABORT, 'message public id alias account mismatch');
+         END;
+         CREATE TRIGGER IF NOT EXISTS trg_message_public_id_aliases_validate_update
+         BEFORE UPDATE OF account_id, message_id ON message_public_id_aliases
+         WHEN NOT EXISTS (
+             SELECT 1 FROM messages
+             WHERE id = NEW.message_id AND account_id = NEW.account_id
+         )
+         BEGIN
+             SELECT RAISE(ABORT, 'message public id alias account mismatch');
+         END;
+         CREATE TRIGGER IF NOT EXISTS trg_message_public_id_aliases_public_id_immutable
+         BEFORE UPDATE OF public_id ON message_public_id_aliases
+         WHEN NEW.public_id IS NOT OLD.public_id
+         BEGIN
+             SELECT RAISE(ABORT, 'message public id alias is immutable');
+         END;",
+    )?;
+    Ok(())
+}
+
 fn flags_with_pending_updates(
     connection: &Connection,
     account_id: &str,
@@ -7620,7 +7740,15 @@ fn query_regular_page_candidates(
     flagged_only: bool,
 ) -> Result<Vec<PageCandidate>> {
     let sql = format!(
-        "SELECT {ALIASED_MESSAGE_SUMMARY_COLUMNS}, m.public_id,
+        "SELECT {ALIASED_MESSAGE_SUMMARY_COLUMNS},
+                COALESCE((
+                    SELECT alias.public_id
+                    FROM message_public_id_aliases alias
+                    WHERE alias.account_id = m.account_id
+                      AND alias.message_id = m.id
+                    ORDER BY alias.id
+                    LIMIT 1
+                ), m.public_id),
                 COALESCE(m.internal_date, m.sent_at, m.synced_at) AS sort_at
          FROM messages m
          WHERE m.account_id = :account_id
@@ -7711,7 +7839,15 @@ fn query_pending_page_candidates(
     flagged_only: bool,
 ) -> Result<Vec<PageCandidate>> {
     let sql = format!(
-        "SELECT {ALIASED_MESSAGE_SUMMARY_COLUMNS}, m.public_id,
+        "SELECT {ALIASED_MESSAGE_SUMMARY_COLUMNS},
+                COALESCE((
+                    SELECT alias.public_id
+                    FROM message_public_id_aliases alias
+                    WHERE alias.account_id = m.account_id
+                      AND alias.message_id = m.id
+                    ORDER BY alias.id
+                    LIMIT 1
+                ), m.public_id),
                 COALESCE(m.internal_date, m.sent_at, m.synced_at) AS sort_at,
                 p.operation_id, p.revision, p.status, p.kind, p.source_role,
                 p.destination_role, p.error_kind
@@ -11350,6 +11486,9 @@ mod tests {
         );
         let source = message(&account.account_id, false);
         let source_id = repository.upsert_message(&source).expect("source message");
+        let source_public_id = repository
+            .message_public_id_by_local_id(&account.account_id, source_id)
+            .expect("source public id");
         let queued = repository
             .queue_message_action_for_account(
                 &account.account_id,
@@ -11423,9 +11562,13 @@ mod tests {
         let mut destination = source.clone();
         destination.mailbox = "Archive".to_owned();
         destination.uid = 900;
-        repository
+        let destination_id = repository
             .upsert_message(&destination)
             .expect("real destination summary");
+        let destination_public_id = repository
+            .message_public_id_by_local_id(&account.account_id, destination_id)
+            .expect("destination public id before convergence");
+        assert_ne!(destination_public_id, source_public_id);
         assert!(
             repository
                 .purge_confirmed_message_action_if_destination_unique(
@@ -11440,7 +11583,61 @@ mod tests {
             .expect("converged target");
         assert_eq!(converged.items.len(), 1);
         assert_eq!(converged.items[0].message.uid, 900);
+        assert_eq!(converged.items[0].public_id, source_public_id);
         assert!(converged.items[0].pending_mutation.is_none());
+        assert_eq!(
+            repository
+                .get_message_by_public_id(&account.account_id, &source_public_id)
+                .expect("old reader id resolves to destination")
+                .id,
+            destination_id
+        );
+        assert_eq!(
+            repository
+                .get_message_by_public_id(&account.account_id, &destination_public_id)
+                .expect("destination id remains compatible")
+                .id,
+            destination_id
+        );
+        assert_eq!(
+            repository
+                .message_public_id_by_local_id(&account.account_id, destination_id)
+                .expect("destination exposes original selection id"),
+            source_public_id
+        );
+    }
+
+    #[test]
+    fn public_id_alias_precedes_a_stale_canonical_row() {
+        let (_directory, repository, account) = setup();
+        let source = message(&account.account_id, false);
+        let source_id = repository.upsert_message(&source).expect("source message");
+        let source_public_id = repository
+            .message_public_id_by_local_id(&account.account_id, source_id)
+            .expect("source public id");
+        let mut destination = source.clone();
+        destination.mailbox = "Archive".to_owned();
+        destination.uid = 900;
+        let destination_id = repository
+            .upsert_message(&destination)
+            .expect("destination message");
+        repository
+            .connection()
+            .expect("alias connection")
+            .execute(
+                "INSERT INTO message_public_id_aliases (public_id, account_id, message_id)
+                 VALUES (?1, ?2, ?3)",
+                params![source_public_id, account.account_id, destination_id],
+            )
+            .expect("selection alias");
+
+        assert_eq!(
+            repository
+                .get_message_by_public_id(&account.account_id, &source_public_id)
+                .expect("selection follows reconciled destination")
+                .id,
+            destination_id
+        );
     }
 
     #[test]
@@ -13966,7 +14163,7 @@ mod tests {
         let version: u32 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("schema version");
-        assert_eq!(version, 21);
+        assert_eq!(version, 22);
         assert!(
             connection
                 .execute(
@@ -14023,7 +14220,7 @@ mod tests {
         let version: u32 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("schema version");
-        assert_eq!(version, 21);
+        assert_eq!(version, 22);
         assert!(
             super::table_has_column(&connection, "mailboxes", "starred_history_before_uid")
                 .unwrap()
@@ -14180,7 +14377,7 @@ mod tests {
                     .expect("schema version connection")
                     .pragma_query_value(None, "user_version", |row| row.get::<_, u32>(0))
                     .expect("schema version"),
-                21
+                22
             );
 
             assert_eq!(
@@ -14919,7 +15116,7 @@ mod tests {
         let version: u32 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("schema version");
-        assert_eq!(version, 21);
+        assert_eq!(version, 22);
         for column in ["source_cleanup_pending", "destination_reconciled"] {
             assert!(
                 super::table_has_column(&connection, "pending_message_actions", column).unwrap()
@@ -15064,7 +15261,7 @@ mod tests {
         let version: u32 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("schema version");
-        assert_eq!(version, 21);
+        assert_eq!(version, 22);
         for column in [
             "operation_id",
             "source_uid_validity",
@@ -15213,7 +15410,7 @@ Body' AS BLOB)
         let version: u32 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("schema version");
-        assert_eq!(version, 21);
+        assert_eq!(version, 22);
         for column in [
             "local_version",
             "has_unsupported_content",
