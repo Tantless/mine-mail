@@ -16,6 +16,35 @@ function sameSelection(current, next) {
   );
 }
 
+function selectionBounds(container, selectedElement) {
+  // Every current selection target is a direct child of its positioned
+  // container. offset* exposes that stable layout box, while
+  // getBoundingClientRect() includes an ancestor's temporary transform. The
+  // latter made a selection measured during the mail-list scale-in animation
+  // remain permanently short after the animation finished.
+  if (
+    selectedElement.parentElement === container &&
+    selectedElement.offsetWidth > 0 &&
+    selectedElement.offsetHeight > 0
+  ) {
+    return {
+      x: selectedElement.offsetLeft,
+      y: selectedElement.offsetTop,
+      width: selectedElement.offsetWidth,
+      height: selectedElement.offsetHeight,
+    };
+  }
+
+  const containerBounds = container.getBoundingClientRect();
+  const selectedBounds = selectedElement.getBoundingClientRect();
+  return {
+    x: selectedBounds.left - containerBounds.left,
+    y: selectedBounds.top - containerBounds.top,
+    width: selectedBounds.width,
+    height: selectedBounds.height,
+  };
+}
+
 export function useSlidingSelection({
   containerRef,
   layoutKey,
@@ -40,13 +69,9 @@ export function useSlidingSelection({
       return;
     }
 
-    const containerBounds = container.getBoundingClientRect();
-    const selectedBounds = selectedElement.getBoundingClientRect();
+    const bounds = selectionBounds(container, selectedElement);
     const nextSelection = {
-      x: selectedBounds.left - containerBounds.left,
-      y: selectedBounds.top - containerBounds.top,
-      width: selectedBounds.width,
-      height: selectedBounds.height,
+      ...bounds,
       visible: true,
     };
 

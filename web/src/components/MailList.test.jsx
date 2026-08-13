@@ -294,6 +294,7 @@ describe("MailList controlled controls", () => {
 
   it("moves one shared selection surface to the active message", () => {
     let secondMessageTop = 276;
+    let secondMessageOffsetTop = 76;
     const rect = (top, left, width, height) => ({
       bottom: top + height,
       height,
@@ -319,6 +320,24 @@ describe("MailList controlled controls", () => {
         }
         return rect(0, 0, 0, 0);
       });
+    const offsetTopSpy = vi
+      .spyOn(HTMLElement.prototype, "offsetTop", "get")
+      .mockImplementation(function offsetTop() {
+        if (this.dataset?.navigationKey === "message:mail-inbox-10") {
+          return secondMessageOffsetTop;
+        }
+        return 0;
+      });
+    const offsetWidthSpy = vi
+      .spyOn(HTMLElement.prototype, "offsetWidth", "get")
+      .mockImplementation(function offsetWidth() {
+        return this.classList?.contains("mail-row") ? 420 : 0;
+      });
+    const offsetHeightSpy = vi
+      .spyOn(HTMLElement.prototype, "offsetHeight", "get")
+      .mockImplementation(function offsetHeight() {
+        return this.classList?.contains("mail-row") ? 76 : 0;
+      });
 
     try {
       const { rerenderMailList } = renderMailList({
@@ -331,6 +350,9 @@ describe("MailList controlled controls", () => {
       expect(
         list.style.getPropertyValue("--sliding-selection-y"),
       ).toBe("0px");
+      expect(
+        list.style.getPropertyValue("--sliding-selection-width"),
+      ).toBe("420px");
 
       rerenderMailList({ selectedMessage: secondMessage });
 
@@ -346,6 +368,7 @@ describe("MailList controlled controls", () => {
       const scrollSurface = list.closest(".message-list");
       scrollSurface.scrollTop = 43;
       secondMessageTop = 352;
+      secondMessageOffsetTop = 152;
       rerenderMailList({
         messages: [
           {
@@ -365,6 +388,63 @@ describe("MailList controlled controls", () => {
       ).toBe("152px");
       expect(scrollSurface.scrollTop).toBe(43);
     } finally {
+      offsetHeightSpy.mockRestore();
+      offsetWidthSpy.mockRestore();
+      offsetTopSpy.mockRestore();
+      boundsSpy.mockRestore();
+    }
+  });
+
+  it("keeps the selection at layout width while its parent is scaled", () => {
+    const rect = (top, left, width, height) => ({
+      bottom: top + height,
+      height,
+      left,
+      right: left + width,
+      top,
+      width,
+      x: left,
+      y: top,
+      toJSON: () => ({}),
+    });
+    const boundsSpy = vi
+      .spyOn(Element.prototype, "getBoundingClientRect")
+      .mockImplementation(function getBoundingClientRect() {
+        if (this.classList?.contains("mail-list")) {
+          return rect(200, 100, 394.8, 71.44);
+        }
+        if (this.classList?.contains("mail-row")) {
+          return rect(200, 100, 394.8, 71.44);
+        }
+        return rect(0, 0, 0, 0);
+      });
+    const offsetWidthSpy = vi
+      .spyOn(HTMLElement.prototype, "offsetWidth", "get")
+      .mockImplementation(function offsetWidth() {
+        return this.classList?.contains("mail-row") ? 420 : 0;
+      });
+    const offsetHeightSpy = vi
+      .spyOn(HTMLElement.prototype, "offsetHeight", "get")
+      .mockImplementation(function offsetHeight() {
+        return this.classList?.contains("mail-row") ? 76 : 0;
+      });
+
+    try {
+      renderMailList({
+        messages: [firstMessage],
+        selectedMessage: firstMessage,
+      });
+      const list = screen.getByRole("list", { name: "邮件" });
+
+      expect(
+        list.style.getPropertyValue("--sliding-selection-width"),
+      ).toBe("420px");
+      expect(
+        list.style.getPropertyValue("--sliding-selection-height"),
+      ).toBe("76px");
+    } finally {
+      offsetHeightSpy.mockRestore();
+      offsetWidthSpy.mockRestore();
       boundsSpy.mockRestore();
     }
   });
