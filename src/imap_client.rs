@@ -1,4 +1,7 @@
-use std::{collections::BTreeSet, time::Duration};
+use std::{
+    collections::{BTreeSet, HashSet},
+    time::Duration,
+};
 
 use async_imap::{
     Session,
@@ -80,6 +83,7 @@ impl MailboxMessageScope {
 #[derive(Clone, Debug)]
 pub(crate) struct RemoteMessage {
     pub uid: u32,
+    pub gmail_message_id: Option<u64>,
     pub flags: Vec<String>,
     pub internal_date: Option<String>,
     pub size_bytes: u32,
@@ -263,6 +267,7 @@ pub(crate) struct ImapConnection {
     supports_create_special_use: bool,
     supports_idle: bool,
     supports_condstore: bool,
+    supports_gmail_extensions: bool,
 }
 
 impl ImapConnection {
@@ -354,6 +359,7 @@ impl ImapConnection {
         let supports_create_special_use = has_capability(&capabilities, "CREATE-SPECIAL-USE");
         let supports_idle = has_capability(&capabilities, "IDLE");
         let supports_condstore = has_capability(&capabilities, "CONDSTORE");
+        let supports_gmail_extensions = has_capability(&capabilities, "X-GM-EXT-1");
         Ok(Self {
             session,
             supports_move,
@@ -362,6 +368,7 @@ impl ImapConnection {
             supports_create_special_use,
             supports_idle,
             supports_condstore,
+            supports_gmail_extensions,
         })
     }
 
@@ -371,6 +378,10 @@ impl ImapConnection {
 
     pub fn supports_condstore(&self) -> bool {
         self.supports_condstore
+    }
+
+    pub fn supports_gmail_extensions(&self) -> bool {
+        self.supports_gmail_extensions
     }
 
     pub fn message_move_method(&self) -> MessageMoveMethod {
@@ -509,6 +520,14 @@ impl ImapConnection {
         })
     }
 
+    pub async fn search_unseen_uids(&mut self) -> Result<Vec<u32>> {
+        self.search_uids("UNSEEN").await
+    }
+
+    pub async fn search_flagged_uids(&mut self) -> Result<Vec<u32>> {
+        self.search_uids("FLAGGED").await
+    }
+
     pub async fn search_uids_after(&mut self, highest_uid: u32) -> Result<Vec<u32>> {
         let first = highest_uid.saturating_add(1);
         if first == 0 {
@@ -642,6 +661,7 @@ impl ImapConnection {
         let supports_create_special_use = self.supports_create_special_use;
         let supports_idle = self.supports_idle;
         let supports_condstore = self.supports_condstore;
+        let supports_gmail_extensions = self.supports_gmail_extensions;
         if !supports_idle {
             return Err(MailError::Validation(
                 "the IMAP server does not advertise IDLE".to_owned(),
@@ -684,6 +704,7 @@ impl ImapConnection {
                 supports_create_special_use,
                 supports_idle,
                 supports_condstore,
+                supports_gmail_extensions,
             },
             matches!(response, IdleResponse::NewData(_)),
         ))
@@ -773,8 +794,89 @@ impl ImapConnection {
     }
 
     pub async fn fetch_summaries(&mut self, uids: &[u32]) -> Result<Vec<RemoteMessage>> {
-        let query = summary_fetch_query();
+        let query = summary_fetch_query(false);
         self.fetch_messages(uids, &query, true).await
+    }
+
+    pub async fn fetch_summaries_with_gmail_id(
+        &mut self,
+        uids: &[u32],
+    ) -> Result<Vec<RemoteMessage>> {
+        if !self.supports_gmail_extensions {
+            return Err(MailError::Validation(
+                "the IMAP server does not advertise Gmail extensions".to_owned(),
+            ));
+        }
+        let query = summary_fetch_query(true);
+        let messages = self.fetch_messages(uids, &query, true).await?;
+        if messages
+            .iter()
+            .any(|message| message.gmail_message_id.is_none())
+        {
+            return Err(MailError::Imap(
+                "Gmail did not return a stable message identity; cached messages were preserved"
+                    .to_owned(),
+            ));
+        }
+        Ok(messages)
+    }
+
+    pub async fn search_gmail_message_id_with_scope(
+        &mut self,
+        gmail_message_id: u64,
+        scope: MailboxMessageScope,
+    ) -> Result<Vec<u32>> {
+        if !self.supports_gmail_extensions {
+            return Err(MailError::Validation(
+                "the IMAP server does not advertise Gmail extensions".to_owned(),
+            ));
+        }
+        let provider_scope = match scope {
+            MailboxMessageScope::All => String::new(),
+            MailboxMessageScope::GmailArchive => format!(" {GMAIL_ARCHIVE_SEARCH}"),
+        };
+        self.search_uids(&format!("X-GM-MSGID {gmail_message_id}{provider_scope}"))
+            .await
+    }
+
+    pub async fn fetch_gmail_message_ids(&mut self, uids: &[u32]) -> Result<Vec<(u32, u64)>> {
+        if uids.is_empty() {
+            return Ok(Vec::new());
+        }
+        if !self.supports_gmail_extensions {
+            return Err(MailError::Validation(
+                "the IMAP server does not advertise Gmail extensions".to_owned(),
+            ));
+        }
+        let sequence_set = required_uid_set(uids)?;
+        let stream = timeout(
+            COMMAND_TIMEOUT,
+            self.session.uid_fetch(sequence_set, "(UID X-GM-MSGID)"),
+        )
+        .await
+        .map_err(|_| MailError::Timeout {
+            operation: "IMAP Gmail identity fetch",
+        })?
+        .map_err(|error| MailError::Imap(error.to_string()))?;
+        let fetched = timeout(COMMAND_TIMEOUT, stream.try_collect::<Vec<_>>())
+            .await
+            .map_err(|_| MailError::Timeout {
+                operation: "IMAP Gmail identity response",
+            })?
+            .map_err(|error| MailError::Imap(error.to_string()))?;
+        let identities: Vec<(u32, u64)> = fetched
+            .into_iter()
+            .filter_map(|message| Some((message.uid?, *message.gmail_msg_id()?)))
+            .collect();
+        let requested: HashSet<u32> = uids.iter().copied().collect();
+        let returned: HashSet<u32> = identities.iter().map(|(uid, _)| *uid).collect();
+        if returned != requested {
+            return Err(MailError::Imap(
+                "Gmail did not return the complete identity set; cached messages were preserved"
+                    .to_owned(),
+            ));
+        }
+        Ok(identities)
     }
 
     /// Fetches only UID and INTERNALDATE for the currently selected mailbox.
@@ -1175,6 +1277,7 @@ impl ImapConnection {
 
                 Ok(RemoteMessage {
                     uid,
+                    gmail_message_id: message.gmail_msg_id().copied(),
                     flags: message.flags().map(flag_name).collect(),
                     internal_date: message.internal_date().map(|date| date.to_rfc3339()),
                     size_bytes: message.size.unwrap_or(raw.len() as u32),
@@ -1365,8 +1468,15 @@ fn imap_connection_error(kind: ConnectionFailureKind) -> MailError {
     MailError::Connection(ConnectionFailure::new(ConnectionProtocol::Imap, kind))
 }
 
-fn summary_fetch_query() -> String {
-    format!("(UID FLAGS INTERNALDATE RFC822.SIZE BODY.PEEK[]<0.{SUMMARY_PREVIEW_BYTES}>)")
+fn summary_fetch_query(include_gmail_message_id: bool) -> String {
+    let gmail_attribute = if include_gmail_message_id {
+        " X-GM-MSGID"
+    } else {
+        ""
+    };
+    format!(
+        "(UID FLAGS INTERNALDATE RFC822.SIZE BODY.PEEK[]<0.{SUMMARY_PREVIEW_BYTES}>{gmail_attribute})"
+    )
 }
 
 fn message_structure_fetch_query() -> &'static str {
@@ -1781,11 +1891,13 @@ mod tests {
 
     #[test]
     fn summary_fetch_is_bounded_and_does_not_mark_messages_seen() {
-        let query = summary_fetch_query();
+        let query = summary_fetch_query(false);
 
         assert!(query.contains("BODY.PEEK[]"));
         assert!(query.contains(&format!("<0.{SUMMARY_PREVIEW_BYTES}>")));
         assert!(!query.contains("BODY[]"));
+        assert!(!query.contains("X-GM-MSGID"));
+        assert!(summary_fetch_query(true).contains("X-GM-MSGID"));
     }
 
     #[test]

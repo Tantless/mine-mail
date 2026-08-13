@@ -185,6 +185,19 @@ impl AccountConfig {
     pub(crate) fn authentication_kind(&self) -> AuthenticationKind {
         self.authentication_kind
     }
+
+    /// Gmail's IMAP host identifies provider protocol behavior, while the
+    /// authentication kind decides whether the Gmail HTTP API is authorized.
+    /// A custom account using an app password must never be promoted to OAuth.
+    pub(crate) fn uses_gmail_imap(&self) -> bool {
+        let host = self.imap.host.trim().trim_end_matches('.');
+        host.eq_ignore_ascii_case("imap.gmail.com")
+            || host.eq_ignore_ascii_case("imap.googlemail.com")
+    }
+
+    pub(crate) fn supports_gmail_history_api(&self) -> bool {
+        self.uses_gmail_imap() && self.authentication_kind == AuthenticationKind::OAuth2
+    }
 }
 
 impl fmt::Debug for AccountConfig {
@@ -215,6 +228,44 @@ mod tests {
         assert_eq!(config.imap.port, 993);
         assert!(!format!("{config:?}").contains("not-a-real-secret"));
         assert!(format!("{config:?}").contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn gmail_history_requires_oauth_even_when_the_custom_imap_host_is_gmail() {
+        let password = AccountConfig::new(
+            "custom-gmail",
+            "demo@gmail.com",
+            "app-password",
+            ServerConfig {
+                host: "IMAP.GMAIL.COM.".to_owned(),
+                port: 993,
+            },
+            ServerConfig {
+                host: "smtp.gmail.com".to_owned(),
+                port: 465,
+            },
+            SmtpSecurity::ImplicitTls,
+        )
+        .expect("custom Gmail IMAP config");
+        assert!(password.uses_gmail_imap());
+        assert!(!password.supports_gmail_history_api());
+
+        let oauth = AccountConfig::new_oauth2(
+            "oauth-gmail",
+            "demo@gmail.com",
+            "access-token",
+            ServerConfig {
+                host: "imap.gmail.com".to_owned(),
+                port: 993,
+            },
+            ServerConfig {
+                host: "smtp.gmail.com".to_owned(),
+                port: 465,
+            },
+            SmtpSecurity::ImplicitTls,
+        )
+        .expect("OAuth Gmail config");
+        assert!(oauth.supports_gmail_history_api());
     }
 
     #[test]

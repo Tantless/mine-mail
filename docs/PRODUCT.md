@@ -109,6 +109,15 @@ product decision changes.
 - Arrival monitoring prefers IMAP IDLE and otherwise uses a lightweight mailbox
   probe. The user-selectable 1/3/5-minute setting, default 5 minutes, performs
   fuller reconciliation for flags, deletions, queued mutations, and recovery.
+- Google OAuth accounts persist Gmail's provider history cursor and use its
+  account-wide change log for routine reconciliation after the initial bounded
+  IMAP import. An expired or unavailable history cursor falls back to the same
+  safe IMAP reconciliation without advancing the cursor. A custom account that
+  points at `imap.gmail.com` with an app password remains IMAP-only; the server
+  host alone never grants or selects Gmail API access. That IMAP-only path uses
+  Gmail's server-side unread and starred searches when available instead of
+  fetching flags for every cached message, while retaining full UID membership
+  checks for deletion safety.
 - Startup and explicit refresh discover available mailbox roles and synchronize
   bounded summaries. They do not eagerly download every body or attachment.
 - Opening Archive or Trash paints cached summaries first and then synchronizes

@@ -2871,6 +2871,7 @@ dependencies = [
  "futures",
  "lettre",
  "mail-parser",
+ "reqwest",
  "rusqlite",
  "serde",
  "serde_json",

@@ -1804,6 +1804,22 @@ pub(crate) async fn perform_sync_all(
                 crate::safe_mail_error(error)
             ));
         }
+        let seeded_gmail_cursor = match network.initialize_gmail_history_cursor().await {
+            Ok(seeded) => seeded,
+            Err(error) => {
+                // Cursor initialization is optional. The full IMAP sync below
+                // remains authoritative, and seeding before it prevents a
+                // change arriving during reconciliation from being skipped.
+                diagnostics::limited_failure(
+                    "gmail_history_cursor_failed",
+                    "gmail_history_cursor_initialize",
+                    Some(&account_id),
+                    diagnostics::mail_error_kind(&error),
+                );
+                false
+            }
+        };
+        let mut full_reconciliation_failed = false;
         let optional_roles = network
             .get_mailbox_capabilities(&account_id)
             .map(|capabilities| available_optional_mailbox_roles(&capabilities))
@@ -1820,7 +1836,10 @@ pub(crate) async fn perform_sync_all(
                     active_inbox = Some(report);
                 }
             }
-            Err(error) => account_errors.push(format!("{account_id} Inbox: {error}")),
+            Err(error) => {
+                full_reconciliation_failed = true;
+                account_errors.push(format!("{account_id} Inbox: {error}"));
+            }
         }
         match drafts {
             Ok(report) => {
@@ -1836,11 +1855,25 @@ pub(crate) async fn perform_sync_all(
                     active_sent = Some(report);
                 }
             }
-            Err(error) => account_errors.push(format!("{account_id} Sent: {error}")),
+            Err(error) => {
+                full_reconciliation_failed = true;
+                account_errors.push(format!("{account_id} Sent: {error}"));
+            }
         }
         for role in optional_roles {
             if let Err(error) = sync_optional_mailbox_for(app, &account_id, role).await {
+                full_reconciliation_failed = true;
                 account_errors.push(format!("{account_id} {role:?}: {error}"));
+            }
+        }
+        if seeded_gmail_cursor && full_reconciliation_failed {
+            if let Err(error) = network.discard_gmail_history_cursor() {
+                diagnostics::limited_failure(
+                    "gmail_history_cursor_discard_failed",
+                    "gmail_history_cursor_discard",
+                    Some(&account_id),
+                    diagnostics::mail_error_kind(&error),
+                );
             }
         }
         if account_errors.is_empty() {
@@ -1990,19 +2023,97 @@ async fn perform_inbox_reconciliation_all(app: &AppHandle) -> Result<(), String>
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
+
+        // Only OAuth-authorized Gmail accounts can consume the provider's
+        // account-wide change log. A custom app-password account pointing at
+        // imap.gmail.com remains on the IMAP branch. History failures also
+        // fall through without advancing the cursor.
+        match network.sync_gmail_history().await {
+            Ok(Some(changed_roles)) => {
+                let inbox_changed = changed_roles.contains(&MailboxRole::Inbox);
+                for role in changed_roles {
+                    match role {
+                        MailboxRole::Inbox => {}
+                        MailboxRole::Sent => diagnostics::emit_event(
+                            app,
+                            "mail:sent-updated",
+                            SentUpdatedEvent {
+                                account_id: account_id.clone(),
+                                completed: 0,
+                                total: Some(0),
+                                is_complete: true,
+                                report: None,
+                            },
+                        ),
+                        _ => diagnostics::emit_event(
+                            app,
+                            "mail:mailbox-updated",
+                            MailboxUpdatedEvent {
+                                account_id: account_id.clone(),
+                                role,
+                            },
+                        ),
+                    }
+                }
+                if inbox_changed {
+                    let report = SyncReport {
+                        mailbox: "INBOX".to_owned(),
+                        ..SyncReport::default()
+                    };
+                    if let Err(error) = finish_inbox_sync(app, &account_id, network.clone(), report)
+                    {
+                        errors.push(format!("{account_id} Inbox: {error}"));
+                    }
+                }
+                continue;
+            }
+            Ok(None) => {}
+            Err(error) => diagnostics::limited_failure(
+                "gmail_history_sync_failed",
+                "gmail_history_sync",
+                Some(&account_id),
+                diagnostics::mail_error_kind(&error),
+            ),
+        }
+        let seeded_gmail_cursor = match network.initialize_gmail_history_cursor().await {
+            Ok(seeded) => seeded,
+            Err(error) => {
+                diagnostics::limited_failure(
+                    "gmail_history_cursor_failed",
+                    "gmail_history_cursor_initialize",
+                    Some(&account_id),
+                    diagnostics::mail_error_kind(&error),
+                );
+                false
+            }
+        };
         let (inbox, sent) = tokio::join!(
             sync_inbox_for(app, &account_id),
             sync_sent_for(app, &account_id),
         );
+        let mut full_reconciliation_failed = false;
         if let Err(error) = inbox {
+            full_reconciliation_failed = true;
             errors.push(format!("{account_id} Inbox: {error}"));
         }
         if let Err(error) = sent {
+            full_reconciliation_failed = true;
             errors.push(format!("{account_id} Sent: {error}"));
         }
         for role in optional_roles {
             if let Err(error) = sync_optional_mailbox_for(app, &account_id, role).await {
+                full_reconciliation_failed = true;
                 errors.push(format!("{account_id} {role:?}: {error}"));
+            }
+        }
+        if seeded_gmail_cursor && full_reconciliation_failed {
+            if let Err(error) = network.discard_gmail_history_cursor() {
+                diagnostics::limited_failure(
+                    "gmail_history_cursor_discard_failed",
+                    "gmail_history_cursor_discard",
+                    Some(&account_id),
+                    diagnostics::mail_error_kind(&error),
+                );
             }
         }
     }

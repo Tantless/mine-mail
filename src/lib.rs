@@ -9,6 +9,7 @@ mod backend;
 mod config;
 mod database;
 mod error;
+mod gmail_client;
 mod imap_client;
 mod mailbox_mutation;
 mod managed_attachments;

@@ -30,10 +30,11 @@ use crate::{
     MailboxRole, OutboxItem, OutboxStatus, ReplyContext, Result, StationeryTheme,
     SyncBatchProgress, SyncReport,
     database::{
-        DraftRecord, MailboxState, ManagedDraftAttachment, NewDraftAttachment,
+        DraftRecord, GmailSyncState, MailboxState, ManagedDraftAttachment, NewDraftAttachment,
         PendingMessageAction, PreparedForwardInsert, Repository,
         managed_attachment_integrity_error,
     },
+    gmail_client::{GmailClient, GmailHistoryError},
     imap_client::{
         CreatableMailboxRole, DeleteFinalization, ImapConnection, MailboxHint, MailboxMessageScope,
         MailboxRoleCreationMethod, MailboxSnapshot, MessageMoveMethod, RemoteBodyPart,
@@ -99,6 +100,16 @@ fn normalize_owned_compose_html(mut request: ComposeRequest) -> ComposeRequest {
         request.format.send_stationery = false;
     }
     request
+}
+
+fn gmail_history_error(error: GmailHistoryError) -> MailError {
+    let message = match error {
+        GmailHistoryError::CursorExpired => "the Gmail history cursor expired",
+        GmailHistoryError::Unavailable => "the Gmail history service is unavailable",
+        GmailHistoryError::InvalidResponse => "the Gmail history response was invalid",
+        GmailHistoryError::TooLarge => "the Gmail history delta exceeded the bounded page limit",
+    };
+    MailError::Imap(message.to_owned())
 }
 
 fn advance_draft_sync_progress<F>(completed: &mut usize, total: usize, on_progress: &mut F)
@@ -862,7 +873,11 @@ impl MailBackend {
     }
 
     fn uses_gmail_archive_adapter(&self) -> bool {
-        self.config.imap.host.eq_ignore_ascii_case("imap.gmail.com")
+        self.config.uses_gmail_imap()
+    }
+
+    fn supports_gmail_history_api(&self) -> bool {
+        self.config.supports_gmail_history_api()
     }
 
     fn uses_qq_imap(&self) -> bool {
@@ -1353,6 +1368,37 @@ impl MailBackend {
         self.sync_sent_with_progress(initial_limit, |_| {}).await
     }
 
+    /// Gmail's IMAP service does not advertise a mailbox history log. For
+    /// app-password/custom accounts, ask the server for the two system-flag
+    /// sets directly so reconciliation traffic scales with unread/starred
+    /// results instead of returning FLAGS for every cached message.
+    async fn sync_gmail_imap_flag_sets(
+        &self,
+        connection: &mut ImapConnection,
+        mailbox: &str,
+    ) -> Result<Option<usize>> {
+        if !self.uses_gmail_archive_adapter()
+            || self.supports_gmail_history_api()
+            || !connection.supports_gmail_extensions()
+        {
+            return Ok(None);
+        }
+        let unseen: HashSet<u32> = connection.search_unseen_uids().await?.into_iter().collect();
+        let flagged: HashSet<u32> = connection
+            .search_flagged_uids()
+            .await?
+            .into_iter()
+            .collect();
+        self.repository
+            .replace_seen_and_flagged_from_uid_sets(
+                &self.config.account_id,
+                mailbox,
+                &unseen,
+                &flagged,
+            )
+            .map(Some)
+    }
+
     pub async fn sync_sent_with_progress<F>(
         &self,
         initial_limit: usize,
@@ -1466,11 +1512,25 @@ impl MailBackend {
         mailbox: &str,
         uids: &[u32],
     ) -> Result<usize> {
-        let remotes = connection.fetch_summaries(uids).await?;
+        let remotes = if self.supports_gmail_history_api() {
+            connection.fetch_summaries_with_gmail_id(uids).await?
+        } else {
+            connection.fetch_summaries(uids).await?
+        };
         let fetched = remotes.len();
         for remote in remotes {
+            let gmail_message_id = remote.gmail_message_id;
+            let uid = remote.uid;
             let message = self.parse_remote_summary(mailbox, remote);
             self.repository.upsert_message_summary(&message)?;
+            if let Some(gmail_message_id) = gmail_message_id {
+                self.repository.upsert_gmail_message_id(
+                    &self.config.account_id,
+                    mailbox,
+                    uid,
+                    gmail_message_id,
+                )?;
+            }
         }
         Ok(fetched)
     }
@@ -1481,7 +1541,11 @@ impl MailBackend {
         mailbox: &str,
         uids: &[u32],
     ) -> Result<usize> {
-        let remotes = connection.fetch_summaries(uids).await?;
+        let remotes = if self.supports_gmail_history_api() {
+            connection.fetch_summaries_with_gmail_id(uids).await?
+        } else {
+            connection.fetch_summaries(uids).await?
+        };
         let returned_uids: HashSet<u32> = remotes.iter().map(|message| message.uid).collect();
         let requested_uids: HashSet<u32> = uids.iter().copied().collect();
         if returned_uids != requested_uids {
@@ -1492,8 +1556,18 @@ impl MailBackend {
         }
         let fetched = remotes.len();
         for remote in remotes {
+            let gmail_message_id = remote.gmail_message_id;
+            let uid = remote.uid;
             let message = self.parse_remote_summary(mailbox, remote);
             self.repository.upsert_message_summary(&message)?;
+            if let Some(gmail_message_id) = gmail_message_id {
+                self.repository.upsert_gmail_message_id(
+                    &self.config.account_id,
+                    mailbox,
+                    uid,
+                    gmail_message_id,
+                )?;
+            }
         }
         Ok(fetched)
     }
@@ -1734,21 +1808,28 @@ impl MailBackend {
                 .and_then(|state| state.highest_modseq),
             snapshot.highest_modseq,
         );
-        let mut updated_flags = 0;
-        for batch in existing_remote_uids.chunks(FLAG_BATCH_SIZE) {
-            let updates = match changed_since {
-                Some(highest_modseq) => {
-                    connection
-                        .fetch_flags_changed_since(batch, highest_modseq)
-                        .await?
-                }
-                None => connection.fetch_flags(batch).await?,
-            };
-            updated_flags += self.repository.update_message_flags_batch(
-                &self.config.account_id,
-                mailbox,
-                &updates,
-            )?;
+        let gmail_flag_updates = if changed_since.is_none() {
+            self.sync_gmail_imap_flag_sets(connection, mailbox).await?
+        } else {
+            None
+        };
+        let mut updated_flags = gmail_flag_updates.unwrap_or_default();
+        if gmail_flag_updates.is_none() {
+            for batch in existing_remote_uids.chunks(FLAG_BATCH_SIZE) {
+                let updates = match changed_since {
+                    Some(highest_modseq) => {
+                        connection
+                            .fetch_flags_changed_since(batch, highest_modseq)
+                            .await?
+                    }
+                    None => connection.fetch_flags(batch).await?,
+                };
+                updated_flags += self.repository.update_message_flags_batch(
+                    &self.config.account_id,
+                    mailbox,
+                    &updates,
+                )?;
+            }
         }
 
         // Destructive reconciliation is deliberately last. A failed summary,
@@ -1812,6 +1893,244 @@ impl MailBackend {
     pub async fn sync_new_inbox(&self, initial_limit: usize) -> Result<SyncReport> {
         self.sync_new_inbox_with_progress(initial_limit, |_| {})
             .await
+    }
+
+    /// Uses Gmail's account-wide History API only for OAuth-authorized Gmail
+    /// accounts. Password/app-password accounts on imap.gmail.com never enter
+    /// this path and remain pure IMAP clients.
+    pub async fn sync_gmail_history(&self) -> Result<Option<Vec<MailboxRole>>> {
+        if !self.supports_gmail_history_api() {
+            return Ok(None);
+        }
+        if !self.mailbox_role_initialized(&self.config.account_id, MailboxRole::Inbox)?
+            || !self.mailbox_role_initialized(&self.config.account_id, MailboxRole::Sent)?
+        {
+            return Ok(None);
+        }
+        let Some(state) = self.repository.gmail_sync_state(&self.config.account_id)? else {
+            return Ok(None);
+        };
+        let client = GmailClient::new().map_err(gmail_history_error)?;
+        let delta = match client
+            .list_history(self.config.authorization_secret(), &state.history_id)
+            .await
+        {
+            Ok(delta) => delta,
+            Err(GmailHistoryError::CursorExpired | GmailHistoryError::TooLarge) => {
+                self.repository
+                    .clear_gmail_sync_state(&self.config.account_id)?;
+                return Ok(None);
+            }
+            Err(error) => return Err(gmail_history_error(error)),
+        };
+
+        let capabilities = self
+            .repository
+            .mailbox_capabilities(&self.config.account_id)?;
+        let mut roles = Vec::new();
+        for role in MailboxRole::ALL {
+            if role == MailboxRole::Drafts
+                || !capabilities.iter().any(|capability| {
+                    capability.role == role
+                        && capability.status == MailboxCapabilityStatus::Available
+                })
+            {
+                continue;
+            }
+            if !matches!(role, MailboxRole::Inbox | MailboxRole::Sent)
+                && !self.mailbox_role_initialized(&self.config.account_id, role)?
+            {
+                continue;
+            }
+            roles.push((
+                role,
+                self.repository
+                    .mailbox_for_semantic_role(&self.config.account_id, role)?,
+            ));
+        }
+        if roles.is_empty() {
+            return Ok(None);
+        }
+
+        let _guard = self.general_imap_gate.lock().await;
+        let mut connection = ImapConnection::connect(&self.config).await?;
+        if !connection.supports_gmail_extensions() {
+            let _ = connection.logout().await;
+            return Ok(None);
+        }
+
+        let mut changed_roles = Vec::new();
+
+        // Existing Gmail rows predate the provider identity table. Backfill
+        // only those cached UIDs once; later summary fetches persist the ID at
+        // insertion time and normal History sync no longer scans the mailbox.
+        for (role, mailbox) in &roles {
+            let missing = self
+                .repository
+                .mailbox_uids_missing_gmail_ids(&self.config.account_id, mailbox)?;
+            let selected = connection.select_mailbox_for_history(mailbox).await?;
+            let persisted_epoch = self
+                .repository
+                .mailbox_state(&self.config.account_id, mailbox)?
+                .and_then(|state| state.uid_validity);
+            if persisted_epoch.is_none() || selected.uid_validity != persisted_epoch {
+                let _ = connection.logout().await;
+                return Ok(None);
+            }
+            let flushed_seen = self
+                .flush_pending_seen_updates(&mut connection, mailbox, selected.uid_validity)
+                .await?;
+            let flushed_flagged = self
+                .flush_pending_flagged_updates(&mut connection, mailbox, selected.uid_validity)
+                .await?;
+            if flushed_seen + flushed_flagged > 0 && !changed_roles.contains(role) {
+                changed_roles.push(*role);
+            }
+            for batch in missing.chunks(FLAG_BATCH_SIZE) {
+                for (uid, gmail_message_id) in connection.fetch_gmail_message_ids(batch).await? {
+                    self.repository.upsert_gmail_message_id(
+                        &self.config.account_id,
+                        mailbox,
+                        uid,
+                        gmail_message_id,
+                    )?;
+                }
+            }
+        }
+
+        let changed_messages = delta
+            .gmail_message_ids
+            .into_iter()
+            .map(|gmail_message_id| {
+                self.repository
+                    .cached_gmail_message_locations(&self.config.account_id, gmail_message_id)
+                    .map(|locations| (gmail_message_id, locations))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        for (role, mailbox) in &roles {
+            let selected = connection.select_mailbox_for_history(mailbox).await?;
+            let persisted_epoch = self
+                .repository
+                .mailbox_state(&self.config.account_id, mailbox)?
+                .and_then(|state| state.uid_validity);
+            if persisted_epoch.is_none() || selected.uid_validity != persisted_epoch {
+                let _ = connection.logout().await;
+                return Ok(None);
+            }
+            for (gmail_message_id, cached_locations) in &changed_messages {
+                let uids = connection
+                    .search_gmail_message_id_with_scope(
+                        *gmail_message_id,
+                        self.mailbox_message_scope(*role),
+                    )
+                    .await?;
+                if let Some(uid) = uids.last().copied() {
+                    let remote = connection.fetch_summaries_with_gmail_id(&[uid]).await?;
+                    let remote = remote.into_iter().next().ok_or_else(|| {
+                        MailError::Imap(
+                            "Gmail changed during reconciliation; cached messages were preserved"
+                                .to_owned(),
+                        )
+                    })?;
+                    let remote_gmail_id = remote.gmail_message_id.ok_or_else(|| {
+                        MailError::Imap(
+                            "Gmail did not return a stable message identity; cached messages were preserved"
+                                .to_owned(),
+                        )
+                    })?;
+                    let message = self.parse_remote_summary(mailbox, remote);
+                    self.repository.upsert_message_summary(&message)?;
+                    let stale_uids: HashSet<u32> = cached_locations
+                        .iter()
+                        .filter_map(|(cached_mailbox, cached_uid)| {
+                            (cached_mailbox == mailbox && *cached_uid != uid).then_some(*cached_uid)
+                        })
+                        .collect();
+                    if !stale_uids.is_empty() {
+                        let remaining = self
+                            .repository
+                            .cached_uids(&self.config.account_id, mailbox)?
+                            .into_iter()
+                            .filter(|cached_uid| !stale_uids.contains(cached_uid))
+                            .collect();
+                        self.repository.delete_missing_uids(
+                            &self.config.account_id,
+                            mailbox,
+                            &remaining,
+                        )?;
+                    }
+                    self.repository.upsert_gmail_message_id(
+                        &self.config.account_id,
+                        mailbox,
+                        uid,
+                        remote_gmail_id,
+                    )?;
+                    if !changed_roles.contains(role) {
+                        changed_roles.push(*role);
+                    }
+                } else if cached_locations
+                    .iter()
+                    .any(|(cached_mailbox, _)| cached_mailbox == mailbox)
+                {
+                    let remote_uids = self
+                        .repository
+                        .cached_uids(&self.config.account_id, mailbox)?;
+                    let remaining: HashSet<u32> = remote_uids
+                        .into_iter()
+                        .filter(|uid| {
+                            !cached_locations.iter().any(|(cached_mailbox, cached_uid)| {
+                                cached_mailbox == mailbox && cached_uid == uid
+                            })
+                        })
+                        .collect();
+                    self.repository.delete_missing_uids(
+                        &self.config.account_id,
+                        mailbox,
+                        &remaining,
+                    )?;
+                    if !changed_roles.contains(role) {
+                        changed_roles.push(*role);
+                    }
+                }
+            }
+        }
+        let _ = connection.logout().await;
+        self.repository.upsert_gmail_sync_state(&GmailSyncState {
+            account_id: self.config.account_id.clone(),
+            history_id: delta.next_history_id,
+        })?;
+        Ok(Some(changed_roles))
+    }
+
+    /// Seeds the account-wide History cursor before a full IMAP reconciliation.
+    /// Returns `true` only when this call created a new cursor, allowing the
+    /// caller to discard it if that reconciliation does not complete.
+    pub async fn initialize_gmail_history_cursor(&self) -> Result<bool> {
+        if !self.supports_gmail_history_api()
+            || self
+                .repository
+                .gmail_sync_state(&self.config.account_id)?
+                .is_some()
+        {
+            return Ok(false);
+        }
+        let client = GmailClient::new().map_err(gmail_history_error)?;
+        let history_id = client
+            .current_history_id(self.config.authorization_secret())
+            .await
+            .map_err(gmail_history_error)?;
+        self.repository.upsert_gmail_sync_state(&GmailSyncState {
+            account_id: self.config.account_id.clone(),
+            history_id,
+        })?;
+        Ok(true)
+    }
+
+    /// Removes a newly seeded cursor after its anchoring full reconciliation
+    /// failed. The next cycle will therefore retry from a fresh full baseline.
+    pub fn discard_gmail_history_cursor(&self) -> Result<()> {
+        self.repository
+            .clear_gmail_sync_state(&self.config.account_id)
     }
 
     pub async fn sync_new_inbox_with_progress<F>(
@@ -10526,6 +10845,7 @@ mod tests {
             let candidate = remote_draft_candidate(
                 RemoteMessage {
                     uid,
+                    gmail_message_id: None,
                     flags: vec!["\\Draft".to_owned()],
                     internal_date: Some("2026-07-14T02:00:00Z".to_owned()),
                     size_bytes: u32::try_from(raw.len()).unwrap(),

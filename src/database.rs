@@ -87,6 +87,12 @@ pub(crate) struct MailboxState {
     pub last_synced_at: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct GmailSyncState {
+    pub account_id: String,
+    pub history_id: String,
+}
+
 /// Server-history cursor persisted independently from the newest-message sync
 /// cursor. The server is authoritative only when `complete` is true.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -369,6 +375,33 @@ impl Repository {
              CREATE INDEX IF NOT EXISTS idx_messages_message_id
                  ON messages(account_id, message_id);
 
+             CREATE TABLE IF NOT EXISTS gmail_sync_state (
+                 account_id TEXT PRIMARY KEY NOT NULL,
+                 history_id TEXT NOT NULL CHECK (
+                     length(history_id) > 0
+                     AND history_id NOT GLOB '*[^0-9]*'
+                 ),
+                 updated_at TEXT NOT NULL
+                     DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                 FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
+             );
+
+             CREATE TABLE IF NOT EXISTS gmail_message_ids (
+                 account_id TEXT NOT NULL,
+                 mailbox TEXT NOT NULL,
+                 uid INTEGER NOT NULL CHECK (uid > 0),
+                 gmail_message_id TEXT NOT NULL CHECK (
+                     length(gmail_message_id) > 0
+                     AND gmail_message_id NOT GLOB '*[^0-9]*'
+                 ),
+                 PRIMARY KEY (account_id, mailbox, uid),
+                 UNIQUE (account_id, mailbox, gmail_message_id),
+                 FOREIGN KEY (account_id, mailbox, uid)
+                     REFERENCES messages(account_id, mailbox, uid) ON DELETE CASCADE
+             );
+             CREATE INDEX IF NOT EXISTS idx_gmail_message_ids_lookup
+                 ON gmail_message_ids(account_id, gmail_message_id);
+
              CREATE TABLE IF NOT EXISTS pending_seen_updates (
                  operation_id TEXT NOT NULL UNIQUE,
                  account_id TEXT NOT NULL,
@@ -595,6 +628,7 @@ impl Repository {
         migrate_starred_history_v20(&connection)?;
         migrate_move_to_inbox_v21(&connection)?;
         migrate_message_public_id_aliases_v22(&connection)?;
+        migrate_gmail_incremental_sync_v23(&connection)?;
         connection.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_drafts_remote_identity
                  ON drafts(account_id, remote_mailbox, remote_uid);
@@ -604,7 +638,7 @@ impl Repository {
              CREATE INDEX IF NOT EXISTS idx_messages_body_cache_lru
                  ON messages(account_id, body_last_accessed_at, id)
                  WHERE body_fetched = 1;
-             PRAGMA user_version = 22;",
+             PRAGMA user_version = 23;",
         )?;
         Ok(repository)
     }
@@ -740,6 +774,164 @@ impl Repository {
             ],
         )?;
         Ok(())
+    }
+
+    pub(crate) fn gmail_sync_state(&self, account_id: &str) -> Result<Option<GmailSyncState>> {
+        let connection = self.connection()?;
+        connection
+            .query_row(
+                "SELECT account_id, history_id
+                 FROM gmail_sync_state WHERE account_id = ?1",
+                params![account_id],
+                |row| {
+                    Ok(GmailSyncState {
+                        account_id: row.get(0)?,
+                        history_id: row.get(1)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    pub(crate) fn upsert_gmail_sync_state(&self, state: &GmailSyncState) -> Result<()> {
+        if state.history_id.is_empty()
+            || !state.history_id.bytes().all(|byte| byte.is_ascii_digit())
+        {
+            return Err(MailError::Validation(
+                "the Gmail history cursor is invalid".to_owned(),
+            ));
+        }
+        let connection = self.connection()?;
+        connection.execute(
+            "INSERT INTO gmail_sync_state (account_id, history_id)
+             VALUES (?1, ?2)
+             ON CONFLICT(account_id) DO UPDATE SET
+                 history_id = excluded.history_id,
+                 updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
+            params![state.account_id, state.history_id],
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn clear_gmail_sync_state(&self, account_id: &str) -> Result<()> {
+        self.connection()?.execute(
+            "DELETE FROM gmail_sync_state WHERE account_id = ?1",
+            params![account_id],
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn upsert_gmail_message_id(
+        &self,
+        account_id: &str,
+        mailbox: &str,
+        uid: u32,
+        gmail_message_id: u64,
+    ) -> Result<()> {
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let gmail_message_id = gmail_message_id.to_string();
+        // Gmail may assign a new mailbox-local UID when the same provider
+        // message leaves and later re-enters a label. Rebind its stable ID
+        // without requiring the stale cached row to be deleted first.
+        transaction.execute(
+            "DELETE FROM gmail_message_ids
+             WHERE account_id = ?1 AND mailbox = ?2
+               AND gmail_message_id = ?3 AND uid <> ?4",
+            params![account_id, mailbox, gmail_message_id, uid],
+        )?;
+        transaction.execute(
+            "INSERT INTO gmail_message_ids (
+                 account_id, mailbox, uid, gmail_message_id
+             ) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(account_id, mailbox, uid) DO UPDATE SET
+                 gmail_message_id = excluded.gmail_message_id",
+            params![account_id, mailbox, uid, gmail_message_id],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub(crate) fn cached_gmail_message_locations(
+        &self,
+        account_id: &str,
+        gmail_message_id: u64,
+    ) -> Result<Vec<(String, u32)>> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT mailbox, uid FROM gmail_message_ids
+             WHERE account_id = ?1 AND gmail_message_id = ?2",
+        )?;
+        statement
+            .query_map(params![account_id, gmail_message_id.to_string()], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    pub(crate) fn mailbox_uids_missing_gmail_ids(
+        &self,
+        account_id: &str,
+        mailbox: &str,
+    ) -> Result<Vec<u32>> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT m.uid
+             FROM messages m
+             LEFT JOIN gmail_message_ids g
+               ON g.account_id = m.account_id
+              AND g.mailbox = m.mailbox
+              AND g.uid = m.uid
+             WHERE m.account_id = ?1 AND m.mailbox = ?2
+               AND g.gmail_message_id IS NULL
+             ORDER BY m.uid",
+        )?;
+        statement
+            .query_map(params![account_id, mailbox], |row| row.get(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    pub(crate) fn replace_seen_and_flagged_from_uid_sets(
+        &self,
+        account_id: &str,
+        mailbox: &str,
+        unseen_uids: &HashSet<u32>,
+        flagged_uids: &HashSet<u32>,
+    ) -> Result<usize> {
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let cached = {
+            let mut statement = transaction.prepare(
+                "SELECT uid, flags_json FROM messages
+                 WHERE account_id = ?1 AND mailbox = ?2",
+            )?;
+            statement
+                .query_map(params![account_id, mailbox], |row| {
+                    Ok((row.get::<_, u32>(0)?, row.get::<_, String>(1)?))
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()?
+        };
+        let mut updated = 0;
+        for (uid, encoded_flags) in cached {
+            let mut flags: Vec<String> = serde_json::from_str(&encoded_flags)?;
+            let previous_flags = flags.clone();
+            set_system_flag(&mut flags, "\\Seen", !unseen_uids.contains(&uid));
+            set_system_flag(&mut flags, "\\Flagged", flagged_uids.contains(&uid));
+            let flags = flags_with_pending_updates(&transaction, account_id, mailbox, uid, &flags)?;
+            if flags != previous_flags {
+                transaction.execute(
+                    "UPDATE messages SET flags_json = ?4
+                     WHERE account_id = ?1 AND mailbox = ?2 AND uid = ?3",
+                    params![account_id, mailbox, uid, encode_json(&flags)?],
+                )?;
+                updated += 1;
+            }
+        }
+        transaction.commit()?;
+        Ok(updated)
     }
 
     pub(crate) fn mailbox_history(
@@ -1118,8 +1310,7 @@ impl Repository {
     /// Clears cached messages and all cursors after an IMAP UIDVALIDITY change.
     pub(crate) fn reset_mailbox(&self, account_id: &str, mailbox: &str) -> Result<usize> {
         let mut connection = self.connection()?;
-        let transaction =
-            connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         for table in ["pending_seen_updates", "pending_flagged_updates"] {
             transaction.execute(
                 &format!(
@@ -1173,8 +1364,7 @@ impl Repository {
         remote_uids: &HashSet<u32>,
     ) -> Result<usize> {
         let mut connection = self.connection()?;
-        let transaction =
-            connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let cached = {
             let mut statement = transaction
                 .prepare("SELECT uid FROM messages WHERE account_id = ?1 AND mailbox = ?2")?;
@@ -1200,7 +1390,8 @@ impl Repository {
                      )",
                 )?;
                 let mut rows = statement.query(params![account_id, mailbox, uid])?;
-                rows.next()?.is_some_and(|row| row.get::<_, bool>(0).unwrap_or(false))
+                rows.next()?
+                    .is_some_and(|row| row.get::<_, bool>(0).unwrap_or(false))
             };
             if protected {
                 continue;
@@ -6984,6 +7175,37 @@ fn migrate_message_public_id_aliases_v22(connection: &Connection) -> Result<()> 
     Ok(())
 }
 
+fn migrate_gmail_incremental_sync_v23(connection: &Connection) -> Result<()> {
+    connection.execute_batch(
+        "CREATE TABLE IF NOT EXISTS gmail_sync_state (
+             account_id TEXT PRIMARY KEY NOT NULL,
+             history_id TEXT NOT NULL CHECK (
+                 length(history_id) > 0
+                 AND history_id NOT GLOB '*[^0-9]*'
+             ),
+             updated_at TEXT NOT NULL
+                 DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+             FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
+         );
+         CREATE TABLE IF NOT EXISTS gmail_message_ids (
+             account_id TEXT NOT NULL,
+             mailbox TEXT NOT NULL,
+             uid INTEGER NOT NULL CHECK (uid > 0),
+             gmail_message_id TEXT NOT NULL CHECK (
+                 length(gmail_message_id) > 0
+                 AND gmail_message_id NOT GLOB '*[^0-9]*'
+             ),
+             PRIMARY KEY (account_id, mailbox, uid),
+             UNIQUE (account_id, mailbox, gmail_message_id),
+             FOREIGN KEY (account_id, mailbox, uid)
+                 REFERENCES messages(account_id, mailbox, uid) ON DELETE CASCADE
+         );
+         CREATE INDEX IF NOT EXISTS idx_gmail_message_ids_lookup
+             ON gmail_message_ids(account_id, gmail_message_id);",
+    )?;
+    Ok(())
+}
+
 fn flags_with_pending_updates(
     connection: &Connection,
     account_id: &str,
@@ -9327,7 +9549,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        DraftRecord, MailboxHistory, MailboxState, NewDraftAttachment, Repository,
+        DraftRecord, GmailSyncState, MailboxHistory, MailboxState, NewDraftAttachment, Repository,
         StarredMailboxHistory, migrate_message_previews_v10,
     };
     use crate::{
@@ -9677,6 +9899,106 @@ mod tests {
             },
             synced_at: "2026-07-14T01:00:02Z".to_owned(),
         }
+    }
+
+    #[test]
+    fn gmail_history_and_message_id_state_are_account_scoped_and_cascade() {
+        let (_directory, repository, account) = setup();
+        let cached = message(&account.account_id, false);
+        repository
+            .upsert_message_summary(&cached)
+            .expect("cached Gmail summary");
+        repository
+            .upsert_gmail_sync_state(&GmailSyncState {
+                account_id: account.account_id.clone(),
+                history_id: "123456789".to_owned(),
+            })
+            .expect("history cursor");
+        repository
+            .upsert_gmail_message_id(&account.account_id, "INBOX", cached.uid, 0x17c7_a8b9)
+            .expect("Gmail identity");
+
+        assert_eq!(
+            repository.gmail_sync_state(&account.account_id).unwrap(),
+            Some(GmailSyncState {
+                account_id: account.account_id.clone(),
+                history_id: "123456789".to_owned(),
+            })
+        );
+        assert_eq!(
+            repository
+                .cached_gmail_message_locations(&account.account_id, 0x17c7_a8b9)
+                .unwrap(),
+            vec![("INBOX".to_owned(), 42)]
+        );
+
+        let mut rebound = cached.clone();
+        rebound.uid = 43;
+        repository
+            .upsert_message_summary(&rebound)
+            .expect("same Gmail message under a new mailbox UID");
+        repository
+            .upsert_gmail_message_id(&account.account_id, "INBOX", rebound.uid, 0x17c7_a8b9)
+            .expect("rebound Gmail identity");
+        assert_eq!(
+            repository
+                .cached_gmail_message_locations(&account.account_id, 0x17c7_a8b9)
+                .unwrap(),
+            vec![("INBOX".to_owned(), 43)]
+        );
+
+        repository
+            .delete_missing_uids(&account.account_id, "INBOX", &HashSet::new())
+            .expect("delete cached message");
+        assert!(
+            repository
+                .cached_gmail_message_locations(&account.account_id, 0x17c7_a8b9)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn gmail_imap_flag_sets_preserve_unrelated_flags_and_pending_intent() {
+        let (_directory, repository, account) = setup();
+        let mut cached = message(&account.account_id, false);
+        cached.flags = vec!["\\Answered".to_owned(), "\\Flagged".to_owned()];
+        let row_id = repository
+            .upsert_message_summary(&cached)
+            .expect("cached flags");
+        repository
+            .upsert_mailbox_state(&MailboxState {
+                account_id: account.account_id.clone(),
+                mailbox: "INBOX".to_owned(),
+                uid_validity: Some(91),
+                uid_next: Some(cached.uid + 1),
+                highest_uid: Some(cached.uid),
+                highest_modseq: None,
+                last_synced_at: Some("2026-08-13T00:00:00Z".to_owned()),
+            })
+            .expect("mailbox identity");
+        repository
+            .queue_system_flag_mutation(
+                &account.account_id,
+                "INBOX",
+                cached.uid,
+                SystemFlagKind::Flagged,
+                true,
+            )
+            .expect("pending local star");
+
+        repository
+            .replace_seen_and_flagged_from_uid_sets(
+                &account.account_id,
+                "INBOX",
+                &HashSet::from([cached.uid]),
+                &HashSet::new(),
+            )
+            .expect("replace Gmail system flags");
+        let refreshed = repository.get_message(row_id).expect("refreshed flags");
+        assert!(refreshed.flags.iter().any(|flag| flag == "\\Answered"));
+        assert!(!refreshed.flags.iter().any(|flag| flag == "\\Seen"));
+        assert!(refreshed.flags.iter().any(|flag| flag == "\\Flagged"));
     }
 
     fn initialize_mailbox(
@@ -14163,7 +14485,7 @@ mod tests {
         let version: u32 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("schema version");
-        assert_eq!(version, 22);
+        assert_eq!(version, 23);
         assert!(
             connection
                 .execute(
@@ -14220,7 +14542,7 @@ mod tests {
         let version: u32 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("schema version");
-        assert_eq!(version, 22);
+        assert_eq!(version, 23);
         assert!(
             super::table_has_column(&connection, "mailboxes", "starred_history_before_uid")
                 .unwrap()
@@ -14377,7 +14699,7 @@ mod tests {
                     .expect("schema version connection")
                     .pragma_query_value(None, "user_version", |row| row.get::<_, u32>(0))
                     .expect("schema version"),
-                22
+                23
             );
 
             assert_eq!(
@@ -15116,7 +15438,7 @@ mod tests {
         let version: u32 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("schema version");
-        assert_eq!(version, 22);
+        assert_eq!(version, 23);
         for column in ["source_cleanup_pending", "destination_reconciled"] {
             assert!(
                 super::table_has_column(&connection, "pending_message_actions", column).unwrap()
@@ -15261,7 +15583,7 @@ mod tests {
         let version: u32 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("schema version");
-        assert_eq!(version, 22);
+        assert_eq!(version, 23);
         for column in [
             "operation_id",
             "source_uid_validity",
@@ -15410,7 +15732,7 @@ Body' AS BLOB)
         let version: u32 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("schema version");
-        assert_eq!(version, 22);
+        assert_eq!(version, 23);
         for column in [
             "local_version",
             "has_unsupported_content",
