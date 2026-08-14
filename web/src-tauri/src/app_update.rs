@@ -37,6 +37,21 @@ fn safe_update_install_error(_error: UpdaterError) -> String {
     "更新安装失败，当前版本和本地邮件未受影响，请稍后重试。".to_owned()
 }
 
+fn install_with_prepared_relaunch(
+    prepare_relaunch: impl FnOnce() -> Result<(), String>,
+    install: impl FnOnce() -> Result<(), String>,
+    rollback_relaunch: impl FnOnce(),
+) -> Result<(), String> {
+    prepare_relaunch()?;
+    match install() {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            rollback_relaunch();
+            Err(error)
+        }
+    }
+}
+
 #[derive(Clone, Default)]
 pub(crate) struct AppUpdateRuntime {
     active: Arc<Mutex<Option<ActiveUpdate>>>,
@@ -96,6 +111,7 @@ fn validate_version(value: &str) -> Result<(), String> {
 
 async fn download_and_install(
     app: AppHandle,
+    storage: StorageRuntime,
     expected_version: String,
     installing: Arc<AtomicBool>,
     on_progress: Channel<AppUpdateEvent>,
@@ -137,13 +153,29 @@ async fn download_and_install(
 
     installing.store(true, Ordering::Release);
     let _ = on_progress.send(AppUpdateEvent::Installing);
-    update.install(bytes).map_err(safe_update_install_error)
+    // The Windows updater launches NSIS and terminates this process from inside
+    // `install`, so the foreground marker must be durable before this call.
+    install_with_prepared_relaunch(
+        || {
+            storage.prepare_app_update_relaunch(&expected_version)?;
+            diagnostics::info(
+                "app_update_relaunch_marker_prepared",
+                DiagnosticFields::default()
+                    .operation("app_update_relaunch")
+                    .outcome("foreground"),
+            );
+            Ok(())
+        },
+        || update.install(bytes).map_err(safe_update_install_error),
+        || storage.rollback_app_update_relaunch(&expected_version),
+    )
 }
 
 #[tauri::command]
 pub(crate) async fn start_app_update(
     app: AppHandle,
     runtime: State<'_, AppUpdateRuntime>,
+    storage: State<'_, StorageRuntime>,
     expected_version: String,
     session_id: String,
     on_progress: Channel<AppUpdateEvent>,
@@ -163,10 +195,16 @@ pub(crate) async fn start_app_update(
     let task_channel = on_progress.clone();
     let installing = Arc::new(AtomicBool::new(false));
     let task_installing = installing.clone();
+    let task_storage = storage.inner().clone();
     let task = tauri::async_runtime::spawn(async move {
-        let result =
-            download_and_install(app, expected_version, task_installing, task_channel.clone())
-                .await;
+        let result = download_and_install(
+            app,
+            task_storage,
+            expected_version,
+            task_installing,
+            task_channel.clone(),
+        )
+        .await;
         let mut active = shared_runtime.active.lock().await;
         if active.as_ref().map(|task| task.session_id.as_str()) == Some(task_session_id.as_str()) {
             *active = None;
@@ -264,6 +302,51 @@ mod tests {
         assert!(completed_update_matches(Some("1.4.0"), "1.4.0"));
         assert!(!completed_update_matches(Some("1.3.2"), "1.4.0"));
         assert!(!completed_update_matches(None, "1.4.0"));
+    }
+
+    #[test]
+    fn terminal_installer_is_preceded_by_the_foreground_relaunch_marker() {
+        let steps = std::cell::RefCell::new(Vec::new());
+
+        install_with_prepared_relaunch(
+            || {
+                steps.borrow_mut().push("prepare");
+                Ok(())
+            },
+            || {
+                assert_eq!(steps.borrow().as_slice(), ["prepare"]);
+                steps.borrow_mut().push("install");
+                Ok(())
+            },
+            || steps.borrow_mut().push("rollback"),
+        )
+        .expect("install succeeds");
+
+        assert_eq!(steps.borrow().as_slice(), ["prepare", "install"]);
+    }
+
+    #[test]
+    fn returned_install_failure_rolls_back_the_relaunch_marker() {
+        let steps = std::cell::RefCell::new(Vec::new());
+
+        let error = install_with_prepared_relaunch(
+            || {
+                steps.borrow_mut().push("prepare");
+                Ok(())
+            },
+            || {
+                steps.borrow_mut().push("install");
+                Err("install failed".to_owned())
+            },
+            || steps.borrow_mut().push("rollback"),
+        )
+        .expect_err("install failure");
+
+        assert_eq!(error, "install failed");
+        assert_eq!(
+            steps.borrow().as_slice(),
+            ["prepare", "install", "rollback"]
+        );
     }
 
     #[test]

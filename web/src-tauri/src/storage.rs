@@ -360,6 +360,10 @@ impl StorageRuntime {
         })
     }
 
+    pub(crate) fn rollback_app_update_relaunch(&self, expected_version: &str) {
+        rollback_app_update_relaunch(&self.bootstrap_dir, expected_version);
+    }
+
     pub(crate) fn consume_app_update_relaunch(&self, current_version: &str) -> bool {
         consume_app_update_relaunch(&self.bootstrap_dir, current_version)
     }
@@ -1235,16 +1239,51 @@ fn consume_app_update_relaunch(bootstrap_dir: &Path, current_version: &str) -> b
     requested
 }
 
-fn remove_app_update_relaunch_marker(path: &Path) {
-    match fs::remove_file(path) {
-        Ok(()) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(_) => diagnostics::warn(
-            "app_update_relaunch_marker_cleanup_failed",
+fn rollback_app_update_relaunch(bootstrap_dir: &Path, expected_version: &str) {
+    let path = bootstrap_dir.join(APP_UPDATE_RELAUNCH_FILE);
+    let request = match read_json::<AppUpdateRelaunchRequest>(&path) {
+        Ok(request) => request,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return,
+        Err(_) => {
+            diagnostics::warn(
+                "app_update_relaunch_marker_rollback_read_failed",
+                DiagnosticFields::default()
+                    .operation("app_update_relaunch")
+                    .error(DiagnosticErrorKind::Io),
+            );
+            return;
+        }
+    };
+
+    if request.schema_version != STORAGE_SCHEMA_VERSION
+        || request.expected_version != expected_version
+    {
+        return;
+    }
+
+    if remove_app_update_relaunch_marker(&path) {
+        diagnostics::info(
+            "app_update_relaunch_marker_rolled_back",
             DiagnosticFields::default()
                 .operation("app_update_relaunch")
-                .error(DiagnosticErrorKind::Io),
-        ),
+                .outcome("install_failed"),
+        );
+    }
+}
+
+fn remove_app_update_relaunch_marker(path: &Path) -> bool {
+    match fs::remove_file(path) {
+        Ok(()) => true,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => true,
+        Err(_) => {
+            diagnostics::warn(
+                "app_update_relaunch_marker_cleanup_failed",
+                DiagnosticFields::default()
+                    .operation("app_update_relaunch")
+                    .error(DiagnosticErrorKind::Io),
+            );
+            false
+        }
     }
 }
 
@@ -1451,6 +1490,26 @@ mod tests {
         fs::write(&marker, b"not-json").expect("corrupt marker");
 
         assert!(!consume_app_update_relaunch(directory.path(), "1.4.0"));
+        assert!(!marker.exists());
+    }
+
+    #[test]
+    fn failed_update_rolls_back_only_its_matching_relaunch_marker() {
+        let directory = tempdir().expect("temporary directory");
+        let marker = directory.path().join(APP_UPDATE_RELAUNCH_FILE);
+        write_json_atomically(
+            &marker,
+            &AppUpdateRelaunchRequest {
+                schema_version: STORAGE_SCHEMA_VERSION,
+                expected_version: "1.4.0".to_owned(),
+            },
+        )
+        .expect("foreground relaunch marker");
+
+        rollback_app_update_relaunch(directory.path(), "1.5.0");
+        assert!(marker.exists());
+
+        rollback_app_update_relaunch(directory.path(), "1.4.0");
         assert!(!marker.exists());
     }
 
