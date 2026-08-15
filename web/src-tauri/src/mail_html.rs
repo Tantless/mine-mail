@@ -12,16 +12,13 @@ use html5ever::tree_builder::TreeSink;
 use scraper::{ElementRef, Html, HtmlTreeSink, Selector};
 
 const MAX_NATIVE_HTML_BYTES: usize = 32 * 1024;
-const MAX_NATIVE_ELEMENTS: usize = 100;
 const MAX_NATIVE_DEPTH: usize = 10;
 const MAX_NATIVE_IMAGES: usize = 3;
-const MAX_DEGRADABLE_STYLE_ELEMENTS: usize = 24;
 const MAX_DEGRADABLE_STYLE_DEPTH: usize = 6;
 const MAX_NATIVE_TABLE_DEPTH: usize = 24;
 const MAX_DEGRADABLE_TABLE_ROWS: usize = 4;
 const MAX_DEGRADABLE_TABLE_CELLS: usize = 8;
 const MAX_TEXT_DOMINANT_HTML_BYTES: usize = 12 * 1024;
-const MAX_TEXT_DOMINANT_ELEMENTS: usize = 60;
 const MAX_TEXT_DOMINANT_DEPTH: usize = 16;
 const MAX_TEXT_DOMINANT_CHARS: usize = 1_600;
 const MIN_STYLED_TEXT_DOMINANT_CHARS: usize = 80;
@@ -229,7 +226,6 @@ fn should_use_plain_authored_segment(
 
 #[derive(Debug, Default, PartialEq, Eq)]
 struct HtmlAnalysis {
-    elements: usize,
     max_depth: usize,
     images: usize,
     inline_image_bytes: usize,
@@ -336,7 +332,6 @@ pub(crate) fn sanitize_mail_html(source: &str) -> SanitizedMailHtml {
 
     let style_dependent_layout = analysis.style_blocks > 0
         && (analysis.has_styling_hooks
-            || analysis.elements > MAX_DEGRADABLE_STYLE_ELEMENTS
             || analysis.max_depth > MAX_DEGRADABLE_STYLE_DEPTH
             || analysis.images > 0);
     let degradable_table = analysis.tables == 1
@@ -372,7 +367,6 @@ pub(crate) fn sanitize_mail_html(source: &str) -> SanitizedMailHtml {
         && analysis.has_meaningful_semantics
         && !analysis.has_background_attribute
         && structural_bytes <= MAX_TEXT_DOMINANT_HTML_BYTES
-        && analysis.elements <= MAX_TEXT_DOMINANT_ELEMENTS
         && analysis.max_depth <= MAX_TEXT_DOMINANT_DEPTH
         && analysis.images <= 2
         && visible_text_chars > 0
@@ -404,7 +398,6 @@ pub(crate) fn sanitize_mail_html(source: &str) -> SanitizedMailHtml {
         || (layout_requires_isolation && !text_dominant_template)
         || (style_dependent_layout && !text_dominant_template)
         || structural_bytes > MAX_NATIVE_HTML_BYTES
-        || analysis.elements > MAX_NATIVE_ELEMENTS
         || analysis.max_depth > depth_limit
         || analysis.images > MAX_NATIVE_IMAGES
     {
@@ -711,7 +704,6 @@ fn analyze_html(fragment: &str) -> HtmlAnalysis {
             continue;
         }
 
-        analysis.elements += 1;
         if name == "table" {
             analysis.tables += 1;
             analysis.table_depth += 1;
@@ -2030,6 +2022,24 @@ mod tests {
 
         assert_eq!(result.structure, MailHtmlStructure::PlainEquivalent);
         assert!(result.native_fragment.is_none());
+    }
+
+    #[test]
+    fn semantic_element_volume_does_not_turn_long_text_html_into_an_iframe() {
+        let mut source = String::new();
+        for index in 0..128 {
+            source.push_str(&format!(
+                r#"<p><strong>Section {index}</strong> contains explanatory text and <a href="https://example.com/{index}">supporting details</a>.</p>"#,
+            ));
+        }
+
+        let result = sanitize_mail_html(&source);
+
+        assert_eq!(result.structure, MailHtmlStructure::Native);
+        let native = result.native_fragment.expect("native long-form message");
+        assert_eq!(native.matches("<p>").count(), 128);
+        assert_eq!(native.matches("<strong>").count(), 128);
+        assert_eq!(native.matches("<a ").count(), 128);
     }
 
     #[test]

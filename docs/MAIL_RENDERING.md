@@ -48,6 +48,9 @@ removing sender layout and styling.
 
 - Preserve safe semantics such as paragraphs, emphasis, links, bounded images,
   and an eligible small flat table.
+- Element count alone does not indicate layout complexity. Long, flat semantic
+  documents remain native when they stay within the byte and depth bounds and
+  have no other isolation trigger.
 - Compact, text-dominant notification/profile templates may use this mode when
   their ornamental styling is unnecessary for understanding.
 - Preserve the compose contract's bounded font face/size, text alignment, and
@@ -73,7 +76,7 @@ large documents, image-heavy content, and structures outside the tested bounds.
 
 ## Classification bounds
 
-The exact byte, element, depth, image, table, and text-dominance thresholds are
+The exact byte, depth, image, table, and text-dominance thresholds are
 implementation constants next to the classifier in
 `../web/src-tauri/src/mail_html.rs`. Their executable contract is the adjacent
 Rust test suite.
