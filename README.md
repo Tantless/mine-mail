@@ -158,9 +158,6 @@ cd web
 npm run tauri:build
 ```
 
-开发协作先阅读 [`AGENTS.md`](AGENTS.md)。修改界面前阅读
-[`DESIGN.md`](DESIGN.md)；修改产品行为或邮件渲染前分别阅读
-[`docs/PRODUCT.md`](docs/PRODUCT.md) 和
 [`docs/MAIL_RENDERING.md`](docs/MAIL_RENDERING.md)。接入 Codex、ChatGPT Desktop、
 Claude Code、OpenClaw 或 Hermes 时阅读 [`docs/MCP.md`](docs/MCP.md)。普通界面和核心开发不需要
 任何真实凭据；任何私有 OAuth 配置均严禁提交。
