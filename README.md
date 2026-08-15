@@ -110,6 +110,15 @@ MINE_MAIL_DEV_PORT=1430 npm run tauri:dev
 显式指定的端口若已被占用，启动器会停止并提示更换端口，不会静默连接到其他项目。
 `MINE_MAIL_DEV_PORT` 同样适用于下面的 React-only 开发命令。
 
+### 开发环境中的 Gmail 登录
+
+开发环境如需使用 Google OAuth 登录，请向仓库所有者索取私有的
+`google-oauth-client.json`，并将其放在仓库内的
+`web/src-tauri/google-oauth-client.json`。该文件已被 Git 忽略，不得提交或转发。
+
+现阶段更推荐在开发调试时选择“自定义邮箱”，使用 Google 提供的 IMAP/SMTP
+服务配置登录 Gmail，以避免依赖私有 OAuth 配置。
+
 只开发 React 界面时，可以启用不连接真实邮箱的 mock 演示模式：
 
 ```powershell
@@ -154,5 +163,4 @@ npm run tauri:build
 [`docs/PRODUCT.md`](docs/PRODUCT.md) 和
 [`docs/MAIL_RENDERING.md`](docs/MAIL_RENDERING.md)。接入 Codex、ChatGPT Desktop、
 Claude Code、OpenClaw 或 Hermes 时阅读 [`docs/MCP.md`](docs/MCP.md)。普通界面和核心开发不需要
-任何真实凭据；Gmail OAuth 联调使用的私有配置必须放在被 Git 忽略的
-`web/src-tauri/google-oauth-client.json`，严禁提交。
+任何真实凭据；任何私有 OAuth 配置均严禁提交。
