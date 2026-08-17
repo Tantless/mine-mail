@@ -22,7 +22,7 @@ describe("installer state presentation", () => {
 
   it("provides a complete browser-preview fallback", () => {
     expect(defaultPreviewInfo()).toMatchObject({
-      version: "1.3.9",
+      version: "1.4.0",
       payloadAvailable: true,
     });
   });
