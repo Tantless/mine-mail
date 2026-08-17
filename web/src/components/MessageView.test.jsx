@@ -55,6 +55,15 @@ describe("MessageView idle experience", () => {
     expect(screen.getByText("已打开的邮件")).toBeTruthy();
   });
 
+  it("keeps the empty reader quiet when homepage poetry is disabled", () => {
+    render(<MessageView message={null} showIdlePoetry={false} />);
+
+    expect(screen.queryByTestId("reader-idle-experience")).toBeNull();
+    expect(
+      screen.getByRole("region", { name: "邮件阅读区，当前未打开邮件" }),
+    ).toBeTruthy();
+  });
+
   it("uses the vertical-only scroll contract for an opened message", () => {
     const { container } = render(
       <MessageView

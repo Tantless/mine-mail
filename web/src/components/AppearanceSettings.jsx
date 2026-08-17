@@ -159,6 +159,8 @@ function ThemeCard({
 
 export function AppearanceSettings({
   appearance,
+  idlePoetryEnabled = true,
+  onIdlePoetryEnabledChange,
   onSelect,
   onImport,
   onUpdate,
@@ -511,6 +513,24 @@ export function AppearanceSettings({
             </div>
           ) : null}
         </div>
+      </section>
+
+      <section className="appearance-section appearance-preference-bar" aria-label="主页展示">
+        <label className="settings-preference-row settings-preference-row--toggle">
+          <span>
+            <strong>主页诗歌</strong>
+            <small>未打开邮件时，在阅读区展示随机诗句。</small>
+          </span>
+          <input
+            type="checkbox"
+            aria-label="展示主页诗歌"
+            checked={idlePoetryEnabled}
+            disabled={Boolean(busyAction)}
+            onChange={(event) =>
+              onIdlePoetryEnabledChange?.(event.target.checked)
+            }
+          />
+        </label>
       </section>
 
       {error || notice || busyAction ? (

@@ -75,6 +75,7 @@ const defaultSettings = {
   notificationSound: "mail",
   remoteImageMode: "automatic",
   aiAssistantDefaultOpen: true,
+  idlePoetryEnabled: true,
   mcpEnabled: false,
   mcpInformationEnabled: true,
   mcpSendEnabled: false,
@@ -7714,6 +7715,7 @@ export function App() {
           : selectedIndex >= 0 && selectedIndex < visibleMessages.length - 1
       }
       remoteImageMode={settings.remoteImageMode}
+      showIdlePoetry={settings.idlePoetryEnabled !== false}
       translationQueue={readerTranslationQueueRef.current}
       onTranslateMessage={(parts, languageId) =>
         mailApi.translateMailContent(parts, languageId)
@@ -7877,6 +7879,7 @@ export function App() {
         ) : needsAccountWorkspace ? (
           <AccountEmptyWorkspace
             needsRepair={accountBackendUnavailable}
+            showIdlePoetry={settings.idlePoetryEnabled !== false}
             onConnect={
               accountBackendUnavailable ? openAccountRepair : openAccountSetup
             }

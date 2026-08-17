@@ -592,6 +592,7 @@ export function MessageView({
   canPrevious,
   canNext,
   remoteImageMode = "automatic",
+  showIdlePoetry = true,
   onOpenExternalLink,
   resolveReferencedMessage,
   onOpenReferencedMessage,
@@ -709,7 +710,7 @@ export function MessageView({
         aria-label="邮件阅读区，当前未打开邮件"
         data-reader-motion="idle"
       >
-        <ReaderIdleExperience />
+        {showIdlePoetry ? <ReaderIdleExperience /> : null}
       </section>
     );
   }

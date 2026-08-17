@@ -159,6 +159,7 @@ pub(super) struct StoredDesktopSettings {
     pub notification_sound: NotificationSound,
     pub remote_image_mode: RemoteImageMode,
     pub ai_assistant_default_open: bool,
+    pub idle_poetry_enabled: bool,
     pub mcp_enabled: bool,
     pub mcp_information_enabled: bool,
     pub mcp_send_enabled: bool,
@@ -183,6 +184,7 @@ impl Default for StoredDesktopSettings {
             notification_sound: NotificationSound::Mail,
             remote_image_mode: RemoteImageMode::Automatic,
             ai_assistant_default_open: true,
+            idle_poetry_enabled: true,
             mcp_enabled: false,
             mcp_information_enabled: true,
             mcp_send_enabled: false,
@@ -202,6 +204,7 @@ pub(crate) struct DesktopSettingsUpdate {
     pub notification_sound: Option<NotificationSound>,
     pub remote_image_mode: Option<RemoteImageMode>,
     pub ai_assistant_default_open: Option<bool>,
+    pub idle_poetry_enabled: Option<bool>,
     pub mcp_enabled: Option<bool>,
     pub mcp_information_enabled: Option<bool>,
     pub mcp_send_enabled: Option<bool>,
@@ -219,6 +222,7 @@ pub(crate) struct DesktopSettingsDto {
     pub notification_sound: NotificationSound,
     pub remote_image_mode: RemoteImageMode,
     pub ai_assistant_default_open: bool,
+    pub idle_poetry_enabled: bool,
     pub mcp_enabled: bool,
     pub mcp_information_enabled: bool,
     pub mcp_send_enabled: bool,
@@ -262,6 +266,8 @@ impl DesktopSettingsStore {
                      CHECK (remote_image_mode IN ('automatic', 'ask', 'blocked')),
                  ai_assistant_default_open INTEGER NOT NULL DEFAULT 1
                      CHECK (ai_assistant_default_open IN (0, 1)),
+                 idle_poetry_enabled INTEGER NOT NULL DEFAULT 1
+                     CHECK (idle_poetry_enabled IN (0, 1)),
                  mcp_enabled INTEGER NOT NULL DEFAULT 0
                      CHECK (mcp_enabled IN (0, 1)),
                  mcp_information_enabled INTEGER NOT NULL DEFAULT 1
@@ -336,6 +342,17 @@ impl DesktopSettingsStore {
                 "ALTER TABLE desktop_settings
                  ADD COLUMN ai_assistant_default_open INTEGER NOT NULL DEFAULT 1
                      CHECK (ai_assistant_default_open IN (0, 1))",
+                [],
+            )?;
+        }
+        if !existing_columns
+            .iter()
+            .any(|column| column == "idle_poetry_enabled")
+        {
+            connection.execute(
+                "ALTER TABLE desktop_settings
+                 ADD COLUMN idle_poetry_enabled INTEGER NOT NULL DEFAULT 1
+                     CHECK (idle_poetry_enabled IN (0, 1))",
                 [],
             )?;
         }
@@ -420,8 +437,9 @@ impl DesktopSettingsStore {
                     notifications_enabled, notification_delivery,
                     notification_baseline_initialized, notification_baseline_uid,
                     remote_image_mode, notification_sound_enabled,
-                    notification_sound, ai_assistant_default_open, mcp_enabled,
-                    mcp_information_enabled, mcp_send_enabled
+                    notification_sound, ai_assistant_default_open,
+                    idle_poetry_enabled, mcp_enabled, mcp_information_enabled,
+                    mcp_send_enabled
              FROM desktop_settings WHERE id = 1",
             [],
             |row| {
@@ -442,9 +460,10 @@ impl DesktopSettingsStore {
                         &row.get::<_, String>(8)?,
                     ),
                     ai_assistant_default_open: row.get::<_, i64>(9)? != 0,
-                    mcp_enabled: row.get::<_, i64>(10)? != 0,
-                    mcp_information_enabled: row.get::<_, i64>(11)? != 0,
-                    mcp_send_enabled: row.get::<_, i64>(12)? != 0,
+                    idle_poetry_enabled: row.get::<_, i64>(10)? != 0,
+                    mcp_enabled: row.get::<_, i64>(11)? != 0,
+                    mcp_information_enabled: row.get::<_, i64>(12)? != 0,
+                    mcp_send_enabled: row.get::<_, i64>(13)? != 0,
                 })
             },
         )
@@ -464,9 +483,10 @@ impl DesktopSettingsStore {
                  notification_sound_enabled = ?8,
                  notification_sound = ?9,
                  ai_assistant_default_open = ?10,
-                 mcp_enabled = ?11,
-                 mcp_information_enabled = ?12,
-                 mcp_send_enabled = ?13,
+                 idle_poetry_enabled = ?11,
+                 mcp_enabled = ?12,
+                 mcp_information_enabled = ?13,
+                 mcp_send_enabled = ?14,
                  updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
              WHERE id = 1",
             params![
@@ -480,6 +500,7 @@ impl DesktopSettingsStore {
                 settings.notification_sound_enabled,
                 settings.notification_sound.as_storage_value(),
                 settings.ai_assistant_default_open,
+                settings.idle_poetry_enabled,
                 settings.mcp_enabled,
                 settings.mcp_information_enabled,
                 settings.mcp_send_enabled,
@@ -751,6 +772,7 @@ mod tests {
         assert_eq!(defaults.poll_interval_minutes, 5);
         assert_eq!(defaults.remote_image_mode, RemoteImageMode::Automatic);
         assert!(defaults.ai_assistant_default_open);
+        assert!(defaults.idle_poetry_enabled);
         assert!(!defaults.mcp_enabled);
         assert!(defaults.mcp_information_enabled);
         assert!(!defaults.mcp_send_enabled);
@@ -765,6 +787,7 @@ mod tests {
             notification_sound: NotificationSound::Reminder,
             remote_image_mode: RemoteImageMode::Blocked,
             ai_assistant_default_open: false,
+            idle_poetry_enabled: false,
             mcp_enabled: true,
             mcp_information_enabled: false,
             mcp_send_enabled: true,
@@ -809,6 +832,7 @@ mod tests {
         assert!(migrated.notification_sound_enabled);
         assert_eq!(migrated.notification_sound, NotificationSound::Mail);
         assert!(migrated.ai_assistant_default_open);
+        assert!(migrated.idle_poetry_enabled);
         assert!(!migrated.mcp_enabled);
         assert!(migrated.mcp_information_enabled);
         assert!(!migrated.mcp_send_enabled);

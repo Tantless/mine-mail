@@ -21,6 +21,7 @@ const settings = {
   notificationSound: "mail",
   remoteImageMode: "automatic",
   aiAssistantDefaultOpen: true,
+  idlePoetryEnabled: true,
   mcpEnabled: false,
   mcpInformationEnabled: true,
   mcpSendEnabled: false,
@@ -149,7 +150,24 @@ describe("SettingsPanel account flow", () => {
       screen.getByRole("button", { name: "外观" }).getAttribute("aria-current"),
     ).toBe("page");
     expect(screen.getByRole("button", { name: "添加自定义主题" })).toBeTruthy();
+    expect(screen.getByRole("checkbox", { name: "展示主页诗歌" }).checked).toBe(true);
     expect(screen.queryByText(/偏好设置会自动保存在这台设备上/)).toBeNull();
+  });
+
+  it("saves the homepage poetry preference from the appearance category", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn();
+    render(
+      <SettingsPanel
+        {...panelProps({ focusTarget: "appearance", onSave })}
+      />,
+    );
+
+    await user.click(screen.getByRole("checkbox", { name: "展示主页诗歌" }));
+
+    expect(onSave).toHaveBeenCalledWith(
+      expect.objectContaining({ idlePoetryEnabled: false }),
+    );
   });
 
   it("opens Agent configuration as a first-class settings category", async () => {

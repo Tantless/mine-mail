@@ -237,7 +237,9 @@ applied at the root.
 ### Empty reader
 
 - With no open message, the reader is transparent and shows the bundled rotating
-  quotation scene directly on the wallpaper.
+  quotation scene directly on the wallpaper when **主页诗歌** is enabled. Turning
+  it off leaves the same quiet transparent reader without mounting quotation
+  text or animation.
 - Quotes render with the brush typeface, visible attribution, and character-level
   entrance. Long text scales rather than crops. Do not add a canvas, glow,
   gradient text, or extra background card.
@@ -284,6 +286,9 @@ applied at the root.
   their contrast and intensity follow the selected palette. External brands,
   avatars, sender HTML, wallpaper pixels, and platform-owned surfaces remain
   outside palette recoloring.
+- A standalone **主页诗歌** preference bar follows theme configuration. It uses
+  the shared compact switch, defaults on, and controls the empty-reader quotation
+  scene independently of the selected built-in or custom theme.
 - Account rows keep a stable height. Avatar editing starts from the avatar;
   remarks and secondary actions live in the row menu. Adding an account drills
   from provider choice into the form.

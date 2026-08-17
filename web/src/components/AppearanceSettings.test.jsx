@@ -29,6 +29,8 @@ const builtinAppearance = {
 function props(overrides = {}) {
   return {
     appearance,
+    idlePoetryEnabled: true,
+    onIdlePoetryEnabledChange: vi.fn(),
     onSelect: vi.fn().mockResolvedValue(appearance),
     onImport: vi.fn().mockResolvedValue(appearance),
     onUpdate: vi.fn().mockResolvedValue(appearance),
@@ -127,6 +129,21 @@ describe("AppearanceSettings", () => {
       paletteId: "sky-dark",
     });
     expect(screen.queryByRole("checkbox", { name: /夜间模式/ })).toBeNull();
+  });
+
+  it("exposes the homepage poetry preference as an independent appearance bar", async () => {
+    const user = userEvent.setup();
+    const onIdlePoetryEnabledChange = vi.fn();
+    render(
+      <AppearanceSettings
+        {...props({ onIdlePoetryEnabledChange })}
+      />,
+    );
+
+    const toggle = screen.getByRole("checkbox", { name: "展示主页诗歌" });
+    expect(toggle.checked).toBe(true);
+    await user.click(toggle);
+    expect(onIdlePoetryEnabledChange).toHaveBeenCalledWith(false);
   });
 
   it("imports a supported image through a bounded encoded payload", async () => {

@@ -244,6 +244,7 @@ function createDemoState() {
       notificationSound: "mail",
       remoteImageMode: "automatic",
       aiAssistantDefaultOpen: true,
+      idlePoetryEnabled: true,
       mcpEnabled: false,
       mcpInformationEnabled: true,
       mcpSendEnabled: false,

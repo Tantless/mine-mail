@@ -207,6 +207,9 @@ function normalizeSettings(settings = {}) {
       settings.ai_assistant_default_open ??
       true,
     ),
+    idlePoetryEnabled: Boolean(
+      settings.idlePoetryEnabled ?? settings.idle_poetry_enabled ?? true,
+    ),
     mcpEnabled: Boolean(settings.mcpEnabled ?? settings.mcp_enabled ?? false),
     mcpInformationEnabled: Boolean(
       settings.mcpInformationEnabled ?? settings.mcp_information_enabled ?? true,
@@ -239,6 +242,7 @@ function settingsDto(settings) {
     notification_sound: normalized.notificationSound,
     remote_image_mode: normalized.remoteImageMode,
     ai_assistant_default_open: normalized.aiAssistantDefaultOpen,
+    idle_poetry_enabled: normalized.idlePoetryEnabled,
     mcp_enabled: normalized.mcpEnabled,
     mcp_information_enabled: normalized.mcpInformationEnabled,
     mcp_send_enabled: normalized.mcpSendEnabled,

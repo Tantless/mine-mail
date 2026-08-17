@@ -8557,6 +8557,17 @@ html[data-surface="new-mail-notification"] #root {
   line-height: 1.55;
 }
 
+.appearance-preference-bar {
+  display: block;
+  overflow: hidden;
+  padding: 0;
+}
+
+.appearance-preference-bar .settings-preference-row {
+  min-height: 72px;
+  border-bottom: 0;
+}
+
 .appearance-theme-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(130px, 1fr));

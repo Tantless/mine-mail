@@ -1398,6 +1398,13 @@ export function SettingsPanel({
           {activeSection === "appearance" ? (
             <AppearanceSettings
               appearance={appearance}
+              idlePoetryEnabled={value.idlePoetryEnabled !== false}
+              onIdlePoetryEnabledChange={(idlePoetryEnabled) =>
+                updateSettings((current) => ({
+                  ...current,
+                  idlePoetryEnabled,
+                }))
+              }
               onSelect={onSelectAppearance}
               onImport={onImportCustomTheme}
               onUpdate={onUpdateCustomTheme}

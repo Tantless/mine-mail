@@ -744,6 +744,10 @@ product decision changes.
   controls remain visible for every theme, while built-in themes expose their
   fixed values as disabled controls. The current selection and each preset's
   settings persist in Rust-owned local state.
+- The device-global **主页诗歌** appearance preference defaults on. Turning it off
+  suppresses the rotating quotation and its animation whenever no message is
+  open, including the disconnected-account workspace, without changing the
+  wallpaper, account prompt, theme selection, or opened-message behavior.
 - Custom background import accepts PNG, JPEG, and WebP only. Rust rejects sources
   above 20 MB or roughly 50 megapixels, applies embedded orientation, strips
   metadata by re-encoding, limits the long edge to 5120 pixels, creates a bounded
