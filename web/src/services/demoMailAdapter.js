@@ -280,6 +280,13 @@ function createDemoState() {
       googleOauthConfigured: true,
     },
     profileAvatars: [],
+    appearance: {
+      selectionInitialized: false,
+      activeTheme: { kind: "builtin", id: "daylight" },
+      previousTheme: null,
+      customPresets: [],
+      activeBackgroundDataUrl: null,
+    },
     favoriteContacts: new Set(),
     contactRemarks: new Map(),
     accountPresets: [
@@ -1982,6 +1989,105 @@ function createDemoActions(
     updateDesktopSettings(settings) {
       state.settings = normalizeSettings(settings);
       return structuredClone(state.settings);
+    },
+
+    getAppearanceSettings() {
+      return structuredClone(state.appearance);
+    },
+
+    selectAppearanceTheme(request) {
+      const preset = state.appearance.customPresets.find(
+        (item) => item.id === request.id,
+      );
+      if (request.kind === "custom" && !preset) {
+        throw new Error("自定义主题不存在");
+      }
+      const unchanged =
+        state.appearance.activeTheme.kind === request.kind &&
+        state.appearance.activeTheme.id === request.id;
+      state.appearance = {
+        ...state.appearance,
+        selectionInitialized: true,
+        previousTheme: unchanged
+          ? state.appearance.previousTheme
+          : structuredClone(state.appearance.activeTheme),
+        activeTheme: structuredClone(request),
+        activeBackgroundDataUrl:
+          request.kind === "custom" ? preset?.imageDataUrl || null : null,
+      };
+      return structuredClone(state.appearance);
+    },
+
+    importCustomTheme(request) {
+      const id = crypto.randomUUID();
+      const names = new Set(
+        state.appearance.customPresets.map((preset) => preset.name),
+      );
+      let nextNumber = 1;
+      while (names.has(`自定义主题 ${nextNumber}`)) nextNumber += 1;
+      const preset = {
+        id,
+        name: request.name?.trim() || `自定义主题 ${nextNumber}`,
+        paletteId: "sky-light",
+        focalX: 0.5,
+        focalY: 0.5,
+        thumbnailDataUrl: request.imageDataUrl,
+        imageDataUrl: request.imageDataUrl,
+      };
+      state.appearance.customPresets.push(preset);
+      state.appearance.previousTheme = structuredClone(
+        state.appearance.activeTheme,
+      );
+      state.appearance.activeTheme = { kind: "custom", id };
+      state.appearance.activeBackgroundDataUrl = request.imageDataUrl;
+      state.appearance.selectionInitialized = true;
+      return structuredClone(state.appearance);
+    },
+
+    updateCustomTheme(request) {
+      const index = state.appearance.customPresets.findIndex(
+        (item) => item.id === request.id,
+      );
+      if (index < 0) throw new Error("自定义主题不存在");
+      const current = state.appearance.customPresets[index];
+      const next = {
+        ...current,
+        ...(request.name != null ? { name: request.name.trim() } : {}),
+        ...(request.paletteId != null ? { paletteId: request.paletteId } : {}),
+        ...(request.focalX != null ? { focalX: request.focalX } : {}),
+        ...(request.focalY != null ? { focalY: request.focalY } : {}),
+        ...(request.imageDataUrl
+          ? {
+              imageDataUrl: request.imageDataUrl,
+              thumbnailDataUrl: request.imageDataUrl,
+            }
+          : {}),
+      };
+      state.appearance.customPresets[index] = next;
+      if (state.appearance.activeTheme.id === request.id) {
+        state.appearance.activeBackgroundDataUrl = next.imageDataUrl;
+      }
+      return structuredClone(state.appearance);
+    },
+
+    deleteCustomTheme(id) {
+      state.appearance.customPresets = state.appearance.customPresets.filter(
+        (item) => item.id !== id,
+      );
+      if (state.appearance.activeTheme.id === id) {
+        const previous = state.appearance.previousTheme;
+        const previousPreset = state.appearance.customPresets.find(
+          (item) => item.id === previous?.id,
+        );
+        const fallback =
+          previous?.kind === "builtin" || previousPreset
+            ? previous
+            : { kind: "builtin", id: "daylight" };
+        state.appearance.activeTheme = structuredClone(fallback);
+        state.appearance.activeBackgroundDataUrl =
+          fallback.kind === "custom" ? previousPreset.imageDataUrl : null;
+      }
+      return structuredClone(state.appearance);
     },
 
     getNewMailNotification() {

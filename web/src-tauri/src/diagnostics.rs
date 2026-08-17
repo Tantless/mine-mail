@@ -1315,8 +1315,8 @@ mod tests {
             instrumented += usize::from(has_diagnostics);
         }
 
-        assert_eq!(blocks.len(), 82, "update the command coverage contract");
-        assert_eq!(instrumented, 80, "update the command coverage contract");
+        assert_eq!(blocks.len(), 87, "update the command coverage contract");
+        assert_eq!(instrumented, 85, "update the command coverage contract");
         assert!(
             instrumented * 100 > blocks.len() * 95,
             "diagnostic command coverage must remain above 95%"

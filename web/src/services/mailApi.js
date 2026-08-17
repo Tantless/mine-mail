@@ -4,6 +4,7 @@ import {
   toUserFacingError,
   userFacingErrorMessage,
 } from "../utils/userFacingError.js";
+import { normalizeAppearancePaletteId } from "../appearanceThemes.js";
 
 export const isTauriRuntime =
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -53,6 +54,7 @@ async function prepareDemoAdapter() {
       normalizeSettings,
       normalizeProfileAvatar,
       normalizeContact,
+      normalizeAppearance,
     });
   });
   return demoAdapterReady;
@@ -90,10 +92,13 @@ const commandFailureMessages = Object.freeze({
   create_mailbox_role: "邮箱文件夹创建没有完成",
   delete_draft: "删除草稿没有完成",
   delete_profile_avatar: "移除头像没有完成",
+  delete_custom_theme: "删除自定义主题没有完成",
   fetch_mailbox_message: "邮件正文读取没有完成",
   fetch_outbox_message: "发件队列邮件读取没有完成",
   get_account_status: "账户状态读取没有完成",
   get_desktop_settings: "桌面设置读取没有完成",
+  get_appearance_settings: "外观设置读取没有完成",
+  import_custom_theme: "自定义主题添加没有完成",
   list_contact_messages: "往来邮件读取没有完成",
   list_contacts: "联系人读取没有完成",
   list_archive_folder_candidates: "服务器文件夹读取没有完成",
@@ -125,6 +130,7 @@ const commandFailureMessages = Object.freeze({
   set_contact_remark: "联系人备注保存没有完成",
   set_message_seen: "已读状态保存没有完成",
   set_message_starred_by_id: "星标状态保存没有完成",
+  select_appearance_theme: "主题切换没有完成",
   switch_account: "邮箱账户切换没有完成",
   test_ai_connection: "AI 连接测试没有完成",
   test_ai_provider_instance: "AI 渠道连接测试没有完成",
@@ -136,6 +142,7 @@ const commandFailureMessages = Object.freeze({
   sync_mailbox: "邮箱文件夹同步没有完成",
   sync_sent: "已发送邮件同步没有完成",
   update_desktop_settings: "桌面设置保存没有完成",
+  update_custom_theme: "自定义主题保存没有完成",
 });
 
 function commandError(error, command) {
@@ -534,6 +541,42 @@ function normalizeAiConfig(config = {}) {
             : null,
         }))
       : [],
+  };
+}
+
+function normalizeAppearance(appearance = {}) {
+  const activeTheme = appearance.activeTheme ?? appearance.active_theme ?? {};
+  const customPresets = appearance.customPresets ?? appearance.custom_presets ?? [];
+  return {
+    selectionInitialized: Boolean(
+      appearance.selectionInitialized ?? appearance.selection_initialized,
+    ),
+    activeTheme: {
+      kind: activeTheme.kind === "custom" ? "custom" : "builtin",
+      id: String(activeTheme.id || "daylight"),
+    },
+    customPresets: customPresets.map((preset) => {
+      const legacyMode =
+        preset.effectiveMode ??
+        preset.effective_mode ??
+        (preset.mode === "dark" ? "dark" : "light");
+      return {
+        id: String(preset.id || ""),
+        name: String(preset.name || "自定义主题"),
+        paletteId: normalizeAppearancePaletteId(
+          preset.paletteId ?? preset.palette_id,
+          legacyMode,
+        ),
+        focalX: Number(preset.focalX ?? preset.focal_x ?? 0.5),
+        focalY: Number(preset.focalY ?? preset.focal_y ?? 0.5),
+        thumbnailDataUrl:
+          preset.thumbnailDataUrl ?? preset.thumbnail_data_url ?? null,
+      };
+    }),
+    activeBackgroundDataUrl:
+      appearance.activeBackgroundDataUrl ??
+      appearance.active_background_data_url ??
+      null,
   };
 }
 
@@ -1361,6 +1404,55 @@ export const mailApi = {
     return callDemo("updateDesktopSettings", normalized);
   },
 
+  async getAppearanceSettings() {
+    if (isTauri) {
+      return normalizeAppearance(await desktopInvoke("get_appearance_settings"));
+    }
+    return normalizeAppearance(await callDemo("getAppearanceSettings"));
+  },
+
+  async selectAppearanceTheme(request) {
+    const response = isTauri
+      ? await desktopInvoke("select_appearance_theme", { request })
+      : await callDemo("selectAppearanceTheme", request);
+    return normalizeAppearance(response);
+  },
+
+  async importCustomTheme(request) {
+    const response = isTauri
+      ? await desktopInvoke("import_custom_theme", {
+          request: {
+            name: request.name || null,
+            imageDataUrl: request.imageDataUrl,
+          },
+        })
+      : await callDemo("importCustomTheme", request);
+    return normalizeAppearance(response);
+  },
+
+  async updateCustomTheme(request) {
+    const response = isTauri
+      ? await desktopInvoke("update_custom_theme", {
+          request: {
+            id: request.id,
+            name: request.name ?? null,
+            paletteId: request.paletteId ?? null,
+            focalX: request.focalX ?? null,
+            focalY: request.focalY ?? null,
+            imageDataUrl: request.imageDataUrl ?? null,
+          },
+        })
+      : await callDemo("updateCustomTheme", request);
+    return normalizeAppearance(response);
+  },
+
+  async deleteCustomTheme(id) {
+    const response = isTauri
+      ? await desktopInvoke("delete_custom_theme", { request: { id } })
+      : await callDemo("deleteCustomTheme", id);
+    return normalizeAppearance(response);
+  },
+
   async getNewMailNotification() {
     if (isTauri) return desktopInvoke("get_new_mail_notification");
     return callDemo("getNewMailNotification");
@@ -1544,6 +1636,7 @@ export const __testing = {
   normalizeSettings,
   normalizeAccountStatus,
   normalizeProfileAvatar,
+  normalizeAppearance,
   normalizeContact,
   normalizeAiSession,
 };

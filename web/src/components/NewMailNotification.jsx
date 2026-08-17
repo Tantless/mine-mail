@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { X } from "@phosphor-icons/react";
 import { mailApi } from "../services/mailApi.js";
 import { ProfileAvatar } from "./ProfileAvatar.jsx";
+import { appearancePalettes } from "../appearanceThemes.js";
 
 const visibleDurationMs = 8000;
 const notificationCountLimit = 99;
@@ -43,9 +44,24 @@ function notificationCountLabel(count) {
 
 function applySavedTheme() {
   const saved = window.localStorage.getItem("mine-mail-theme");
-  document.documentElement.dataset.theme = validThemes.has(saved)
-    ? saved
-    : "daylight";
+  const root = document.documentElement;
+  if (saved !== "custom") {
+    root.dataset.theme = validThemes.has(saved) ? saved : "daylight";
+    delete root.dataset.colorMode;
+    return;
+  }
+  const paletteId = window.localStorage.getItem("mine-mail-custom-palette");
+  const palette =
+    appearancePalettes.find((item) => item.id === paletteId) ||
+    appearancePalettes.find((item) => item.id === "sky");
+  root.dataset.theme = "custom";
+  root.dataset.colorMode =
+    window.localStorage.getItem("mine-mail-custom-mode") === "dark"
+      ? "dark"
+      : "light";
+  root.style.setProperty("--custom-accent", palette.main);
+  root.style.setProperty("--custom-accent-soft", palette.soft);
+  root.style.setProperty("--custom-accent-deep", palette.deep);
 }
 
 function playWebSound(preset) {
@@ -240,7 +256,7 @@ export function NewMailNotification() {
   useEffect(() => {
     applySavedTheme();
     const handleStorage = (event) => {
-      if (event.key === "mine-mail-theme") applySavedTheme();
+      if (event.key?.startsWith("mine-mail-")) applySavedTheme();
     };
     window.addEventListener("storage", handleStorage);
     let cancelled = false;

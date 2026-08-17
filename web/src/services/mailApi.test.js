@@ -1081,6 +1081,78 @@ describe("mailApi desktop IPC contract", () => {
     });
   });
 
+  it("maps appearance presets without exposing managed asset paths", async () => {
+    const response = {
+      selectionInitialized: true,
+      activeTheme: { kind: "custom", id: "preset-1" },
+      customPresets: [
+        {
+          id: "preset-1",
+          name: "海岸",
+          paletteId: "teal",
+          mode: "auto",
+          effectiveMode: "dark",
+          focalX: 0.25,
+          focalY: 0.6,
+          thumbnailDataUrl: "data:image/jpeg;base64,AQID",
+        },
+      ],
+      activeBackgroundDataUrl: "data:image/jpeg;base64,BAUG",
+    };
+    ipc.invoke
+      .mockResolvedValueOnce(response)
+      .mockResolvedValueOnce(response)
+      .mockResolvedValueOnce(response)
+      .mockResolvedValueOnce(response)
+      .mockResolvedValueOnce({
+        ...response,
+        activeTheme: { kind: "builtin", id: "daylight" },
+        customPresets: [],
+        activeBackgroundDataUrl: null,
+      });
+    const { mailApi } = await import("./mailApi.js");
+
+    const loaded = await mailApi.getAppearanceSettings();
+    expect(loaded.customPresets[0]).toEqual(
+      expect.objectContaining({ name: "海岸", paletteId: "teal-dark" }),
+    );
+    expect(JSON.stringify(loaded)).not.toContain("asset_file_name");
+    await mailApi.selectAppearanceTheme({ kind: "custom", id: "preset-1" });
+    await mailApi.importCustomTheme({
+      imageDataUrl: "data:image/png;base64,AQID",
+    });
+    await mailApi.updateCustomTheme({
+      id: "preset-1",
+      paletteId: "rose-light",
+      focalX: 0.4,
+    });
+    await mailApi.deleteCustomTheme("preset-1");
+
+    expect(ipc.invoke).toHaveBeenNthCalledWith(1, "get_appearance_settings", undefined);
+    expect(ipc.invoke).toHaveBeenNthCalledWith(2, "select_appearance_theme", {
+      request: { kind: "custom", id: "preset-1" },
+    });
+    expect(ipc.invoke).toHaveBeenNthCalledWith(3, "import_custom_theme", {
+      request: {
+        name: null,
+        imageDataUrl: "data:image/png;base64,AQID",
+      },
+    });
+    expect(ipc.invoke).toHaveBeenNthCalledWith(4, "update_custom_theme", {
+      request: {
+        id: "preset-1",
+        name: null,
+        paletteId: "rose-light",
+        focalX: 0.4,
+        focalY: null,
+        imageDataUrl: null,
+      },
+    });
+    expect(ipc.invoke).toHaveBeenNthCalledWith(5, "delete_custom_theme", {
+      request: { id: "preset-1" },
+    });
+  });
+
   it("maps local contacts and correspondence through narrow desktop commands", async () => {
     ipc.invoke
       .mockResolvedValueOnce({

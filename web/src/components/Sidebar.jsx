@@ -1,7 +1,5 @@
 import {
   useEffect,
-  useId,
-  useLayoutEffect,
   useRef,
 } from "react";
 import {
@@ -96,13 +94,6 @@ function capabilityStateFor(role, capability) {
   };
 }
 
-const themeOptions = [
-  { id: "daylight", label: "日间", swatch: "theme-swatch--daylight" },
-  { id: "night", label: "夜间", swatch: "theme-swatch--night" },
-  { id: "dusk", label: "黄昏", swatch: "theme-swatch--dusk" },
-  { id: "forest", label: "森林", swatch: "theme-swatch--forest" },
-];
-
 const providerNames = {
   "163": "163 邮箱",
   qq: "QQ 邮箱",
@@ -130,11 +121,6 @@ export function Sidebar({
   activeFolder,
   onFolderChange,
   onCompose,
-  theme,
-  onThemeChange,
-  isThemeMenuOpen,
-  onThemeMenuToggle,
-  onThemeMenuClose,
   counts = {},
   outboxActive = false,
   sentHasNew = false,
@@ -147,6 +133,7 @@ export function Sidebar({
   onAccountSwitch,
   onAddAccount,
   onOpenSettings,
+  onOpenAppearance,
   mailboxCapabilities = null,
   onMailboxCapabilityRetry = null,
   isDrawerOpen = false,
@@ -157,12 +144,6 @@ export function Sidebar({
   const folderNavRef = useRef(null);
   const accountSwitcherRef = useRef(null);
   const drawerPreviousFocusRef = useRef(null);
-  const themeToggleRef = useRef(null);
-  const themeOptionRefs = useRef([]);
-  const themeWasOpenRef = useRef(false);
-  const themeMenuId = `theme-menu-${useId().replaceAll(":", "")}`;
-  const themeMenuOpenRef = useRef(isThemeMenuOpen);
-  themeMenuOpenRef.current = isThemeMenuOpen;
   const accounts = connectedAccounts(accountStatus);
   const maxAccounts = Math.max(accountStatus?.maxAccounts || 3, accounts.length);
   const emptySlots = Math.max(0, maxAccounts - accounts.length);
@@ -193,53 +174,6 @@ export function Sidebar({
     selectedSelector: '.account-card[data-active="true"]',
   });
 
-  useLayoutEffect(() => {
-    const wasOpen = themeWasOpenRef.current;
-    themeWasOpenRef.current = isThemeMenuOpen;
-    if (isThemeMenuOpen) {
-      const selectedIndex = Math.max(
-        0,
-        themeOptions.findIndex((option) => option.id === theme),
-      );
-      themeOptionRefs.current[selectedIndex]?.focus();
-    } else if (wasOpen && themeToggleRef.current?.isConnected) {
-      themeToggleRef.current.focus();
-    }
-  }, [isThemeMenuOpen, theme]);
-
-  useEffect(() => {
-    if (!isThemeMenuOpen) return undefined;
-    const closeOnEscape = (event) => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      event.stopPropagation();
-      onThemeMenuClose?.();
-    };
-
-    document.addEventListener("keydown", closeOnEscape);
-    return () => {
-      document.removeEventListener("keydown", closeOnEscape);
-    };
-  }, [isThemeMenuOpen, onThemeMenuClose]);
-
-  const navigateThemeMenu = (event) => {
-    const keys = ["ArrowDown", "ArrowRight", "ArrowUp", "ArrowLeft", "Home", "End"];
-    if (!keys.includes(event.key)) return;
-    event.preventDefault();
-    const options = themeOptionRefs.current.filter(Boolean);
-    if (!options.length) return;
-    const currentIndex = Math.max(0, options.indexOf(document.activeElement));
-    const nextIndex =
-      event.key === "Home"
-        ? 0
-        : event.key === "End"
-          ? options.length - 1
-          : ["ArrowDown", "ArrowRight"].includes(event.key)
-            ? (currentIndex + 1) % options.length
-            : (currentIndex - 1 + options.length) % options.length;
-    options[nextIndex]?.focus();
-  };
-
   useEffect(() => {
     if (!isDrawerOpen) return undefined;
     drawerPreviousFocusRef.current =
@@ -252,7 +186,7 @@ export function Sidebar({
     );
     focusable?.focus();
     const closeOnEscape = (event) => {
-      if (event.key !== "Escape" || themeMenuOpenRef.current) return;
+      if (event.key !== "Escape") return;
       event.preventDefault();
       event.stopPropagation();
       onDrawerClose?.();
@@ -463,45 +397,10 @@ export function Sidebar({
           </div>
 
           <div className="theme-control">
-            {isThemeMenuOpen ? (
-              <div
-                className="theme-menu"
-                id={themeMenuId}
-                role="menu"
-                aria-label="选择主题"
-                onKeyDown={navigateThemeMenu}
-              >
-                <p>界面主题</p>
-                <div className="theme-menu__grid">
-                  {themeOptions.map((option, index) => (
-                    <button
-                      ref={(element) => {
-                        themeOptionRefs.current[index] = element;
-                      }}
-                      key={option.id}
-                      type="button"
-                      role="menuitemradio"
-                      aria-checked={theme === option.id}
-                      className="theme-option"
-                      data-selected={theme === option.id}
-                      onClick={() => onThemeChange(option.id)}
-                    >
-                      <span className={`theme-swatch ${option.swatch}`} />
-                      <span>{option.label}</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            ) : null}
             <button
-              ref={themeToggleRef}
               type="button"
               className="sidebar-action"
-              data-theme-menu-toggle="true"
-              onClick={onThemeMenuToggle}
-              aria-haspopup="menu"
-              aria-controls={isThemeMenuOpen ? themeMenuId : undefined}
-              aria-expanded={isThemeMenuOpen}
+              onClick={onOpenAppearance}
             >
               <Palette size={19} />
               <span>主题外观</span>

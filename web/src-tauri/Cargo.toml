@@ -25,6 +25,7 @@ base64 = "0.22"
 dotenvy = "0.15"
 ego-tree = "0.11"
 html5ever = "0.39"
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
 keyring = "4.1.4"
 log = "0.4"
 mine-mail = { path = "../.." }

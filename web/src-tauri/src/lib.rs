@@ -42,8 +42,10 @@ use ai::{
 };
 use contacts::{ContactDirectoryDto, ContactRuntime};
 use desktop::{
-    DeleteProfileAvatarRequest, DesktopRuntime, DesktopSettingsDto, DesktopSettingsUpdate,
-    NewMailNotificationDto, ProfileAvatarDto, SaveProfileAvatarRequest,
+    AppearanceSettingsDto, DeleteCustomThemeRequest, DeleteProfileAvatarRequest, DesktopRuntime,
+    DesktopSettingsDto, DesktopSettingsUpdate, ImportCustomThemeRequest, NewMailNotificationDto,
+    ProfileAvatarDto, SaveProfileAvatarRequest, SelectAppearanceThemeRequest,
+    UpdateCustomThemeRequest,
 };
 use diagnostics::{ErrorKind as DiagnosticErrorKind, Fields as DiagnosticFields};
 use mail_html::{
@@ -2426,6 +2428,59 @@ fn delete_profile_avatar(
 }
 
 #[tauri::command]
+fn get_appearance_settings(
+    runtime: State<'_, DesktopRuntime>,
+) -> CommandResult<AppearanceSettingsDto> {
+    diagnostics::command(
+        "get_appearance_settings",
+        DiagnosticFields::default(),
+        || runtime.appearance_settings(),
+    )
+}
+
+#[tauri::command]
+fn select_appearance_theme(
+    runtime: State<'_, DesktopRuntime>,
+    request: SelectAppearanceThemeRequest,
+) -> CommandResult<AppearanceSettingsDto> {
+    diagnostics::command_lifecycle(
+        "select_appearance_theme",
+        DiagnosticFields::default(),
+        || runtime.select_appearance_theme(request),
+    )
+}
+
+#[tauri::command]
+fn import_custom_theme(
+    runtime: State<'_, DesktopRuntime>,
+    request: ImportCustomThemeRequest,
+) -> CommandResult<AppearanceSettingsDto> {
+    diagnostics::command_lifecycle("import_custom_theme", DiagnosticFields::default(), || {
+        runtime.import_custom_theme(request)
+    })
+}
+
+#[tauri::command]
+fn update_custom_theme(
+    runtime: State<'_, DesktopRuntime>,
+    request: UpdateCustomThemeRequest,
+) -> CommandResult<AppearanceSettingsDto> {
+    diagnostics::command_lifecycle("update_custom_theme", DiagnosticFields::default(), || {
+        runtime.update_custom_theme(request)
+    })
+}
+
+#[tauri::command]
+fn delete_custom_theme(
+    runtime: State<'_, DesktopRuntime>,
+    request: DeleteCustomThemeRequest,
+) -> CommandResult<AppearanceSettingsDto> {
+    diagnostics::command_lifecycle("delete_custom_theme", DiagnosticFields::default(), || {
+        runtime.delete_custom_theme(request)
+    })
+}
+
+#[tauri::command]
 async fn update_desktop_settings(
     app: AppHandle,
     runtime: State<'_, DesktopRuntime>,
@@ -3259,6 +3314,11 @@ pub fn run() {
             list_profile_avatars,
             save_profile_avatar,
             delete_profile_avatar,
+            get_appearance_settings,
+            select_appearance_theme,
+            import_custom_theme,
+            update_custom_theme,
+            delete_custom_theme,
             app_update::start_app_update,
             app_update::cancel_app_update,
             app_update::relaunch_after_app_update,

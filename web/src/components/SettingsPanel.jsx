@@ -11,6 +11,7 @@ import {
   Info,
   MicrosoftOutlookLogo,
   NotePencil,
+  PaintBrushBroad,
   Plus,
   Question,
   Robot,
@@ -30,6 +31,7 @@ import {
 import { AccountRemovalDialog } from "./AccountRemovalDialog.jsx";
 import { AccountSetupForm } from "./AccountSetup.jsx";
 import { AgentSettings } from "./AgentSettings.jsx";
+import { AppearanceSettings } from "./AppearanceSettings.jsx";
 import { AuthorizationGuide } from "./AuthorizationGuide.jsx";
 import { BrandLogo } from "./BrandLogo.jsx";
 import {
@@ -78,6 +80,11 @@ const menuItems = [
     id: "features",
     label: "功能设定",
     icon: SlidersHorizontal,
+  },
+  {
+    id: "appearance",
+    label: "外观",
+    icon: PaintBrushBroad,
   },
   {
     id: "agent",
@@ -319,6 +326,11 @@ export function SettingsPanel({
   onSetAccountAvatar,
   onRemoveAccountAvatar,
   focusTarget,
+  appearance,
+  onSelectAppearance,
+  onImportCustomTheme,
+  onUpdateCustomTheme,
+  onDeleteCustomTheme,
   updateClient = appUpdateApi,
   appUpdateController = null,
   storageClient = appStorageApi,
@@ -347,7 +359,9 @@ export function SettingsPanel({
     typeof focusTarget === "string" &&
     focusTarget.startsWith("account-repair");
   const [value, setValue] = useState(settings);
-  const [activeSection, setActiveSection] = useState("account");
+  const [activeSection, setActiveSection] = useState(
+    focusTarget === "appearance" ? "appearance" : "account",
+  );
   const [accountFlow, setAccountFlow] = useState(
     addAccountRequested || repairAccountRequested ? "providers" : "overview",
   );
@@ -413,6 +427,11 @@ export function SettingsPanel({
       (provider) => provider.id !== "outlook" && !provider.disabled,
     );
   }, [accountPresets]);
+
+  useEffect(() => {
+    if (focusTarget !== "appearance") return;
+    setActiveSection("appearance");
+  }, [focusTarget]);
 
   useEffect(() => {
     setValue(settings);
@@ -776,8 +795,6 @@ export function SettingsPanel({
             );
           })}
         </nav>
-
-        <p className="settings-sidebar__note">偏好设置会自动保存在这台设备上。</p>
       </aside>
 
       <div className="settings-content">
@@ -1376,6 +1393,16 @@ export function SettingsPanel({
 
               </div>
             </section>
+          ) : null}
+
+          {activeSection === "appearance" ? (
+            <AppearanceSettings
+              appearance={appearance}
+              onSelect={onSelectAppearance}
+              onImport={onImportCustomTheme}
+              onUpdate={onUpdateCustomTheme}
+              onDelete={onDeleteCustomTheme}
+            />
           ) : null}
 
           {activeSection === "agent" ? (

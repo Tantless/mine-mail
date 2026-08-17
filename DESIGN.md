@@ -14,8 +14,9 @@ they are not independent design authorities.
   the implementation, relevant tests, and this document together.
 - Prefer semantic tokens and shared primitives. A local exception needs a
   functional reason, not a slightly different appearance.
-- Check visible changes in all four themes, affected desktop reflows, keyboard
-  navigation, and reduced-motion mode.
+- Check visible changes in all four built-in themes, representative custom
+  light/dark palettes, affected desktop reflows, keyboard navigation, and
+  reduced-motion mode.
 - Keep temporary screenshots, comparison boards, and implementation plans out of
   the repository. Durable conclusions belong here; behavior belongs in
   `docs/PRODUCT.md`.
@@ -41,10 +42,13 @@ Mine Mail is quiet, atmospheric, compact, and content-first.
   installer surfaces. New-mail notifications use the sender avatar.
 - The sidebar owns the only shell-level Mine Mail lockup. At compact width it
   keeps the centered fox and hides the wordmark rather than wrapping it.
-- The shipped themes are exactly Daylight, Night, Dusk, and Forest, backed by the
-  four `web/src/assets/wallpaper-*.png` files. They share layout and component
-  anatomy; only wallpaper, semantic color, material opacity, contrast, and
-  optical weight vary.
+- Daylight, Night, Dusk, and Forest are the four immutable built-in theme cards,
+  backed by the four `web/src/assets/wallpaper-*.png` files. Users may append
+  local custom theme cards in **设置 → 外观**. Every custom card owns one managed
+  wallpaper, normalized focal point, and one shared validated semantic palette.
+  Each palette owns its internal light or dark presentation. Built-in cards show
+  their fixed focus and palette configuration as disabled rows rather than hiding
+  those controls.
 - Product icons use Phosphor Icons. Do not substitute emoji, text glyphs,
   hand-drawn CSS, or one-off SVG icons.
 - Avatars resolve locally: user override, built-in known-domain mark, then
@@ -95,7 +99,8 @@ mobile or hosted Web product.
 ## Material and shared components
 
 All app-owned color and material decisions flow through custom properties in
-`:root` and the four theme blocks.
+`:root`, the four built-in theme blocks, and the complete custom semantic palette
+applied at the root.
 
 - Foundation tokens cover text, borders, controls, panels, accent, success,
   warning, danger, focus, geometry, and motion.
@@ -257,6 +262,28 @@ All app-owned color and material decisions flow through custom properties in
 - Settings is embedded beside the persistent sidebar. The category rail and
   detail pane share one glass shell; preferences save immediately and there is
   no global Save/Cancel footer.
+- **外观** is a category between **功能设定** and **Agent 配置**. The sidebar
+  **主题外观** action opens this category directly; it does not duplicate a theme
+  picker. Four built-in cards remain first, custom cards follow in creation order,
+  and an add card remains last. Custom cards expose a compact local menu for
+  rename, image replacement, and deletion. The selected card uses the shared
+  primary edge and check treatment.
+- Theme configuration is always present below the cards as two compact disclosure
+  rows: **设置焦点** and **调色盘**. Built-in themes keep both rows visible but
+  disabled. A custom theme may expand the focal preview and open the palette tray.
+  The tray groups twelve bright and twelve dark palettes. Each square tile shows
+  a circular four-part preview covering glass, accent, selection, and edge tones.
+  Panel and text remain palette-owned but are omitted from the miniature because
+  they add little visual distinction between adjacent palettes. The tray and tile
+  surfaces stay transparent; a shared edge and check mark identify the current
+  palette.
+- A custom palette is the complete semantic color owner for Mine Mail-controlled
+  UI: glass shells, panels, controls, text hierarchy, edges, selection, focus,
+  correspondence, data visualization, and status feedback all resolve through it.
+  Success, warning, danger, and favorite retain their semantic hue families while
+  their contrast and intensity follow the selected palette. External brands,
+  avatars, sender HTML, wallpaper pixels, and platform-owned surfaces remain
+  outside palette recoloring.
 - Account rows keep a stable height. Avatar editing starts from the avatar;
   remarks and secondary actions live in the row menu. Adding an account drills
   from provider choice into the form.
@@ -534,7 +561,8 @@ All app-owned color and material decisions flow through custom properties in
 Before handing off a visible change:
 
 1. Reuse or extend shared tokens/components and remove superseded rules.
-2. Check Daylight, Night, Dusk, and Forest.
+2. Check Daylight, Night, Dusk, Forest, and representative custom light/dark
+   palettes.
 3. Check the affected wide and defensive desktop reflows.
 4. Check relevant hover, pressed, focus, disabled, loading, empty, error, and
    long-content states.

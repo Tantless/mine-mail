@@ -34,10 +34,6 @@ function renderSidebar(accountCount, overrides = {}) {
     activeFolder: "inbox",
     onFolderChange: vi.fn(),
     onCompose: vi.fn(),
-    theme: "dusk",
-    onThemeChange: vi.fn(),
-    isThemeMenuOpen: false,
-    onThemeMenuToggle: vi.fn(),
     counts: {},
     accountStatus: {
       configured: true,
@@ -49,6 +45,7 @@ function renderSidebar(accountCount, overrides = {}) {
     onAccountSwitch,
     onAddAccount,
     onOpenSettings: vi.fn(),
+    onOpenAppearance: vi.fn(),
   };
   const renderResult = render(<Sidebar {...baseProps} {...overrides} />);
   const rerenderSidebar = (nextOverrides = {}) =>
@@ -283,29 +280,14 @@ describe("Sidebar account switcher", () => {
     ).toBeTruthy();
   });
 
-  it("focuses and keyboard-navigates the theme menu, then restores its trigger", () => {
-    const onThemeMenuClose = vi.fn();
-    const { rerenderSidebar } = renderSidebar(1, { onThemeMenuClose });
-    const toggle = screen.getByRole("button", { name: "主题外观" });
-    toggle.focus();
+  it("opens the appearance settings from the theme shortcut", async () => {
+    const user = userEvent.setup();
+    const onOpenAppearance = vi.fn();
+    renderSidebar(1, { onOpenAppearance });
 
-    rerenderSidebar({ isThemeMenuOpen: true, onThemeMenuClose });
-    const dusk = screen.getByRole("menuitemradio", { name: "黄昏" });
-    const forest = screen.getByRole("menuitemradio", { name: "森林" });
-    const daylight = screen.getByRole("menuitemradio", { name: "日间" });
-    expect(document.activeElement).toBe(dusk);
+    await user.click(screen.getByRole("button", { name: "主题外观" }));
 
-    fireEvent.keyDown(dusk, { key: "ArrowRight" });
-    expect(document.activeElement).toBe(forest);
-    fireEvent.keyDown(forest, { key: "ArrowRight" });
-    expect(document.activeElement).toBe(daylight);
-    fireEvent.keyDown(daylight, { key: "End" });
-    expect(document.activeElement).toBe(forest);
-
-    fireEvent.keyDown(document, { key: "Escape" });
-    expect(onThemeMenuClose).toHaveBeenCalledOnce();
-    rerenderSidebar({ isThemeMenuOpen: false, onThemeMenuClose });
-    expect(document.activeElement).toBe(toggle);
+    expect(onOpenAppearance).toHaveBeenCalledOnce();
   });
 
   it.each([

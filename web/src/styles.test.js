@@ -78,6 +78,19 @@ describe("Agent configuration feedback", () => {
   });
 });
 
+describe("custom appearance semantic palette", () => {
+  it("derives application-owned surfaces and states from one complete palette", () => {
+    const customTheme = declarationsFor(':root\\[data-theme="custom"\\]');
+
+    expect(customTheme).toMatch(/color-scheme:\s*var\(--custom-color-scheme/);
+    expect(customTheme).toMatch(/--settings-shell-surface:[^;]*--custom-glass/);
+    expect(customTheme).toMatch(/--compose-paper-surface:\s*var\(--custom-panel\)/);
+    expect(customTheme).toMatch(/--color-text:\s*var\(--custom-text/);
+    expect(customTheme).toMatch(/--color-danger:\s*var\(--custom-danger/);
+    expect(styles).not.toMatch(/data-color-mode/);
+  });
+});
+
 describe("compose AI conversation header", () => {
   it("reserves space between the back action and the session title", () => {
     expect(

@@ -32,6 +32,11 @@ import { useAppUpdate } from "./hooks/useAppUpdate.js";
 import { hasFlag } from "./utils/formatters.js";
 import { messageNavigationKey } from "./utils/messageNavigation.js";
 import { userFacingErrorMessage } from "./utils/userFacingError.js";
+import {
+  appearanceFromLegacyTheme,
+  applyAppearanceToDocument,
+  builtinAppearanceThemes,
+} from "./appearanceThemes.js";
 
 const ContactsWorkspace = lazy(() =>
   import("./components/ContactsWorkspace.jsx").then(({ ContactsWorkspace }) => ({
@@ -60,7 +65,6 @@ const folderLabels = {
   contacts: "通讯录",
 };
 
-const validThemes = new Set(["daylight", "night", "dusk", "forest"]);
 const defaultSettings = {
   pollingIntervalMinutes: 5,
   autostartEnabled: false,
@@ -477,9 +481,10 @@ function messageBodyIsReady(message) {
   );
 }
 
-function getInitialTheme() {
-  const saved = window.localStorage.getItem("mine-mail-theme");
-  return validThemes.has(saved) ? saved : "daylight";
+function getInitialAppearance() {
+  return appearanceFromLegacyTheme(
+    window.localStorage.getItem("mine-mail-theme"),
+  );
 }
 
 function describeError(error, fallback) {
@@ -728,7 +733,7 @@ function upsertDraft(items, draft) {
 
 export function App() {
   const appUpdate = useAppUpdate();
-  const [theme, setTheme] = useState(getInitialTheme);
+  const [appearance, setAppearance] = useState(getInitialAppearance);
   const [activeFolder, setActiveFolder] = useState("inbox");
   const [messages, setMessages] = useState([]);
   const [sentMessages, setSentMessages] = useState([]);
@@ -778,7 +783,6 @@ export function App() {
   const [forwardPreparationStates, setForwardPreparationStates] = useState({});
   const [permanentDelete, setPermanentDelete] = useState(null);
   const [archiveFolderDialog, setArchiveFolderDialog] = useState(null);
-  const [isThemeMenuOpen, setIsThemeMenuOpen] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [composer, setComposer] = useState(null);
   const [composeRestoreRequest, setComposeRestoreRequest] = useState(0);
@@ -3111,6 +3115,27 @@ export function App() {
           if (!cancelled)
             showToast(describeError(error, "本地头像读取失败"), "error");
         });
+      const appearanceTask = mailApi
+        .getAppearanceSettings()
+        .then(async (value) => {
+          if (cancelled) return;
+          const legacyTheme = window.localStorage.getItem("mine-mail-theme");
+          const legacyIsBuiltin = builtinAppearanceThemes.some(
+            (theme) => theme.id === legacyTheme,
+          );
+          const resolved =
+            !value.selectionInitialized && legacyIsBuiltin
+              ? await mailApi.selectAppearanceTheme({
+                  kind: "builtin",
+                  id: legacyTheme,
+                })
+              : value;
+          if (!cancelled) setAppearance(resolved);
+        })
+        .catch((error) => {
+          if (!cancelled)
+            showToast(describeError(error, "外观设置读取失败"), "error");
+        });
 
       try {
         const status = await mailApi.getAccountStatus();
@@ -3153,7 +3178,12 @@ export function App() {
         setAccountError(describeError(error, "无法读取账户配置"));
       }
 
-      await Promise.allSettled([settingsTask, presetsTask, avatarsTask]);
+      await Promise.allSettled([
+        settingsTask,
+        presetsTask,
+        avatarsTask,
+        appearanceTask,
+      ]);
     };
     void load();
     return () => {
@@ -3162,9 +3192,8 @@ export function App() {
   }, [beginMailboxLoading, loadMailboxData, prefetchAccountViews]);
 
   useEffect(() => {
-    document.documentElement.dataset.theme = theme;
-    window.localStorage.setItem("mine-mail-theme", theme);
-  }, [theme]);
+    applyAppearanceToDocument(appearance);
+  }, [appearance]);
 
   useEffect(() => {
     if (!toast || toast.exiting) return undefined;
@@ -6724,6 +6753,30 @@ export function App() {
     }
   };
 
+  const handleSelectAppearance = async (request) => {
+    const updated = await mailApi.selectAppearanceTheme(request);
+    setAppearance(updated);
+    return updated;
+  };
+
+  const handleImportCustomTheme = async (request) => {
+    const updated = await mailApi.importCustomTheme(request);
+    setAppearance(updated);
+    return updated;
+  };
+
+  const handleUpdateCustomTheme = async (request) => {
+    const updated = await mailApi.updateCustomTheme(request);
+    setAppearance(updated);
+    return updated;
+  };
+
+  const handleDeleteCustomTheme = async (id) => {
+    const updated = await mailApi.deleteCustomTheme(id);
+    setAppearance(updated);
+    return updated;
+  };
+
   const restoreComposerAfterFailedAccountConnection = useCallback(
     (sessionId) => {
       if (!sessionId) return;
@@ -7697,17 +7750,6 @@ export function App() {
     <div
       className={`app-shell platform-${platform} ${isSidebarOpen ? "sidebar-is-open" : ""} ${isSettingsOpen ? "settings-is-open" : ""} ${(isReaderOpen && selectedMessage) || (isContactMode && selectedContact) ? "has-selection" : ""}`}
       data-runtime={isTauriRuntime ? "tauri" : "web"}
-      onClickCapture={(event) => {
-        if (
-          !isThemeMenuOpen ||
-          event.target?.closest?.(
-            ".theme-menu, [data-theme-menu-toggle='true']",
-          )
-        ) {
-          return;
-        }
-        setIsThemeMenuOpen(false);
-      }}
     >
       <div className="app-wallpaper" aria-hidden="true" />
       <WindowTitlebar platform={platform} isDesktop={isTauriRuntime} />
@@ -7750,14 +7792,6 @@ export function App() {
                 : openAccountSetup()
               : openOrRestoreComposer();
           }}
-          theme={theme}
-          onThemeChange={(nextTheme) => {
-            setTheme(nextTheme);
-            setIsThemeMenuOpen(false);
-          }}
-          isThemeMenuOpen={isThemeMenuOpen}
-          onThemeMenuToggle={() => setIsThemeMenuOpen((open) => !open)}
-          onThemeMenuClose={() => setIsThemeMenuOpen(false)}
           counts={folderCounts}
           outboxActive={outbox.length > 0 || activeBackgroundSendCount > 0}
           sentHasNew={Boolean(
@@ -7772,6 +7806,12 @@ export function App() {
             invalidatePreparedFolderMotion();
             setSettingsSaveStatus("idle");
             setSettingsFocusTarget(null);
+            setIsSettingsOpen(true);
+          }}
+          onOpenAppearance={() => {
+            invalidatePreparedFolderMotion();
+            setSettingsSaveStatus("idle");
+            setSettingsFocusTarget("appearance");
             setIsSettingsOpen(true);
           }}
           mailboxCapabilities={mailboxCapabilities}
@@ -7826,6 +7866,11 @@ export function App() {
                 handleDeleteProfileAvatar("account", email)
               }
               focusTarget={settingsFocusTarget}
+              appearance={appearance}
+              onSelectAppearance={handleSelectAppearance}
+              onImportCustomTheme={handleImportCustomTheme}
+              onUpdateCustomTheme={handleUpdateCustomTheme}
+              onDeleteCustomTheme={handleDeleteCustomTheme}
               appUpdateController={appUpdate}
             />
           </Suspense>

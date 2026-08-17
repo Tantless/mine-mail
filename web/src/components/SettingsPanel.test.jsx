@@ -41,6 +41,13 @@ const accountStatus = {
   ],
 };
 
+const appearance = {
+  selectionInitialized: true,
+  activeTheme: { kind: "builtin", id: "daylight" },
+  customPresets: [],
+  activeBackgroundDataUrl: null,
+};
+
 function panelProps(overrides = {}) {
   return {
     settings,
@@ -63,6 +70,11 @@ function panelProps(overrides = {}) {
     onSetAccountAvatar: vi.fn(),
     onRemoveAccountAvatar: vi.fn(),
     focusTarget: null,
+    appearance,
+    onSelectAppearance: vi.fn().mockResolvedValue(appearance),
+    onImportCustomTheme: vi.fn().mockResolvedValue(appearance),
+    onUpdateCustomTheme: vi.fn().mockResolvedValue(appearance),
+    onDeleteCustomTheme: vi.fn().mockResolvedValue(appearance),
     ...overrides,
   };
 }
@@ -125,6 +137,19 @@ describe("SettingsPanel account flow", () => {
     } finally {
       boundsSpy.mockRestore();
     }
+  });
+
+  it("opens the appearance category directly from the sidebar shortcut", () => {
+    render(
+      <SettingsPanel {...panelProps({ focusTarget: "appearance" })} />,
+    );
+
+    expect(screen.getByRole("heading", { name: "外观" })).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "外观" }).getAttribute("aria-current"),
+    ).toBe("page");
+    expect(screen.getByRole("button", { name: "添加自定义主题" })).toBeTruthy();
+    expect(screen.queryByText(/偏好设置会自动保存在这台设备上/)).toBeNull();
   });
 
   it("opens Agent configuration as a first-class settings category", async () => {

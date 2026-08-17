@@ -1,3 +1,4 @@
+mod appearance;
 mod settings;
 
 use std::{
@@ -34,6 +35,11 @@ use crate::{
     diagnostics::{self, ErrorKind, Fields},
 };
 
+use appearance::AppearanceStore;
+pub(crate) use appearance::{
+    AppearanceSettingsDto, DeleteCustomThemeRequest, ImportCustomThemeRequest,
+    SelectAppearanceThemeRequest, UpdateCustomThemeRequest,
+};
 pub(crate) use settings::{
     DeleteProfileAvatarRequest, DesktopSettingsDto, DesktopSettingsUpdate, MCP_ENDPOINT,
     ProfileAvatarDto, SaveProfileAvatarRequest,
@@ -203,6 +209,7 @@ impl Drop for SmtpOperationGuard<'_> {
 pub(crate) struct DesktopRuntime {
     settings: RwLock<StoredDesktopSettings>,
     store: Option<DesktopSettingsStore>,
+    appearance_store: Option<AppearanceStore>,
     startup_error: RwLock<Option<String>>,
     sync_tx: mpsc::Sender<BackgroundRequest>,
     shutdown_tx: watch::Sender<bool>,
@@ -279,6 +286,14 @@ impl DesktopRuntime {
                 }
             }
         };
+        let appearance_store = AppearanceStore::open(app_data.join(SETTINGS_DATABASE_NAME))
+            .map_err(|_| {
+                diagnostics::error(
+                    "appearance_store_open_failed",
+                    Fields::default().error(ErrorKind::Database),
+                );
+            })
+            .ok();
         // Leave room for a short burst of per-account IDLE events while the
         // serialized SQLite/IMAP synchronization actor is busy.
         let (sync_tx, sync_rx) = mpsc::channel(32);
@@ -288,6 +303,7 @@ impl DesktopRuntime {
             Self {
                 settings: RwLock::new(settings),
                 store,
+                appearance_store,
                 startup_error: RwLock::new(startup_error),
                 sync_tx,
                 shutdown_tx,
@@ -404,6 +420,53 @@ impl DesktopRuntime {
             .ok_or_else(|| "Avatar storage is unavailable.".to_owned())?
             .list_profile_avatars()
             .map_err(|_| "Avatars could not be loaded.".to_owned())
+    }
+
+    pub(crate) fn appearance_settings(&self) -> Result<AppearanceSettingsDto, String> {
+        self.appearance_store
+            .as_ref()
+            .ok_or_else(|| "Appearance storage is unavailable.".to_owned())?
+            .load()
+    }
+
+    pub(crate) fn select_appearance_theme(
+        &self,
+        request: SelectAppearanceThemeRequest,
+    ) -> Result<AppearanceSettingsDto, String> {
+        self.appearance_store
+            .as_ref()
+            .ok_or_else(|| "Appearance storage is unavailable.".to_owned())?
+            .select(request)
+    }
+
+    pub(crate) fn import_custom_theme(
+        &self,
+        request: ImportCustomThemeRequest,
+    ) -> Result<AppearanceSettingsDto, String> {
+        self.appearance_store
+            .as_ref()
+            .ok_or_else(|| "Appearance storage is unavailable.".to_owned())?
+            .import_custom(request)
+    }
+
+    pub(crate) fn update_custom_theme(
+        &self,
+        request: UpdateCustomThemeRequest,
+    ) -> Result<AppearanceSettingsDto, String> {
+        self.appearance_store
+            .as_ref()
+            .ok_or_else(|| "Appearance storage is unavailable.".to_owned())?
+            .update_custom(request)
+    }
+
+    pub(crate) fn delete_custom_theme(
+        &self,
+        request: DeleteCustomThemeRequest,
+    ) -> Result<AppearanceSettingsDto, String> {
+        self.appearance_store
+            .as_ref()
+            .ok_or_else(|| "Appearance storage is unavailable.".to_owned())?
+            .delete_custom(request)
     }
 
     fn profile_avatar_for(

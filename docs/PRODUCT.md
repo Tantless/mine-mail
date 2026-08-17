@@ -735,6 +735,34 @@ product decision changes.
 
 - Settings is an embedded workspace. Preferences save immediately and there is no
   global Save/Cancel footer.
+- Appearance is device-global rather than account-scoped. The four built-in
+  themes remain immutable; users may add any number of local custom theme presets,
+  rename them, replace their images, adjust normalized focal points, choose a
+  complete curated semantic palette, and delete them. Each palette owns its light
+  or dark presentation together with app-owned glass, panel, text, interaction,
+  and status tones; there is no separate night-mode preference. Focus and palette
+  controls remain visible for every theme, while built-in themes expose their
+  fixed values as disabled controls. The current selection and each preset's
+  settings persist in Rust-owned local state.
+- Custom background import accepts PNG, JPEG, and WebP only. Rust rejects sources
+  above 20 MB or roughly 50 megapixels, applies embedded orientation, strips
+  metadata by re-encoding, limits the long edge to 5120 pixels, creates a bounded
+  thumbnail, and stores only a managed copy under local user assets. React never
+  receives the original or managed complete path. Images below 1600 × 900 are
+  accepted with a quality warning. SVG, animated images, and remote URLs are not
+  accepted.
+- New custom backgrounds are analyzed across the full image with extra weight on
+  the left shell region. Mine Mail maps hue and luminance together to the closest
+  complete bright or dark palette; neutral or unstable results fall back to the
+  corresponding blue palette. Users may choose any other complete palette.
+  Existing custom presets migrate their former palette and effective light/dark
+  value into one equivalent palette identifier. Deleting the current custom preset
+  restores a recent still-valid selection when possible, otherwise Daylight, and
+  removes only Mine Mail's managed copy.
+- The legacy `mine-mail-theme` browser value is used only once to migrate a valid
+  built-in selection into Rust-owned appearance state. The explicit browser demo
+  keeps a local mock of the same interaction without becoming a parallel Web mail
+  runtime.
 - Account setup is provider-first. Avatar editing starts from the avatar; account
   remarks and secondary actions use the local row menu.
 - Routine backend health and successful background synchronization are not

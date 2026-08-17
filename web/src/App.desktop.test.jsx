@@ -68,6 +68,11 @@ const desktop = vi.hoisted(() => {
       sendDraft: vi.fn(),
       getDesktopSettings: vi.fn(),
       updateDesktopSettings: vi.fn(),
+      getAppearanceSettings: vi.fn(),
+      selectAppearanceTheme: vi.fn(),
+      importCustomTheme: vi.fn(),
+      updateCustomTheme: vi.fn(),
+      deleteCustomTheme: vi.fn(),
       listAccountPresets: vi.fn(),
       getAccountStatus: vi.fn(),
       switchAccount: vi.fn(),
@@ -367,6 +372,13 @@ describe("Mine Mail desktop state bridge", () => {
       notificationSoundEnabled: true,
       notificationSound: "mail",
       remoteImageMode: "automatic",
+    });
+    desktop.mailApi.getAppearanceSettings.mockResolvedValue({
+      activeTheme: { kind: "builtin", id: "daylight" },
+      previousTheme: null,
+      selectionInitialized: true,
+      customPresets: [],
+      activeBackgroundDataUrl: null,
     });
     desktop.mailApi.listAccountPresets.mockResolvedValue([]);
     desktop.mailApi.getAccountStatus.mockResolvedValue({

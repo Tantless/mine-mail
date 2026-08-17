@@ -358,33 +358,28 @@ describe("Mine Mail MVP", () => {
     expect(screen.queryByText("已切换到 b@gmail.com")).toBeNull();
   });
 
-  it("switches and persists an MVP theme", async () => {
+  it("switches and persists a built-in theme from appearance settings", async () => {
     const user = userEvent.setup();
     render(<App />);
     await screen.findAllByText("欢迎来到 Mine Mail");
 
     await user.click(screen.getByRole("button", { name: "主题外观" }));
-    await user.click(screen.getByRole("menuitemradio", { name: "夜间" }));
+    await user.click(await screen.findByRole("button", { name: "使用夜间主题" }));
 
-    expect(document.documentElement.dataset.theme).toBe("night");
-    expect(window.localStorage.getItem("mine-mail-theme")).toBe("night");
+    await waitFor(() => {
+      expect(document.documentElement.dataset.theme).toBe("night");
+      expect(window.localStorage.getItem("mine-mail-theme")).toBe("night");
+    });
   });
 
-  it("dismisses the theme picker before outside controls continue", async () => {
+  it("uses the sidebar theme action as a shortcut to the appearance category", async () => {
     const user = userEvent.setup();
     render(<App />);
     await screen.findAllByText("欢迎来到 Mine Mail");
 
     await user.click(screen.getByRole("button", { name: "主题外观" }));
-    expect(screen.getByRole("menu", { name: "选择主题" })).toBeTruthy();
 
-    await user.click(screen.getByRole("button", { name: "设置" }));
-    expect(screen.queryByRole("menu", { name: "选择主题" })).toBeNull();
-    const settings = screen.getByRole("region", { name: "设置" });
-
-    await user.click(screen.getByRole("button", { name: "主题外观" }));
-    expect(screen.getByRole("menu", { name: "选择主题" })).toBeTruthy();
-    fireEvent.click(settings);
+    expect(await screen.findByRole("heading", { name: "外观" })).toBeTruthy();
     expect(screen.queryByRole("menu", { name: "选择主题" })).toBeNull();
   });
 
