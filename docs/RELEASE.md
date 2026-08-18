@@ -231,21 +231,21 @@ usage scenario before changing visible behavior or interaction.
   `flush_pending_system_flag_mutations` in
   [`src/backend.rs`](../src/backend.rs).
 
-- [ ] **AUTH-01 — Keep cached-message opening independent of unrelated OAuth
-  accounts.** `fetch_mailbox_message` refreshes every Google backend before the
-  backend checks whether the selected message body is already complete in
-  SQLite. Opening a cached 163/QQ message can therefore wait for keyring or token
-  refresh work belonging to another account. **Agreed plan — pending
-  implementation.** Make the owning account's SQLite body the first read path:
-  when its cached body is complete, return it immediately without consulting the
+- [x] **AUTH-01 — Keep cached-message opening independent of unrelated OAuth
+  accounts.** Previously, `fetch_mailbox_message` refreshed every Google backend
+  before checking whether the selected message body was already complete in
+  SQLite, so opening a cached 163/QQ message could wait for keyring or token
+  refresh work belonging to another account. **Implemented and verified.** The
+  owning account's SQLite body is now the first read path:
+  when its cached body is complete, it returns immediately without consulting the
   credential store, refreshing OAuth, or opening a network connection, including
-  when the owning Google authorization is expired or revoked. Preserve the
+  when the owning Google authorization is expired or revoked. The path preserves
   existing cached MIME/attachment indexing, inline-image repair, sanitization,
-  and rendering path. Only a missing or incomplete body may refresh credentials,
+  and rendering behavior. Only a missing or incomplete body refreshes credentials,
   and then only for the owning account via the account-scoped refresh API before
-  attempting its network backend; unrelated Google accounts must never enter the
-  reader critical path. Network failure must retain any usable local state and
-  return the existing safe, actionable failure. Close with tests proving cached
+  attempting its network backend; unrelated Google accounts do not enter the
+  reader critical path. Network failure retains any usable local state and
+  returns the existing safe, actionable failure. Tests prove that cached
   non-Google and Google messages remain readable when unrelated credentials or
   the owning authorization are unavailable, and that a cache miss refreshes only
   its owning account. Evidence: `fetch_mailbox_message` in

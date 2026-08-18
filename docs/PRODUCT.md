@@ -98,8 +98,10 @@ existing visual system normally changes this document rather than `DESIGN.md`.
   Provider-issued desktop OAuth client metadata is a separate ignored Rust-only
   build input.
 - A missing, expired, or revoked credential stops network work only for the
-  affected account. Cached mail stays readable; the account shows one persistent
-  reauthentication affordance instead of repeated background-error toasts.
+  affected account. A complete cached message body is read from SQLite without
+  consulting the credential store or network, so cached mail stays readable;
+  the account shows one persistent reauthentication affordance instead of
+  repeated background-error toasts.
 - A local account remark may become the primary display label, but the real
   mailbox address remains available wherever identity must be clear.
 - Connecting another account while compose is open first saves and minimizes the

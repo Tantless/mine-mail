@@ -1,4 +1,4 @@
-use std::time::Instant;
+use std::{future::Future, time::Instant};
 
 use mine_mail::{
     AttachmentMeta, AttachmentSaveErrorKind, AttachmentSaveStatus, ForwardPreparationErrorKind,
@@ -859,6 +859,25 @@ fn mailbox_role_name(role: MailboxRole) -> &'static str {
     }
 }
 
+async fn cached_message_or_refresh_owner<T, E, Cache, Refresh, RefreshFuture>(
+    account_id: &str,
+    cached_message: Cache,
+    refresh_owner: Refresh,
+) -> Option<T>
+where
+    Cache: FnOnce() -> Result<T, E>,
+    Refresh: FnOnce(String) -> RefreshFuture,
+    RefreshFuture: Future<Output = ()>,
+{
+    match cached_message() {
+        Ok(message) => Some(message),
+        Err(_) => {
+            refresh_owner(account_id.to_owned()).await;
+            None
+        }
+    }
+}
+
 #[tauri::command]
 pub(crate) async fn fetch_mailbox_message(
     account: State<'_, AccountRuntime>,
@@ -868,7 +887,21 @@ pub(crate) async fn fetch_mailbox_message(
     diagnostics::command_async("fetch_mailbox_message", Fields::default(), async {
         validate_message_id(&message_id)?;
         let (account_id, local) = active_local_backend(&backend)?;
-        let _ = account.refresh_oauth_backends(&backend).await;
+        let account_runtime: &AccountRuntime = &account;
+        let backend_state: &BackendState = &backend;
+        if let Some(message) = cached_message_or_refresh_owner(
+            &account_id,
+            || local.cached_message_by_id(&message_id),
+            |owner_account_id| async move {
+                let _ = account_runtime
+                    .refresh_oauth_backend_for(backend_state, &owner_account_id)
+                    .await;
+            },
+        )
+        .await
+        {
+            return complete_mailbox_message_dto(&local, message_id, message, None);
+        }
         if let Ok(network) = backend.network_for(&account_id) {
             network.promote_body_prefetch_for_selection(&message_id);
             match network.fetch_message_view_by_id(&message_id, false).await {
@@ -1398,9 +1431,10 @@ mod tests {
 
     use super::{
         ArchiveFolderCandidateDto, MailboxBodySegmentDto, MailboxCapabilityDto, MailboxMessageDto,
-        MailboxSyncReportDto, MessagePageDto, is_offline_history_error, normalize_query,
-        offline_page, parse_cursor, validate_account_id, validate_attachment_id,
-        validate_message_id, validate_page_role, validate_page_size, validate_starred_page_role,
+        MailboxSyncReportDto, MessagePageDto, cached_message_or_refresh_owner,
+        is_offline_history_error, normalize_query, offline_page, parse_cursor, validate_account_id,
+        validate_attachment_id, validate_message_id, validate_page_role, validate_page_size,
+        validate_starred_page_role,
     };
     use crate::{
         AttachmentMetaDto, BodyRenderMode, BodySegmentConfidenceDto, BodySegmentDto,
@@ -1474,6 +1508,42 @@ mod tests {
         assert!(parse_cursor(None, false).is_ok_and(|cursor| cursor.is_none()));
         assert!(parse_cursor(None, true).is_err());
         assert!(parse_cursor(Some("x".repeat(65)), true).is_err());
+    }
+
+    #[tokio::test]
+    async fn cached_reader_messages_do_not_enter_authentication_path() {
+        for authentication in ["password", "google-oauth-with-unavailable-authorization"] {
+            let message = cached_message_or_refresh_owner(
+                "account-owner",
+                || Ok::<_, &'static str>(authentication),
+                |_| async {
+                    panic!("a complete cached body must not refresh credentials");
+                },
+            )
+            .await;
+
+            assert_eq!(message, Some(authentication));
+        }
+    }
+
+    #[tokio::test]
+    async fn cache_miss_refreshes_only_the_owning_account() {
+        let refreshed_accounts = std::cell::RefCell::new(Vec::new());
+        let refreshed_accounts_ref = &refreshed_accounts;
+        let message = cached_message_or_refresh_owner(
+            "account-owner",
+            || Err::<(), _>("cached body is incomplete"),
+            |account_id| async move {
+                refreshed_accounts_ref.borrow_mut().push(account_id);
+            },
+        )
+        .await;
+
+        assert!(message.is_none());
+        assert_eq!(
+            refreshed_accounts.into_inner(),
+            vec!["account-owner".to_owned()]
+        );
     }
 
     #[test]
