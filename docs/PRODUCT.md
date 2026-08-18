@@ -147,6 +147,10 @@ existing visual system normally changes this document rather than `DESIGN.md`.
 - Each bounded network summary batch is committed through one SQLite transaction
   before synchronization progress advances. A failed batch leaves the prior
   cache readable and never exposes a partially persisted batch as completed.
+- Per-account Inbox synchronization treats full reconciliation as stronger than
+  incremental refresh. Incremental requests may join a running full pass; a full
+  request arriving during an incremental pass queues exactly one full pass and
+  waits for that stronger result, including when the incremental pass fails.
 - Opening Archive or Trash paints cached summaries first and then synchronizes
   that role. Mine Mail never empties Trash automatically.
 - When an active folder has no cached rows and its initial read, import, or

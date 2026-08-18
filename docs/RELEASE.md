@@ -284,27 +284,26 @@ usage scenario before changing visible behavior or interaction.
   `upsert_message_summary_batch` in
   [`src/database.rs`](../src/database.rs).
 
-- [ ] **SYNC-02 — Preserve explicit full-Inbox refresh semantics when an
-  incremental sync is already running.** The desktop Inbox single-flight is
+- [x] **SYNC-02 — Preserve explicit full-Inbox refresh semantics when an
+  incremental sync is already running.** The desktop Inbox single-flight was
   keyed only by account, not by synchronization strength. A focus/IDLE
-  incremental sync can therefore cause a user-triggered full refresh to join and
-  return the incremental report without completing deletion and older-flag
-  reconciliation. **Agreed plan — pending implementation.** Make each
-  per-account Inbox flight mode-aware with ordered strength (`incremental` less
-  than `full reconciliation`). An incremental request may join either running
-  mode, and any request may join a running full reconciliation. When a full
-  request arrives during an incremental run, record one pending full pass rather
-  than cancelling partially persisted work; after the incremental run settles,
-  execute exactly one full reconciliation for all accumulated stronger requests.
-  The full caller must wait through that pass and receive its own full result,
+  incremental sync could therefore cause a user-triggered full refresh to join
+  and return the incremental report without completing deletion and older-flag
+  reconciliation. **Implemented and verified.** Each per-account Inbox flight is
+  now mode-aware with ordered strength (`incremental` less than `full
+  reconciliation`). An incremental request may join either running mode, and any
+  request may join a running full reconciliation. When a full request arrives
+  during an incremental run, the flight records one pending full pass instead of
+  cancelling partially persisted work; after the incremental run settles,
+  exactly one full reconciliation executes for all accumulated stronger
+  requests. The full caller waits through that pass and receives its full result,
   never an incremental result presented as success. Multiple stronger requests
-  coalesce, accounts remain independent, and an incremental failure must not
-  silently satisfy or discard an already-requested full attempt. Coordinate
-  progress and terminal events with SYNC-01 so each actual pass has one
-  authoritative outcome. Close with deterministic race tests for incremental
-  followed by one or many full requests, full followed by weaker requests,
-  failure propagation, exact pass counts, requested-strength result matching,
-  and account isolation. Evidence: `coordinate_inbox_sync`,
+  coalesce, accounts remain independent, and an incremental failure does not
+  satisfy or discard an already-requested full attempt. SYNC-01 progress and
+  terminal events remain owned by each actual pass. Deterministic race tests
+  cover incremental followed by one or many full requests, full followed by
+  weaker requests, failure propagation, exact pass counts, requested-strength
+  result matching, and account isolation. Evidence: `coordinate_inbox_sync`,
   `perform_inbox_mailbox_sync`, and `sync_inbox_with_operation` in
   [`web/src-tauri/src/desktop/mod.rs`](../web/src-tauri/src/desktop/mod.rs).
 

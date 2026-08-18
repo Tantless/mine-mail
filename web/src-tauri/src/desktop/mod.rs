@@ -145,11 +145,32 @@ struct ExitHandshakeState {
     phase: ExitHandshakePhase,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InboxSyncMode {
+    Incremental,
+    Full,
+}
+
+impl InboxSyncMode {
+    fn satisfies(self, requested: Self) -> bool {
+        self == Self::Full || self == requested
+    }
+}
+
+#[derive(Clone)]
+struct InboxSyncCompletion {
+    generation: u64,
+    mode: InboxSyncMode,
+    result: Result<SyncReport, String>,
+}
+
 #[derive(Default)]
 struct InboxSyncFlightState {
-    running: bool,
+    running_mode: Option<InboxSyncMode>,
+    pending_full: bool,
     generation: u64,
-    result: Option<Result<SyncReport, String>>,
+    latest_completion: Option<InboxSyncCompletion>,
+    latest_full_completion: Option<InboxSyncCompletion>,
 }
 
 #[derive(Default)]
@@ -160,7 +181,14 @@ struct InboxSyncFlight {
 
 struct InboxSyncLeader {
     flight: Arc<InboxSyncFlight>,
+    mode: InboxSyncMode,
     settled: bool,
+}
+
+enum InboxSyncDecision {
+    Run(InboxSyncMode),
+    Joined(Result<SyncReport, String>),
+    Wait,
 }
 
 #[derive(Default)]
@@ -169,6 +197,22 @@ struct MessageMutationFlightState {
     requested_generation: u64,
     completed_generation: u64,
     result: Option<Result<MessageMutationDrainReport, String>>,
+}
+
+impl InboxSyncFlightState {
+    fn completion_after(
+        &self,
+        requested_mode: InboxSyncMode,
+        requested_after_generation: u64,
+    ) -> Option<Result<SyncReport, String>> {
+        let completion = match requested_mode {
+            InboxSyncMode::Incremental => self.latest_completion.as_ref(),
+            InboxSyncMode::Full => self.latest_full_completion.as_ref(),
+        }?;
+        (completion.generation > requested_after_generation
+            && completion.mode.satisfies(requested_mode))
+        .then(|| completion.result.clone())
+    }
 }
 
 #[derive(Default)]
@@ -247,9 +291,17 @@ impl MessageMutationFlight {
 impl InboxSyncLeader {
     fn settle(&mut self, result: Result<SyncReport, String>) {
         if let Ok(mut state) = self.flight.state.lock() {
-            state.running = false;
+            state.running_mode = None;
             state.generation = state.generation.wrapping_add(1);
-            state.result = Some(result);
+            let completion = InboxSyncCompletion {
+                generation: state.generation,
+                mode: self.mode,
+                result,
+            };
+            state.latest_completion = Some(completion.clone());
+            if self.mode == InboxSyncMode::Full {
+                state.latest_full_completion = Some(completion);
+            }
             self.settled = true;
         }
         self.flight.settled.notify_waiters();
@@ -262,11 +314,17 @@ impl Drop for InboxSyncLeader {
             return;
         }
         if let Ok(mut state) = self.flight.state.lock() {
-            state.running = false;
+            state.running_mode = None;
             state.generation = state.generation.wrapping_add(1);
-            state.result = Some(Err(
-                "Inbox synchronization was interrupted and can be retried.".to_owned(),
-            ));
+            let completion = InboxSyncCompletion {
+                generation: state.generation,
+                mode: self.mode,
+                result: Err("Inbox synchronization was interrupted and can be retried.".to_owned()),
+            };
+            state.latest_completion = Some(completion.clone());
+            if self.mode == InboxSyncMode::Full {
+                state.latest_full_completion = Some(completion);
+            }
         }
         self.flight.settled.notify_waiters();
     }
@@ -1104,11 +1162,12 @@ impl DesktopRuntime {
     async fn coordinate_inbox_sync<F, Fut>(
         &self,
         account_id: &str,
+        requested_mode: InboxSyncMode,
         requested_operation: &'static str,
         operation: F,
     ) -> Result<SyncReport, String>
     where
-        F: FnOnce() -> Fut,
+        F: FnOnce(InboxSyncMode) -> Fut,
         Fut: Future<Output = Result<SyncReport, String>>,
     {
         let flight = {
@@ -1121,52 +1180,77 @@ impl DesktopRuntime {
                 .or_insert_with(|| Arc::new(InboxSyncFlight::default()))
                 .clone()
         };
+        let requested_after_generation = flight
+            .state
+            .lock()
+            .map_err(|_| "The Inbox sync coordinator is temporarily unavailable.".to_owned())?
+            .generation;
         let mut operation = Some(operation);
         loop {
             let settled = flight.settled.notified();
-            let observed_generation = {
+            let decision = {
                 let mut state = flight.state.lock().map_err(|_| {
                     "The Inbox sync coordinator is temporarily unavailable.".to_owned()
                 })?;
-                if !state.running {
-                    state.running = true;
-                    None
+                if let Some(result) =
+                    state.completion_after(requested_mode, requested_after_generation)
+                {
+                    InboxSyncDecision::Joined(result)
                 } else {
-                    Some(state.generation)
+                    match state.running_mode {
+                        None => {
+                            let mode =
+                                if requested_mode == InboxSyncMode::Full || state.pending_full {
+                                    InboxSyncMode::Full
+                                } else {
+                                    InboxSyncMode::Incremental
+                                };
+                            if mode == InboxSyncMode::Full {
+                                state.pending_full = false;
+                            }
+                            state.running_mode = Some(mode);
+                            InboxSyncDecision::Run(mode)
+                        }
+                        Some(running_mode) if running_mode.satisfies(requested_mode) => {
+                            InboxSyncDecision::Wait
+                        }
+                        Some(InboxSyncMode::Incremental) => {
+                            state.pending_full = true;
+                            InboxSyncDecision::Wait
+                        }
+                        Some(InboxSyncMode::Full) => {
+                            unreachable!("a full Inbox sync satisfies every request")
+                        }
+                    }
                 }
             };
-            let Some(observed_generation) = observed_generation else {
-                let mut leader = InboxSyncLeader {
-                    flight: flight.clone(),
-                    settled: false,
-                };
-                let result = operation
-                    .take()
-                    .expect("only the elected Inbox sync leader runs the operation")(
-                )
-                .await;
-                leader.settle(result.clone());
-                return result;
-            };
-
-            settled.await;
-            let joined = {
-                let state = flight.state.lock().map_err(|_| {
-                    "The Inbox sync coordinator is temporarily unavailable.".to_owned()
-                })?;
-                (state.generation != observed_generation)
-                    .then(|| state.result.clone())
-                    .flatten()
-            };
-            if let Some(result) = joined {
-                diagnostics::info(
-                    "account_sync_joined",
-                    Fields::default()
-                        .account(account_id)
-                        .operation(requested_operation)
-                        .outcome("joined"),
-                );
-                return result;
+            match decision {
+                InboxSyncDecision::Run(mode) => {
+                    let mut leader = InboxSyncLeader {
+                        flight: flight.clone(),
+                        mode,
+                        settled: false,
+                    };
+                    let result = operation
+                        .take()
+                        .expect("only the elected Inbox sync leader runs the operation")(
+                        mode
+                    )
+                    .await;
+                    leader.settle(result.clone());
+                    return result;
+                }
+                InboxSyncDecision::Joined(result) => {
+                    diagnostics::info(
+                        "account_sync_joined",
+                        Fields::default()
+                            .account(account_id)
+                            .operation(requested_operation)
+                            .outcome("joined"),
+                    );
+                    return result;
+                }
+                InboxSyncDecision::Wait => settled.await,
             }
         }
     }
@@ -2475,12 +2559,18 @@ pub(crate) async fn perform_inbox_mailbox_sync(
 ) -> Result<SyncReport, String> {
     let backend = app.state::<BackendState>().network_for(account_id)?;
     app.state::<DesktopRuntime>()
-        .coordinate_inbox_sync(account_id, "inbox_reconciliation", || async move {
-            backend
-                .sync_inbox(crate::INBOX_SYNC_LIMIT)
-                .await
-                .map_err(crate::safe_mail_error)
-        })
+        .coordinate_inbox_sync(
+            account_id,
+            InboxSyncMode::Full,
+            "inbox_reconciliation",
+            |mode| async move {
+                debug_assert_eq!(mode, InboxSyncMode::Full);
+                backend
+                    .sync_inbox(crate::INBOX_SYNC_LIMIT)
+                    .await
+                    .map_err(crate::safe_mail_error)
+            },
+        )
         .await
 }
 
@@ -2494,9 +2584,14 @@ async fn sync_inbox_with_operation(
     } else {
         "inbox_reconciliation"
     };
+    let requested_mode = if incremental {
+        InboxSyncMode::Incremental
+    } else {
+        InboxSyncMode::Full
+    };
     app.state::<DesktopRuntime>()
-        .coordinate_inbox_sync(account_id, operation, || {
-            sync_inbox_network_with_operation(app, account_id, incremental)
+        .coordinate_inbox_sync(account_id, requested_mode, operation, |mode| {
+            sync_inbox_network_with_operation(app, account_id, mode == InboxSyncMode::Incremental)
         })
         .await
 }
@@ -3731,7 +3826,7 @@ mod tests {
     use std::{
         cell::Cell,
         sync::{
-            Arc,
+            Arc, Mutex,
             atomic::{AtomicUsize, Ordering},
         },
         time::{Duration, Instant},
@@ -3747,13 +3842,14 @@ mod tests {
         NotificationBaseline, NotificationDelivery, NotificationSound, StoredDesktopSettings,
     };
     use super::{
-        BeforeExitEvent, DesktopRuntime, EXIT_HANDSHAKE_TIMEOUT, MessageMutationFlight,
-        SyncAllReport, align_notification_axis, available_optional_mailbox_roles,
-        consume_open_new_mail_notification, effective_notification_delivery, is_seen,
-        notification_candidates, notification_sender, notification_sender_email,
-        optional_role_participates_periodically, prioritize_active_account,
-        sanitize_notification_text, should_deliver_new_mail_notification,
-        trigger_discovers_mailbox_roles, windows_notification_content,
+        BeforeExitEvent, DesktopRuntime, EXIT_HANDSHAKE_TIMEOUT, InboxSyncMode,
+        MessageMutationFlight, SyncAllReport, align_notification_axis,
+        available_optional_mailbox_roles, consume_open_new_mail_notification,
+        effective_notification_delivery, is_seen, notification_candidates, notification_sender,
+        notification_sender_email, optional_role_participates_periodically,
+        prioritize_active_account, sanitize_notification_text,
+        should_deliver_new_mail_notification, trigger_discovers_mailbox_roles,
+        windows_notification_content,
     };
 
     fn message(flags: Vec<String>) -> InboxMessage {
@@ -3784,6 +3880,18 @@ mod tests {
             body_fetched: false,
             raw_rfc822: vec![],
             synced_at: "2026-07-14T00:00:00Z".to_owned(),
+        }
+    }
+
+    fn inbox_report(fetched: usize, removed: usize) -> SyncReport {
+        SyncReport {
+            mailbox: "INBOX".to_owned(),
+            remote_total: 4,
+            fetched,
+            updated_flags: 0,
+            removed,
+            cached_total: 4,
+            uid_validity_reset: false,
         }
     }
 
@@ -3931,12 +4039,18 @@ mod tests {
             let expected = expected.clone();
             tokio::spawn(async move {
                 runtime
-                    .coordinate_inbox_sync("account-a", "inbox_reconciliation", || async move {
-                        executions.fetch_add(1, Ordering::SeqCst);
-                        started.notify_one();
-                        release.notified().await;
-                        Ok(expected)
-                    })
+                    .coordinate_inbox_sync(
+                        "account-a",
+                        InboxSyncMode::Full,
+                        "inbox_reconciliation",
+                        |mode| async move {
+                            assert_eq!(mode, InboxSyncMode::Full);
+                            executions.fetch_add(1, Ordering::SeqCst);
+                            started.notify_one();
+                            release.notified().await;
+                            Ok(expected)
+                        },
+                    )
                     .await
             })
         };
@@ -3946,10 +4060,16 @@ mod tests {
             let executions = executions.clone();
             tokio::spawn(async move {
                 runtime
-                    .coordinate_inbox_sync("account-a", "inbox_reconciliation", || async move {
-                        executions.fetch_add(1, Ordering::SeqCst);
-                        Ok(SyncReport::default())
-                    })
+                    .coordinate_inbox_sync(
+                        "account-a",
+                        InboxSyncMode::Full,
+                        "inbox_reconciliation",
+                        |mode| async move {
+                            assert_eq!(mode, InboxSyncMode::Full);
+                            executions.fetch_add(1, Ordering::SeqCst);
+                            Ok(SyncReport::default())
+                        },
+                    )
                     .await
             })
         };
@@ -3968,6 +4088,393 @@ mod tests {
             expected
         );
         assert_eq!(executions.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn full_inbox_requests_queue_once_behind_incremental_work() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let (runtime, _sync_rx, _shutdown_rx) = DesktopRuntime::open(directory.path());
+        let runtime = Arc::new(runtime);
+        let modes = Arc::new(Mutex::new(Vec::new()));
+        let incremental_started = Arc::new(Notify::new());
+        let incremental_release = Arc::new(Notify::new());
+        let incremental_started_wait = incremental_started.notified();
+        let incremental_report = inbox_report(1, 0);
+        let full_report = inbox_report(2, 1);
+
+        let incremental = {
+            let runtime = runtime.clone();
+            let modes = modes.clone();
+            let incremental_started = incremental_started.clone();
+            let incremental_release = incremental_release.clone();
+            let incremental_report = incremental_report.clone();
+            tokio::spawn(async move {
+                runtime
+                    .coordinate_inbox_sync(
+                        "account-a",
+                        InboxSyncMode::Incremental,
+                        "inbox_incremental",
+                        |mode| async move {
+                            modes.lock().expect("modes").push(mode);
+                            incremental_started.notify_one();
+                            incremental_release.notified().await;
+                            Ok(incremental_report)
+                        },
+                    )
+                    .await
+            })
+        };
+        incremental_started_wait.await;
+
+        let first_full = {
+            let runtime = runtime.clone();
+            let modes = modes.clone();
+            let full_report = full_report.clone();
+            tokio::spawn(async move {
+                runtime
+                    .coordinate_inbox_sync(
+                        "account-a",
+                        InboxSyncMode::Full,
+                        "inbox_reconciliation",
+                        |mode| async move {
+                            modes.lock().expect("modes").push(mode);
+                            Ok(full_report)
+                        },
+                    )
+                    .await
+            })
+        };
+        let second_full = {
+            let runtime = runtime.clone();
+            let modes = modes.clone();
+            let full_report = full_report.clone();
+            tokio::spawn(async move {
+                runtime
+                    .coordinate_inbox_sync(
+                        "account-a",
+                        InboxSyncMode::Full,
+                        "inbox_reconciliation",
+                        |mode| async move {
+                            modes.lock().expect("modes").push(mode);
+                            Ok(full_report)
+                        },
+                    )
+                    .await
+            })
+        };
+        for _ in 0..4 {
+            tokio::task::yield_now().await;
+        }
+        assert!(!first_full.is_finished());
+        assert!(!second_full.is_finished());
+        incremental_release.notify_one();
+
+        assert_eq!(
+            incremental
+                .await
+                .expect("incremental task")
+                .expect("incremental sync"),
+            incremental_report
+        );
+        assert_eq!(
+            first_full
+                .await
+                .expect("first full task")
+                .expect("first full sync"),
+            full_report
+        );
+        assert_eq!(
+            second_full
+                .await
+                .expect("second full task")
+                .expect("second full sync"),
+            full_report
+        );
+        assert_eq!(
+            *modes.lock().expect("modes"),
+            vec![InboxSyncMode::Incremental, InboxSyncMode::Full]
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn incremental_request_joins_a_running_full_inbox_sync() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let (runtime, _sync_rx, _shutdown_rx) = DesktopRuntime::open(directory.path());
+        let runtime = Arc::new(runtime);
+        let executions = Arc::new(AtomicUsize::new(0));
+        let full_started = Arc::new(Notify::new());
+        let full_release = Arc::new(Notify::new());
+        let full_started_wait = full_started.notified();
+        let full_report = inbox_report(3, 1);
+
+        let full = {
+            let runtime = runtime.clone();
+            let executions = executions.clone();
+            let full_started = full_started.clone();
+            let full_release = full_release.clone();
+            let full_report = full_report.clone();
+            tokio::spawn(async move {
+                runtime
+                    .coordinate_inbox_sync(
+                        "account-a",
+                        InboxSyncMode::Full,
+                        "inbox_reconciliation",
+                        |mode| async move {
+                            assert_eq!(mode, InboxSyncMode::Full);
+                            executions.fetch_add(1, Ordering::SeqCst);
+                            full_started.notify_one();
+                            full_release.notified().await;
+                            Ok(full_report)
+                        },
+                    )
+                    .await
+            })
+        };
+        full_started_wait.await;
+        let incremental = {
+            let runtime = runtime.clone();
+            let executions = executions.clone();
+            tokio::spawn(async move {
+                runtime
+                    .coordinate_inbox_sync(
+                        "account-a",
+                        InboxSyncMode::Incremental,
+                        "inbox_incremental",
+                        |mode| async move {
+                            executions.fetch_add(1, Ordering::SeqCst);
+                            Ok(inbox_report(
+                                if mode == InboxSyncMode::Incremental {
+                                    1
+                                } else {
+                                    99
+                                },
+                                0,
+                            ))
+                        },
+                    )
+                    .await
+            })
+        };
+        for _ in 0..4 {
+            tokio::task::yield_now().await;
+        }
+        assert!(!incremental.is_finished());
+        full_release.notify_one();
+
+        assert_eq!(
+            full.await.expect("full task").expect("full sync"),
+            full_report
+        );
+        assert_eq!(
+            incremental
+                .await
+                .expect("incremental task")
+                .expect("joined full sync"),
+            full_report
+        );
+        assert_eq!(executions.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn running_full_inbox_failure_is_shared_with_weaker_joiners() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let (runtime, _sync_rx, _shutdown_rx) = DesktopRuntime::open(directory.path());
+        let runtime = Arc::new(runtime);
+        let executions = Arc::new(AtomicUsize::new(0));
+        let full_started = Arc::new(Notify::new());
+        let full_release = Arc::new(Notify::new());
+        let full_started_wait = full_started.notified();
+
+        let full = {
+            let runtime = runtime.clone();
+            let executions = executions.clone();
+            let full_started = full_started.clone();
+            let full_release = full_release.clone();
+            tokio::spawn(async move {
+                runtime
+                    .coordinate_inbox_sync(
+                        "account-a",
+                        InboxSyncMode::Full,
+                        "inbox_reconciliation",
+                        |mode| async move {
+                            assert_eq!(mode, InboxSyncMode::Full);
+                            executions.fetch_add(1, Ordering::SeqCst);
+                            full_started.notify_one();
+                            full_release.notified().await;
+                            Err("injected full failure".to_owned())
+                        },
+                    )
+                    .await
+            })
+        };
+        full_started_wait.await;
+        let incremental = {
+            let runtime = runtime.clone();
+            let executions = executions.clone();
+            tokio::spawn(async move {
+                runtime
+                    .coordinate_inbox_sync(
+                        "account-a",
+                        InboxSyncMode::Incremental,
+                        "inbox_incremental",
+                        |mode| async move {
+                            executions.fetch_add(1, Ordering::SeqCst);
+                            Ok(inbox_report(
+                                if mode == InboxSyncMode::Incremental {
+                                    1
+                                } else {
+                                    99
+                                },
+                                0,
+                            ))
+                        },
+                    )
+                    .await
+            })
+        };
+        for _ in 0..4 {
+            tokio::task::yield_now().await;
+        }
+        full_release.notify_one();
+
+        assert_eq!(
+            full.await.expect("full task").expect_err("full failure"),
+            "injected full failure"
+        );
+        assert_eq!(
+            incremental
+                .await
+                .expect("incremental task")
+                .expect_err("joined full failure"),
+            "injected full failure"
+        );
+        assert_eq!(executions.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn incremental_failure_does_not_discard_a_queued_full_attempt() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let (runtime, _sync_rx, _shutdown_rx) = DesktopRuntime::open(directory.path());
+        let runtime = Arc::new(runtime);
+        let modes = Arc::new(Mutex::new(Vec::new()));
+        let incremental_started = Arc::new(Notify::new());
+        let incremental_release = Arc::new(Notify::new());
+        let incremental_started_wait = incremental_started.notified();
+        let full_report = inbox_report(4, 2);
+
+        let incremental = {
+            let runtime = runtime.clone();
+            let modes = modes.clone();
+            let incremental_started = incremental_started.clone();
+            let incremental_release = incremental_release.clone();
+            tokio::spawn(async move {
+                runtime
+                    .coordinate_inbox_sync(
+                        "account-a",
+                        InboxSyncMode::Incremental,
+                        "inbox_incremental",
+                        |mode| async move {
+                            modes.lock().expect("modes").push(mode);
+                            incremental_started.notify_one();
+                            incremental_release.notified().await;
+                            Err("injected incremental failure".to_owned())
+                        },
+                    )
+                    .await
+            })
+        };
+        incremental_started_wait.await;
+        let full = {
+            let runtime = runtime.clone();
+            let modes = modes.clone();
+            let full_report = full_report.clone();
+            tokio::spawn(async move {
+                runtime
+                    .coordinate_inbox_sync(
+                        "account-a",
+                        InboxSyncMode::Full,
+                        "inbox_reconciliation",
+                        |mode| async move {
+                            modes.lock().expect("modes").push(mode);
+                            Ok(full_report)
+                        },
+                    )
+                    .await
+            })
+        };
+        for _ in 0..4 {
+            tokio::task::yield_now().await;
+        }
+        incremental_release.notify_one();
+
+        assert_eq!(
+            incremental
+                .await
+                .expect("incremental task")
+                .expect_err("incremental failure"),
+            "injected incremental failure"
+        );
+        assert_eq!(
+            full.await.expect("full task").expect("full retry"),
+            full_report
+        );
+        assert_eq!(
+            *modes.lock().expect("modes"),
+            vec![InboxSyncMode::Incremental, InboxSyncMode::Full]
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn inbox_sync_strength_flights_remain_independent_between_accounts() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let (runtime, _sync_rx, _shutdown_rx) = DesktopRuntime::open(directory.path());
+        let runtime = Arc::new(runtime);
+        let first_started = Arc::new(Notify::new());
+        let first_release = Arc::new(Notify::new());
+        let first_started_wait = first_started.notified();
+
+        let first = {
+            let runtime = runtime.clone();
+            let first_started = first_started.clone();
+            let first_release = first_release.clone();
+            tokio::spawn(async move {
+                runtime
+                    .coordinate_inbox_sync(
+                        "account-a",
+                        InboxSyncMode::Incremental,
+                        "inbox_incremental",
+                        |mode| async move {
+                            assert_eq!(mode, InboxSyncMode::Incremental);
+                            first_started.notify_one();
+                            first_release.notified().await;
+                            Ok(inbox_report(1, 0))
+                        },
+                    )
+                    .await
+            })
+        };
+        first_started_wait.await;
+
+        let second = runtime
+            .coordinate_inbox_sync(
+                "account-b",
+                InboxSyncMode::Full,
+                "inbox_reconciliation",
+                |mode| async move {
+                    assert_eq!(mode, InboxSyncMode::Full);
+                    Ok(inbox_report(2, 1))
+                },
+            )
+            .await
+            .expect("independent account sync");
+        assert_eq!(second, inbox_report(2, 1));
+        assert!(!first.is_finished());
+
+        first_release.notify_one();
+        assert_eq!(
+            first.await.expect("first task").expect("first sync"),
+            inbox_report(1, 0)
+        );
     }
 
     #[test]
