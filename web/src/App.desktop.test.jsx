@@ -1933,6 +1933,43 @@ describe("Mine Mail desktop state bridge", () => {
     );
   });
 
+  it("defers contact-directory invalidation until a contact consumer opens", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findAllByText("First mail");
+    await waitFor(() =>
+      expect(desktop.listeners.has("mail:inbox-updated")).toBe(true),
+    );
+    await waitFor(() =>
+      expect(desktop.mailApi.listContacts).toHaveBeenCalled(),
+    );
+    const callsBeforeMailboxUpdate =
+      desktop.mailApi.listContacts.mock.calls.length;
+
+    await act(async () => {
+      desktop.listeners.get("mail:inbox-updated")?.({
+        payload: {
+          account_id: "desktop-account",
+          completed: 1,
+          total: 1,
+          is_complete: true,
+          report: { fetched: 1, removed: 0 },
+        },
+      });
+      await Promise.resolve();
+    });
+    expect(desktop.mailApi.listContacts.mock.calls.length).toBe(
+      callsBeforeMailboxUpdate,
+    );
+
+    await user.click(screen.getByRole("button", { name: "通讯录" }));
+    await waitFor(() =>
+      expect(desktop.mailApi.listContacts.mock.calls.length).toBe(
+        callsBeforeMailboxUpdate + 1,
+      ),
+    );
+  });
+
   it("keeps the initial Inbox loading motion visible after returning from settings", async () => {
     desktop.fixtures.inboxPageSource.mockResolvedValue([]);
     const user = userEvent.setup();

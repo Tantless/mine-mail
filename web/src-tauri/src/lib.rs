@@ -9,7 +9,7 @@ mod mailbox_api;
 mod mcp;
 mod storage;
 
-use std::time::Instant;
+use std::{collections::HashMap, time::Instant};
 
 use mine_mail::{
     AttachmentDisposition, AttachmentMeta, AttachmentSaveErrorKind, AttachmentSaveResult,
@@ -1160,6 +1160,41 @@ async fn sync_sent(app: AppHandle) -> CommandResult<desktop::SyncReportDto> {
 /// Returns current-account correspondents separately from app-wide favorites.
 /// Each favorite retains the account that owns it so the UI can make the
 /// otherwise mixed scope explicit.
+fn contact_activity_for_directory(
+    active_account_id: &str,
+    backend: &BackendState,
+    account: &AccountRuntime,
+    contacts: &ContactRuntime,
+) -> CommandResult<Vec<(String, Vec<mine_mail::ContactActivity>)>> {
+    let (has_legacy_favorites, favorite_scopes) = contacts.favorite_activity_scopes()?;
+    let mut favorite_emails_by_account = HashMap::<String, Vec<String>>::new();
+    for (account_id, email) in favorite_scopes {
+        favorite_emails_by_account
+            .entry(account_id)
+            .or_default()
+            .push(email);
+    }
+    account
+        .account_ids()
+        .into_iter()
+        .map(|configured_account_id| {
+            let local = backend.local_for(&configured_account_id)?;
+            let activity = if configured_account_id == active_account_id || has_legacy_favorites {
+                local.list_contact_activity()
+            } else {
+                local.list_contact_activity_for_emails(
+                    favorite_emails_by_account
+                        .get(&configured_account_id)
+                        .map(Vec::as_slice)
+                        .unwrap_or(&[]),
+                )
+            }
+            .map_err(safe_mail_error)?;
+            Ok((configured_account_id, activity))
+        })
+        .collect()
+}
+
 #[tauri::command]
 fn list_contacts(
     backend: State<'_, BackendState>,
@@ -1169,17 +1204,8 @@ fn list_contacts(
 ) -> CommandResult<ContactDirectoryDto> {
     diagnostics::command("list_contacts", DiagnosticFields::default(), || {
         backend.local_for(&account_id)?;
-        let activity_by_account = account
-            .account_ids()
-            .into_iter()
-            .map(|configured_account_id| {
-                backend
-                    .local_for(&configured_account_id)?
-                    .list_contact_activity()
-                    .map(|activity| (configured_account_id, activity))
-                    .map_err(safe_mail_error)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        let activity_by_account =
+            contact_activity_for_directory(&account_id, &backend, &account, &contacts)?;
         contacts.list_directory(&account_id, activity_by_account)
     })
 }
@@ -1223,17 +1249,8 @@ fn prepare_ai_execution_context(
     let (sender_email, sender_remark) = account
         .account_email_and_remark(&active_account_id)
         .ok_or_else(|| "当前邮箱账户不可用。".to_owned())?;
-    let activity_by_account = account
-        .account_ids()
-        .into_iter()
-        .map(|configured_account_id| {
-            backend
-                .local_for(&configured_account_id)?
-                .list_contact_activity()
-                .map(|activity| (configured_account_id, activity))
-                .map_err(safe_mail_error)
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    let activity_by_account =
+        contact_activity_for_directory(&active_account_id, backend, account, contacts)?;
     let directory = contacts.list_directory(&active_account_id, activity_by_account)?;
     let mut seen = std::collections::HashSet::new();
     let contacts = directory

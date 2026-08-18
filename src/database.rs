@@ -13,8 +13,8 @@ use serde::{Serialize, de::DeserializeOwned};
 use uuid::Uuid;
 
 use crate::{
-    AccountConfig, ComposeFormat, ComposeRequest, Draft, InboxMessage, MailError, OutboxItem,
-    OutboxRecipientGroups, OutboxStatus, Result,
+    AccountConfig, ComposeFormat, ComposeRequest, ContactActivity, Draft, InboxMessage, MailError,
+    OutboxItem, OutboxRecipientGroups, OutboxStatus, Result,
     managed_attachments::ImportedManagedAttachment,
     mime::{build_envelope, draft_has_unsupported_content, reply_message_ids},
     models::{
@@ -190,6 +190,12 @@ struct PageCandidate {
 pub(crate) struct ContactMessageSource {
     pub public_id: String,
     pub message: InboxMessage,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DirtyContactActivity {
+    pub email: String,
+    pub revision: i64,
 }
 
 /// Internal draft row including synchronization metadata. The public `Draft`
@@ -633,6 +639,7 @@ impl Repository {
         migrate_message_public_id_aliases_v22(&connection)?;
         migrate_gmail_incremental_sync_v23(&connection)?;
         migrate_message_page_cursors_v24(&connection)?;
+        migrate_contact_activity_v25(&connection)?;
         connection.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_drafts_remote_identity
                  ON drafts(account_id, remote_mailbox, remote_uid);
@@ -642,7 +649,7 @@ impl Repository {
              CREATE INDEX IF NOT EXISTS idx_messages_body_cache_lru
                  ON messages(account_id, body_last_accessed_at, id)
                  WHERE body_fetched = 1;
-             PRAGMA user_version = 24;",
+             PRAGMA user_version = 25;",
         )?;
         Ok(repository)
     }
@@ -3398,9 +3405,192 @@ impl Repository {
             .map_err(Into::into)
     }
 
+    pub(crate) fn list_dirty_contact_activity(
+        &self,
+        account_id: &str,
+        limit: usize,
+    ) -> Result<Vec<DirtyContactActivity>> {
+        if limit == 0 {
+            return Err(MailError::Validation(
+                "contact activity maintenance limit must be greater than zero".to_owned(),
+            ));
+        }
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT email, revision
+             FROM contact_activity_dirty
+             WHERE account_id = ?1
+             ORDER BY email
+             LIMIT ?2",
+        )?;
+        statement
+            .query_map(params![account_id, usize_to_i64(limit)], |row| {
+                Ok(DirtyContactActivity {
+                    email: row.get(0)?,
+                    revision: row.get(1)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    pub(crate) fn dirty_contact_activity_revision(
+        &self,
+        account_id: &str,
+        email: &str,
+    ) -> Result<Option<i64>> {
+        self.connection()?
+            .query_row(
+                "SELECT revision
+                 FROM contact_activity_dirty
+                 WHERE account_id = ?1 AND email = ?2",
+                params![account_id, email],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    pub(crate) fn replace_contact_activity_if_dirty(
+        &self,
+        account_id: &str,
+        email: &str,
+        expected_revision: i64,
+        activity: Option<&ContactActivity>,
+    ) -> Result<bool> {
+        if expected_revision <= 0
+            || activity
+                .is_some_and(|activity| activity.email != email || activity.message_count == 0)
+        {
+            return Err(MailError::Validation(
+                "contact activity maintenance state is invalid".to_owned(),
+            ));
+        }
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let current_revision = transaction
+            .query_row(
+                "SELECT revision
+                 FROM contact_activity_dirty
+                 WHERE account_id = ?1 AND email = ?2",
+                params![account_id, email],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?;
+        if current_revision != Some(expected_revision) {
+            transaction.commit()?;
+            return Ok(false);
+        }
+
+        if let Some(activity) = activity {
+            let message_count = i64::try_from(activity.message_count).map_err(|_| {
+                MailError::Validation("contact activity count is too large".to_owned())
+            })?;
+            transaction.execute(
+                "INSERT INTO contact_activity_summary (
+                     account_id, email, display_name, message_count,
+                     last_message_at, last_subject, updated_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, unixepoch())
+                 ON CONFLICT(account_id, email) DO UPDATE SET
+                     display_name = excluded.display_name,
+                     message_count = excluded.message_count,
+                     last_message_at = excluded.last_message_at,
+                     last_subject = excluded.last_subject,
+                     updated_at = excluded.updated_at",
+                params![
+                    account_id,
+                    email,
+                    activity.display_name.as_deref(),
+                    message_count,
+                    activity.last_message_at.as_deref(),
+                    &activity.last_subject,
+                ],
+            )?;
+        } else {
+            transaction.execute(
+                "DELETE FROM contact_activity_summary
+                 WHERE account_id = ?1 AND email = ?2",
+                params![account_id, email],
+            )?;
+        }
+        let cleared = transaction.execute(
+            "DELETE FROM contact_activity_dirty
+             WHERE account_id = ?1 AND email = ?2 AND revision = ?3",
+            params![account_id, email, expected_revision],
+        )?;
+        transaction.commit()?;
+        Ok(cleared == 1)
+    }
+
+    pub(crate) fn list_contact_activity_summary(
+        &self,
+        account_id: &str,
+    ) -> Result<Vec<ContactActivity>> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT email, display_name, message_count, last_message_at, last_subject
+             FROM contact_activity_summary
+             WHERE account_id = ?1
+             ORDER BY last_message_at DESC, email",
+        )?;
+        statement
+            .query_map(params![account_id], row_to_contact_activity)?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    pub(crate) fn list_contact_activity_summary_for_emails(
+        &self,
+        account_id: &str,
+        emails: &[String],
+    ) -> Result<Vec<ContactActivity>> {
+        let connection = self.connection()?;
+        let mut activity = Vec::new();
+        for email in emails {
+            if let Some(item) = connection
+                .query_row(
+                    "SELECT email, display_name, message_count,
+                            last_message_at, last_subject
+                     FROM contact_activity_summary
+                     WHERE account_id = ?1 AND email = ?2",
+                    params![account_id, email],
+                    row_to_contact_activity,
+                )
+                .optional()?
+            {
+                activity.push(item);
+            }
+        }
+        Ok(activity)
+    }
+
+    pub(crate) fn reset_contact_activity(&self, account_id: &str) -> Result<()> {
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute(
+            "DELETE FROM contact_activity_summary WHERE account_id = ?1",
+            params![account_id],
+        )?;
+        transaction.execute(
+            "DELETE FROM contact_activity_dirty WHERE account_id = ?1",
+            params![account_id],
+        )?;
+        transaction.execute(
+            "INSERT INTO contact_activity_dirty (account_id, email, revision)
+             SELECT account_id, email, 1
+             FROM message_contact_emails
+             WHERE account_id = ?1
+             GROUP BY account_id, email",
+            params![account_id],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
     /// Returns body-free summaries for all locally cached mailboxes belonging
-    /// to one account. Contact aggregation deliberately happens over parsed
-    /// MailAddress values in Rust instead of substring matching JSON in SQL.
+    /// to one account. Retained only for explicit repair and test evidence;
+    /// routine contact-directory reads use the incremental activity summary.
+    #[cfg(test)]
     pub(crate) fn list_contact_source_messages(
         &self,
         account_id: &str,
@@ -7282,6 +7472,79 @@ fn migrate_message_page_cursors_v24(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn migrate_contact_activity_v25(connection: &Connection) -> Result<()> {
+    let schema_version: u32 =
+        connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    connection.execute_batch(
+        "CREATE TABLE IF NOT EXISTS contact_activity_summary (
+             account_id TEXT NOT NULL,
+             email TEXT NOT NULL CHECK (
+                 length(email) > 0 AND email = lower(trim(email))
+             ),
+             display_name TEXT,
+             message_count INTEGER NOT NULL CHECK (message_count > 0),
+             last_message_at TEXT,
+             last_subject TEXT NOT NULL DEFAULT '',
+             updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+             PRIMARY KEY (account_id, email),
+             FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
+         );
+         CREATE INDEX IF NOT EXISTS idx_contact_activity_summary_recent
+             ON contact_activity_summary(account_id, last_message_at DESC, email);
+         CREATE TABLE IF NOT EXISTS contact_activity_dirty (
+             account_id TEXT NOT NULL,
+             email TEXT NOT NULL CHECK (
+                 length(email) > 0 AND email = lower(trim(email))
+             ),
+             revision INTEGER NOT NULL DEFAULT 1 CHECK (revision > 0),
+             PRIMARY KEY (account_id, email),
+             FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
+         );
+         CREATE TRIGGER IF NOT EXISTS trg_message_contact_activity_insert
+         AFTER INSERT ON message_contact_emails
+         BEGIN
+             INSERT INTO contact_activity_dirty (account_id, email, revision)
+             VALUES (NEW.account_id, NEW.email, 1)
+             ON CONFLICT(account_id, email) DO UPDATE SET
+                 revision = contact_activity_dirty.revision + 1;
+         END;
+         CREATE TRIGGER IF NOT EXISTS trg_message_contact_activity_delete
+         AFTER DELETE ON message_contact_emails
+         BEGIN
+             INSERT INTO contact_activity_dirty (account_id, email, revision)
+             SELECT OLD.account_id, OLD.email, 1
+             WHERE EXISTS (
+                 SELECT 1 FROM accounts WHERE id = OLD.account_id
+             )
+             ON CONFLICT(account_id, email) DO UPDATE SET
+                 revision = contact_activity_dirty.revision + 1;
+         END;
+         CREATE TRIGGER IF NOT EXISTS trg_account_contact_activity_identity
+         AFTER UPDATE OF email ON accounts
+         WHEN NEW.email IS NOT OLD.email
+         BEGIN
+             INSERT INTO contact_activity_dirty (account_id, email, revision)
+             SELECT NEW.id, source.email, 1
+             FROM message_contact_emails AS source
+             WHERE source.account_id = NEW.id
+             GROUP BY source.email
+             ON CONFLICT(account_id, email) DO UPDATE SET
+                 revision = contact_activity_dirty.revision + 1;
+         END;",
+    )?;
+    if schema_version < 25 {
+        connection.execute_batch(
+            "DELETE FROM contact_activity_summary;
+             DELETE FROM contact_activity_dirty;
+             INSERT INTO contact_activity_dirty (account_id, email, revision)
+             SELECT account_id, email, 1
+             FROM message_contact_emails
+             GROUP BY account_id, email;",
+        )?;
+    }
+    Ok(())
+}
+
 fn flags_with_pending_updates(
     connection: &Connection,
     account_id: &str,
@@ -9502,6 +9765,20 @@ fn decode_optional_u64(column: usize, value: Option<String>) -> rusqlite::Result
 fn decode_u64(column: usize, value: i64) -> rusqlite::Result<u64> {
     u64::try_from(value).map_err(|error| {
         rusqlite::Error::FromSqlConversionFailure(column, Type::Integer, Box::new(error))
+    })
+}
+
+fn row_to_contact_activity(row: &Row<'_>) -> rusqlite::Result<ContactActivity> {
+    let message_count = row.get::<_, i64>(2)?;
+    let message_count = usize::try_from(message_count).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(2, Type::Integer, Box::new(error))
+    })?;
+    Ok(ContactActivity {
+        email: row.get(0)?,
+        display_name: row.get(1)?,
+        message_count,
+        last_message_at: row.get(3)?,
+        last_subject: row.get(4)?,
     })
 }
 
@@ -14857,7 +15134,7 @@ mod tests {
         let version: u32 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("schema version");
-        assert_eq!(version, 24);
+        assert_eq!(version, 25);
         let payload_index_exists: bool = connection
             .query_row(
                 "SELECT EXISTS(
@@ -14870,6 +15147,79 @@ mod tests {
             )
             .expect("payload index");
         assert!(payload_index_exists);
+    }
+
+    #[test]
+    fn v25_migration_seeds_incremental_contact_repair_and_cascades_by_account() {
+        let (_directory, repository, account) = setup();
+        initialize_mailbox(
+            &repository,
+            &account.account_id,
+            MailboxRole::Inbox,
+            "INBOX",
+            95,
+        );
+        repository
+            .upsert_message(&message_with_identity(
+                &account.account_id,
+                "INBOX",
+                1,
+                "2026-07-21T12:00:00Z",
+                "Migration contact",
+            ))
+            .expect("message");
+        let path = repository.path.clone();
+        let connection = repository.connection().expect("connection");
+        connection
+            .execute_batch(
+                "DROP TRIGGER trg_message_contact_activity_insert;
+                 DROP TRIGGER trg_message_contact_activity_delete;
+                 DROP TRIGGER trg_account_contact_activity_identity;
+                 DROP TABLE contact_activity_dirty;
+                 DROP TABLE contact_activity_summary;",
+            )
+            .expect("restore v24 contact schema");
+        connection
+            .pragma_update(None, "user_version", 24)
+            .expect("v24 marker");
+        drop(connection);
+        drop(repository);
+
+        let upgraded = Repository::open(&path).expect("v25 upgrade");
+        let connection = upgraded.connection().expect("upgraded connection");
+        let dirty_emails = connection
+            .prepare(
+                "SELECT email FROM contact_activity_dirty
+                 WHERE account_id = ?1 ORDER BY email",
+            )
+            .expect("dirty query")
+            .query_map(params![&account.account_id], |row| row.get::<_, String>(0))
+            .expect("dirty rows")
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .expect("dirty emails");
+        assert!(dirty_emails.contains(&"alice@example.com".to_owned()));
+        assert_eq!(
+            connection
+                .query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
+                .expect("schema version"),
+            25
+        );
+        connection
+            .execute(
+                "DELETE FROM accounts WHERE id = ?1",
+                params![&account.account_id],
+            )
+            .expect("delete account");
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM contact_activity_dirty WHERE account_id = ?1",
+                    params![&account.account_id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .expect("remaining dirty rows"),
+            0
+        );
     }
 
     #[test]
@@ -14925,7 +15275,7 @@ mod tests {
         let version: u32 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("schema version");
-        assert_eq!(version, 24);
+        assert_eq!(version, 25);
         assert!(
             connection
                 .execute(
@@ -14982,7 +15332,7 @@ mod tests {
         let version: u32 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("schema version");
-        assert_eq!(version, 24);
+        assert_eq!(version, 25);
         assert!(
             super::table_has_column(&connection, "mailboxes", "starred_history_before_uid")
                 .unwrap()
@@ -15139,7 +15489,7 @@ mod tests {
                     .expect("schema version connection")
                     .pragma_query_value(None, "user_version", |row| row.get::<_, u32>(0))
                     .expect("schema version"),
-                24
+                25
             );
 
             assert_eq!(
@@ -15878,7 +16228,7 @@ mod tests {
         let version: u32 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("schema version");
-        assert_eq!(version, 24);
+        assert_eq!(version, 25);
         for column in ["source_cleanup_pending", "destination_reconciled"] {
             assert!(
                 super::table_has_column(&connection, "pending_message_actions", column).unwrap()
@@ -16023,7 +16373,7 @@ mod tests {
         let version: u32 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("schema version");
-        assert_eq!(version, 24);
+        assert_eq!(version, 25);
         for column in [
             "operation_id",
             "source_uid_validity",
@@ -16172,7 +16522,7 @@ Body' AS BLOB)
         let version: u32 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("schema version");
-        assert_eq!(version, 24);
+        assert_eq!(version, 25);
         for column in [
             "local_version",
             "has_unsupported_content",

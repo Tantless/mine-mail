@@ -93,6 +93,7 @@ const BODY_PREFETCH_PRIORITY_RECENT: u8 = 0;
 const BODY_PREFETCH_PRIORITY_PAGE: u8 = 1;
 const BODY_PREFETCH_PRIORITY_NEIGHBOR: u8 = 2;
 const BODY_PREFETCH_NEIGHBOR_RADIUS: usize = 2;
+const CONTACT_ACTIVITY_MAINTENANCE_BATCH: usize = 128;
 
 fn normalize_owned_compose_html(mut request: ComposeRequest) -> ComposeRequest {
     request.format.body_html = sanitize_compose_html(request.format.body_html.as_deref());
@@ -2542,42 +2543,109 @@ impl MailBackend {
         }
     }
 
-    /// Derives one contact row per normalized address from all cached message
-    /// headers for this account. The account's own address is excluded and a
-    /// participant appearing more than once in one message is counted once.
+    /// Reads the complete derived contact directory for this account after
+    /// authoritatively rebuilding only addresses dirtied by message changes.
     pub fn list_contact_activity(&self) -> Result<Vec<ContactActivity>> {
         let own_email = normalize_contact_email(&self.config.email)?;
-        let messages = self
-            .repository
-            .list_contact_source_messages(&self.config.account_id)?;
-        let mut order = Vec::new();
-        let mut activity_by_email: HashMap<String, ContactActivity> = HashMap::new();
-
-        for source in messages {
-            let message = source.message;
-            let participants = contact_participants(&message, &own_email);
-            for (email, display_name) in participants {
-                let activity = activity_by_email.entry(email.clone()).or_insert_with(|| {
-                    order.push(email.clone());
-                    ContactActivity {
-                        email,
-                        display_name: None,
-                        message_count: 0,
-                        last_message_at: message_activity_at(&message),
-                        last_subject: message.subject.clone(),
-                    }
-                });
-                activity.message_count += 1;
-                if activity.display_name.is_none() {
-                    activity.display_name = display_name;
-                }
+        loop {
+            let dirty = self.repository.list_dirty_contact_activity(
+                &self.config.account_id,
+                CONTACT_ACTIVITY_MAINTENANCE_BATCH,
+            )?;
+            if dirty.is_empty() {
+                break;
+            }
+            for item in dirty {
+                self.refresh_contact_activity_email(&own_email, &item.email, item.revision)?;
             }
         }
+        self.repository
+            .list_contact_activity_summary(&self.config.account_id)
+    }
 
-        Ok(order
-            .into_iter()
-            .filter_map(|email| activity_by_email.remove(&email))
-            .collect())
+    /// Reads activity only for the requested normalized addresses. This is used
+    /// by inactive accounts, whose only directory contribution is app-wide
+    /// favorites owned by that account.
+    pub fn list_contact_activity_for_emails(
+        &self,
+        emails: &[String],
+    ) -> Result<Vec<ContactActivity>> {
+        let own_email = normalize_contact_email(&self.config.email)?;
+        let mut normalized = emails
+            .iter()
+            .filter_map(|email| normalize_contact_email(email).ok())
+            .collect::<Vec<_>>();
+        normalized.sort();
+        normalized.dedup();
+        for email in &normalized {
+            while let Some(revision) = self
+                .repository
+                .dirty_contact_activity_revision(&self.config.account_id, email)?
+            {
+                self.refresh_contact_activity_email(&own_email, email, revision)?;
+            }
+        }
+        self.repository
+            .list_contact_activity_summary_for_emails(&self.config.account_id, &normalized)
+    }
+
+    /// Explicit repair path for derived contact data. Routine reads never
+    /// perform a full message scan; repair reseeds the dirty set and then uses
+    /// the same per-address authoritative maintenance path.
+    pub fn repair_contact_activity(&self) -> Result<Vec<ContactActivity>> {
+        self.repository
+            .reset_contact_activity(&self.config.account_id)?;
+        self.list_contact_activity()
+    }
+
+    fn refresh_contact_activity_email(
+        &self,
+        own_email: &str,
+        email: &str,
+        revision: i64,
+    ) -> Result<()> {
+        let activity = self.derive_contact_activity_email(own_email, email)?;
+        let _ = self.repository.replace_contact_activity_if_dirty(
+            &self.config.account_id,
+            email,
+            revision,
+            activity.as_ref(),
+        )?;
+        Ok(())
+    }
+
+    fn derive_contact_activity_email(
+        &self,
+        own_email: &str,
+        email: &str,
+    ) -> Result<Option<ContactActivity>> {
+        let messages = self.repository.list_contact_source_messages_for_email(
+            &self.config.account_id,
+            email,
+            usize::MAX,
+        )?;
+        let mut activity = None::<ContactActivity>;
+        for source in messages {
+            let message = source.message;
+            let Some((_, display_name)) = contact_participants(&message, own_email)
+                .into_iter()
+                .find(|(participant, _)| participant == email)
+            else {
+                continue;
+            };
+            let current = activity.get_or_insert_with(|| ContactActivity {
+                email: email.to_owned(),
+                display_name: None,
+                message_count: 0,
+                last_message_at: message_activity_at(&message),
+                last_subject: message.subject.clone(),
+            });
+            current.message_count += 1;
+            if current.display_name.is_none() {
+                current.display_name = display_name;
+            }
+        }
+        Ok(activity)
     }
 
     /// Lists bounded, body-free summaries involving one normalized contact
@@ -10520,6 +10588,104 @@ mod tests {
                 .expect("bounded contact messages")
                 .len(),
             1
+        );
+
+        backend
+            .repository
+            .delete_missing_uids(&backend.config.account_id, INBOX, &HashSet::new())
+            .expect("remove newest correspondence");
+        let fallback = backend
+            .list_contact_activity()
+            .expect("fallback contact activity");
+        assert_eq!(fallback.len(), 1);
+        assert_eq!(fallback[0].message_count, 1);
+        assert_eq!(fallback[0].display_name.as_deref(), Some("Older Friend"));
+        assert_eq!(fallback[0].last_subject, "Older subject");
+    }
+
+    #[test]
+    fn selected_contact_activity_maintenance_leaves_unrequested_addresses_dirty() {
+        let directory = tempdir().expect("tempdir");
+        let config =
+            AccountConfig::from_163_lines(["demo@163.com", "not-a-real-secret"]).expect("config");
+        let backend = MailBackend::open(config, directory.path().join("mail.db")).expect("backend");
+        backend.initialize().expect("initialize");
+
+        let mut alice = cached_message(
+            &backend.config.account_id,
+            20,
+            "alice-message@example.com",
+            "Alice original",
+            "alice@example.com",
+            "demo@163.com",
+        );
+        let mut bob = cached_message(
+            &backend.config.account_id,
+            19,
+            "bob-message@example.com",
+            "Bob original",
+            "bob@example.com",
+            "demo@163.com",
+        );
+        backend.repository.upsert_message(&alice).expect("alice");
+        backend.repository.upsert_message(&bob).expect("bob");
+        assert_eq!(
+            backend
+                .list_contact_activity()
+                .expect("initial activity")
+                .len(),
+            2
+        );
+
+        alice.subject = "Alice refreshed".to_owned();
+        alice.sender.as_mut().expect("alice sender").name = Some("Alice Latest".to_owned());
+        bob.subject = "Bob refreshed".to_owned();
+        backend
+            .repository
+            .upsert_message(&alice)
+            .expect("refresh alice");
+        backend
+            .repository
+            .upsert_message(&bob)
+            .expect("refresh bob");
+
+        let selected = backend
+            .list_contact_activity_for_emails(&["ALICE@example.com".to_owned()])
+            .expect("selected activity");
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].email, "alice@example.com");
+        assert_eq!(selected[0].last_subject, "Alice refreshed");
+        assert_eq!(selected[0].display_name.as_deref(), Some("Alice Latest"));
+        let still_dirty = backend
+            .repository
+            .list_dirty_contact_activity(&backend.config.account_id, 16)
+            .expect("remaining dirty activity");
+        assert!(
+            still_dirty
+                .iter()
+                .any(|item| item.email == "bob@example.com")
+        );
+
+        let complete = backend.list_contact_activity().expect("complete activity");
+        assert_eq!(complete.len(), 2);
+        assert!(
+            complete
+                .iter()
+                .any(|item| item.email == "bob@example.com"
+                    && item.last_subject == "Bob refreshed")
+        );
+        assert!(
+            backend
+                .repository
+                .list_dirty_contact_activity(&backend.config.account_id, 1)
+                .expect("clean activity")
+                .is_empty()
+        );
+        assert_eq!(
+            backend
+                .repair_contact_activity()
+                .expect("explicit activity repair"),
+            complete
         );
     }
 

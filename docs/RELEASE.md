@@ -171,12 +171,12 @@ usage scenario before changing visible behavior or interaction.
   [`src/database.rs`](../src/database.rs), plus local/network continuation in
   [`web/src-tauri/src/mailbox_api.rs`](../web/src-tauri/src/mailbox_api.rs).
 
-- [ ] **CONTACT-01 — Eliminate all-account, all-message contact rescans from
+- [x] **CONTACT-01 — Eliminate all-account, all-message contact rescans from
   routine refresh paths.** `list_contacts` currently rebuilds activity for every
   configured account by loading every cached message header and aggregating it in
   Rust. Inbox/Sent invalidation can invoke this work even when Contacts is not
   visible, and AI turn preparation repeats it before contacting the provider.
-  **Agreed plan — pending implementation.** Treat contact activity as rebuildable
+  **Implemented.** Contact activity is rebuildable
   derived data maintained incrementally from `message_contact_emails`: add an
   account-and-normalized-email keyed activity summary plus a persistent dirty-email
   set. Message/contact membership changes mark only the affected addresses dirty;

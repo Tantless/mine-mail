@@ -334,6 +334,29 @@ impl ContactRuntime {
         ))
     }
 
+    pub(crate) fn favorite_activity_scopes(
+        &self,
+    ) -> Result<(bool, Vec<(String, String)>), String> {
+        self.store
+            .as_ref()
+            .ok_or_else(|| {
+                "Mine Mail 内部处理失败：联系人存储暂时不可用，请重试。".to_owned()
+            })?
+            .list_favorites()
+            .map(|records| {
+                let has_legacy = records
+                    .iter()
+                    .any(|record| record.account_id == LEGACY_FAVORITE_ACCOUNT_ID);
+                let scopes = records
+                    .into_iter()
+                    .filter(|record| record.account_id != LEGACY_FAVORITE_ACCOUNT_ID)
+                    .map(|record| (record.account_id, record.email))
+                    .collect();
+                (has_legacy, scopes)
+            })
+            .map_err(|_| "Mine Mail 未能读取联系人收藏，请重试。".to_owned())
+    }
+
     pub(crate) fn set_favorite(
         &self,
         account_id: &str,
