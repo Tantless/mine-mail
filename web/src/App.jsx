@@ -98,6 +98,7 @@ const paginatedMailboxRoles = ["inbox", "sent", "archive", "trash"];
 const starredMailboxRoles = ["inbox", "sent", "archive"];
 const mailboxFolders = [...paginatedMailboxRoles, "drafts", "outbox"];
 const mailboxPageSize = 50;
+const maxAutomaticEmptyPageContinuations = 3;
 const wideMailWorkspaceQuery = "(min-width: 941px)";
 const reducedMotionQuery = "(prefers-reduced-motion: reduce)";
 
@@ -330,15 +331,42 @@ function normalizeMailboxPage(page, role, query = null) {
 }
 
 function appendMailboxItems(current, incoming) {
+  const currentItems = current || [];
   const seen = new Set();
   const appended = [];
-  for (const message of [...(current || []), ...(incoming || [])]) {
+  for (const message of [...currentItems, ...(incoming || [])]) {
     const id = localMessageId(message);
     if (id === null || seen.has(id)) continue;
     seen.add(id);
     appended.push(message);
   }
+  if (
+    appended.length === currentItems.length &&
+    appended.every((message, index) => message === currentItems[index])
+  ) {
+    return currentItems;
+  }
   return appended;
+}
+
+function nextEmptyMailboxPageCursor(
+  cursor,
+  page,
+  appendedItemCount,
+  completedContinuations,
+) {
+  const nextCursor = page?.state?.nextCursor || null;
+  if (
+    appendedItemCount !== 0 ||
+    page?.state?.remoteHistoryState !== "may_have_more" ||
+    page?.state?.endReached ||
+    !nextCursor ||
+    nextCursor === cursor ||
+    completedContinuations >= maxAutomaticEmptyPageContinuations
+  ) {
+    return null;
+  }
+  return nextCursor;
 }
 
 function preserveStarredVisitMessages(snapshotItems, currentItems) {
@@ -887,6 +915,7 @@ export function App() {
   const accountStatusRef = useRef(accountStatus);
   const activeAccountIdRef = useRef(null);
   const activeFolderRef = useRef("inbox");
+  const mailboxQueryRef = useRef("");
   const selectedContactEmailRef = useRef(null);
   const selectedContactAccountIdRef = useRef(null);
   const accountSwitchRequestRef = useRef(0);
@@ -949,6 +978,7 @@ export function App() {
   mailboxLoadStatesRef.current = mailboxLoadStates;
   activeAccountIdRef.current = activeAccountId;
   activeFolderRef.current = activeFolder;
+  mailboxQueryRef.current = query;
   selectedContactEmailRef.current = selectedContactEmail;
   selectedContactAccountIdRef.current = selectedContactAccountId;
 
@@ -1906,6 +1936,7 @@ export function App() {
       selectFirst = false,
       preserveSyncing = false,
       recoveringCursor = false,
+      settleLoadMore = true,
     }) => {
       if (!accountId || !paginatedMailboxRoles.includes(role)) return null;
       const normalizedQuery = normalizedMailboxQuery(pageQuery);
@@ -1999,12 +2030,16 @@ export function App() {
                 endReached: existingPageState.endReached,
               }
             : normalized.state;
+        const appendedItemCount = Math.max(
+          0,
+          committedItems.length - existingItems.length,
+        );
         commitRoleItems(role, committedItems, accountId);
         commitMailboxPageState(
           role,
           {
             ...committedPageState,
-            loadMorePhase: "idle",
+            loadMorePhase: append && !settleLoadMore ? "loading" : "idle",
             loadMoreError: null,
           },
           accountId,
@@ -2052,6 +2087,7 @@ export function App() {
           ...normalized,
           items: committedItems,
           state: committedPageState,
+          appendedItemCount,
         };
       } catch (error) {
         if (
@@ -2067,6 +2103,7 @@ export function App() {
               mergeExisting: !normalizedQuery,
               preserveSyncing: true,
               recoveringCursor: true,
+              settleLoadMore,
             });
             return recovered
               ? { ...recovered, cursorRecovered: true }
@@ -2132,6 +2169,7 @@ export function App() {
       append = false,
       mergeExisting = false,
       recoveringCursor = false,
+      settleLoadMore = true,
     }) => {
       if (!accountId || !starredMailboxRoles.includes(role)) return null;
       const normalizedQuery = normalizedMailboxQuery(pageQuery);
@@ -2203,17 +2241,21 @@ export function App() {
             : append
               ? appendMailboxItems(existingItems, normalized.items)
               : normalized.items;
+        const appendedItemCount = Math.max(
+          0,
+          committedItems.length - existingItems.length,
+        );
         commitStarredMailboxPageState(
           role,
           {
             ...normalized.state,
             items: committedItems,
-            loadMorePhase: "idle",
+            loadMorePhase: append && !settleLoadMore ? "loading" : "idle",
             loadMoreError: null,
           },
           accountId,
         );
-        return { ...normalized, items: committedItems };
+        return { ...normalized, items: committedItems, appendedItemCount };
       } catch (error) {
         if (
           append &&
@@ -2227,6 +2269,7 @@ export function App() {
               query: normalizedQuery,
               mergeExisting: !normalizedQuery,
               recoveringCursor: true,
+              settleLoadMore,
             });
             return recovered
               ? { ...recovered, cursorRecovered: true }
@@ -4953,25 +4996,93 @@ export function App() {
         await Promise.all(
           Object.entries(sources)
             .filter(([, source]) => source?.nextCursor && !source.endReached)
-            .map(([role, source]) =>
-              loadStarredMailboxRolePage({
-                accountId,
-                role,
-                cursor: source.nextCursor,
-                append: true,
-              }),
-            ),
+            .map(async ([role, source]) => {
+              let cursor = source.nextCursor;
+              let completedContinuations = 0;
+              let completedWithoutError = false;
+              try {
+                while (cursor) {
+                  const page = await loadStarredMailboxRolePage({
+                    accountId,
+                    role,
+                    cursor,
+                    append: true,
+                    settleLoadMore: false,
+                  });
+                  if (!page) return;
+                  const nextCursor = nextEmptyMailboxPageCursor(
+                    cursor,
+                    page,
+                    page.appendedItemCount,
+                    completedContinuations,
+                  );
+                  if (
+                    !nextCursor ||
+                    activeAccountIdRef.current !== accountId ||
+                    activeFolderRef.current !== "starred" ||
+                    normalizedMailboxQuery(mailboxQueryRef.current)
+                  ) {
+                    break;
+                  }
+                  cursor = nextCursor;
+                  completedContinuations += 1;
+                }
+                completedWithoutError = true;
+              } finally {
+                if (completedWithoutError) {
+                  commitStarredMailboxPageState(
+                    role,
+                    (current) => ({
+                      ...current,
+                      loadMorePhase: "idle",
+                      loadMoreError: null,
+                    }),
+                    accountId,
+                  );
+                }
+              }
+            }),
         );
         return;
       }
-      const cursor = activePagination?.nextCursor;
+      let cursor = activePagination?.nextCursor;
       if (!cursor || !paginatedMailboxRoles.includes(activeFolder)) return;
-      await loadMailboxRolePage({
+      let completedContinuations = 0;
+      while (cursor) {
+        const page = await loadMailboxRolePage({
+          accountId,
+          role: activeFolder,
+          cursor,
+          append: true,
+          settleLoadMore: false,
+        });
+        if (!page) return;
+        const nextCursor = nextEmptyMailboxPageCursor(
+          cursor,
+          page,
+          page.appendedItemCount,
+          completedContinuations,
+        );
+        if (
+          !nextCursor ||
+          activeAccountIdRef.current !== accountId ||
+          activeFolderRef.current !== activeFolder ||
+          normalizedMailboxQuery(mailboxQueryRef.current)
+        ) {
+          break;
+        }
+        cursor = nextCursor;
+        completedContinuations += 1;
+      }
+      commitMailboxPageState(
+        activeFolder,
+        (current) => ({
+          ...current,
+          loadMorePhase: "idle",
+          loadMoreError: null,
+        }),
         accountId,
-        role: activeFolder,
-        cursor,
-        append: true,
-      });
+      );
     } catch {
       // The page state retains the silent automatic-pagination failure so a
       // later explicit refresh can reconcile the folder without losing rows.
@@ -4980,6 +5091,8 @@ export function App() {
     activeFolder,
     activePagination,
     canLoadOlder,
+    commitMailboxPageState,
+    commitStarredMailboxPageState,
     loadMailboxRolePage,
     loadStarredMailboxRolePage,
     loadRemoteSearch,

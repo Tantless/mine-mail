@@ -86,6 +86,7 @@ const BODY_IMAP_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(60);
 const DEFAULT_MESSAGE_PAGE_SIZE: usize = 50;
 const MAX_MESSAGE_PAGE_SIZE: usize = 100;
 const HISTORY_FETCH_PAGE_SIZE: usize = 50;
+const MAX_HISTORY_SCAN_WINDOWS_PER_REQUEST: usize = 4;
 const PERMANENT_DELETE_PLAN_MINUTES: i64 = 5;
 const MAX_PENDING_DELETE_PLANS: usize = 64;
 const MAX_ARCHIVE_FOLDER_CANDIDATES: usize = 128;
@@ -2425,7 +2426,7 @@ impl MailBackend {
             .transpose()?
             .flatten()
             .unwrap_or_default();
-        let history_before_uid = if flagged_only {
+        let mut history_before_uid = if flagged_only {
             starred_history.before_uid
         } else {
             ordinary_history.before_uid
@@ -2511,62 +2512,91 @@ impl MailBackend {
             };
         };
         let fetch_limit = normalized_message_page_size(page_size).min(HISTORY_FETCH_PAGE_SIZE);
-        let searched_result = if flagged_only {
-            connection
-                .search_flagged_uids_before_with_scope(before_uid, fetch_limit, scope)
-                .await
-        } else {
-            connection
-                .search_uids_before_with_scope(before_uid, fetch_limit, scope)
-                .await
-        };
-        let searched = match searched_result {
-            Ok(searched) => searched,
-            Err(_) => {
-                let _ = connection.logout().await;
-                return Ok(page_with_remote_state(local, RemoteHistoryState::Offline));
+        let mut before_uid = before_uid;
+        for completed_windows in 1..=MAX_HISTORY_SCAN_WINDOWS_PER_REQUEST {
+            let searched_result = if flagged_only {
+                connection
+                    .search_flagged_uids_before_with_scope(before_uid, fetch_limit, scope)
+                    .await
+            } else {
+                connection
+                    .search_uids_before_with_scope(before_uid, fetch_limit, scope)
+                    .await
+            };
+            let searched = match searched_result {
+                Ok(searched) => searched,
+                Err(_) => {
+                    let _ = connection.logout().await;
+                    let current = if flagged_only {
+                        self.repository.load_older_starred_mailbox_page(
+                            account_id, role, cursor, page_size, query,
+                        )?
+                    } else {
+                        self.repository
+                            .load_older_mailbox_page(account_id, role, cursor, page_size, query)?
+                    };
+                    return Ok(page_with_remote_state(current, RemoteHistoryState::Offline));
+                }
+            };
+            if !searched.uids.is_empty() {
+                let fetched = self
+                    .fetch_and_cache_summaries(&mut connection, &context.mailbox, &searched.uids)
+                    .await;
+                if fetched.ok() != Some(searched.uids.len()) {
+                    let _ = connection.logout().await;
+                    let current = if flagged_only {
+                        self.repository.load_older_starred_mailbox_page(
+                            account_id, role, cursor, page_size, query,
+                        )?
+                    } else {
+                        self.repository
+                            .load_older_mailbox_page(account_id, role, cursor, page_size, query)?
+                    };
+                    return Ok(page_with_remote_state(current, RemoteHistoryState::Offline));
+                }
             }
-        };
-        if !searched.uids.is_empty() {
-            let fetched = self
-                .fetch_and_cache_summaries(&mut connection, &context.mailbox, &searched.uids)
-                .await;
-            if fetched.ok() != Some(searched.uids.len()) {
+            let history_advanced = if flagged_only {
+                self.repository.advance_starred_mailbox_history(
+                    account_id,
+                    &context.mailbox,
+                    selected_uid_validity,
+                    history_before_uid,
+                    searched.next_before_uid,
+                    searched.reached_uid_floor,
+                )?
+            } else {
+                self.repository.advance_mailbox_history(
+                    account_id,
+                    &context.mailbox,
+                    selected_uid_validity,
+                    history_before_uid,
+                    searched.next_before_uid,
+                    searched.reached_uid_floor,
+                    match scope {
+                        MailboxMessageScope::All => Some(selected.exists),
+                        MailboxMessageScope::GmailArchive => ordinary_history.remote_total,
+                    },
+                )?
+            };
+            let page = if flagged_only {
+                self.repository
+                    .load_older_starred_mailbox_page(account_id, role, cursor, page_size, query)?
+            } else {
+                self.repository
+                    .load_older_mailbox_page(account_id, role, cursor, page_size, query)?
+            };
+            if !should_continue_empty_history_scan(&page, history_advanced, completed_windows) {
                 let _ = connection.logout().await;
-                return Ok(page_with_remote_state(local, RemoteHistoryState::Offline));
+                return Ok(page);
             }
+            let Some(next_before_uid) = searched.next_before_uid else {
+                let _ = connection.logout().await;
+                return Ok(page);
+            };
+            history_before_uid = Some(next_before_uid);
+            before_uid = next_before_uid;
         }
-        if flagged_only {
-            self.repository.advance_starred_mailbox_history(
-                account_id,
-                &context.mailbox,
-                selected_uid_validity,
-                starred_history.before_uid,
-                searched.next_before_uid,
-                searched.reached_uid_floor,
-            )?;
-        } else {
-            self.repository.advance_mailbox_history(
-                account_id,
-                &context.mailbox,
-                selected_uid_validity,
-                ordinary_history.before_uid,
-                searched.next_before_uid,
-                searched.reached_uid_floor,
-                match scope {
-                    MailboxMessageScope::All => Some(selected.exists),
-                    MailboxMessageScope::GmailArchive => ordinary_history.remote_total,
-                },
-            )?;
-        }
-        let _ = connection.logout().await;
-        if flagged_only {
-            self.repository
-                .load_older_starred_mailbox_page(account_id, role, cursor, page_size, query)
-        } else {
-            self.repository
-                .load_older_mailbox_page(account_id, role, cursor, page_size, query)
-        }
+        unreachable!("bounded history scan loop always returns on its final window")
     }
 
     /// Reads the complete derived contact directory for this account after
@@ -7609,6 +7639,19 @@ fn page_with_remote_state(mut page: MessagePage, state: RemoteHistoryState) -> M
     page
 }
 
+fn should_continue_empty_history_scan(
+    page: &MessagePage,
+    history_advanced: bool,
+    completed_windows: usize,
+) -> bool {
+    history_advanced
+        && completed_windows < MAX_HISTORY_SCAN_WINDOWS_PER_REQUEST
+        && page.items.is_empty()
+        && !page.has_more_local
+        && page.remote_history_state == RemoteHistoryState::MayHaveMore
+        && !page.end_reached
+}
+
 fn validate_managed_attachment_inventory(
     expected_count: usize,
     sizes: impl IntoIterator<Item = u64>,
@@ -8056,16 +8099,17 @@ mod tests {
     use super::{
         BODY_PREFETCH_PRIORITY_NEIGHBOR, BODY_PREFETCH_PRIORITY_PAGE,
         BODY_PREFETCH_PRIORITY_RECENT, BodyDownloadKey, BodyDownloadOwner, BodyPrefetchQueue,
-        DraftReconciliation, INBOX, InboxUidScope, MailBackend, RemoteDraftCandidate,
-        RemoteForkPreservation, advance_draft_sync_progress, advance_summary_sync_progress,
-        archive_folder_candidates, bounded_body_prefetch_ids, changed_flags_cursor,
-        classify_draft_reconciliation, classify_inbox_uid_scope, configured_archive_capability,
-        confirmed_created_mailbox_capability, discovered_mailbox_capability,
-        draft_record_matches_remote, earlier_history_bound, mailbox_hint_changed,
-        mailbox_snapshot_has_usable_epoch, mailbox_snapshot_requires_confirmation,
-        mailbox_snapshots_confirm_same_membership, newest_uids_by_internal_date,
-        next_missing_history_bound, normalized_message_page_size, remote_attachment_listing,
-        remote_candidates_equivalent, remote_draft_candidate, selected_remote_body_paths,
+        DraftReconciliation, INBOX, InboxUidScope, MAX_HISTORY_SCAN_WINDOWS_PER_REQUEST,
+        MailBackend, RemoteDraftCandidate, RemoteForkPreservation, advance_draft_sync_progress,
+        advance_summary_sync_progress, archive_folder_candidates, bounded_body_prefetch_ids,
+        changed_flags_cursor, classify_draft_reconciliation, classify_inbox_uid_scope,
+        configured_archive_capability, confirmed_created_mailbox_capability,
+        discovered_mailbox_capability, draft_record_matches_remote, earlier_history_bound,
+        mailbox_hint_changed, mailbox_snapshot_has_usable_epoch,
+        mailbox_snapshot_requires_confirmation, mailbox_snapshots_confirm_same_membership,
+        newest_uids_by_internal_date, next_missing_history_bound, normalized_message_page_size,
+        remote_attachment_listing, remote_candidates_equivalent, remote_draft_candidate,
+        selected_remote_body_paths, should_continue_empty_history_scan,
         validate_delivery_unknown_attempt, validate_manual_retry,
     };
     use crate::{
@@ -8088,7 +8132,8 @@ mod tests {
             AttachmentDisposition, AttachmentSaveStatus, DraftAttachmentMutationKind,
             ForwardPreparationErrorKind, ForwardPreparationOutcome, ForwardWarning,
             MailboxCapability, MailboxCapabilityStatus, MailboxCapabilityUnavailableReason,
-            MessageMutationDrainReport, MutationStatus, SystemFlagKind,
+            MessageMutationDrainReport, MessagePage, MutationStatus, RemoteHistoryState,
+            SystemFlagKind,
         },
     };
 
@@ -8886,6 +8931,32 @@ mod tests {
         assert_eq!(normalized_message_page_size(0), 50);
         assert_eq!(normalized_message_page_size(100), 100);
         assert_eq!(normalized_message_page_size(500), 100);
+    }
+
+    #[test]
+    fn empty_history_scans_continue_only_after_progress_and_within_the_request_budget() {
+        let empty_page = MessagePage {
+            items: Vec::new(),
+            next_cursor: None,
+            has_more_local: false,
+            remote_history_state: RemoteHistoryState::MayHaveMore,
+            end_reached: false,
+        };
+
+        assert!(should_continue_empty_history_scan(&empty_page, true, 1));
+        assert!(!should_continue_empty_history_scan(&empty_page, false, 1,));
+        assert!(!should_continue_empty_history_scan(
+            &empty_page,
+            true,
+            MAX_HISTORY_SCAN_WINDOWS_PER_REQUEST,
+        ));
+
+        let complete_page = MessagePage {
+            remote_history_state: RemoteHistoryState::Complete,
+            end_reached: true,
+            ..empty_page
+        };
+        assert!(!should_continue_empty_history_scan(&complete_page, true, 1,));
     }
 
     #[test]

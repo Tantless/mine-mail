@@ -3556,6 +3556,131 @@ describe("Mine Mail desktop state bridge", () => {
     expect(screen.queryByText("Newest local page")).toBeNull();
   });
 
+  it("continues an empty remote-history page without another user scroll", async () => {
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: 600,
+    });
+    const newest = {
+      ...summary("empty-history-newest", "Newest before sparse history"),
+      uid: undefined,
+      flags: ["\\Seen"],
+    };
+    const older = {
+      ...summary("empty-history-older", "Older after sparse history"),
+      uid: undefined,
+      flags: ["\\Seen"],
+    };
+    const pendingVisiblePage = deferred();
+    desktop.mailApi.listMailboxPage.mockImplementation(
+      async (_, role, _cursor, _pageSize, query) =>
+        role === "inbox" && !query
+          ? mailboxPage([newest], role, {
+              next_cursor: "sparse-cursor-1",
+              has_more_local: false,
+              remote_history_state: "may_have_more",
+              end_reached: false,
+            })
+          : mailboxPage([], role),
+    );
+    desktop.mailApi.loadOlderMailboxPage.mockImplementation(
+      async (_accountId, role, cursor) => {
+        if (cursor === "sparse-cursor-1") {
+          return mailboxPage([], role, {
+            next_cursor: "sparse-cursor-2",
+            has_more_local: false,
+            remote_history_state: "may_have_more",
+            end_reached: false,
+          });
+        }
+        expect(cursor).toBe("sparse-cursor-2");
+        return pendingVisiblePage.promise;
+      },
+    );
+    render(<App />);
+
+    expect(await screen.findByText("Newest before sparse history")).toBeTruthy();
+    const list = screen.getByLabelText("收件箱邮件列表");
+    const scrollSurface = list.querySelector(".message-list");
+    Object.defineProperties(scrollSurface, {
+      scrollHeight: { configurable: true, value: 800 },
+      clientHeight: { configurable: true, value: 400 },
+      scrollTop: { configurable: true, value: 350 },
+    });
+    fireEvent.scroll(scrollSurface);
+
+    await waitFor(() =>
+      expect(desktop.mailApi.loadOlderMailboxPage).toHaveBeenCalledTimes(2),
+    );
+    expect(
+      within(list).getByRole("status", { name: "正在加载更多邮件" }),
+    ).toBeTruthy();
+
+    await act(async () => {
+      pendingVisiblePage.resolve(mailboxPage([older], "inbox"));
+    });
+    expect(await screen.findByText("Older after sparse history")).toBeTruthy();
+    expect(
+      within(list).queryByRole("status", { name: "正在加载更多邮件" }),
+    ).toBeNull();
+    expect(desktop.mailApi.loadOlderMailboxPage).toHaveBeenCalledTimes(2);
+  });
+
+  it("bounds automatic continuation when remote history keeps returning empty pages", async () => {
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: 600,
+    });
+    const newest = {
+      ...summary("bounded-history-newest", "Newest before bounded history"),
+      uid: undefined,
+      flags: ["\\Seen"],
+    };
+    desktop.mailApi.listMailboxPage.mockImplementation(
+      async (_, role, _cursor, _pageSize, query) =>
+        role === "inbox" && !query
+          ? mailboxPage([newest], role, {
+              next_cursor: "bounded-cursor-1",
+              has_more_local: false,
+              remote_history_state: "may_have_more",
+              end_reached: false,
+            })
+          : mailboxPage([], role),
+    );
+    desktop.mailApi.loadOlderMailboxPage.mockImplementation(
+      async (_accountId, role, cursor) => {
+        const cursorNumber = Number(cursor.split("-").at(-1));
+        return mailboxPage([], role, {
+          next_cursor: `bounded-cursor-${cursorNumber + 1}`,
+          has_more_local: false,
+          remote_history_state: "may_have_more",
+          end_reached: false,
+        });
+      },
+    );
+    render(<App />);
+
+    expect(await screen.findByText("Newest before bounded history")).toBeTruthy();
+    const list = screen.getByLabelText("收件箱邮件列表");
+    const scrollSurface = list.querySelector(".message-list");
+    Object.defineProperties(scrollSurface, {
+      scrollHeight: { configurable: true, value: 800 },
+      clientHeight: { configurable: true, value: 400 },
+      scrollTop: { configurable: true, value: 350 },
+    });
+    fireEvent.scroll(scrollSurface);
+
+    await waitFor(() =>
+      expect(desktop.mailApi.loadOlderMailboxPage).toHaveBeenCalledTimes(4),
+    );
+    await waitFor(() =>
+      expect(
+        within(list).queryByRole("status", { name: "正在加载更多邮件" }),
+      ).toBeNull(),
+    );
+    expect(desktop.mailApi.loadOlderMailboxPage).toHaveBeenCalledTimes(4);
+  });
+
   it("preserves visible rows and rebuilds pagination after a stale cursor", async () => {
     Object.defineProperty(window, "innerWidth", {
       configurable: true,

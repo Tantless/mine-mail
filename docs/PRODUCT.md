@@ -209,7 +209,12 @@ existing visual system normally changes this document rather than `DESIGN.md`.
   automatically near the list end. Loading another page preserves visible rows,
   selection, and scroll position. The bounded loading row says
   **正在加载更多邮件…**. There is no manual load-more control or persistent end
-  card.
+  card. An intermediate remote UID window that advances history but yields no
+  visible row does not immediately settle the loading action: Rust reuses the
+  selected IMAP connection for a bounded continuation, and React may continue
+  another bounded page only while the opaque cursor advances and the same view
+  remains active. Visible rows, an authoritative end, an unchanged cursor, a
+  network failure, or exhaustion of the continuation budget stops that chain.
 - Each page distinguishes local history, possible remote history, offline
   unavailability, and an authoritative end internally; those distinctions must
   not produce misleading empty or completion claims in the list.
