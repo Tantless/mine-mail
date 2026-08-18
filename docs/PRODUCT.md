@@ -63,9 +63,15 @@ product decision changes.
   - 163 and QQ use the provider's fixed address suffix and a provider-generated
     authorization code, not the Web login password. Their forms link to bundled
     offline instructions.
-  - Gmail uses Google OAuth 2.0 Authorization Code + PKCE in the system browser
-    and XOAUTH2 for mail access. While access remains preview-only, the form shows
-    the current allowlisting contact.
+  - Gmail offers a password-style IMAP / SMTP form first and Google OAuth as a
+    separate alternative below it. Password-style login uses the complete Gmail
+    or Google Workspace address plus a Google-generated app password, never the
+    ordinary Web login password. Its bundled tutorial explains that two-step
+    verification must be enabled, then links to
+    `https://myaccount.google.com/apppasswords` to create the password. OAuth uses
+    Authorization Code + PKCE in the system browser and XOAUTH2 for mail access;
+    while access remains preview-only, its action shows the current allowlisting
+    contact.
   - Custom accounts collect explicit IMAP and SMTP configuration.
 - Outlook is not offered until Microsoft OAuth / Modern Auth is supported. A
   legacy Outlook record remains visible and its cached mail remains readable,

@@ -532,6 +532,50 @@ describe("SettingsPanel account flow", () => {
     expect(onOpenExternalLink).not.toHaveBeenCalled();
   });
 
+  it("opens the Gmail app-password guide and its official Google page", async () => {
+    const onOpenExternalLink = vi.fn();
+    const user = userEvent.setup();
+    render(<SettingsPanel {...panelProps({ onOpenExternalLink })} />);
+
+    await user.click(screen.getByRole("button", { name: "添加账户" }));
+    await user.click(screen.getByRole("button", { name: /Gmail/ }));
+    const secretInput = screen.getByLabelText("Google 应用专用密码");
+    const guideButton = screen.getByRole("button", {
+      name: "查看 Gmail 应用专用密码获取教程",
+    });
+    await user.type(secretInput, "keep-google-app-password");
+    await user.click(guideButton);
+
+    const guidePage = screen.getByRole("region", {
+      name: "Gmail 应用专用密码教程",
+    });
+    await waitFor(() => expect(document.activeElement).toBe(guidePage));
+    expect(
+      within(guidePage).getByText(/Google 账户已开启两步验证/),
+    ).toBeTruthy();
+    expect(
+      within(guidePage).getByRole("img", {
+        name: "Google 应用专用密码页面中的应用名称输入框和创建按钮",
+      }),
+    ).toBeTruthy();
+    const officialLink = within(guidePage).getByRole("link", {
+      name: "打开 Google 应用专用密码",
+    });
+    expect(officialLink.getAttribute("href")).toBe(
+      "https://myaccount.google.com/apppasswords",
+    );
+    await user.click(officialLink);
+    expect(onOpenExternalLink).toHaveBeenCalledWith(
+      "https://myaccount.google.com/apppasswords",
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: "返回连接 Gmail" }),
+    );
+    expect(secretInput.value).toBe("keep-google-app-password");
+    await waitFor(() => expect(document.activeElement).toBe(guideButton));
+  });
+
   it("keeps a legacy Outlook account visible as cache-only without a reconnect form", () => {
     const legacyAccountStatus = {
       ...accountStatus,

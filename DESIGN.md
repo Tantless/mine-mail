@@ -297,7 +297,13 @@ applied at the root.
   as cache-only records.
 - 163 and QQ use one composite address field with a fixed provider suffix and an
   adjacent icon-only offline tutorial action for obtaining an authorization
-  code. Gmail shows the current preview-access note beside its OAuth action.
+  code. Gmail first shows the same compact address-and-secret form using the
+  complete account address and a Google app password, with an adjacent offline
+  tutorial action. The tutorial states that Google two-step verification is a
+  prerequisite, links explicitly to Google's app-password page, and uses a
+  bundled privacy-safe image for the create action. A quiet **或** divider
+  separates the Google OAuth notice and action below it; the OAuth action keeps
+  the current preview-access note beside it.
 - Persistent backend health is not decoration. Show progress for the action the
   user started and failures that require attention.
 - **桌面通知** remains the master preference. On Windows, one adjacent

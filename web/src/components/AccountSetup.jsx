@@ -13,7 +13,13 @@ import { userFacingErrorMessage } from "../utils/userFacingError.js";
 const fallbackPresets = [
   { id: "163", label: "163 邮箱", secret_label: "客户端授权密码" },
   { id: "qq", label: "QQ 邮箱", secret_label: "QQ 邮箱授权码" },
-  { id: "gmail", label: "Gmail", oauth: true, secret_label: "Google OAuth" },
+  {
+    id: "gmail",
+    label: "Gmail",
+    oauth: true,
+    note: "请使用 Google 账户生成的应用专用密码，而不是普通登录密码。",
+    secret_label: "Google 应用专用密码",
+  },
   { id: "custom", label: "自定义 IMAP/SMTP", secret_label: "邮箱密码或授权密码" },
 ];
 
@@ -22,7 +28,7 @@ const smtpSecurityOptions = [
   { value: "start_tls", label: "STARTTLS" },
 ];
 
-const authorizationGuideProviders = new Set(["163", "qq"]);
+const authorizationGuideProviders = new Set(["163", "qq", "gmail"]);
 const providerEmailDomains = Object.freeze({
   163: "@163.com",
   qq: "@qq.com",
@@ -64,6 +70,12 @@ function normalizedPreset(preset) {
       preset.secretLabel ?? preset.secret_label ?? "邮箱密码或客户端授权密码",
     oauth: Boolean(preset.oauth),
   };
+}
+
+function authorizationGuideLabel(provider, providerLabel) {
+  return provider === "gmail"
+    ? "查看 Gmail 应用专用密码获取教程"
+    : `查看 ${providerLabel}授权码获取教程`;
 }
 
 function resolveProvider(options, requestedProvider) {
@@ -109,6 +121,7 @@ export function AccountSetupForm({
     smtpSecurity: "implicit_tls",
   });
   const [validationError, setValidationError] = useState(null);
+  const [submissionMethod, setSubmissionMethod] = useState(null);
   const secretInputId = useId();
   const emailInputId = useId();
   const emailDomainDescriptionId = useId();
@@ -152,11 +165,6 @@ export function AccountSetupForm({
   const handleSubmit = (event) => {
     event.preventDefault();
     if (configurationBlocked || submitStatus === "saving") return;
-    if (provider === "gmail") {
-      setValidationError(null);
-      void onGoogle?.();
-      return;
-    }
 
     const emailInput = email.trim();
     const normalizedEmail = providerEmailDomain
@@ -214,6 +222,7 @@ export function AccountSetupForm({
     }
 
     setValidationError(null);
+    setSubmissionMethod("password");
     if (secretRef.current) secretRef.current.value = "";
     const request = {
       provider,
@@ -231,6 +240,20 @@ export function AccountSetupForm({
     };
     void onSubmit(request);
   };
+
+  const handleGoogle = () => {
+    if (configurationBlocked || submitStatus === "saving") return;
+    setValidationError(null);
+    setSubmissionMethod("oauth");
+    void onGoogle?.();
+  };
+
+  const oauthError = Boolean(
+    provider === "gmail" &&
+    submissionMethod === "oauth" &&
+    !validationError &&
+    displayedError,
+  );
 
   return (
     <form
@@ -256,6 +279,7 @@ export function AccountSetupForm({
                 );
                 setProvider(option.id);
                 setValidationError(null);
+                setSubmissionMethod(null);
               }}
             >
               {option.label}
@@ -273,19 +297,7 @@ export function AccountSetupForm({
           </span>
         </div>
       ) : (
-        provider === "gmail" ? (
-          <div className="account-google-auth" role="status">
-            <ShieldCheck size={22} weight="duotone" />
-            <span>
-              <strong>通过 Google 安全登录</strong>
-              <small>
-                登录将在系统默认浏览器中完成。Mine Mail 不会读取你的 Google 密码，
-                OAuth 令牌只保存在系统凭据库中。
-              </small>
-            </span>
-          </div>
-        ) : (
-          <>
+        <>
           <div className="settings-field">
             <label htmlFor={emailInputId}>邮箱地址</label>
             <span className="settings-input-shell settings-input-shell--text account-email-control inset-input-shell">
@@ -360,7 +372,7 @@ export function AccountSetupForm({
                 <IconButton
                   ref={authorizationGuideButtonRef}
                   className="account-authorization-guide"
-                  label={`查看 ${selected?.label}授权码获取教程`}
+                  label={authorizationGuideLabel(provider, selected?.label)}
                   tooltipOnFocus={false}
                   onClick={() => onOpenAuthorizationGuide(provider)}
                 >
@@ -481,11 +493,10 @@ export function AccountSetupForm({
               </div>
             </div>
           ) : null}
-          </>
-        )
+        </>
       )}
 
-      {displayedError ? (
+      {displayedError && !oauthError ? (
         <p id="account-setup-error" className="settings-error" role="alert">
           {displayedError}
         </p>
@@ -497,28 +508,57 @@ export function AccountSetupForm({
           className="send-button account-submit"
           disabled={configurationBlocked || submitStatus === "saving"}
         >
-          {provider === "gmail" ? (
-            <GoogleLogo size={18} weight="bold" />
-          ) : (
-            <EnvelopeSimple size={18} weight="fill" />
-          )}
-          {submitStatus === "saving"
-            ? provider === "gmail"
-              ? "等待 Google 登录…"
-              : "正在验证并保存…"
+          <EnvelopeSimple size={18} weight="fill" />
+          {submitStatus === "saving" &&
+          (provider !== "gmail" || submissionMethod === "password")
+            ? "正在验证并保存…"
             : provider === "gmail"
-              ? "使用 Google 登录"
+              ? "使用 IMAP 登录"
             : status?.configured
               ? "更新账户"
               : "连接邮箱"}
         </button>
-        {provider === "gmail" ? (
-          <small className="account-google-preview-note" role="note">
-            目前处于预览测试版，如想使用 Google OAuth 登录，请联系 tantless@163.com
-            添加白名单。
-          </small>
-        ) : null}
       </div>
+
+      {provider === "gmail" && !configurationBlocked ? (
+        <>
+          <div className="account-auth-divider" aria-hidden="true">
+            <span>或</span>
+          </div>
+          <div className="account-google-auth">
+            <ShieldCheck size={22} weight="duotone" />
+            <span>
+              <strong>通过 Google OAuth 安全登录</strong>
+              <small>
+                登录将在系统默认浏览器中完成。Mine Mail 不会读取你的 Google 密码，
+                OAuth 令牌只保存在系统凭据库中。
+              </small>
+            </span>
+          </div>
+          {oauthError ? (
+            <p id="account-setup-error" className="settings-error" role="alert">
+              {displayedError}
+            </p>
+          ) : null}
+          <div className="account-submit-row account-submit-row--google">
+            <button
+              type="button"
+              className="send-button account-submit"
+              disabled={submitStatus === "saving"}
+              onClick={handleGoogle}
+            >
+              <GoogleLogo size={18} weight="bold" />
+              {submitStatus === "saving" && submissionMethod === "oauth"
+                ? "等待 Google 登录…"
+                : "使用 Google 登录"}
+            </button>
+            <small className="account-google-preview-note" role="note">
+              目前处于预览测试版，如想使用 Google OAuth 登录，请联系 tantless@163.com
+              添加白名单。
+            </small>
+          </div>
+        </>
+      ) : null}
     </form>
   );
 }

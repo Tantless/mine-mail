@@ -9698,6 +9698,11 @@ html[data-surface="new-mail-notification"] #root {
   padding-bottom: 12px;
 }
 
+.authorization-guide-external {
+  width: fit-content;
+  text-decoration: none;
+}
+
 .authorization-guide-page:focus {
   outline: none;
 }
@@ -9935,6 +9940,27 @@ html[data-surface="new-mail-notification"] #root {
   color: var(--color-text-muted);
   font-size: 10px;
   line-height: 1.55;
+}
+
+.account-auth-divider {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  gap: 11px;
+  align-items: center;
+  color: var(--color-text-muted);
+  font-size: 10px;
+  line-height: 1;
+}
+
+.account-auth-divider::before,
+.account-auth-divider::after {
+  height: 1px;
+  background: color-mix(in srgb, var(--color-divider) 86%, transparent);
+  content: "";
+}
+
+.account-auth-divider > span {
+  padding: 0 2px;
 }
 
 .account-submit-row {
@@ -10659,6 +10685,10 @@ html[data-surface="new-mail-notification"] #root {
 
 .agent-provider-meta small[data-status="available"] {
   color: var(--color-success);
+}
+
+.account-submit-row--google {
+  align-items: flex-start;
 }
 
 .agent-provider-meta small[data-status="unavailable"],

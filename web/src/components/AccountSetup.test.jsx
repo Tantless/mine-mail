@@ -6,7 +6,14 @@ import { AccountSetupForm } from "./AccountSetup.jsx";
 const presets = [
   { id: "163", label: "163 邮箱", secretLabel: "客户端授权密码", availableInMvp: true },
   { id: "qq", label: "QQ 邮箱", secretLabel: "QQ 邮箱授权码", availableInMvp: true },
-  { id: "gmail", label: "Gmail", oauth: true, secretLabel: "Google OAuth", availableInMvp: true },
+  {
+    id: "gmail",
+    label: "Gmail",
+    oauth: true,
+    note: "请使用 Google 账户生成的应用专用密码，而不是普通登录密码。",
+    secretLabel: "Google 应用专用密码",
+    availableInMvp: true,
+  },
   {
     id: "outlook",
     label: "Outlook",
@@ -180,8 +187,9 @@ describe("AccountSetupForm", () => {
     expect(screen.queryByText("Outlook")).toBeNull();
   });
 
-  it("starts Google OAuth without asking React for a password", async () => {
+  it("shows Gmail IMAP login above Google OAuth and keeps OAuth password-free", async () => {
     const onGoogle = vi.fn().mockResolvedValue(undefined);
+    const onSubmit = vi.fn();
     const user = userEvent.setup();
     render(
       <AccountSetupForm
@@ -189,19 +197,57 @@ describe("AccountSetupForm", () => {
         status={{ configured: false }}
         submitStatus="idle"
         error={null}
-        onSubmit={vi.fn()}
+        onSubmit={onSubmit}
         onGoogle={onGoogle}
       />,
     );
 
     await user.click(screen.getByRole("radio", { name: "Gmail" }));
-    expect(screen.queryByLabelText("邮箱地址")).toBeNull();
-    expect(screen.queryByPlaceholderText("请输入授权密码")).toBeNull();
+    const email = screen.getByLabelText("邮箱地址");
+    const secret = screen.getByLabelText("Google 应用专用密码");
+    const imapLogin = screen.getByRole("button", { name: "使用 IMAP 登录" });
+    const oauthLogin = screen.getByRole("button", { name: "使用 Google 登录" });
+    expect(email.type).toBe("email");
+    expect(secret.type).toBe("password");
+    expect(
+      imapLogin.compareDocumentPosition(oauthLogin) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
     expect(screen.getByRole("note").textContent).toBe(
       "目前处于预览测试版，如想使用 Google OAuth 登录，请联系 tantless@163.com 添加白名单。",
     );
-    await user.click(screen.getByRole("button", { name: "使用 Google 登录" }));
+    await user.click(oauthLogin);
     expect(onGoogle).toHaveBeenCalledOnce();
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it("submits Gmail IMAP login with the complete address and app password", async () => {
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    const user = userEvent.setup();
+    render(
+      <AccountSetupForm
+        presets={presets}
+        status={{ configured: false }}
+        submitStatus="idle"
+        error={null}
+        onSubmit={onSubmit}
+        onGoogle={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("radio", { name: "Gmail" }));
+    await user.type(screen.getByLabelText("邮箱地址"), "mine@gmail.com");
+    await user.type(
+      screen.getByLabelText("Google 应用专用密码"),
+      "google-app-secret",
+    );
+    await user.click(screen.getByRole("button", { name: "使用 IMAP 登录" }));
+
+    expect(onSubmit).toHaveBeenCalledWith({
+      provider: "gmail",
+      email: "mine@gmail.com",
+      secret: "google-app-secret",
+    });
   });
 
   it("submits QQ accounts with the provider-issued authorization code", async () => {
@@ -251,6 +297,11 @@ describe("AccountSetupForm", () => {
     await user.click(screen.getByRole("radio", { name: "QQ 邮箱" }));
     expect(screen.queryByText("@163.com")).toBeNull();
     expect(screen.getByText("@qq.com")).toBeTruthy();
+
+    await user.click(screen.getByRole("radio", { name: "Gmail" }));
+    expect(screen.queryByText("@qq.com")).toBeNull();
+    expect(email.type).toBe("email");
+    expect(email.placeholder).toBe("name@example.com");
 
     await user.click(
       screen.getByRole("radio", { name: "自定义 IMAP/SMTP" }),
@@ -324,10 +375,20 @@ describe("AccountSetupForm", () => {
     );
     expect(onOpenAuthorizationGuide).toHaveBeenLastCalledWith("qq");
 
+    await user.click(screen.getByRole("radio", { name: "Gmail" }));
+    await user.click(
+      screen.getByRole("button", {
+        name: "查看 Gmail 应用专用密码获取教程",
+      }),
+    );
+    expect(onOpenAuthorizationGuide).toHaveBeenLastCalledWith("gmail");
+
     await user.click(
       screen.getByRole("radio", { name: "自定义 IMAP/SMTP" }),
     );
-    expect(screen.queryByRole("button", { name: /授权码获取教程/ })).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: /(?:授权码|应用专用密码)获取教程/ }),
+    ).toBeNull();
   });
 
   it("uses the themed selector for custom SMTP security", async () => {

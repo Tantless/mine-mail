@@ -445,8 +445,8 @@ pub(crate) fn account_presets() -> Vec<AccountPresetDto> {
             AccountProvider::Gmail,
             "Gmail",
             true,
-            "使用系统默认浏览器登录 Google；Mine Mail 只在系统凭据库中保存 OAuth 令牌。",
-            "Google OAuth",
+            "请使用 Google 账户生成的应用专用密码通过 IMAP / SMTP 连接；也可继续使用 Google OAuth。",
+            "Google 应用专用密码",
             true,
         ),
         AccountPresetDto {
@@ -3390,10 +3390,8 @@ mod tests {
 
     #[test]
     fn built_in_presets_match_the_mvp_contract() {
-        let providers = account_presets()
-            .into_iter()
-            .map(|preset| preset.id)
-            .collect::<Vec<_>>();
+        let presets = account_presets();
+        let providers = presets.iter().map(|preset| preset.id).collect::<Vec<_>>();
         assert_eq!(
             providers,
             vec![
@@ -3426,6 +3424,13 @@ mod tests {
         assert_eq!(gmail.smtp.port, 465);
         assert_eq!(gmail.smtp_security, SmtpSecurity::ImplicitTls);
         assert_eq!(gmail.authentication, AccountAuthentication::Password);
+        let gmail_preset = presets
+            .iter()
+            .find(|preset| preset.id == AccountProvider::Gmail)
+            .expect("Gmail preset remains available");
+        assert!(gmail_preset.oauth);
+        assert_eq!(gmail_preset.secret_label, "Google 应用专用密码");
+        assert!(gmail_preset.authentication_note.contains("IMAP / SMTP"));
 
         let qq = AccountMetadata::preset(AccountProvider::Qq, "demo@qq.com".to_owned())
             .expect("QQ preset");

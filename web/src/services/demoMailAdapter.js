@@ -302,7 +302,8 @@ function createDemoState() {
         id: "gmail",
         label: "Gmail",
         oauth: true,
-        secret_label: "Google OAuth",
+        note: "请使用 Google 账户生成的应用专用密码，而不是普通登录密码。",
+        secret_label: "Google 应用专用密码",
       },
       {
         id: "custom",

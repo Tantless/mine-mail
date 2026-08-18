@@ -1,7 +1,8 @@
 import { useEffect, useRef } from "react";
-import { ArrowLeft } from "@phosphor-icons/react";
+import { ArrowLeft, ArrowSquareOut } from "@phosphor-icons/react";
 import image163Step1 from "../assets/help/mail-authorization/163-step-1.png";
 import image163Step2 from "../assets/help/mail-authorization/163-step-2.png";
+import imageGmailAppPassword from "../assets/help/mail-authorization/gmail-app-password.png";
 import imageQqStep1 from "../assets/help/mail-authorization/qq-step-1.png";
 import imageQqStep2 from "../assets/help/mail-authorization/qq-step-2.png";
 import { IconButton } from "./IconButton.jsx";
@@ -51,9 +52,34 @@ const guides = {
       },
     ],
   },
+  gmail: {
+    title: "Gmail 应用专用密码教程",
+    returnLabel: "返回连接 Gmail",
+    introduction:
+      "先为 Google 账户开启两步验证，再创建一个仅供 Mine Mail 使用的应用专用密码。",
+    externalUrl: "https://myaccount.google.com/apppasswords",
+    externalLabel: "打开 Google 应用专用密码",
+    steps: [
+      {
+        text: "确认 Google 账户已开启两步验证。未开启时，Google 不会提供应用专用密码。",
+      },
+      {
+        text: "打开 Google 应用专用密码页面并登录账户，在“应用名称”中输入 Mine Mail，然后点击“创建”。",
+        image: imageGmailAppPassword,
+        alt: "Google 应用专用密码页面中的应用名称输入框和创建按钮",
+        caption: "输入应用名称后点击“创建”。",
+      },
+      {
+        text: "复制 Google 生成的 16 位应用专用密码，返回 Mine Mail，将完整 Gmail 或 Google Workspace 地址和该密码填入连接表单。不要填写普通 Google 登录密码。",
+      },
+    ],
+    securityTitle: "请妥善保管应用专用密码",
+    securityText:
+      "应用专用密码与密码同样敏感，而且只显示一次。请勿发送给他人或保留包含密码的截图；如果怀疑泄露，请立即在 Google 账户中撤销并重新生成。",
+  },
 };
 
-export function AuthorizationGuide({ provider, onBack }) {
+export function AuthorizationGuide({ provider, onBack, onOpenExternalLink }) {
   const guide = guides[provider];
   const pageRef = useRef(null);
 
@@ -84,6 +110,19 @@ export function AuthorizationGuide({ provider, onBack }) {
       </header>
 
       <article className="authorization-guide-content">
+        {guide.externalUrl ? (
+          <a
+            className="secondary-button authorization-guide-external"
+            href={guide.externalUrl}
+            onClick={(event) => {
+              event.preventDefault();
+              onOpenExternalLink?.(guide.externalUrl);
+            }}
+          >
+            {guide.externalLabel}
+            <ArrowSquareOut size={16} weight="bold" aria-hidden="true" />
+          </a>
+        ) : null}
         <ol className="authorization-guide-steps">
           {guide.steps.map((step, index) => (
             <li key={step.text} className="authorization-guide-step">
@@ -101,9 +140,10 @@ export function AuthorizationGuide({ provider, onBack }) {
         </ol>
 
         <aside className="authorization-guide-security">
-          <strong>请妥善保管授权码</strong>
+          <strong>{guide.securityTitle || "请妥善保管授权码"}</strong>
           <p>
-            授权码与密码同样敏感。请勿发送给他人或保留包含授权码的截图；如果怀疑泄露，请立即在邮箱网页端撤销并重新生成。
+            {guide.securityText ||
+              "授权码与密码同样敏感。请勿发送给他人或保留包含授权码的截图；如果怀疑泄露，请立即在邮箱网页端撤销并重新生成。"}
           </p>
         </aside>
       </article>
