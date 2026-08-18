@@ -1728,11 +1728,11 @@ describe("Mine Mail desktop state bridge", () => {
 
     expect(await screen.findByText("Progress mail 10")).toBeTruthy();
     expect(screen.queryByText("加载中…")).toBeNull();
-    await waitFor(() =>
-      expect(desktop.mailApi.listContacts.mock.calls.length).toBeGreaterThan(
-        contactsCallsBeforeProgress,
-      ),
+    expect(desktop.mailApi.listContacts.mock.calls.length).toBe(
+      contactsCallsBeforeProgress,
     );
+    const callsBeforeTerminal =
+      desktop.fixtures.inboxPageSource.mock.calls.length;
 
     await act(async () => {
       desktop.listeners.get("mail:inbox-updated")?.({
@@ -1744,6 +1744,11 @@ describe("Mine Mail desktop state bridge", () => {
         },
       });
     });
+    await waitFor(() =>
+      expect(desktop.fixtures.inboxPageSource.mock.calls.length).toBe(
+        callsBeforeTerminal + 1,
+      ),
+    );
     expect(screen.getByText("Progress mail 10")).toBeTruthy();
 
     desktop.mailApi.listDrafts.mockResolvedValue([
@@ -1771,6 +1776,159 @@ describe("Mine Mail desktop state bridge", () => {
     expect(
       screen.queryByText("正在同步草稿，已加载 10/20 封"),
     ).toBeNull();
+  });
+
+  it("updates zero-item sync progress without rereading the visible mailbox", async () => {
+    render(<App />);
+    await screen.findAllByText("First mail");
+    await waitFor(() =>
+      expect(desktop.listeners.has("mail:inbox-updated")).toBe(true),
+    );
+    const callsBeforeStart = desktop.fixtures.inboxPageSource.mock.calls.length;
+
+    await act(async () => {
+      desktop.listeners.get("mail:inbox-updated")?.({
+        payload: {
+          account_id: "desktop-account",
+          completed: 0,
+          total: 100,
+          is_complete: false,
+        },
+      });
+      await Promise.resolve();
+    });
+
+    expect(desktop.fixtures.inboxPageSource.mock.calls.length).toBe(
+      callsBeforeStart,
+    );
+  });
+
+  it("ends a failed mailbox sync without rereading the visible mailbox", async () => {
+    render(<App />);
+    await screen.findAllByText("First mail");
+    await waitFor(() =>
+      expect(desktop.listeners.has("mail:inbox-updated")).toBe(true),
+    );
+    const callsBeforeFailure =
+      desktop.fixtures.inboxPageSource.mock.calls.length;
+
+    await act(async () => {
+      desktop.listeners.get("mail:inbox-updated")?.({
+        payload: {
+          account_id: "desktop-account",
+          completed: 0,
+          total: null,
+          is_complete: false,
+        },
+      });
+      desktop.listeners.get("mail:inbox-updated")?.({
+        payload: {
+          account_id: "desktop-account",
+          completed: 0,
+          total: null,
+          is_complete: true,
+          report: null,
+          error: "同步失败",
+        },
+      });
+      await Promise.resolve();
+    });
+
+    expect(desktop.fixtures.inboxPageSource.mock.calls.length).toBe(
+      callsBeforeFailure,
+    );
+  });
+
+  it("coalesces mailbox progress arriving during one visible projection read", async () => {
+    render(<App />);
+    await screen.findAllByText("First mail");
+    await waitFor(() =>
+      expect(desktop.listeners.has("mail:inbox-updated")).toBe(true),
+    );
+    const pendingBatchRead = deferred();
+    const callsBeforeProgress =
+      desktop.fixtures.inboxPageSource.mock.calls.length;
+    desktop.fixtures.inboxPageSource
+      .mockReturnValueOnce(pendingBatchRead.promise)
+      .mockResolvedValue([summary(20, "Latest coalesced batch")]);
+
+    await act(async () => {
+      desktop.listeners.get("mail:inbox-updated")?.({
+        payload: {
+          account_id: "desktop-account",
+          completed: 10,
+          total: 30,
+          is_complete: false,
+        },
+      });
+      await Promise.resolve();
+    });
+    expect(desktop.fixtures.inboxPageSource.mock.calls.length).toBe(
+      callsBeforeProgress + 1,
+    );
+
+    await act(async () => {
+      for (const completed of [20, 30]) {
+        desktop.listeners.get("mail:inbox-updated")?.({
+          payload: {
+            account_id: "desktop-account",
+            completed,
+            total: 30,
+            is_complete: false,
+          },
+        });
+      }
+      await Promise.resolve();
+    });
+    expect(desktop.fixtures.inboxPageSource.mock.calls.length).toBe(
+      callsBeforeProgress + 1,
+    );
+
+    await act(async () => {
+      pendingBatchRead.resolve([summary(10, "First persisted batch")]);
+    });
+    expect(await screen.findByText("Latest coalesced batch")).toBeTruthy();
+    expect(desktop.fixtures.inboxPageSource.mock.calls.length).toBe(
+      callsBeforeProgress + 2,
+    );
+  });
+
+  it("defers a non-visible mailbox projection until the user opens it", async () => {
+    render(<App />);
+    await screen.findAllByText("First mail");
+    await waitFor(() =>
+      expect(desktop.listeners.has("mail:sent-updated")).toBe(true),
+    );
+    const sentCallsBeforeEvent =
+      desktop.fixtures.sentPageSource.mock.calls.length;
+    desktop.fixtures.sentPageSource.mockResolvedValue([
+      {
+        ...summary(31, "Deferred Sent refresh"),
+        to: [{ name: "Friend", email: "friend@example.com" }],
+      },
+    ]);
+
+    await act(async () => {
+      desktop.listeners.get("mail:sent-updated")?.({
+        payload: {
+          account_id: "desktop-account",
+          completed: 1,
+          total: 1,
+          is_complete: true,
+          report: { fetched: 1, removed: 0 },
+        },
+      });
+      await Promise.resolve();
+    });
+    expect(desktop.fixtures.sentPageSource.mock.calls.length).toBe(
+      sentCallsBeforeEvent,
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: /已发送/ }));
+    expect(await screen.findByText("Deferred Sent refresh")).toBeTruthy();
+    expect(desktop.fixtures.sentPageSource.mock.calls.length).toBe(
+      sentCallsBeforeEvent + 1,
+    );
   });
 
   it("keeps the initial Inbox loading motion visible after returning from settings", async () => {
@@ -3337,6 +3495,21 @@ describe("Mine Mail desktop state bridge", () => {
     await userEvent.click(
       screen.getByRole("button", { name: "同步收件箱" }),
     );
+    await act(async () => {
+      desktop.listeners.get("mail:inbox-updated")?.({
+        payload: {
+          account_id: "desktop-account",
+          completed: 1,
+          total: 1,
+          is_complete: true,
+          report: {
+            fetched: 1,
+            removed: 0,
+            uid_validity_reset: false,
+          },
+        },
+      });
+    });
 
     expect(await screen.findByText("New arrival after refresh")).toBeTruthy();
     expect(screen.getByText("Newest refreshed summary")).toBeTruthy();

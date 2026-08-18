@@ -980,7 +980,12 @@ pub(crate) async fn sync_mailbox(
                 .outcome("completed")
                 .duration(backend_started.elapsed()),
         );
-        emit_mailbox_updated(&app, &account_id, role);
+        // Inbox synchronization already emits its start, persisted-batch, and
+        // authoritative terminal event. A second generic event would schedule
+        // another identical SQLite projection read in React.
+        if role != MailboxRole::Inbox {
+            emit_mailbox_updated(&app, &account_id, role);
+        }
         diagnostics::info(
             "mailbox_sync_completed",
             Fields::default()

@@ -99,14 +99,14 @@ usage scenario before changing visible behavior or interaction.
 
 ### P0 — synchronization and resource amplification
 
-- [ ] **SYNC-01 — Establish one owner for mailbox-list refreshes.** A summary
+- [x] **SYNC-01 — Establish one owner for mailbox-list refreshes.** A summary
   synchronization emits start, batch-progress, and completion events; React
   reloads the mailbox for every event, while manual synchronization and
   post-delivery reconciliation reload it again after the command returns. In an
   initial import or preview backfill this can turn one synchronization into
   dozens of duplicate list reads and prefetch reschedules.
 
-  **Agreed plan — pending implementation.** Preserve intentional progressive
+  **Implemented.** Preserve intentional progressive
   display for the currently visible account and mailbox: after each summary
   batch has been durably persisted (normally ten messages, plus a final partial
   batch), that visible projection may request a list update. Start and zero-item

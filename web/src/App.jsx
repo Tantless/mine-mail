@@ -259,6 +259,13 @@ function mailboxProgress(payload) {
   };
 }
 
+function mailboxEventHasExplicitProgress(payload) {
+  if (!payload || typeof payload !== "object") return false;
+  return ["completed", "total", "isComplete", "is_complete", "report"].some(
+    (key) => Object.prototype.hasOwnProperty.call(payload, key),
+  );
+}
+
 function eventAccountId(payload) {
   return payload?.accountId ?? payload?.account_id ?? null;
 }
@@ -869,6 +876,9 @@ export function App() {
   const draftsRequestRef = useRef(0);
   const outboxRequestRef = useRef(0);
   const mailboxPageRequestsRef = useRef(new Map());
+  const mailboxRefreshFlightsRef = useRef(new Map());
+  const mailboxProjectionInvalidationsRef = useRef(new Set());
+  const mailboxSyncProgressRef = useRef(new Map());
   const mailboxCapabilityRequestRef = useRef(new Map());
   const mailboxRoleCreationRequestsRef = useRef(new Map());
   const archiveFolderRequestRef = useRef(null);
@@ -891,6 +901,7 @@ export function App() {
   const preservedContactContextRef = useRef(null);
   const favoriteOwnershipWarningRef = useRef(false);
   const contactsRefreshTimerRef = useRef(null);
+  const contactsInvalidatedAccountsRef = useRef(new Set());
   const starRequestRef = useRef(new Map());
   const starStateRef = useRef(new Map());
   const settingsSaveRequestRef = useRef(0);
@@ -2186,6 +2197,179 @@ export function App() {
     [commitStarredMailboxPageState],
   );
 
+  const mailboxProjectionKey = useCallback(
+    (accountId, role, projection = "main") =>
+      `${accountId}:${role}:${projection}`,
+    [],
+  );
+
+  const mailboxProjectionIsVisible = useCallback(
+    (accountId, role, projection = "main") => {
+      if (activeAccountIdRef.current !== accountId) return false;
+      if (projection === "starred") {
+        return (
+          activeFolderRef.current === "starred" &&
+          starredMailboxRoles.includes(role)
+        );
+      }
+      return activeFolderRef.current === role;
+    },
+    [],
+  );
+
+  const runMailboxProjectionRefresh = useCallback(
+    ({
+      accountId,
+      role,
+      projection = "main",
+      selectFirst = false,
+      preserveSyncing = false,
+      mergeExisting = false,
+      rerunIfActive = false,
+    }) => {
+      if (!accountId || !paginatedMailboxRoles.includes(role)) {
+        return Promise.resolve(null);
+      }
+      const key = mailboxProjectionKey(accountId, role, projection);
+      const activeFlight = mailboxRefreshFlightsRef.current.get(key);
+      const requestedOptions = {
+        selectFirst,
+        preserveSyncing,
+        mergeExisting,
+      };
+      if (activeFlight) {
+        if (rerunIfActive) {
+          activeFlight.dirty = true;
+          activeFlight.nextOptions = activeFlight.nextOptions
+            ? {
+                selectFirst:
+                  activeFlight.nextOptions.selectFirst || selectFirst,
+                preserveSyncing:
+                  activeFlight.nextOptions.preserveSyncing && preserveSyncing,
+                mergeExisting:
+                  activeFlight.nextOptions.mergeExisting && mergeExisting,
+              }
+            : requestedOptions;
+        }
+        return activeFlight.promise;
+      }
+
+      const flight = {
+        dirty: false,
+        nextOptions: null,
+        promise: null,
+      };
+      const operation = (async () => {
+        let options = requestedOptions;
+        let result = null;
+        do {
+          flight.dirty = false;
+          flight.nextOptions = null;
+          mailboxProjectionInvalidationsRef.current.delete(key);
+          try {
+            result =
+              projection === "starred"
+                ? await loadStarredMailboxRolePage({ accountId, role })
+                : await loadMailboxRolePage({
+                    accountId,
+                    role,
+                    selectFirst: options.selectFirst,
+                    preserveSyncing: options.preserveSyncing,
+                    mergeExisting: options.mergeExisting,
+                  });
+          } catch (error) {
+            mailboxProjectionInvalidationsRef.current.add(key);
+            throw error;
+          }
+          options = flight.nextOptions || requestedOptions;
+        } while (flight.dirty);
+        return result;
+      })().finally(() => {
+        if (mailboxRefreshFlightsRef.current.get(key) === flight) {
+          mailboxRefreshFlightsRef.current.delete(key);
+        }
+      });
+      flight.promise = operation;
+      mailboxRefreshFlightsRef.current.set(key, flight);
+      return operation;
+    },
+    [
+      loadMailboxRolePage,
+      loadStarredMailboxRolePage,
+      mailboxProjectionKey,
+    ],
+  );
+
+  const invalidateMailboxRole = useCallback(
+    ({
+      accountId,
+      role,
+      preserveSyncing = false,
+      mergeExisting = false,
+    }) => {
+      if (!accountId || !paginatedMailboxRoles.includes(role)) return [];
+      const projections = ["main"];
+      if (starredMailboxRoles.includes(role)) projections.push("starred");
+      const visibleRefreshes = [];
+      for (const projection of projections) {
+        const key = mailboxProjectionKey(accountId, role, projection);
+        mailboxProjectionInvalidationsRef.current.add(key);
+        if (!mailboxProjectionIsVisible(accountId, role, projection)) {
+          continue;
+        }
+        visibleRefreshes.push(
+          runMailboxProjectionRefresh({
+            accountId,
+            role,
+            projection,
+            preserveSyncing,
+            mergeExisting,
+            rerunIfActive: true,
+          }),
+        );
+      }
+      return visibleRefreshes;
+    },
+    [
+      mailboxProjectionIsVisible,
+      mailboxProjectionKey,
+      runMailboxProjectionRefresh,
+    ],
+  );
+
+  useEffect(() => {
+    if (!activeAccountId) return;
+    if (paginatedMailboxRoles.includes(activeFolder)) {
+      const key = mailboxProjectionKey(
+        activeAccountId,
+        activeFolder,
+        "main",
+      );
+      if (mailboxProjectionInvalidationsRef.current.has(key)) {
+        void runMailboxProjectionRefresh({
+          accountId: activeAccountId,
+          role: activeFolder,
+        }).catch(() => {});
+      }
+      return;
+    }
+    if (activeFolder !== "starred") return;
+    for (const role of starredMailboxRoles) {
+      const key = mailboxProjectionKey(activeAccountId, role, "starred");
+      if (!mailboxProjectionInvalidationsRef.current.has(key)) continue;
+      void runMailboxProjectionRefresh({
+        accountId: activeAccountId,
+        role,
+        projection: "starred",
+      }).catch(() => {});
+    }
+  }, [
+    activeAccountId,
+    activeFolder,
+    mailboxProjectionKey,
+    runMailboxProjectionRefresh,
+  ]);
+
   const refreshInbox = useCallback(
     ({
       selectFirst = false,
@@ -2193,7 +2377,7 @@ export function App() {
       preserveSyncing = false,
       mergeExisting = false,
     } = {}) =>
-      loadMailboxRolePage({
+      runMailboxProjectionRefresh({
         accountId,
         role: "inbox",
         selectFirst,
@@ -2202,7 +2386,7 @@ export function App() {
       }).then(
         (page) => page?.items || [],
       ),
-    [loadMailboxRolePage],
+    [runMailboxProjectionRefresh],
   );
 
   const refreshSent = useCallback(
@@ -2211,7 +2395,7 @@ export function App() {
       preserveSyncing = false,
       mergeExisting = false,
     } = {}) =>
-      loadMailboxRolePage({
+      runMailboxProjectionRefresh({
         accountId,
         role: "sent",
         preserveSyncing,
@@ -2219,7 +2403,7 @@ export function App() {
       }).then(
         (page) => page?.items || [],
       ),
-    [loadMailboxRolePage],
+    [runMailboxProjectionRefresh],
   );
 
   const refreshDrafts = useCallback(async ({ preserveSyncing = false } = {}) => {
@@ -2437,7 +2621,7 @@ export function App() {
         );
         await Promise.allSettled(
           roles.map((role) =>
-            loadMailboxRolePage({ accountId, role }),
+            runMailboxProjectionRefresh({ accountId, role }),
           ),
         );
         const previous = accountViewsRef.current.get(accountId) || {};
@@ -2470,7 +2654,7 @@ export function App() {
       accountViewLoadsRef.current.set(accountId, operation);
       return operation;
     },
-    [loadMailboxRolePage, refreshMailboxCapabilities],
+    [refreshMailboxCapabilities, runMailboxProjectionRefresh],
   );
 
   const prefetchAccountViews = useCallback(
@@ -2531,7 +2715,7 @@ export function App() {
       }
       const pageResults = await Promise.allSettled(
         pageRoles.map((role) =>
-          loadMailboxRolePage({
+          runMailboxProjectionRefresh({
             accountId,
             role,
             selectFirst: role === "inbox" && selectFirst,
@@ -2546,7 +2730,11 @@ export function App() {
               starredMailboxRoles
                 .filter((role) => capabilityAvailable(capabilities, role))
                 .map((role) =>
-                  loadStarredMailboxRolePage({ accountId, role }),
+                  runMailboxProjectionRefresh({
+                    accountId,
+                    role,
+                    projection: "starred",
+                  }),
                 ),
             )
           : [];
@@ -2591,8 +2779,7 @@ export function App() {
       refreshDrafts,
       refreshOutbox,
       refreshMailboxCapabilities,
-      loadMailboxRolePage,
-      loadStarredMailboxRolePage,
+      runMailboxProjectionRefresh,
       commitMailboxPageState,
       commitStarredMailboxPageState,
       commitRoleItems,
@@ -3013,9 +3200,9 @@ export function App() {
 
   const refreshActiveContactWorkspace = useCallback(async () => {
     const accountId = activeAccountIdRef.current;
-    if (!accountId) return;
+    if (!accountId || activeFolderRef.current !== "contacts") return;
+    contactsInvalidatedAccountsRef.current.delete(accountId);
     await loadContacts({ accountId, silent: true });
-    if (activeFolderRef.current !== "contacts") return;
     const email = selectedContactEmailRef.current;
     const contactAccountId = selectedContactAccountIdRef.current || accountId;
     if (email) {
@@ -3033,6 +3220,17 @@ export function App() {
       void refreshActiveContactWorkspace().catch(() => {});
     }, 80);
   }, [refreshActiveContactWorkspace]);
+
+  useEffect(() => {
+    if (
+      activeFolder !== "contacts" ||
+      !activeAccountId ||
+      !contactsInvalidatedAccountsRef.current.has(activeAccountId)
+    ) {
+      return;
+    }
+    scheduleContactsRefresh();
+  }, [activeAccountId, activeFolder, scheduleContactsRefresh]);
 
   useEffect(
     () => () => {
@@ -3552,48 +3750,92 @@ export function App() {
     const handleMailboxUpdate = (
       folder,
       event,
-      refresh,
       fallback,
-      { refreshContacts = false } = {},
+      { refreshContacts = false, refreshOutboxOnComplete = false } = {},
     ) => {
       const payload = event?.payload || {};
-      const targetAccountId = eventAccountId(payload);
+      const targetAccountId =
+        eventAccountId(payload) || activeAccountIdRef.current;
       const activeAccountId = activeAccountIdRef.current;
       const progress = mailboxProgress(payload);
-      if (
-        targetAccountId &&
-        activeAccountId &&
-        targetAccountId !== activeAccountId
-      ) {
+      const explicitProgress = mailboxEventHasExplicitProgress(payload);
+      const progressKey = targetAccountId
+        ? `${targetAccountId}:${folder}`
+        : null;
+      const terminalError =
+        progress.complete && typeof payload.error === "string"
+          ? payload.error.trim()
+          : "";
+      let hasNewPersistedBatch = false;
+
+      if (progressKey) {
         if (progress.complete) {
-          void loadAccountView(targetAccountId, { force: true }).catch(() => {});
+          mailboxSyncProgressRef.current.delete(progressKey);
+        } else if (progress.completed > 0) {
+          const previous = mailboxSyncProgressRef.current.get(progressKey) || 0;
+          hasNewPersistedBatch = progress.completed > previous;
+          mailboxSyncProgressRef.current.set(
+            progressKey,
+            Math.max(previous, progress.completed),
+          );
         }
-        return;
       }
-      updateMailboxLoadState(folder, (current) => {
-        if (
-          !progress.complete &&
-          current?.phase !== "loading" &&
-          current?.phase !== "syncing"
-        ) {
-          return current;
+
+      if (targetAccountId === activeAccountId) {
+        updateMailboxLoadState(folder, (current) => {
+          if (terminalError) {
+            return ["loading", "syncing"].includes(current?.phase)
+              ? { ...current, phase: "error" }
+              : current;
+          }
+          if (
+            !progress.complete &&
+            current?.phase !== "loading" &&
+            current?.phase !== "syncing"
+          ) {
+            return current;
+          }
+          return {
+            phase: progress.complete ? "ready" : "syncing",
+            completed: progress.completed,
+            total: progress.total,
+          };
+        });
+      }
+
+      const shouldRefresh =
+        !terminalError &&
+        (!explicitProgress || progress.complete || hasNewPersistedBatch);
+      if (targetAccountId && shouldRefresh) {
+        const refreshes = invalidateMailboxRole({
+          accountId: targetAccountId,
+          role: folder,
+          preserveSyncing: !progress.complete,
+          mergeExisting:
+            !Boolean(
+              payload.report?.uidValidityReset ??
+                payload.report?.uid_validity_reset,
+            ) && Number(payload.report?.removed || 0) === 0,
+        });
+        for (const refresh of refreshes) {
+          void refresh.catch((error) => reportEventError(error, fallback));
         }
-        return {
-          phase: progress.complete ? "ready" : "syncing",
-          completed: progress.completed,
-          total: progress.total,
-        };
-      });
-      void refresh({
-        preserveSyncing: !progress.complete,
-        mergeExisting:
-          !Boolean(payload.report?.uid_validity_reset) &&
-          Number(payload.report?.removed || 0) === 0,
-      })
-        .then(() => {
-          if (refreshContacts) scheduleContactsRefresh();
-        })
-        .catch((error) => reportEventError(error, fallback));
+      }
+
+      if (targetAccountId && progress.complete && !terminalError) {
+        if (refreshContacts) {
+          contactsInvalidatedAccountsRef.current.add(targetAccountId);
+          if (
+            targetAccountId === activeAccountId &&
+            activeFolderRef.current === "contacts"
+          ) {
+            scheduleContactsRefresh();
+          }
+        }
+        if (refreshOutboxOnComplete && targetAccountId === activeAccountId) {
+          void refreshOutbox().catch(() => {});
+        }
+      }
     };
     const openNotificationMessage = (request) => {
       const {
@@ -3747,7 +3989,6 @@ export function App() {
             handleMailboxUpdate(
               "inbox",
               event,
-              refreshInbox,
               "收件箱刷新失败",
               { refreshContacts: true },
             );
@@ -3772,10 +4013,8 @@ export function App() {
             handleMailboxUpdate(
               "sent",
               event,
-              (options) =>
-                Promise.all([refreshSent(options), refreshOutbox()]),
               "已发送刷新失败",
-              { refreshContacts: true },
+              { refreshContacts: true, refreshOutboxOnComplete: true },
             );
           },
         );
@@ -3794,28 +4033,32 @@ export function App() {
             ) {
               return;
             }
-            if (targetAccountId !== activeAccountIdRef.current) {
-              void loadAccountView(targetAccountId, { force: true }).catch(
-                () => {},
-              );
-              return;
-            }
-            void loadMailboxRolePage({
+            const refreshes = invalidateMailboxRole({
               accountId: targetAccountId,
               role,
-            }).catch((error) =>
-              reportEventError(error, `${folderLabels[role]}刷新失败`),
-            );
-            if (
-              activeFolderRef.current === "starred" &&
-              starredMailboxRoles.includes(role)
-            ) {
-              void loadStarredMailboxRolePage({
-                accountId: targetAccountId,
-                role,
-              }).catch((error) =>
-                reportEventError(error, "收藏邮件刷新失败"),
+            });
+            for (const refresh of refreshes) {
+              void refresh.catch((error) =>
+                reportEventError(
+                  error,
+                  activeFolderRef.current === "starred"
+                    ? "收藏邮件刷新失败"
+                    : `${folderLabels[role]}刷新失败`,
+                ),
               );
+            }
+            contactsInvalidatedAccountsRef.current.add(targetAccountId);
+            if (
+              targetAccountId === activeAccountIdRef.current &&
+              activeFolderRef.current === "contacts"
+            ) {
+              scheduleContactsRefresh();
+            }
+            if (
+              role === "sent" &&
+              targetAccountId === activeAccountIdRef.current
+            ) {
+              void refreshOutbox().catch(() => {});
             }
           },
         );
@@ -3871,12 +4114,26 @@ export function App() {
         const draftsUnlisten = await mailApi.onMailEvent(
           "mail:drafts-updated",
           (event) => {
-            handleMailboxUpdate(
-              "drafts",
-              event,
-              (options) =>
-                Promise.all([refreshDrafts(options), refreshOutbox()]),
-              "草稿或发件队列刷新失败",
+            const progress = mailboxProgress(event?.payload || {});
+            updateMailboxLoadState("drafts", (current) => {
+              if (
+                !progress.complete &&
+                current?.phase !== "loading" &&
+                current?.phase !== "syncing"
+              ) {
+                return current;
+              }
+              return {
+                phase: progress.complete ? "ready" : "syncing",
+                completed: progress.completed,
+                total: progress.total,
+              };
+            });
+            void Promise.all([
+              refreshDrafts({ preserveSyncing: !progress.complete }),
+              refreshOutbox(),
+            ]).catch((error) =>
+              reportEventError(error, "草稿或发件队列刷新失败"),
             );
           },
         );
@@ -4027,17 +4284,14 @@ export function App() {
   }, [
     commitComposer,
     handleSelect,
+    invalidateMailboxRole,
     invalidateForwardPreparationsForAccount,
     loadAccountView,
-    loadMailboxRolePage,
-    loadStarredMailboxRolePage,
     markSentAttention,
     prepareComposerForAccountSwitch,
     refreshDrafts,
-    refreshInbox,
     refreshMailboxCapabilities,
     refreshOutbox,
-    refreshSent,
     restoreAccountView,
     saveDraftNow,
     scheduleContactsRefresh,
@@ -5665,23 +5919,19 @@ export function App() {
     if (paginatedMailboxRoles.includes(folder) && targetAccountId) {
       const preserveSyncing =
         mailboxLoadStatesRef.current[folder]?.phase === "syncing";
-      void loadMailboxRolePage({
+      const cachedRead = runMailboxProjectionRefresh({
         accountId: targetAccountId,
         role: folder,
         preserveSyncing,
-      }).catch(() => {});
+      });
+      void cachedRead.catch(() => {});
       if (
         ["archive", "trash"].includes(folder) &&
         networkActionsAvailable
       ) {
-        void mailApi
-          .syncMailbox(targetAccountId, folder)
-          .then(() =>
-            loadMailboxRolePage({
-              accountId: targetAccountId,
-              role: folder,
-            }),
-          )
+        void cachedRead
+          .catch(() => undefined)
+          .then(() => mailApi.syncMailbox(targetAccountId, folder))
           .catch(() => {});
       }
     } else if (folder === "starred" && activeAccountId) {
@@ -5690,9 +5940,10 @@ export function App() {
       );
       void Promise.allSettled(
         roles.map((role) =>
-          loadStarredMailboxRolePage({
+          runMailboxProjectionRefresh({
             accountId: activeAccountId,
             role,
+            projection: "starred",
           }),
         ),
       );
@@ -6021,15 +6272,6 @@ export function App() {
       if (paginatedMailboxRoles.includes(folder)) {
         const report = await mailApi.syncMailbox(accountId, folder);
         synchronizedCount = synchronizedMessageCount(report);
-        await loadMailboxRolePage({
-          accountId,
-          role: folder,
-          mergeExisting:
-            folder === "inbox" &&
-            !Boolean(report?.uid_validity_reset) &&
-            Number(report?.removed || 0) === 0,
-        });
-        if (folder === "sent") await refreshOutbox();
       } else if (folder === "starred") {
         const roles = starredMailboxRoles.filter((role) =>
           capabilityAvailable(mailboxCapabilities, role),
@@ -6038,13 +6280,6 @@ export function App() {
           roles.map((role) => mailApi.syncMailbox(accountId, role)),
         );
         synchronizedCount = synchronizedMessageCount(reports);
-        await Promise.all(
-          roles.flatMap((role) => [
-            loadMailboxRolePage({ accountId, role }),
-            loadStarredMailboxRolePage({ accountId, role }),
-          ]),
-        );
-        if (roles.includes("sent")) await refreshOutbox();
       } else if (folder === "drafts") {
         const report = await mailApi.syncDrafts();
         synchronizedCount = synchronizedMessageCount(report);
@@ -6112,12 +6347,11 @@ export function App() {
   const reconcileSentAfterDelivery = useCallback(() => {
     void mailApi
       .syncSent()
-      .then(() => Promise.all([refreshSent(), refreshOutbox()]))
       // The local Outbox fallback remains visible if the provider's Sent copy
       // is briefly delayed or the follow-up sync is offline. Scheduled full
       // reconciliation will retry without changing delivery state.
       .catch(() => undefined);
-  }, [refreshOutbox, refreshSent]);
+  }, []);
 
   const handleComposeChange = (updater) => {
     commitComposer((current) => {

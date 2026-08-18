@@ -1269,6 +1269,8 @@ struct InboxUpdatedEvent {
     total: Option<usize>,
     is_complete: bool,
     report: Option<SyncReportDto>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1278,6 +1280,8 @@ struct SentUpdatedEvent {
     total: Option<usize>,
     is_complete: bool,
     report: Option<SyncReportDto>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -2111,6 +2115,7 @@ async fn perform_inbox_reconciliation_all(app: &AppHandle) -> Result<(), String>
                                 total: Some(0),
                                 is_complete: true,
                                 report: None,
+                                error: None,
                             },
                         ),
                         _ => diagnostics::emit_event(
@@ -2349,6 +2354,7 @@ async fn sync_inbox_network_with_operation(
             total: None,
             is_complete: false,
             report: None,
+            error: None,
         },
     );
     let progress_app = app.clone();
@@ -2365,6 +2371,7 @@ async fn sync_inbox_network_with_operation(
                         total: Some(progress.total),
                         is_complete: false,
                         report: None,
+                        error: None,
                     },
                 );
             })
@@ -2381,6 +2388,7 @@ async fn sync_inbox_network_with_operation(
                         total: Some(progress.total),
                         is_complete: false,
                         report: None,
+                        error: None,
                     },
                 );
             })
@@ -2394,7 +2402,20 @@ async fn sync_inbox_network_with_operation(
                 Some(account_id),
                 diagnostics::mail_error_kind(&error),
             );
-            return Err(crate::safe_mail_error(error));
+            let message = crate::safe_mail_error(error);
+            diagnostics::emit_event(
+                app,
+                "mail:inbox-updated",
+                InboxUpdatedEvent {
+                    account_id: account_id.to_owned(),
+                    completed: 0,
+                    total: None,
+                    is_complete: true,
+                    report: None,
+                    error: Some(message.clone()),
+                },
+            );
+            return Err(message);
         }
     };
 
@@ -2449,6 +2470,7 @@ async fn sync_sent_for(app: &AppHandle, account_id: &str) -> Result<SyncReport, 
             total: None,
             is_complete: false,
             report: None,
+            error: None,
         },
     );
     let progress_app = app.clone();
@@ -2464,6 +2486,7 @@ async fn sync_sent_for(app: &AppHandle, account_id: &str) -> Result<SyncReport, 
                     total: Some(progress.total),
                     is_complete: false,
                     report: None,
+                    error: None,
                 },
             );
         })
@@ -2477,7 +2500,20 @@ async fn sync_sent_for(app: &AppHandle, account_id: &str) -> Result<SyncReport, 
                 Some(account_id),
                 diagnostics::mail_error_kind(&error),
             );
-            return Err(crate::safe_mail_error(error));
+            let message = crate::safe_mail_error(error);
+            diagnostics::emit_event(
+                app,
+                "mail:sent-updated",
+                SentUpdatedEvent {
+                    account_id: account_id.to_owned(),
+                    completed: 0,
+                    total: None,
+                    is_complete: true,
+                    report: None,
+                    error: Some(message.clone()),
+                },
+            );
+            return Err(message);
         }
     };
     diagnostics::emit_event(
@@ -2489,6 +2525,7 @@ async fn sync_sent_for(app: &AppHandle, account_id: &str) -> Result<SyncReport, 
             total: Some(report.fetched),
             is_complete: true,
             report: Some(SyncReportDto::from(&report)),
+            error: None,
         },
     );
     match backend.schedule_sent_body_prefetch(
@@ -2545,6 +2582,7 @@ fn finish_inbox_sync(
             total: Some(report.fetched),
             is_complete: true,
             report: Some(SyncReportDto::from(&report)),
+            error: None,
         },
     );
     match backend.schedule_inbox_body_prefetch(
