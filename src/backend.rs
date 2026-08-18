@@ -63,10 +63,10 @@ use crate::{
         DraftAttachmentMutationOutcome, DraftDto, DraftSyncReport, ForwardContext,
         ForwardPreparationError, ForwardPreparationErrorKind, ForwardPreparationOutcome,
         ForwardQuotedRenderMode, ForwardWarning, MailboxCapability, MailboxCapabilityStatus,
-        MailboxCapabilityUnavailableReason, MessageActionKind, MessageMutationErrorKind,
-        MessageMutationReceipt, MessagePage, MessagePageCursor, MutationStatus, PreparedForward,
-        RemoteHistoryState, RemoteMutationPhase, SystemFlagKind, SystemFlagMutationReceipt,
-        normalize_contact_email,
+        MailboxCapabilityUnavailableReason, MessageActionKind, MessageMutationDrainReport,
+        MessageMutationErrorKind, MessageMutationReceipt, MessagePage, MessagePageCursor,
+        MutationStatus, PreparedForward, RemoteHistoryState, RemoteMutationPhase, SystemFlagKind,
+        SystemFlagMutationReceipt, normalize_contact_email,
     },
     smtp_client::SmtpClient,
 };
@@ -3090,7 +3090,13 @@ impl MailBackend {
         let mailbox = self
             .repository
             .mailbox_for_semantic_role(account_id, role)?;
+        if !self.has_pending_system_flag_work(account_id, &mailbox, flag)? {
+            return Ok(0);
+        }
         let _guard = self.general_imap_gate.lock().await;
+        if !self.has_pending_system_flag_work(account_id, &mailbox, flag)? {
+            return Ok(0);
+        }
         let mut connection = ImapConnection::connect(&self.config)
             .await
             .map_err(|_| privacy_safe_imap_error("system-flag synchronization"))?;
@@ -3123,6 +3129,172 @@ impl MailBackend {
         };
         let _ = connection.logout().await;
         result
+    }
+
+    fn has_pending_system_flag_work(
+        &self,
+        account_id: &str,
+        mailbox: &str,
+        flag: SystemFlagKind,
+    ) -> Result<bool> {
+        Ok(!self
+            .repository
+            .pending_system_flag_mutations(account_id, mailbox, flag)?
+            .is_empty()
+            || !self
+                .repository
+                .system_flag_mutations_requiring_reconciliation(account_id, mailbox, flag)?
+                .is_empty())
+    }
+
+    /// Drains both idempotent system-flag queues for one semantic mailbox with
+    /// at most one account connection. Each flag still validates the mailbox's
+    /// advertised permanent flags before issuing UID STORE.
+    async fn flush_pending_system_flags_for_role(
+        &self,
+        account_id: &str,
+        role: MailboxRole,
+    ) -> Result<usize> {
+        if role == MailboxRole::Drafts {
+            return Ok(0);
+        }
+        let mailbox = self
+            .repository
+            .mailbox_for_semantic_role(account_id, role)?;
+        let mut seen_pending =
+            self.has_pending_system_flag_work(account_id, &mailbox, SystemFlagKind::Seen)?;
+        let mut flagged_pending =
+            self.has_pending_system_flag_work(account_id, &mailbox, SystemFlagKind::Flagged)?;
+        if !seen_pending && !flagged_pending {
+            return Ok(0);
+        }
+
+        let _guard = self.general_imap_gate.lock().await;
+        seen_pending =
+            self.has_pending_system_flag_work(account_id, &mailbox, SystemFlagKind::Seen)?;
+        flagged_pending =
+            self.has_pending_system_flag_work(account_id, &mailbox, SystemFlagKind::Flagged)?;
+        if !seen_pending && !flagged_pending {
+            return Ok(0);
+        }
+        let mut connection = ImapConnection::connect(&self.config)
+            .await
+            .map_err(|_| privacy_safe_imap_error("system-flag synchronization"))?;
+        let result = async {
+            let local_uid_validity = self
+                .repository
+                .mailbox_state(account_id, &mailbox)?
+                .and_then(|state| state.uid_validity);
+            let mut completed = 0;
+            if seen_pending {
+                let selected_uid_validity = connection
+                    .select_mailbox_for_seen_update(&mailbox)
+                    .await
+                    .map_err(|_| privacy_safe_imap_error("system-flag synchronization"))?;
+                if classify_inbox_uid_scope(local_uid_validity, selected_uid_validity)
+                    != InboxUidScope::Current
+                {
+                    return Err(MailError::Validation(
+                        "the mailbox epoch changed; synchronize before updating message state"
+                            .to_owned(),
+                    ));
+                }
+                completed += self
+                    .flush_pending_seen_updates(&mut connection, &mailbox, selected_uid_validity)
+                    .await?;
+            }
+            if flagged_pending {
+                let selected_uid_validity = connection
+                    .select_mailbox_for_flagged_update(&mailbox)
+                    .await
+                    .map_err(|_| privacy_safe_imap_error("system-flag synchronization"))?;
+                if classify_inbox_uid_scope(local_uid_validity, selected_uid_validity)
+                    != InboxUidScope::Current
+                {
+                    return Err(MailError::Validation(
+                        "the mailbox epoch changed; synchronize before updating message state"
+                            .to_owned(),
+                    ));
+                }
+                completed += self
+                    .flush_pending_flagged_updates(&mut connection, &mailbox, selected_uid_validity)
+                    .await?;
+            }
+            Ok(completed)
+        }
+        .await;
+        let _ = connection.logout().await;
+        result
+    }
+
+    /// Performs one bounded account-scoped mutation drain. The durable queues
+    /// are inspected before any connection is opened, system flags are applied
+    /// before move/delete actions, and affected roles are deduplicated for the
+    /// desktop event boundary.
+    pub async fn flush_pending_account_mutations(
+        &self,
+        account_id: &str,
+    ) -> Result<MessageMutationDrainReport> {
+        self.ensure_account_scope(account_id)?;
+        let flag_roles = self.repository.pending_system_flag_roles(account_id)?;
+        let pending_actions = self.repository.pending_message_actions(account_id)?;
+        let recoverable_actions = self
+            .repository
+            .message_actions_requiring_reconciliation(account_id)?;
+        let cleanup_tombstones = self
+            .repository
+            .confirmed_source_cleanup_tombstones(account_id)?;
+
+        let mut affected_roles = flag_roles.clone();
+        for action in pending_actions
+            .iter()
+            .chain(recoverable_actions.iter())
+            .chain(cleanup_tombstones.iter())
+        {
+            if !affected_roles.contains(&action.source_role) {
+                affected_roles.push(action.source_role);
+            }
+            if let Some(role) = action.destination_role
+                && !affected_roles.contains(&role)
+            {
+                affected_roles.push(role);
+            }
+        }
+        if affected_roles.is_empty() {
+            return Ok(MessageMutationDrainReport::default());
+        }
+        affected_roles.sort_by_key(|role| match role {
+            MailboxRole::Inbox => 0,
+            MailboxRole::Sent => 1,
+            MailboxRole::Archive => 2,
+            MailboxRole::Trash => 3,
+            MailboxRole::Drafts => 4,
+        });
+
+        let mut completed = 0;
+        let mut first_error = None;
+        for role in flag_roles {
+            match self
+                .flush_pending_system_flags_for_role(account_id, role)
+                .await
+            {
+                Ok(changed) => completed += changed,
+                Err(error) if first_error.is_none() => first_error = Some(error),
+                Err(_) => {}
+            }
+        }
+        match self.flush_pending_message_mutations(account_id).await {
+            Ok(changed) => completed += changed,
+            Err(error) if first_error.is_none() => first_error = Some(error),
+            Err(_) => {}
+        }
+        if let Some(error) = first_error {
+            return Err(error);
+        }
+        Ok(MessageMutationDrainReport {
+            completed,
+            affected_roles,
+        })
     }
 
     fn queue_remote_message_action(
@@ -3301,6 +3473,16 @@ impl MailBackend {
         }
 
         let _guard = self.general_imap_gate.lock().await;
+        let recoverable = self
+            .repository
+            .message_actions_requiring_reconciliation(account_id)?;
+        let pending = self.repository.pending_message_actions(account_id)?;
+        let cleanup_tombstones = self
+            .repository
+            .confirmed_source_cleanup_tombstones(account_id)?;
+        if recoverable.is_empty() && pending.is_empty() && cleanup_tombstones.is_empty() {
+            return Ok(0);
+        }
         let mut connection = ImapConnection::connect(&self.config)
             .await
             .map_err(|_| privacy_safe_imap_error("message mutation synchronization"))?;
@@ -4053,153 +4235,174 @@ impl MailBackend {
             return Ok(0);
         };
         let mut completed = 0;
-        for mutation in self
+        let reconciling = self
             .repository
             .system_flag_mutations_requiring_reconciliation(
                 &self.config.account_id,
                 mailbox,
                 flag,
-            )?
-        {
-            if persisted_flag_work(mutation.status) != PersistedFlagWork::Reconcile
-                || mutation.source_uid_validity != selected_uid_validity
-            {
-                continue;
-            }
-            let Some((_, server_flags)) = connection
-                .fetch_flags(&[mutation.source_uid])
+            )?;
+        for batch in reconciling.chunks(FLAG_BATCH_SIZE) {
+            let uids = batch
+                .iter()
+                .map(|mutation| mutation.source_uid)
+                .collect::<Vec<_>>();
+            let server_flags = connection
+                .fetch_flags(&uids)
                 .await?
                 .into_iter()
-                .find(|(uid, _)| *uid == mutation.source_uid)
-            else {
-                continue;
-            };
-            let server_matches = system_flag_is_set(&server_flags, flag) == mutation.desired;
-            if server_matches {
-                if self.repository.reconcile_system_flag_mutation_confirmed(
-                    &mutation.account_id,
-                    &mutation.operation_id,
-                    flag,
-                    mutation.revision,
-                    &server_flags,
-                )? {
-                    completed += 1;
+                .collect::<HashMap<_, _>>();
+            for mutation in batch {
+                if persisted_flag_work(mutation.status) != PersistedFlagWork::Reconcile
+                    || mutation.source_uid_validity != selected_uid_validity
+                {
+                    continue;
                 }
-            } else {
-                self.repository
-                    .requeue_system_flag_mutation_after_reconcile(
+                let Some(flags) = server_flags.get(&mutation.source_uid) else {
+                    continue;
+                };
+                if system_flag_is_set(flags, flag) == mutation.desired {
+                    if self.repository.reconcile_system_flag_mutation_confirmed(
                         &mutation.account_id,
                         &mutation.operation_id,
                         flag,
                         mutation.revision,
-                    )?;
+                        flags,
+                    )? {
+                        completed += 1;
+                    }
+                } else {
+                    self.repository
+                        .requeue_system_flag_mutation_after_reconcile(
+                            &mutation.account_id,
+                            &mutation.operation_id,
+                            flag,
+                            mutation.revision,
+                        )?;
+                }
             }
         }
 
-        for mutation in
-            self.repository
-                .pending_system_flag_mutations(&self.config.account_id, mailbox, flag)?
-        {
-            if persisted_flag_work(mutation.status) != PersistedFlagWork::Execute {
-                continue;
-            }
+        let pending = self.repository.pending_system_flag_mutations(
+            &self.config.account_id,
+            mailbox,
+            flag,
+        )?;
+        for batch in pending.chunks(FLAG_BATCH_SIZE) {
+            let uids = batch
+                .iter()
+                .map(|mutation| mutation.source_uid)
+                .collect::<Vec<_>>();
             let current_flags = connection
-                .fetch_flags(&[mutation.source_uid])
+                .fetch_flags(&uids)
                 .await?
                 .into_iter()
-                .find(|(uid, _)| *uid == mutation.source_uid);
-            let Some(claimed) = self.repository.claim_system_flag_mutation(
-                &mutation.account_id,
-                &mutation.operation_id,
-                flag,
-                mutation.revision,
-            )?
-            else {
-                continue;
-            };
-            if claimed.source_uid_validity != selected_uid_validity {
-                self.repository.finalize_system_flag_mutation_failure(
-                    &claimed.account_id,
-                    &claimed.operation_id,
-                    flag,
-                    claimed.revision,
-                    MutationStatus::NeedsAttention,
-                    MessageMutationErrorKind::UidValidityChanged,
-                )?;
-                continue;
-            }
-            let Some((_, current_flags)) = current_flags else {
-                self.repository.finalize_system_flag_mutation_failure(
-                    &claimed.account_id,
-                    &claimed.operation_id,
-                    flag,
-                    claimed.revision,
-                    MutationStatus::NeedsAttention,
-                    MessageMutationErrorKind::SourceMissing,
-                )?;
-                continue;
-            };
-            if system_flag_is_set(&current_flags, flag) == claimed.desired {
-                if self.repository.finalize_system_flag_mutation_confirmed(
-                    &claimed.account_id,
-                    &claimed.operation_id,
-                    flag,
-                    claimed.revision,
-                    &current_flags,
-                )? {
-                    completed += 1;
+                .collect::<HashMap<_, _>>();
+            let mut desired_true = Vec::new();
+            let mut desired_false = Vec::new();
+            for mutation in batch {
+                if persisted_flag_work(mutation.status) != PersistedFlagWork::Execute {
+                    continue;
                 }
-                continue;
-            }
-
-            let remote_result = match flag {
-                SystemFlagKind::Seen => {
-                    connection
-                        .set_seen_flags(&[claimed.source_uid], claimed.desired)
-                        .await
-                }
-                SystemFlagKind::Flagged => {
-                    connection
-                        .set_flagged_flags(&[claimed.source_uid], claimed.desired)
-                        .await
-                }
-            };
-            let confirmed = match remote_result {
-                Ok(confirmed) => confirmed,
-                Err(error) => {
+                let Some(claimed) = self.repository.claim_system_flag_mutation(
+                    &mutation.account_id,
+                    &mutation.operation_id,
+                    flag,
+                    mutation.revision,
+                )?
+                else {
+                    continue;
+                };
+                if claimed.source_uid_validity != selected_uid_validity {
                     self.repository.finalize_system_flag_mutation_failure(
                         &claimed.account_id,
                         &claimed.operation_id,
                         flag,
                         claimed.revision,
-                        MutationStatus::OutcomeUnknown,
-                        message_mutation_error_kind(&error),
+                        MutationStatus::NeedsAttention,
+                        MessageMutationErrorKind::UidValidityChanged,
                     )?;
                     continue;
                 }
-            };
-            let Some((_, server_flags)) = confirmed
-                .into_iter()
-                .find(|(uid, _)| *uid == claimed.source_uid)
-            else {
-                self.repository.finalize_system_flag_mutation_failure(
-                    &claimed.account_id,
-                    &claimed.operation_id,
-                    flag,
-                    claimed.revision,
-                    MutationStatus::OutcomeUnknown,
-                    MessageMutationErrorKind::Unknown,
-                )?;
-                continue;
-            };
-            if self.repository.finalize_system_flag_mutation_confirmed(
-                &claimed.account_id,
-                &claimed.operation_id,
-                flag,
-                claimed.revision,
-                &server_flags,
-            )? {
-                completed += 1;
+                let Some(flags) = current_flags.get(&claimed.source_uid) else {
+                    self.repository.finalize_system_flag_mutation_failure(
+                        &claimed.account_id,
+                        &claimed.operation_id,
+                        flag,
+                        claimed.revision,
+                        MutationStatus::NeedsAttention,
+                        MessageMutationErrorKind::SourceMissing,
+                    )?;
+                    continue;
+                };
+                if system_flag_is_set(flags, flag) == claimed.desired {
+                    if self.repository.finalize_system_flag_mutation_confirmed(
+                        &claimed.account_id,
+                        &claimed.operation_id,
+                        flag,
+                        claimed.revision,
+                        flags,
+                    )? {
+                        completed += 1;
+                    }
+                } else if claimed.desired {
+                    desired_true.push(claimed);
+                } else {
+                    desired_false.push(claimed);
+                }
+            }
+
+            for (desired, claimed_batch) in [(true, desired_true), (false, desired_false)] {
+                if claimed_batch.is_empty() {
+                    continue;
+                }
+                let uids = claimed_batch
+                    .iter()
+                    .map(|mutation| mutation.source_uid)
+                    .collect::<Vec<_>>();
+                let remote_result = match flag {
+                    SystemFlagKind::Seen => connection.set_seen_flags(&uids, desired).await,
+                    SystemFlagKind::Flagged => connection.set_flagged_flags(&uids, desired).await,
+                };
+                let confirmed = match remote_result {
+                    Ok(confirmed) => confirmed.into_iter().collect::<HashMap<_, _>>(),
+                    Err(error) => {
+                        let error_kind = message_mutation_error_kind(&error);
+                        for claimed in claimed_batch {
+                            self.repository.finalize_system_flag_mutation_failure(
+                                &claimed.account_id,
+                                &claimed.operation_id,
+                                flag,
+                                claimed.revision,
+                                MutationStatus::OutcomeUnknown,
+                                error_kind,
+                            )?;
+                        }
+                        continue;
+                    }
+                };
+                for claimed in claimed_batch {
+                    let Some(server_flags) = confirmed.get(&claimed.source_uid) else {
+                        self.repository.finalize_system_flag_mutation_failure(
+                            &claimed.account_id,
+                            &claimed.operation_id,
+                            flag,
+                            claimed.revision,
+                            MutationStatus::OutcomeUnknown,
+                            MessageMutationErrorKind::Unknown,
+                        )?;
+                        continue;
+                    };
+                    if self.repository.finalize_system_flag_mutation_confirmed(
+                        &claimed.account_id,
+                        &claimed.operation_id,
+                        flag,
+                        claimed.revision,
+                        server_flags,
+                    )? {
+                        completed += 1;
+                    }
+                }
             }
         }
         Ok(completed)
@@ -7859,7 +8062,7 @@ mod tests {
             AttachmentDisposition, AttachmentSaveStatus, DraftAttachmentMutationKind,
             ForwardPreparationErrorKind, ForwardPreparationOutcome, ForwardWarning,
             MailboxCapability, MailboxCapabilityStatus, MailboxCapabilityUnavailableReason,
-            MutationStatus, SystemFlagKind,
+            MessageMutationDrainReport, MutationStatus, SystemFlagKind,
         },
     };
 
@@ -10686,6 +10889,24 @@ mod tests {
                 .repair_contact_activity()
                 .expect("explicit activity repair"),
             complete
+        );
+    }
+
+    #[tokio::test]
+    async fn account_mutation_drain_proves_empty_queues_without_connecting() {
+        let directory = tempdir().expect("tempdir");
+        let config =
+            AccountConfig::from_163_lines(["demo@163.com", "not-a-real-secret"]).expect("config");
+        let account_id = config.account_id.clone();
+        let backend = MailBackend::open(config, directory.path().join("mail.db")).expect("backend");
+        backend.initialize().expect("initialize");
+
+        assert_eq!(
+            backend
+                .flush_pending_account_mutations(&account_id)
+                .await
+                .expect("empty mutation drain"),
+            MessageMutationDrainReport::default()
         );
     }
 

@@ -597,6 +597,15 @@ pub struct SystemFlagMutationReceipt {
     pub desired: bool,
 }
 
+/// One account-scoped mutation worker drain. Roles are semantic and bounded;
+/// provider mailbox names and individual message identities never cross this
+/// scheduling boundary.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MessageMutationDrainReport {
+    pub completed: usize,
+    pub affected_roles: Vec<MailboxRole>,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AttachmentDisposition {

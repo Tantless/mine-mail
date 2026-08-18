@@ -383,164 +383,8 @@ fn emit_mailbox_updated(app: &AppHandle, account_id: &str, role: MailboxRole) {
     );
 }
 
-fn schedule_seen_flush(
-    app: &AppHandle,
-    backend: &BackendState,
-    account_id: String,
-    role: MailboxRole,
-) {
-    if let Ok(network) = backend.network_for(&account_id) {
-        let event_app = app.clone();
-        let event_account_id = account_id.clone();
-        tauri::async_runtime::spawn(async move {
-            match network
-                .flush_pending_seen_mutations(&event_account_id, role)
-                .await
-            {
-                Ok(changed) => {
-                    diagnostics::limited_recovery(
-                        "message_mutation_flush_failed",
-                        "message_mutation_flush_recovered",
-                        "seen_mutation_flush",
-                        Some(&event_account_id),
-                    );
-                    if changed > 0 {
-                        diagnostics::info(
-                            "message_mutation_flush_completed",
-                            Fields::default()
-                                .account(&event_account_id)
-                                .operation("seen_mutation_flush")
-                                .outcome("completed")
-                                .changes(changed),
-                        );
-                    }
-                }
-                Err(error) => diagnostics::limited_failure(
-                    "message_mutation_flush_failed",
-                    "seen_mutation_flush",
-                    Some(&event_account_id),
-                    diagnostics::mail_error_kind(&error),
-                ),
-            }
-            emit_mailbox_updated(&event_app, &event_account_id, role);
-        });
-    } else {
-        diagnostics::limited_failure(
-            "message_mutation_flush_failed",
-            "seen_mutation_flush",
-            Some(&account_id),
-            diagnostics::ErrorKind::Runtime,
-        );
-    }
-    desktop::request_sync(app, false, "message_mutation");
-}
-
-fn schedule_flagged_flush(
-    app: &AppHandle,
-    backend: &BackendState,
-    account_id: String,
-    role: MailboxRole,
-) {
-    if let Ok(network) = backend.network_for(&account_id) {
-        let event_app = app.clone();
-        let event_account_id = account_id.clone();
-        tauri::async_runtime::spawn(async move {
-            match network
-                .flush_pending_flagged_mutations(&event_account_id, role)
-                .await
-            {
-                Ok(changed) => {
-                    diagnostics::limited_recovery(
-                        "message_mutation_flush_failed",
-                        "message_mutation_flush_recovered",
-                        "flagged_mutation_flush",
-                        Some(&event_account_id),
-                    );
-                    if changed > 0 {
-                        diagnostics::info(
-                            "message_mutation_flush_completed",
-                            Fields::default()
-                                .account(&event_account_id)
-                                .operation("flagged_mutation_flush")
-                                .outcome("completed")
-                                .changes(changed),
-                        );
-                    }
-                }
-                Err(error) => diagnostics::limited_failure(
-                    "message_mutation_flush_failed",
-                    "flagged_mutation_flush",
-                    Some(&event_account_id),
-                    diagnostics::mail_error_kind(&error),
-                ),
-            }
-            emit_mailbox_updated(&event_app, &event_account_id, role);
-        });
-    } else {
-        diagnostics::limited_failure(
-            "message_mutation_flush_failed",
-            "flagged_mutation_flush",
-            Some(&account_id),
-            diagnostics::ErrorKind::Runtime,
-        );
-    }
-    desktop::request_sync(app, false, "message_mutation");
-}
-
-fn schedule_message_action_flush(
-    app: &AppHandle,
-    backend: &BackendState,
-    account_id: String,
-    source_role: MailboxRole,
-    destination_role: Option<MailboxRole>,
-) {
-    if let Ok(network) = backend.network_for(&account_id) {
-        let event_app = app.clone();
-        let event_account_id = account_id.clone();
-        tauri::async_runtime::spawn(async move {
-            match network
-                .flush_pending_message_mutations(&event_account_id)
-                .await
-            {
-                Ok(changed) => {
-                    diagnostics::limited_recovery(
-                        "message_mutation_flush_failed",
-                        "message_mutation_flush_recovered",
-                        "message_action_flush",
-                        Some(&event_account_id),
-                    );
-                    if changed > 0 {
-                        diagnostics::info(
-                            "message_mutation_flush_completed",
-                            Fields::default()
-                                .account(&event_account_id)
-                                .operation("message_action_flush")
-                                .outcome("completed")
-                                .changes(changed),
-                        );
-                    }
-                }
-                Err(error) => diagnostics::limited_failure(
-                    "message_mutation_flush_failed",
-                    "message_action_flush",
-                    Some(&event_account_id),
-                    diagnostics::mail_error_kind(&error),
-                ),
-            }
-            emit_mailbox_updated(&event_app, &event_account_id, source_role);
-            if let Some(role) = destination_role {
-                emit_mailbox_updated(&event_app, &event_account_id, role);
-            }
-        });
-    } else {
-        diagnostics::limited_failure(
-            "message_mutation_flush_failed",
-            "message_action_flush",
-            Some(&account_id),
-            diagnostics::ErrorKind::Runtime,
-        );
-    }
-    desktop::request_sync(app, false, "message_mutation");
+fn schedule_message_mutation_flush(app: &AppHandle, account_id: &str) {
+    desktop::request_message_mutation_flush(app, account_id);
 }
 
 fn offline_page(mut page: MessagePage) -> MessagePage {
@@ -1391,7 +1235,7 @@ pub(crate) fn set_message_seen(
                 .operation("seen_mutation")
                 .outcome(if seen { "seen" } else { "unseen" }),
         );
-        schedule_seen_flush(&app, &backend, account_id, receipt.source_role);
+        schedule_message_mutation_flush(&app, &account_id);
         Ok(receipt)
     })
 }
@@ -1417,7 +1261,7 @@ pub(crate) fn set_message_starred_by_id(
                 .operation("flagged_mutation")
                 .outcome(if starred { "starred" } else { "unstarred" }),
         );
-        schedule_flagged_flush(&app, &backend, account_id, receipt.source_role);
+        schedule_message_mutation_flush(&app, &account_id);
         Ok(receipt)
     })
 }
@@ -1442,13 +1286,7 @@ pub(crate) fn archive_message(
                 .operation("archive_message")
                 .outcome("queued"),
         );
-        schedule_message_action_flush(
-            &app,
-            &backend,
-            account_id,
-            receipt.source_role,
-            receipt.destination_role,
-        );
+        schedule_message_mutation_flush(&app, &account_id);
         Ok(receipt)
     })
 }
@@ -1473,13 +1311,7 @@ pub(crate) fn move_message_to_trash(
                 .operation("move_message_to_trash")
                 .outcome("queued"),
         );
-        schedule_message_action_flush(
-            &app,
-            &backend,
-            account_id,
-            receipt.source_role,
-            receipt.destination_role,
-        );
+        schedule_message_mutation_flush(&app, &account_id);
         Ok(receipt)
     })
 }
@@ -1504,13 +1336,7 @@ pub(crate) fn move_message_to_inbox(
                 .operation("move_message_to_inbox")
                 .outcome("queued"),
         );
-        schedule_message_action_flush(
-            &app,
-            &backend,
-            account_id,
-            receipt.source_role,
-            receipt.destination_role,
-        );
+        schedule_message_mutation_flush(&app, &account_id);
         Ok(receipt)
     })
 }
@@ -1554,13 +1380,7 @@ pub(crate) async fn confirm_permanent_delete(
                 .operation("permanent_delete")
                 .outcome("queued"),
         );
-        schedule_message_action_flush(
-            &app,
-            &backend,
-            account_id,
-            receipt.source_role,
-            receipt.destination_role,
-        );
+        schedule_message_mutation_flush(&app, &account_id);
         Ok(receipt)
     })
     .await

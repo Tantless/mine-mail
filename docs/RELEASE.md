@@ -198,13 +198,13 @@ usage scenario before changing visible behavior or interaction.
   `list_contact_source_messages` plus `message_contact_emails` in
   [`src/database.rs`](../src/database.rs).
 
-- [ ] **MUTATION-01 — Coalesce queued message-state network work.** Each seen,
+- [x] **MUTATION-01 — Coalesce queued message-state network work.** Each seen,
   flagged, move, archive, trash, or delete action can spawn its own flush, emit
   one or two mailbox-update events, and enqueue a `message_mutation` full-sync
   request. Seen/flagged flushes open and select an IMAP mailbox before proving
   that pending work still exists, so rapid triage can create several serialized
   connections after an earlier worker has already drained the queue.
-  **Agreed plan — pending implementation.** Replace per-action flush tasks with
+  **Implemented.** Per-action flush tasks are replaced with
   one asynchronous, single-flight mutation worker per account; accounts remain
   independent. Commands still durably record local intent and update the visible
   state immediately, then only wake the worker. The worker uses a short bounded

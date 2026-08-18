@@ -22,7 +22,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     account::{AccountRuntime, BackendState},
-    desktop::{DesktopRuntime, DraftsUpdatedEvent},
+    desktop::{self, DesktopRuntime, DraftsUpdatedEvent},
 };
 
 const MCP_BIND_ADDRESS: &str = "127.0.0.1:46321";
@@ -613,6 +613,7 @@ impl MineMailMcp {
             .local_backend(&request.account_id)?
             .set_message_seen(&request.message_id, request.desired)
             .map_err(crate::safe_mail_error)?;
+        desktop::request_message_mutation_flush(&self.app, &request.account_id);
         Ok(Json(
             serde_json::to_value(result).unwrap_or_else(|_| json!({})),
         ))
@@ -629,6 +630,7 @@ impl MineMailMcp {
             .local_backend(&request.account_id)?
             .set_message_starred_by_id(&request.message_id, request.desired)
             .map_err(crate::safe_mail_error)?;
+        desktop::request_message_mutation_flush(&self.app, &request.account_id);
         Ok(Json(
             serde_json::to_value(result).unwrap_or_else(|_| json!({})),
         ))
@@ -645,6 +647,7 @@ impl MineMailMcp {
             .local_backend(&request.account_id)?
             .archive_message(&request.message_id)
             .map_err(crate::safe_mail_error)?;
+        desktop::request_message_mutation_flush(&self.app, &request.account_id);
         Ok(Json(
             serde_json::to_value(result).unwrap_or_else(|_| json!({})),
         ))
@@ -661,6 +664,7 @@ impl MineMailMcp {
             .local_backend(&request.account_id)?
             .move_message_to_inbox(&request.message_id)
             .map_err(crate::safe_mail_error)?;
+        desktop::request_message_mutation_flush(&self.app, &request.account_id);
         Ok(Json(
             serde_json::to_value(result).unwrap_or_else(|_| json!({})),
         ))
@@ -677,6 +681,7 @@ impl MineMailMcp {
             .local_backend(&request.account_id)?
             .move_message_to_trash(&request.message_id)
             .map_err(crate::safe_mail_error)?;
+        desktop::request_message_mutation_flush(&self.app, &request.account_id);
         Ok(Json(
             serde_json::to_value(result).unwrap_or_else(|_| json!({})),
         ))

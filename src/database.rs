@@ -1778,6 +1778,50 @@ impl Repository {
         query_reconcilable_system_flag_mutations(&connection, flag, expected_account_id, mailbox)
     }
 
+    /// Returns only semantic roles with actionable Seen/Flagged work in the
+    /// current mailbox epoch. The account worker uses this bounded plan to
+    /// prove work exists before opening IMAP.
+    pub(crate) fn pending_system_flag_roles(
+        &self,
+        expected_account_id: &str,
+    ) -> Result<Vec<MailboxRole>> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT DISTINCT COALESCE((
+                 SELECT r.role
+                 FROM mailbox_roles r
+                 WHERE r.account_id = q.account_id AND r.mailbox = q.mailbox
+                 ORDER BY CASE r.role WHEN 'inbox' THEN 0 ELSE 1 END
+                 LIMIT 1
+             ), 'inbox') AS role
+             FROM (
+                 SELECT account_id, mailbox, source_uid_validity, status
+                 FROM pending_seen_updates
+                 UNION ALL
+                 SELECT account_id, mailbox, source_uid_validity, status
+                 FROM pending_flagged_updates
+             ) q
+             JOIN mailboxes b
+               ON b.account_id = q.account_id AND b.name = q.mailbox
+              AND b.uid_validity = q.source_uid_validity
+             WHERE q.account_id = ?1
+               AND q.status IN ('pending', 'outcome_unknown', 'needs_attention')
+             ORDER BY CASE role
+                 WHEN 'inbox' THEN 0
+                 WHEN 'sent' THEN 1
+                 WHEN 'archive' THEN 2
+                 WHEN 'trash' THEN 3
+                 ELSE 4
+             END",
+        )?;
+        statement
+            .query_map(params![expected_account_id], |row| {
+                mailbox_role_from_column(0, row.get(0)?)
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
     pub(crate) fn claim_system_flag_mutation(
         &self,
         expected_account_id: &str,
@@ -11398,6 +11442,12 @@ mod tests {
         assert_eq!(unstar.revision, star.revision + 1);
         assert_eq!(unstar.status, MutationStatus::Pending);
         assert!(!unstar.desired);
+        assert_eq!(
+            repository
+                .pending_system_flag_roles(&account.account_id)
+                .expect("account flag work plan"),
+            [MailboxRole::Inbox]
+        );
 
         assert!(
             !repository
@@ -11449,6 +11499,12 @@ mod tests {
         assert_eq!(receipt.status, MutationStatus::Confirmed);
         assert_eq!(receipt.local_revision, unstar.revision);
         assert!(!receipt.desired);
+        assert!(
+            repository
+                .pending_system_flag_roles(&account.account_id)
+                .expect("completed account flag work plan")
+                .is_empty()
+        );
     }
 
     #[test]

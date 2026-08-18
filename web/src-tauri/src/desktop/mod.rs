@@ -15,7 +15,8 @@ use std::{
 
 use mine_mail::{
     DraftSyncReport, InboxMessage, InboxMonitorMode, MailBackend, MailboxCapability,
-    MailboxCapabilityStatus, MailboxRole, SyncBatchProgress, SyncReport,
+    MailboxCapabilityStatus, MailboxRole, MessageMutationDrainReport, SyncBatchProgress,
+    SyncReport,
 };
 use serde::Serialize;
 use tauri::{
@@ -58,6 +59,7 @@ const MONITOR_RECONNECT_BACKOFF_SECONDS: [u64; 7] = [2, 5, 15, 30, 60, 120, 300]
 const EXIT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(35);
 const SETTINGS_DATABASE_NAME: &str = "desktop-runtime.sqlite3";
 const NEW_MAIL_NOTIFICATION_WINDOW: &str = "new-mail-notification";
+const MESSAGE_MUTATION_COALESCE_WINDOW: Duration = Duration::from_millis(75);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct McpAccess {
@@ -161,6 +163,87 @@ struct InboxSyncLeader {
     settled: bool,
 }
 
+#[derive(Default)]
+struct MessageMutationFlightState {
+    running: bool,
+    requested_generation: u64,
+    completed_generation: u64,
+    result: Option<Result<MessageMutationDrainReport, String>>,
+}
+
+#[derive(Default)]
+struct MessageMutationFlight {
+    state: StdMutex<MessageMutationFlightState>,
+    settled: Notify,
+}
+
+impl MessageMutationFlight {
+    fn request(&self, wake_running: bool) -> Result<(u64, bool), String> {
+        let mut state = self.state.lock().map_err(|_| {
+            "The message mutation coordinator is temporarily unavailable.".to_owned()
+        })?;
+        if wake_running || !state.running {
+            state.requested_generation = state.requested_generation.wrapping_add(1);
+        }
+        let generation = state.requested_generation;
+        let start = !state.running;
+        if start {
+            state.running = true;
+        }
+        Ok((generation, start))
+    }
+
+    fn requested_generation(&self) -> Result<u64, String> {
+        self.state
+            .lock()
+            .map(|state| state.requested_generation)
+            .map_err(|_| "The message mutation coordinator is temporarily unavailable.".to_owned())
+    }
+
+    fn settle(
+        &self,
+        generation: u64,
+        result: Result<MessageMutationDrainReport, String>,
+    ) -> Result<bool, String> {
+        let mut state = self.state.lock().map_err(|_| {
+            "The message mutation coordinator is temporarily unavailable.".to_owned()
+        })?;
+        state.completed_generation = generation;
+        state.result = Some(result.clone());
+        let drain_again = result.is_ok() && state.requested_generation != generation;
+        if result.is_err() {
+            // One failed network attempt consumes the current burst. Durable
+            // work remains queued and a later sync/recovery wake retries it.
+            state.completed_generation = state.requested_generation;
+        }
+        state.running = drain_again;
+        drop(state);
+        self.settled.notify_waiters();
+        Ok(drain_again)
+    }
+
+    async fn wait_for(
+        &self,
+        requested_generation: u64,
+    ) -> Result<MessageMutationDrainReport, String> {
+        loop {
+            let settled = self.settled.notified();
+            let result = {
+                let state = self.state.lock().map_err(|_| {
+                    "The message mutation coordinator is temporarily unavailable.".to_owned()
+                })?;
+                (state.completed_generation >= requested_generation)
+                    .then(|| state.result.clone())
+                    .flatten()
+            };
+            if let Some(result) = result {
+                return result;
+            }
+            settled.await;
+        }
+    }
+}
+
 impl InboxSyncLeader {
     fn settle(&mut self, result: Result<SyncReport, String>) {
         if let Ok(mut state) = self.flight.state.lock() {
@@ -219,6 +302,7 @@ pub(crate) struct DesktopRuntime {
     last_sync_started: StdMutex<Option<Instant>>,
     pending_inbox_syncs: StdMutex<HashSet<String>>,
     inbox_sync_flights: StdMutex<HashMap<String, Arc<InboxSyncFlight>>>,
+    message_mutation_flights: StdMutex<HashMap<String, Arc<MessageMutationFlight>>>,
     pending_notification_baselines: StdMutex<HashSet<String>>,
     exit_handshake: StdMutex<ExitHandshakeState>,
     smtp_operations_in_flight: AtomicUsize,
@@ -313,6 +397,7 @@ impl DesktopRuntime {
                 last_sync_started: StdMutex::new(None),
                 pending_inbox_syncs: StdMutex::new(HashSet::new()),
                 inbox_sync_flights: StdMutex::new(HashMap::new()),
+                message_mutation_flights: StdMutex::new(HashMap::new()),
                 pending_notification_baselines: StdMutex::new(HashSet::new()),
                 exit_handshake: StdMutex::new(ExitHandshakeState::default()),
                 smtp_operations_in_flight: AtomicUsize::new(0),
@@ -1086,6 +1171,19 @@ impl DesktopRuntime {
         }
     }
 
+    fn message_mutation_flight(
+        &self,
+        account_id: &str,
+    ) -> Result<Arc<MessageMutationFlight>, String> {
+        let mut flights = self.message_mutation_flights.lock().map_err(|_| {
+            "The message mutation coordinator is temporarily unavailable.".to_owned()
+        })?;
+        Ok(flights
+            .entry(account_id.to_owned())
+            .or_insert_with(|| Arc::new(MessageMutationFlight::default()))
+            .clone())
+    }
+
     fn poll_duration(&self) -> Duration {
         let minutes = self
             .settings()
@@ -1750,40 +1848,130 @@ async fn sync_optional_mailbox_for(
     Ok(())
 }
 
-async fn flush_pending_message_mutations_for(
-    backend: &MailBackend,
-    account_id: &str,
-) -> mine_mail::Result<usize> {
-    match backend.flush_pending_message_mutations(account_id).await {
-        Ok(changed) => {
-            diagnostics::limited_recovery(
-                "message_mutation_flush_failed",
-                "message_mutation_flush_recovered",
-                "queued_message_mutation_flush",
-                Some(account_id),
-            );
-            if changed > 0 {
-                diagnostics::info(
-                    "message_mutation_flush_completed",
-                    Fields::default()
-                        .account(account_id)
-                        .operation("queued_message_mutation_flush")
-                        .outcome("completed")
-                        .changes(changed),
-                );
+fn start_message_mutation_worker(
+    app: AppHandle,
+    account_id: String,
+    flight: Arc<MessageMutationFlight>,
+) {
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(MESSAGE_MUTATION_COALESCE_WINDOW).await;
+        loop {
+            let generation = match flight.requested_generation() {
+                Ok(generation) => generation,
+                Err(_) => {
+                    diagnostics::limited_failure(
+                        "message_mutation_flush_failed",
+                        "mutation_worker_state",
+                        Some(&account_id),
+                        ErrorKind::Runtime,
+                    );
+                    return;
+                }
+            };
+            let result = match app.state::<BackendState>().network_for(&account_id) {
+                Ok(backend) => match backend.flush_pending_account_mutations(&account_id).await {
+                    Ok(report) => {
+                        diagnostics::limited_recovery(
+                            "message_mutation_flush_failed",
+                            "message_mutation_flush_recovered",
+                            "account_mutation_worker",
+                            Some(&account_id),
+                        );
+                        if report.completed > 0 {
+                            diagnostics::info(
+                                "message_mutation_flush_completed",
+                                Fields::default()
+                                    .account(&account_id)
+                                    .operation("account_mutation_worker")
+                                    .outcome("completed")
+                                    .changes(report.completed),
+                            );
+                        }
+                        for role in &report.affected_roles {
+                            diagnostics::emit_event(
+                                &app,
+                                "mail:mailbox-updated",
+                                MailboxUpdatedEvent {
+                                    account_id: account_id.clone(),
+                                    role: *role,
+                                },
+                            );
+                        }
+                        Ok(report)
+                    }
+                    Err(error) => {
+                        diagnostics::limited_failure(
+                            "message_mutation_flush_failed",
+                            "account_mutation_worker",
+                            Some(&account_id),
+                            diagnostics::mail_error_kind(&error),
+                        );
+                        Err(crate::safe_mail_error(error))
+                    }
+                },
+                Err(error) => {
+                    diagnostics::limited_failure(
+                        "message_mutation_flush_failed",
+                        "account_mutation_worker",
+                        Some(&account_id),
+                        ErrorKind::Runtime,
+                    );
+                    Err(error)
+                }
+            };
+            match flight.settle(generation, result) {
+                Ok(true) => continue,
+                Ok(false) => return,
+                Err(_) => {
+                    diagnostics::limited_failure(
+                        "message_mutation_flush_failed",
+                        "mutation_worker_state",
+                        Some(&account_id),
+                        ErrorKind::Runtime,
+                    );
+                    return;
+                }
             }
-            Ok(changed)
         }
-        Err(error) => {
-            diagnostics::limited_failure(
-                "message_mutation_flush_failed",
-                "queued_message_mutation_flush",
-                Some(account_id),
-                diagnostics::mail_error_kind(&error),
-            );
-            Err(error)
-        }
+    });
+}
+
+fn request_message_mutation_flight(
+    app: &AppHandle,
+    account_id: &str,
+    wake_running: bool,
+) -> Result<(Arc<MessageMutationFlight>, u64), String> {
+    let flight = app
+        .state::<DesktopRuntime>()
+        .message_mutation_flight(account_id)?;
+    let (generation, start) = flight.request(wake_running)?;
+    if start {
+        start_message_mutation_worker(app.clone(), account_id.to_owned(), flight.clone());
     }
+    Ok((flight, generation))
+}
+
+/// Commands only wake the account worker; their local durable response is not
+/// delayed by the coalescing window or any network operation.
+pub(crate) fn request_message_mutation_flush(app: &AppHandle, account_id: &str) {
+    if request_message_mutation_flight(app, account_id, true).is_err() {
+        diagnostics::limited_failure(
+            "message_mutation_flush_failed",
+            "mutation_worker_wake",
+            Some(account_id),
+            ErrorKind::Runtime,
+        );
+    }
+}
+
+/// Synchronization and network recovery join an active worker or start one
+/// exactly once, then wait for its current durable queue snapshot to drain.
+async fn ensure_message_mutation_flush(
+    app: &AppHandle,
+    account_id: &str,
+) -> Result<MessageMutationDrainReport, String> {
+    let (flight, generation) = request_message_mutation_flight(app, account_id, false)?;
+    flight.wait_for(generation).await
 }
 
 pub(crate) async fn perform_sync_all(
@@ -1870,11 +2058,8 @@ pub(crate) async fn perform_sync_all(
                 )),
             }
         }
-        if let Err(error) = flush_pending_message_mutations_for(&network, &account_id).await {
-            account_errors.push(format!(
-                "{account_id} queued mutations: {}",
-                crate::safe_mail_error(error)
-            ));
+        if let Err(error) = ensure_message_mutation_flush(app, &account_id).await {
+            account_errors.push(format!("{account_id} queued mutations: {error}"));
         }
         let seeded_gmail_cursor = match network.initialize_gmail_history_cursor().await {
             Ok(seeded) => seeded,
@@ -2065,20 +2250,16 @@ async fn perform_inbox_reconciliation_all(app: &AppHandle) -> Result<(), String>
         let mutation_activity_before_flush = network
             .has_message_mutation_activity(&account_id)
             .unwrap_or(false);
-        let mutation_activity =
-            match flush_pending_message_mutations_for(&network, &account_id).await {
-                Ok(confirmed) => confirmed > 0,
-                Err(error) => {
-                    errors.push(format!(
-                        "{account_id} queued mutations: {}",
-                        crate::safe_mail_error(error)
-                    ));
-                    false
-                }
-            } || mutation_activity_before_flush
-                || network
-                    .has_message_mutation_activity(&account_id)
-                    .unwrap_or(false);
+        let mutation_activity = match ensure_message_mutation_flush(app, &account_id).await {
+            Ok(report) => report.completed > 0,
+            Err(error) => {
+                errors.push(format!("{account_id} queued mutations: {error}"));
+                false
+            }
+        } || mutation_activity_before_flush
+            || network
+                .has_message_mutation_activity(&account_id)
+                .unwrap_or(false);
         let optional_roles = network
             .get_mailbox_capabilities(&account_id)
             .map(|capabilities| {
@@ -2246,6 +2427,7 @@ async fn perform_incremental_inbox_sync(
     // refreshed backend before opening the short-lived incremental session.
     let _ = account_runtime.refresh_oauth_backends(&backend_state).await;
     emit_account_status(app, &account_runtime, &backend_state);
+    ensure_message_mutation_flush(app, account_id).await?;
     sync_new_inbox_for(app, account_id).await
 }
 
@@ -2263,6 +2445,7 @@ pub(crate) async fn perform_sent_sync(app: &AppHandle) -> Result<SyncReport, Str
     let account_id = backend_state
         .active_account_id()
         .ok_or_else(|| "No mail account is selected.".to_owned())?;
+    ensure_message_mutation_flush(app, &account_id).await?;
     sync_sent_for(app, &account_id).await
 }
 
@@ -3556,7 +3739,7 @@ mod tests {
 
     use mine_mail::{
         DraftSyncReport, InboxMessage, MailAddress, MailboxCapability, MailboxCapabilityStatus,
-        MailboxRole, SyncReport,
+        MailboxRole, MessageMutationDrainReport, SyncReport,
     };
     use tokio::sync::Notify;
 
@@ -3564,8 +3747,8 @@ mod tests {
         NotificationBaseline, NotificationDelivery, NotificationSound, StoredDesktopSettings,
     };
     use super::{
-        BeforeExitEvent, DesktopRuntime, EXIT_HANDSHAKE_TIMEOUT, SyncAllReport,
-        align_notification_axis, available_optional_mailbox_roles,
+        BeforeExitEvent, DesktopRuntime, EXIT_HANDSHAKE_TIMEOUT, MessageMutationFlight,
+        SyncAllReport, align_notification_axis, available_optional_mailbox_roles,
         consume_open_new_mail_notification, effective_notification_delivery, is_seen,
         notification_candidates, notification_sender, notification_sender_email,
         optional_role_participates_periodically, prioritize_active_account,
@@ -3602,6 +3785,78 @@ mod tests {
             raw_rfc822: vec![],
             synced_at: "2026-07-14T00:00:00Z".to_owned(),
         }
+    }
+
+    #[test]
+    fn mutation_worker_coalesces_a_rapid_wake_burst_into_one_drain() {
+        let flight = MessageMutationFlight::default();
+        let (first_generation, first_starts) = flight.request(true).expect("first wake");
+        let (second_generation, second_starts) = flight.request(true).expect("second wake");
+        assert!(first_starts);
+        assert!(!second_starts);
+        assert!(second_generation > first_generation);
+        assert_eq!(
+            flight.requested_generation().expect("drain snapshot"),
+            second_generation
+        );
+        assert!(
+            !flight
+                .settle(second_generation, Ok(MessageMutationDrainReport::default()))
+                .expect("settle coalesced drain")
+        );
+    }
+
+    #[test]
+    fn mutation_worker_records_one_more_drain_for_work_arriving_in_flight() {
+        let flight = MessageMutationFlight::default();
+        let (first_generation, starts) = flight.request(true).expect("first wake");
+        assert!(starts);
+        let (second_generation, starts_again) = flight.request(true).expect("in-flight wake");
+        assert!(!starts_again);
+        assert!(
+            flight
+                .settle(first_generation, Ok(MessageMutationDrainReport::default()))
+                .expect("first drain")
+        );
+        assert_eq!(
+            flight.requested_generation().expect("second snapshot"),
+            second_generation
+        );
+        assert!(
+            !flight
+                .settle(second_generation, Ok(MessageMutationDrainReport::default()))
+                .expect("second drain")
+        );
+    }
+
+    #[test]
+    fn mutation_worker_failure_stops_the_burst_for_bounded_recovery() {
+        let flight = MessageMutationFlight::default();
+        let (first_generation, _) = flight.request(true).expect("first wake");
+        let (latest_generation, _) = flight.request(true).expect("queued wake");
+        assert!(
+            !flight
+                .settle(first_generation, Err("offline".to_owned()))
+                .expect("failed drain")
+        );
+        let state = flight.state.lock().expect("flight state");
+        assert!(!state.running);
+        assert_eq!(state.completed_generation, latest_generation);
+    }
+
+    #[test]
+    fn mutation_worker_flights_are_independent_between_accounts() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let (runtime, _sync_rx, _shutdown_rx) = DesktopRuntime::open(directory.path());
+        let first = runtime
+            .message_mutation_flight("account-a")
+            .expect("first account flight");
+        let second = runtime
+            .message_mutation_flight("account-b")
+            .expect("second account flight");
+        assert!(!Arc::ptr_eq(&first, &second));
+        assert!(first.request(true).expect("first account wake").1);
+        assert!(second.request(true).expect("second account wake").1);
     }
 
     #[test]
