@@ -1428,7 +1428,7 @@ describe("mailApi desktop IPC contract", () => {
     ).rejects.toThrow("投递结果已变化");
   });
 
-  it("requires an explicit demo build outside Tauri and test mode", async () => {
+  it("requires an explicit demo build outside Tauri", async () => {
     const { __testing } = await import("./mailApi.js");
 
     expect(
@@ -1446,6 +1446,12 @@ describe("mailApi desktop IPC contract", () => {
     expect(
       __testing.demoAdapterBuildEnabled({
         demoFlag: undefined,
+        mode: "demo",
+      }),
+    ).toBe(true);
+    expect(
+      __testing.demoAdapterBuildEnabled({
+        demoFlag: undefined,
         mode: "test",
       }),
     ).toBe(true);
@@ -1456,6 +1462,13 @@ describe("mailApi desktop IPC contract", () => {
         mode: "production",
       }),
     ).toBe("unsupported");
+    expect(
+      __testing.resolveRuntime({
+        tauri: false,
+        demoFlag: undefined,
+        mode: "demo",
+      }),
+    ).toBe("demo");
     expect(
       __testing.resolveRuntime({
         tauri: false,

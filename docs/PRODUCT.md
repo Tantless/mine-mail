@@ -18,9 +18,10 @@ product decision changes.
 - SQLite is the immediate local source for renderable mailbox state. The server
   remains authoritative for remote messages and system flags after
   synchronization confirms them.
-- The Vite build is an explicit mock UI surface. It performs no real mail,
-  credential, tray, notification, filesystem, or operating-system work and must
-  never become a parallel Web mail runtime.
+- The React-only Vite development entry is an explicit mock UI surface and opens
+  in the default browser. It performs no real mail, credential, tray,
+  notification, filesystem, or operating-system work and must never become a
+  parallel Web mail runtime.
 - Rust owns credentials, IMAP/SMTP, MIME processing, synchronization, drafts,
   Outbox state, notifications, local files, and database access. React calls
   narrow Tauri commands and receives only bounded, typed presentation data.

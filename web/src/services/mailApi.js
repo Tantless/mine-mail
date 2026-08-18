@@ -10,15 +10,14 @@ export const isTauriRuntime =
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
 function demoAdapterBuildEnabled({ demoFlag, mode }) {
-  return demoFlag === "1" || mode === "test";
+  return demoFlag === "1" || mode === "demo" || mode === "test";
 }
 
 function resolveRuntime({ tauri, demoFlag, mode }) {
   if (tauri) return "tauri";
-  if (demoFlag === "1") return "demo";
-  // Vitest is an explicitly isolated mock environment. Production browser
-  // builds must opt in with VITE_MINE_MAIL_DEMO=1 instead of silently faking mail.
-  if (mode === "test") return "demo";
+  if (demoAdapterBuildEnabled({ demoFlag, mode })) return "demo";
+  // The WebUI command uses Vite's explicit demo mode. Ordinary production
+  // browser builds stay unsupported instead of silently faking mail.
   return "unsupported";
 }
 
@@ -35,7 +34,9 @@ export const isUnsupportedRuntime = runtimeKind === "unsupported";
 // Keep this as a compile-time conditional. Vite/Rollup removes the import and
 // its full fixture graph from ordinary production builds.
 const demoAdapterModule =
-  import.meta.env.VITE_MINE_MAIL_DEMO === "1" || import.meta.env.MODE === "test"
+  import.meta.env.VITE_MINE_MAIL_DEMO === "1" ||
+  import.meta.env.MODE === "demo" ||
+  import.meta.env.MODE === "test"
     ? import("./demoMailAdapter.js")
     : null;
 
@@ -43,7 +44,7 @@ let demoAdapterReady;
 
 function unsupportedRuntimeError() {
   return new Error(
-    "Mine Mail 不支持直接在普通浏览器中运行。请启动 Tauri 桌面版，或设置 VITE_MINE_MAIL_DEMO=1 进行界面演示。",
+    "当前浏览器构建未启用 WebUI 演示。请在 web 目录运行 npm run dev，或启动 Tauri 桌面版。",
   );
 }
 

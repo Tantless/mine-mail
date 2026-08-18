@@ -49,6 +49,15 @@ describe("production bundle boundaries", () => {
     );
   });
 
+  it("opens the explicit WebUI demo without changing the Tauri dev entry", () => {
+    const packageJson = JSON.parse(source("package.json"));
+    const tauriConfig = JSON.parse(source("src-tauri/tauri.conf.json"));
+
+    expect(packageJson.scripts.dev).toBe("vite --mode demo --open");
+    expect(packageJson.scripts["dev:tauri"]).toBe("vite");
+    expect(tauriConfig.build.beforeDevCommand).toBe("npm run dev:tauri");
+  });
+
   it("separates the eager React runtime without changing mailbox loading", () => {
     const viteConfig = source("vite.config.mjs");
 

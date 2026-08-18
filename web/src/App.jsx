@@ -7516,8 +7516,8 @@ export function App() {
           <p className="eyebrow">MINE MAIL DESKTOP</p>
           <h1>请从桌面应用启动 Mine Mail</h1>
           <p>
-            普通浏览器不会连接邮箱，也不会启用模拟数据。开发界面时可显式设置
-            <code>VITE_MINE_MAIL_DEMO=1</code>。
+            当前浏览器构建未启用 WebUI 演示。开发界面时，请在
+            <code>web</code> 目录运行 <code>npm run dev</code>。
           </p>
         </div>
       </main>

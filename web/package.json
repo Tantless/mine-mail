@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "vite --mode demo --open",
+    "dev:tauri": "vite",
     "build": "vite build",
     "verify:production-bundle": "node ./scripts/verify-production-bundle.mjs",
     "preview": "vite preview",

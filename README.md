@@ -119,20 +119,15 @@ MINE_MAIL_DEV_PORT=1430 npm run tauri:dev
 现阶段更推荐在开发调试时选择“自定义邮箱”，使用 Google 提供的 IMAP/SMTP
 服务配置登录 Gmail，以避免依赖私有 OAuth 配置。
 
-只开发 React 界面时，可以启用不连接真实邮箱的 mock 演示模式：
+只开发 React 界面时，运行 WebUI 演示入口：
 
 ```powershell
 cd web
-$env:VITE_MINE_MAIL_DEMO = "1"
 npm run dev
 ```
 
-在 Bash 中使用：
-
-```bash
-cd web
-VITE_MINE_MAIL_DEMO=1 npm run dev
-```
+该命令使用不连接真实邮箱的 mock 数据，并自动在默认浏览器中打开页面。
+生产构建与 Tauri 开发版不会因此包含或启用演示数据。
 
 提交改动前运行适用的检查：
 
