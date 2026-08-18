@@ -25,9 +25,11 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
 use tokio::sync::{
-    Mutex as AsyncMutex, MutexGuard as AsyncMutexGuard, Notify, RwLock as AsyncRwLock,
-    RwLockReadGuard, RwLockWriteGuard, mpsc, watch,
+    Mutex as AsyncMutex, MutexGuard as AsyncMutexGuard, Notify, OwnedMutexGuard,
+    OwnedRwLockReadGuard, OwnedRwLockWriteGuard, OwnedSemaphorePermit, RwLock as AsyncRwLock,
+    Semaphore, mpsc, watch,
 };
+use tokio::task::JoinSet;
 use tokio::time::Instant as TokioInstant;
 
 use crate::{
@@ -60,6 +62,8 @@ const EXIT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(35);
 const SETTINGS_DATABASE_NAME: &str = "desktop-runtime.sqlite3";
 const NEW_MAIL_NOTIFICATION_WINDOW: &str = "new-mail-notification";
 const MESSAGE_MUTATION_COALESCE_WINDOW: Duration = Duration::from_millis(75);
+const MAX_CONCURRENT_ACCOUNT_PIPELINES: usize = 2;
+const ACCOUNT_SYNC_PIPELINE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct McpAccess {
@@ -121,6 +125,97 @@ pub(crate) enum BackgroundRequest {
         trigger: &'static str,
     },
     ScheduleChanged,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BackgroundBatchKind {
+    Sync,
+    Inbox,
+    Drafts,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BackgroundBatchWork {
+    Sync { force: bool, trigger: &'static str },
+    Inbox,
+    Drafts,
+}
+
+impl BackgroundBatchWork {
+    fn kind(self) -> BackgroundBatchKind {
+        match self {
+            Self::Sync { .. } => BackgroundBatchKind::Sync,
+            Self::Inbox => BackgroundBatchKind::Inbox,
+            Self::Drafts => BackgroundBatchKind::Drafts,
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct BackgroundBatchQueue {
+    pending_sync: Option<(bool, &'static str)>,
+    pending_inbox: bool,
+    pending_drafts: bool,
+}
+
+impl BackgroundBatchQueue {
+    fn enqueue_sync(&mut self, force: bool, trigger: &'static str) {
+        self.pending_sync = Some(match self.pending_sync {
+            Some((pending_force, pending_trigger)) => {
+                let merged_force = pending_force || force;
+                let merged_trigger = if (force && !pending_force)
+                    || (force == pending_force
+                        && background_sync_trigger_priority(trigger)
+                            > background_sync_trigger_priority(pending_trigger))
+                {
+                    trigger
+                } else {
+                    pending_trigger
+                };
+                (merged_force, merged_trigger)
+            }
+            None => (force, trigger),
+        });
+        self.pending_inbox = false;
+        self.pending_drafts = false;
+    }
+
+    fn enqueue_inbox(&mut self, running: Option<BackgroundBatchKind>) {
+        if self.pending_sync.is_none() && running != Some(BackgroundBatchKind::Sync) {
+            self.pending_inbox = true;
+        }
+    }
+
+    fn enqueue_drafts(&mut self, running: Option<BackgroundBatchKind>) {
+        if self.pending_sync.is_none() && running != Some(BackgroundBatchKind::Sync) {
+            self.pending_drafts = true;
+        }
+    }
+
+    fn pop_next(&mut self) -> Option<BackgroundBatchWork> {
+        if let Some((force, trigger)) = self.pending_sync.take() {
+            return Some(BackgroundBatchWork::Sync { force, trigger });
+        }
+        if std::mem::take(&mut self.pending_inbox) {
+            return Some(BackgroundBatchWork::Inbox);
+        }
+        if std::mem::take(&mut self.pending_drafts) {
+            return Some(BackgroundBatchWork::Drafts);
+        }
+        None
+    }
+}
+
+fn background_sync_trigger_priority(trigger: &str) -> usize {
+    match trigger {
+        "account_change" => 6,
+        "tray" => 5,
+        "startup" => 4,
+        "single_instance" => 3,
+        "resume" => 2,
+        "window_open" => 1,
+        _ => 0,
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -355,7 +450,10 @@ pub(crate) struct DesktopRuntime {
     sync_tx: mpsc::Sender<BackgroundRequest>,
     shutdown_tx: watch::Sender<bool>,
     account_mutation_gate: AsyncMutex<()>,
-    lifecycle_gate: AsyncRwLock<()>,
+    lifecycle_gate: Arc<AsyncRwLock<()>>,
+    account_lifecycle_gates: StdMutex<HashMap<String, Arc<AsyncRwLock<()>>>>,
+    account_pipeline_gates: StdMutex<HashMap<String, Arc<AsyncMutex<()>>>>,
+    account_pipeline_permits: Arc<Semaphore>,
     batch_sync_gate: AsyncMutex<()>,
     last_sync_started: StdMutex<Option<Instant>>,
     pending_inbox_syncs: StdMutex<HashSet<String>>,
@@ -450,7 +548,12 @@ impl DesktopRuntime {
                 sync_tx,
                 shutdown_tx,
                 account_mutation_gate: AsyncMutex::new(()),
-                lifecycle_gate: AsyncRwLock::new(()),
+                lifecycle_gate: Arc::new(AsyncRwLock::new(())),
+                account_lifecycle_gates: StdMutex::new(HashMap::new()),
+                account_pipeline_gates: StdMutex::new(HashMap::new()),
+                account_pipeline_permits: Arc::new(Semaphore::new(
+                    MAX_CONCURRENT_ACCOUNT_PIPELINES,
+                )),
                 batch_sync_gate: AsyncMutex::new(()),
                 last_sync_started: StdMutex::new(None),
                 pending_inbox_syncs: StdMutex::new(HashSet::new()),
@@ -1137,26 +1240,110 @@ impl DesktopRuntime {
 
     /// Prevent account replacement or cache-deleting removal while a network
     /// operation retains one of its backend handles.
-    pub(crate) async fn acquire_sync_access(&self) -> RwLockReadGuard<'_, ()> {
-        self.lifecycle_gate.read().await
+    pub(crate) async fn acquire_sync_access(&self) -> OwnedRwLockReadGuard<()> {
+        self.lifecycle_gate.clone().read_owned().await
+    }
+
+    fn try_acquire_sync_access(&self) -> Result<OwnedRwLockReadGuard<()>, String> {
+        self.lifecycle_gate.clone().try_read_owned().map_err(|_| {
+            "Account configuration is changing; synchronization can be retried.".to_owned()
+        })
+    }
+
+    fn account_lifecycle_gate(&self, account_id: &str) -> Result<Arc<AsyncRwLock<()>>, String> {
+        let mut gates = self.account_lifecycle_gates.lock().map_err(|_| {
+            "The account synchronization coordinator is temporarily unavailable.".to_owned()
+        })?;
+        Ok(gates
+            .entry(account_id.to_owned())
+            .or_insert_with(|| Arc::new(AsyncRwLock::new(())))
+            .clone())
+    }
+
+    pub(crate) async fn acquire_account_sync_access(
+        &self,
+        account_id: &str,
+    ) -> Result<OwnedRwLockReadGuard<()>, String> {
+        Ok(self.account_lifecycle_gate(account_id)?.read_owned().await)
+    }
+
+    fn try_acquire_account_sync_access(
+        &self,
+        account_id: &str,
+    ) -> Result<OwnedRwLockReadGuard<()>, String> {
+        self.account_lifecycle_gate(account_id)?
+            .try_read_owned()
+            .map_err(|_| {
+                "The account is changing; queued mutations will be retried later.".to_owned()
+            })
+    }
+
+    fn account_pipeline_gate(&self, account_id: &str) -> Result<Arc<AsyncMutex<()>>, String> {
+        let mut gates = self.account_pipeline_gates.lock().map_err(|_| {
+            "The account synchronization coordinator is temporarily unavailable.".to_owned()
+        })?;
+        Ok(gates
+            .entry(account_id.to_owned())
+            .or_insert_with(|| Arc::new(AsyncMutex::new(())))
+            .clone())
+    }
+
+    pub(crate) async fn acquire_account_pipeline_access(
+        &self,
+        account_id: &str,
+    ) -> Result<OwnedMutexGuard<()>, String> {
+        Ok(self.account_pipeline_gate(account_id)?.lock_owned().await)
+    }
+
+    pub(crate) async fn acquire_account_pipeline_permit(
+        &self,
+    ) -> Result<OwnedSemaphorePermit, String> {
+        self.account_pipeline_permits
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| "The account synchronization capacity is unavailable.".to_owned())
+    }
+
+    pub(crate) async fn acquire_account_removal_access(
+        &self,
+        account_id: &str,
+    ) -> Result<OwnedRwLockWriteGuard<()>, String> {
+        Ok(self.account_lifecycle_gate(account_id)?.write_owned().await)
+    }
+
+    pub(crate) fn retire_account_sync_state(&self, account_id: &str) -> Result<(), String> {
+        self.account_pipeline_gates
+            .lock()
+            .map_err(|_| {
+                "The account synchronization coordinator is temporarily unavailable.".to_owned()
+            })?
+            .remove(account_id);
+        self.inbox_sync_flights
+            .lock()
+            .map_err(|_| "The Inbox sync coordinator is temporarily unavailable.".to_owned())?
+            .remove(account_id);
+        self.message_mutation_flights
+            .lock()
+            .map_err(|_| "The message mutation coordinator is temporarily unavailable.".to_owned())?
+            .remove(account_id);
+        self.pending_inbox_syncs
+            .lock()
+            .map_err(|_| "The Inbox request coordinator is temporarily unavailable.".to_owned())?
+            .remove(account_id);
+        Ok(())
     }
 
     /// Adding a distinct account does not invalidate handles retained by syncs
     /// for existing accounts, so it shares lifecycle access with those syncs.
-    pub(crate) async fn acquire_account_add_access(&self) -> RwLockReadGuard<'_, ()> {
-        self.lifecycle_gate.read().await
-    }
-
-    /// Disconnecting an account without deleting its cache can remove the
-    /// runtime slot while an existing sync finishes through its retained Arc.
-    pub(crate) async fn acquire_account_disconnect_access(&self) -> RwLockReadGuard<'_, ()> {
-        self.lifecycle_gate.read().await
+    pub(crate) async fn acquire_account_add_access(&self) -> OwnedRwLockReadGuard<()> {
+        self.lifecycle_gate.clone().read_owned().await
     }
 
     /// Account lifecycle changes wait for every in-flight network operation,
     /// then exclude new work until the backend slots are settled.
-    pub(crate) async fn acquire_sync_gate(&self) -> RwLockWriteGuard<'_, ()> {
-        self.lifecycle_gate.write().await
+    pub(crate) async fn acquire_sync_gate(&self) -> OwnedRwLockWriteGuard<()> {
+        self.lifecycle_gate.clone().write_owned().await
     }
 
     async fn coordinate_inbox_sync<F, Fut>(
@@ -1442,6 +1629,33 @@ pub(crate) struct SyncAllReport {
     pub sent: SyncReportDto,
     pub drafts: DraftSyncReportDto,
     pub accounts_synced: usize,
+}
+
+struct AccountSyncOutcome {
+    inbox: Option<SyncReport>,
+    sent: Option<SyncReport>,
+    drafts: Option<DraftSyncReport>,
+    attempted: bool,
+    errors: Vec<String>,
+}
+
+impl AccountSyncOutcome {
+    fn skipped() -> Self {
+        Self {
+            inbox: None,
+            sent: None,
+            drafts: None,
+            attempted: false,
+            errors: Vec::new(),
+        }
+    }
+
+    fn failed(error: String) -> Self {
+        Self {
+            errors: vec![error],
+            ..Self::skipped()
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1754,6 +1968,43 @@ async fn wait_for_monitor_retry(shutdown_rx: &mut watch::Receiver<bool>, failure
     }
 }
 
+fn start_next_background_batch(
+    app: &AppHandle,
+    queue: &mut BackgroundBatchQueue,
+    tasks: &mut JoinSet<BackgroundBatchKind>,
+    running: &mut Option<BackgroundBatchKind>,
+) {
+    if running.is_some() {
+        return;
+    }
+    let Some(work) = queue.pop_next() else {
+        return;
+    };
+    let kind = work.kind();
+    *running = Some(kind);
+    let app = app.clone();
+    tasks.spawn(async move {
+        match work {
+            BackgroundBatchWork::Sync { force, trigger } => {
+                if let Err(error) = perform_sync_all(&app, force, trigger).await {
+                    emit_sync_error(&app, "all", trigger, error);
+                }
+            }
+            BackgroundBatchWork::Inbox => {
+                if let Err(error) = perform_inbox_reconciliation_all(&app).await {
+                    emit_sync_error(&app, "inbox", "schedule", error);
+                }
+            }
+            BackgroundBatchWork::Drafts => {
+                if let Err(error) = perform_draft_sync_all(&app).await {
+                    emit_sync_error(&app, "drafts", "schedule", error);
+                }
+            }
+        }
+        kind
+    });
+}
+
 pub(crate) fn start_background_loop(
     app: AppHandle,
     mut sync_rx: mpsc::Receiver<BackgroundRequest>,
@@ -1763,41 +2014,83 @@ pub(crate) fn start_background_loop(
         let mut inbox_deadline =
             TokioInstant::now() + app.state::<DesktopRuntime>().poll_duration();
         let mut draft_deadline = TokioInstant::now() + DRAFT_SYNC_INTERVAL;
+        let mut batch_queue = BackgroundBatchQueue::default();
+        let mut batch_tasks = JoinSet::new();
+        let mut running_batch = None;
+        let mut incremental_tasks = JoinSet::new();
         loop {
             tokio::select! {
                 _ = tokio::time::sleep_until(inbox_deadline) => {
-                    if let Err(error) = perform_inbox_reconciliation_all(&app).await {
-                        emit_sync_error(&app, "inbox", "schedule", error);
-                    }
                     inbox_deadline = TokioInstant::now() + app.state::<DesktopRuntime>().poll_duration();
+                    batch_queue.enqueue_inbox(running_batch);
+                    start_next_background_batch(
+                        &app,
+                        &mut batch_queue,
+                        &mut batch_tasks,
+                        &mut running_batch,
+                    );
                 }
                 _ = tokio::time::sleep_until(draft_deadline) => {
-                    if let Err(error) = perform_draft_sync_all(&app).await {
-                        emit_sync_error(&app, "drafts", "schedule", error);
-                    }
                     draft_deadline = TokioInstant::now() + DRAFT_SYNC_INTERVAL;
+                    batch_queue.enqueue_drafts(running_batch);
+                    start_next_background_batch(
+                        &app,
+                        &mut batch_queue,
+                        &mut batch_tasks,
+                        &mut running_batch,
+                    );
                 }
                 request = sync_rx.recv() => {
                     match request {
                         Some(BackgroundRequest::Sync { force, trigger }) => {
-                            if let Err(error) = perform_sync_all(&app, force, trigger).await {
-                                emit_sync_error(&app, "all", trigger, error);
-                            }
+                            batch_queue.enqueue_sync(force, trigger);
                             inbox_deadline = TokioInstant::now() + app.state::<DesktopRuntime>().poll_duration();
                             draft_deadline = TokioInstant::now() + DRAFT_SYNC_INTERVAL;
+                            start_next_background_batch(
+                                &app,
+                                &mut batch_queue,
+                                &mut batch_tasks,
+                                &mut running_batch,
+                            );
                         }
                         Some(BackgroundRequest::ScheduleChanged) => {
                             inbox_deadline = TokioInstant::now() + app.state::<DesktopRuntime>().poll_duration();
                         }
                         Some(BackgroundRequest::InboxChanged { account_id, trigger }) => {
                             app.state::<DesktopRuntime>().begin_incremental_inbox_sync(&account_id);
-                            if let Err(error) = perform_incremental_inbox_sync(&app, &account_id).await {
-                                emit_sync_error(&app, "inbox", trigger, error);
-                            }
+                            let incremental_app = app.clone();
+                            incremental_tasks.spawn(async move {
+                                if let Err(error) = perform_incremental_inbox_sync(
+                                    &incremental_app,
+                                    &account_id,
+                                )
+                                .await
+                                {
+                                    emit_sync_error(&incremental_app, "inbox", trigger, error);
+                                }
+                            });
                         }
                         None => break,
                     }
                 }
+                completed = batch_tasks.join_next(), if running_batch.is_some() => {
+                    running_batch = None;
+                    if completed.is_some_and(|result| result.is_err()) {
+                        diagnostics::limited_failure(
+                            "background_sync_task_failed",
+                            "background_batch",
+                            None,
+                            ErrorKind::Runtime,
+                        );
+                    }
+                    start_next_background_batch(
+                        &app,
+                        &mut batch_queue,
+                        &mut batch_tasks,
+                        &mut running_batch,
+                    );
+                }
+                _ = incremental_tasks.join_next(), if !incremental_tasks.is_empty() => {}
                 changed = shutdown_rx.changed() => {
                     if changed.is_err() || *shutdown_rx.borrow() {
                         break;
@@ -1936,8 +2229,12 @@ fn start_message_mutation_worker(
     app: AppHandle,
     account_id: String,
     flight: Arc<MessageMutationFlight>,
+    _lifecycle_guard: OwnedRwLockReadGuard<()>,
+    _account_guard: OwnedRwLockReadGuard<()>,
 ) {
     tauri::async_runtime::spawn(async move {
+        let _lifecycle_guard = _lifecycle_guard;
+        let _account_guard = _account_guard;
         tokio::time::sleep(MESSAGE_MUTATION_COALESCE_WINDOW).await;
         loop {
             let generation = match flight.requested_generation() {
@@ -2025,12 +2322,19 @@ fn request_message_mutation_flight(
     account_id: &str,
     wake_running: bool,
 ) -> Result<(Arc<MessageMutationFlight>, u64), String> {
-    let flight = app
-        .state::<DesktopRuntime>()
-        .message_mutation_flight(account_id)?;
+    let runtime = app.state::<DesktopRuntime>();
+    let lifecycle_guard = runtime.try_acquire_sync_access()?;
+    let account_guard = runtime.try_acquire_account_sync_access(account_id)?;
+    let flight = runtime.message_mutation_flight(account_id)?;
     let (generation, start) = flight.request(wake_running)?;
     if start {
-        start_message_mutation_worker(app.clone(), account_id.to_owned(), flight.clone());
+        start_message_mutation_worker(
+            app.clone(),
+            account_id.to_owned(),
+            flight.clone(),
+            lifecycle_guard,
+            account_guard,
+        );
     }
     Ok((flight, generation))
 }
@@ -2058,6 +2362,184 @@ async fn ensure_message_mutation_flush(
     flight.wait_for(generation).await
 }
 
+async fn run_bounded_account_pipelines<T, F, Fut>(
+    account_ids: Vec<String>,
+    operation: F,
+) -> Result<Vec<(String, T)>, String>
+where
+    T: Send + 'static,
+    F: Fn(String) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = T> + Send + 'static,
+{
+    let operation = Arc::new(operation);
+    let mut running = JoinSet::new();
+    let mut completed = Vec::with_capacity(account_ids.len());
+    let mut task_failed = false;
+    for (index, account_id) in account_ids.into_iter().enumerate() {
+        if running.len() >= MAX_CONCURRENT_ACCOUNT_PIPELINES
+            && let Some(result) = running.join_next().await
+        {
+            match result {
+                Ok(outcome) => completed.push(outcome),
+                Err(_) => task_failed = true,
+            }
+        }
+        let operation = operation.clone();
+        running.spawn(async move {
+            let result = operation(account_id.clone()).await;
+            (index, account_id, result)
+        });
+    }
+    while let Some(result) = running.join_next().await {
+        match result {
+            Ok(outcome) => completed.push(outcome),
+            Err(_) => task_failed = true,
+        }
+    }
+    if task_failed {
+        return Err(
+            "An account synchronization task stopped unexpectedly and can be retried.".to_owned(),
+        );
+    }
+    completed.sort_by_key(|(index, _, _)| *index);
+    Ok(completed
+        .into_iter()
+        .map(|(_, account_id, result)| (account_id, result))
+        .collect())
+}
+
+async fn perform_account_full_sync(
+    app: AppHandle,
+    account_id: String,
+    trigger: &'static str,
+) -> AccountSyncOutcome {
+    let runtime = app.state::<DesktopRuntime>();
+    let _lifecycle_guard = runtime.acquire_sync_access().await;
+    let _account_guard = match runtime.acquire_account_sync_access(&account_id).await {
+        Ok(guard) => guard,
+        Err(error) => return AccountSyncOutcome::failed(error),
+    };
+    let _pipeline_guard = match runtime.acquire_account_pipeline_access(&account_id).await {
+        Ok(guard) => guard,
+        Err(error) => return AccountSyncOutcome::failed(error),
+    };
+    let _pipeline_permit = match runtime.acquire_account_pipeline_permit().await {
+        Ok(permit) => permit,
+        Err(error) => return AccountSyncOutcome::failed(error),
+    };
+    let account_runtime = app.state::<AccountRuntime>();
+    let backend_state = app.state::<BackendState>();
+    if !account_runtime.account_ids().contains(&account_id)
+        || !backend_state.network_ready_for(&account_id)
+    {
+        return AccountSyncOutcome::skipped();
+    }
+
+    let mut outcome = AccountSyncOutcome {
+        inbox: None,
+        sent: None,
+        drafts: None,
+        attempted: true,
+        errors: Vec::new(),
+    };
+    if let Err(error) = account_runtime
+        .refresh_oauth_backend_for(&backend_state, &account_id)
+        .await
+    {
+        outcome.errors.push(error);
+    }
+    emit_account_status(&app, &account_runtime, &backend_state);
+    let network = match backend_state.network_for(&account_id) {
+        Ok(network) => network,
+        Err(error) => {
+            outcome
+                .errors
+                .push(format!("{account_id} runtime: {error}"));
+            return outcome;
+        }
+    };
+    if trigger_discovers_mailbox_roles(trigger) {
+        match network.discover_mailbox_roles(&account_id).await {
+            Ok(_) => diagnostics::emit_event(
+                &app,
+                "mail:mailbox-capabilities-updated",
+                MailboxCapabilitiesUpdatedEvent {
+                    account_id: account_id.clone(),
+                },
+            ),
+            Err(error) => outcome.errors.push(format!(
+                "{account_id} mailbox discovery: {}",
+                crate::safe_mail_error(error)
+            )),
+        }
+    }
+    if let Err(error) = ensure_message_mutation_flush(&app, &account_id).await {
+        outcome
+            .errors
+            .push(format!("{account_id} queued mutations: {error}"));
+    }
+    let seeded_gmail_cursor = match network.initialize_gmail_history_cursor().await {
+        Ok(seeded) => seeded,
+        Err(error) => {
+            diagnostics::limited_failure(
+                "gmail_history_cursor_failed",
+                "gmail_history_cursor_initialize",
+                Some(&account_id),
+                diagnostics::mail_error_kind(&error),
+            );
+            false
+        }
+    };
+    let optional_roles = network
+        .get_mailbox_capabilities(&account_id)
+        .map(|capabilities| available_optional_mailbox_roles(&capabilities))
+        .unwrap_or_default();
+    let (inbox, sent, drafts) = tokio::join!(
+        sync_inbox_for(&app, &account_id),
+        sync_sent_for(&app, &account_id),
+        sync_drafts_for(&app, &account_id),
+    );
+    let mut full_reconciliation_failed = false;
+    match inbox {
+        Ok(report) => outcome.inbox = Some(report),
+        Err(error) => {
+            full_reconciliation_failed = true;
+            outcome.errors.push(format!("{account_id} Inbox: {error}"));
+        }
+    }
+    match drafts {
+        Ok(report) => outcome.drafts = Some(report),
+        Err(error) => outcome.errors.push(format!("{account_id} Drafts: {error}")),
+    }
+    match sent {
+        Ok(report) => outcome.sent = Some(report),
+        Err(error) => {
+            full_reconciliation_failed = true;
+            outcome.errors.push(format!("{account_id} Sent: {error}"));
+        }
+    }
+    for role in optional_roles {
+        if let Err(error) = sync_optional_mailbox_for(&app, &account_id, role).await {
+            full_reconciliation_failed = true;
+            outcome
+                .errors
+                .push(format!("{account_id} {role:?}: {error}"));
+        }
+    }
+    if seeded_gmail_cursor
+        && full_reconciliation_failed
+        && let Err(error) = network.discard_gmail_history_cursor()
+    {
+        diagnostics::limited_failure(
+            "gmail_history_cursor_discard_failed",
+            "gmail_history_cursor_discard",
+            Some(&account_id),
+            diagnostics::mail_error_kind(&error),
+        );
+    }
+    outcome
+}
+
 pub(crate) async fn perform_sync_all(
     app: &AppHandle,
     force: bool,
@@ -2066,7 +2548,6 @@ pub(crate) async fn perform_sync_all(
     let started = Instant::now();
     let runtime = app.state::<DesktopRuntime>();
     let _batch_guard = runtime.batch_sync_gate.lock().await;
-    let _access_guard = runtime.acquire_sync_access().await;
     if !force && runtime.should_skip_automatic_sync()? {
         return Ok(None);
     }
@@ -2083,13 +2564,6 @@ pub(crate) async fn perform_sync_all(
 
     let account_runtime = app.state::<AccountRuntime>();
     let backend_state = app.state::<BackendState>();
-    // Refresh every Google token that is near expiry before opening IMAP or
-    // SMTP. One failed refresh must not prevent the other configured accounts
-    // from synchronizing.
-    let refresh_error = account_runtime
-        .refresh_oauth_backends(&backend_state)
-        .await
-        .err();
     emit_account_status(app, &account_runtime, &backend_state);
     let active_account_id = backend_state.active_account_id();
     let account_ids =
@@ -2113,118 +2587,34 @@ pub(crate) async fn perform_sync_all(
     let mut accounts_synced = 0;
     let mut errors = Vec::new();
 
-    for account_id in account_ids {
-        if !backend_state.network_ready_for(&account_id) {
-            continue;
-        }
-        let network = match backend_state.network_for(&account_id) {
-            Ok(network) => network,
-            Err(error) => {
-                errors.push(format!("{account_id} runtime: {error}"));
-                continue;
-            }
-        };
-        let mut account_errors = Vec::new();
-        if trigger_discovers_mailbox_roles(trigger) {
-            match network.discover_mailbox_roles(&account_id).await {
-                Ok(_) => {
-                    diagnostics::emit_event(
-                        app,
-                        "mail:mailbox-capabilities-updated",
-                        MailboxCapabilitiesUpdatedEvent {
-                            account_id: account_id.clone(),
-                        },
-                    );
-                }
-                Err(error) => account_errors.push(format!(
-                    "{account_id} mailbox discovery: {}",
-                    crate::safe_mail_error(error)
+    let pipeline_app = app.clone();
+    let outcomes = run_bounded_account_pipelines(account_ids, move |account_id| {
+        let app = pipeline_app.clone();
+        async move {
+            match tokio::time::timeout(
+                ACCOUNT_SYNC_PIPELINE_TIMEOUT,
+                perform_account_full_sync(app, account_id.clone(), trigger),
+            )
+            .await
+            {
+                Ok(outcome) => outcome,
+                Err(_) => AccountSyncOutcome::failed(format!(
+                    "{account_id} synchronization timed out and can be retried"
                 )),
             }
         }
-        if let Err(error) = ensure_message_mutation_flush(app, &account_id).await {
-            account_errors.push(format!("{account_id} queued mutations: {error}"));
+    })
+    .await?;
+    for (account_id, outcome) in outcomes {
+        if active_account_id.as_deref() == Some(account_id.as_str()) {
+            active_inbox = outcome.inbox;
+            active_sent = outcome.sent;
+            active_drafts = outcome.drafts;
         }
-        let seeded_gmail_cursor = match network.initialize_gmail_history_cursor().await {
-            Ok(seeded) => seeded,
-            Err(error) => {
-                // Cursor initialization is optional. The full IMAP sync below
-                // remains authoritative, and seeding before it prevents a
-                // change arriving during reconciliation from being skipped.
-                diagnostics::limited_failure(
-                    "gmail_history_cursor_failed",
-                    "gmail_history_cursor_initialize",
-                    Some(&account_id),
-                    diagnostics::mail_error_kind(&error),
-                );
-                false
-            }
-        };
-        let mut full_reconciliation_failed = false;
-        let optional_roles = network
-            .get_mailbox_capabilities(&account_id)
-            .map(|capabilities| available_optional_mailbox_roles(&capabilities))
-            .unwrap_or_default();
-        let (inbox, sent, drafts) = tokio::join!(
-            sync_inbox_for(app, &account_id),
-            sync_sent_for(app, &account_id),
-            sync_drafts_for(app, &account_id),
-        );
-        let is_active = active_account_id.as_deref() == Some(account_id.as_str());
-        match inbox {
-            Ok(report) => {
-                if is_active {
-                    active_inbox = Some(report);
-                }
-            }
-            Err(error) => {
-                full_reconciliation_failed = true;
-                account_errors.push(format!("{account_id} Inbox: {error}"));
-            }
-        }
-        match drafts {
-            Ok(report) => {
-                if is_active {
-                    active_drafts = Some(report);
-                }
-            }
-            Err(error) => account_errors.push(format!("{account_id} Drafts: {error}")),
-        }
-        match sent {
-            Ok(report) => {
-                if is_active {
-                    active_sent = Some(report);
-                }
-            }
-            Err(error) => {
-                full_reconciliation_failed = true;
-                account_errors.push(format!("{account_id} Sent: {error}"));
-            }
-        }
-        for role in optional_roles {
-            if let Err(error) = sync_optional_mailbox_for(app, &account_id, role).await {
-                full_reconciliation_failed = true;
-                account_errors.push(format!("{account_id} {role:?}: {error}"));
-            }
-        }
-        if seeded_gmail_cursor && full_reconciliation_failed {
-            if let Err(error) = network.discard_gmail_history_cursor() {
-                diagnostics::limited_failure(
-                    "gmail_history_cursor_discard_failed",
-                    "gmail_history_cursor_discard",
-                    Some(&account_id),
-                    diagnostics::mail_error_kind(&error),
-                );
-            }
-        }
-        if account_errors.is_empty() {
+        if outcome.attempted && outcome.errors.is_empty() {
             accounts_synced += 1;
-        } else {
-            errors.extend(account_errors);
         }
-    }
-    if let Some(error) = refresh_error {
-        errors.push(error);
+        errors.extend(outcome.errors);
     }
     // Emit again after mailbox work so a frontend that mounted while the
     // refresh was in flight still receives the settled readiness snapshot.
@@ -2303,161 +2693,199 @@ fn prioritize_active_account(
     account_ids
 }
 
+async fn perform_account_inbox_reconciliation(app: AppHandle, account_id: String) -> Vec<String> {
+    let runtime = app.state::<DesktopRuntime>();
+    let _lifecycle_guard = runtime.acquire_sync_access().await;
+    let _account_guard = match runtime.acquire_account_sync_access(&account_id).await {
+        Ok(guard) => guard,
+        Err(error) => return vec![error],
+    };
+    let _pipeline_guard = match runtime.acquire_account_pipeline_access(&account_id).await {
+        Ok(guard) => guard,
+        Err(error) => return vec![error],
+    };
+    let _pipeline_permit = match runtime.acquire_account_pipeline_permit().await {
+        Ok(permit) => permit,
+        Err(error) => return vec![error],
+    };
+    let account_runtime = app.state::<AccountRuntime>();
+    let backend_state = app.state::<BackendState>();
+    if !account_runtime.account_ids().contains(&account_id)
+        || !backend_state.network_ready_for(&account_id)
+    {
+        return Vec::new();
+    }
+    let mut errors = Vec::new();
+    if let Err(error) = account_runtime
+        .refresh_oauth_backend_for(&backend_state, &account_id)
+        .await
+    {
+        errors.push(error);
+    }
+    emit_account_status(&app, &account_runtime, &backend_state);
+    let network = match backend_state.network_for(&account_id) {
+        Ok(network) => network,
+        Err(error) => {
+            errors.push(format!("{account_id} runtime: {error}"));
+            return errors;
+        }
+    };
+    let mutation_activity_before_flush = network
+        .has_message_mutation_activity(&account_id)
+        .unwrap_or(false);
+    let mutation_activity = match ensure_message_mutation_flush(&app, &account_id).await {
+        Ok(report) => report.completed > 0,
+        Err(error) => {
+            errors.push(format!("{account_id} queued mutations: {error}"));
+            false
+        }
+    } || mutation_activity_before_flush
+        || network
+            .has_message_mutation_activity(&account_id)
+            .unwrap_or(false);
+    let optional_roles = network
+        .get_mailbox_capabilities(&account_id)
+        .map(|capabilities| {
+            [MailboxRole::Archive, MailboxRole::Trash]
+                .into_iter()
+                .filter(|role| {
+                    optional_role_participates_periodically(
+                        *role,
+                        &capabilities,
+                        role_has_local_history(&network, &account_id, *role),
+                        mutation_activity,
+                    )
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    match network.sync_gmail_history().await {
+        Ok(Some(changed_roles)) => {
+            let inbox_changed = changed_roles.contains(&MailboxRole::Inbox);
+            for role in changed_roles {
+                match role {
+                    MailboxRole::Inbox => {}
+                    MailboxRole::Sent => diagnostics::emit_event(
+                        &app,
+                        "mail:sent-updated",
+                        SentUpdatedEvent {
+                            account_id: account_id.clone(),
+                            completed: 0,
+                            total: Some(0),
+                            is_complete: true,
+                            report: None,
+                            error: None,
+                        },
+                    ),
+                    _ => diagnostics::emit_event(
+                        &app,
+                        "mail:mailbox-updated",
+                        MailboxUpdatedEvent {
+                            account_id: account_id.clone(),
+                            role,
+                        },
+                    ),
+                }
+            }
+            if inbox_changed {
+                let report = SyncReport {
+                    mailbox: "INBOX".to_owned(),
+                    ..SyncReport::default()
+                };
+                if let Err(error) = finish_inbox_sync(&app, &account_id, network.clone(), report) {
+                    errors.push(format!("{account_id} Inbox: {error}"));
+                }
+            }
+            return errors;
+        }
+        Ok(None) => {}
+        Err(error) => diagnostics::limited_failure(
+            "gmail_history_sync_failed",
+            "gmail_history_sync",
+            Some(&account_id),
+            diagnostics::mail_error_kind(&error),
+        ),
+    }
+    let seeded_gmail_cursor = match network.initialize_gmail_history_cursor().await {
+        Ok(seeded) => seeded,
+        Err(error) => {
+            diagnostics::limited_failure(
+                "gmail_history_cursor_failed",
+                "gmail_history_cursor_initialize",
+                Some(&account_id),
+                diagnostics::mail_error_kind(&error),
+            );
+            false
+        }
+    };
+    let (inbox, sent) = tokio::join!(
+        sync_inbox_for(&app, &account_id),
+        sync_sent_for(&app, &account_id),
+    );
+    let mut full_reconciliation_failed = false;
+    if let Err(error) = inbox {
+        full_reconciliation_failed = true;
+        errors.push(format!("{account_id} Inbox: {error}"));
+    }
+    if let Err(error) = sent {
+        full_reconciliation_failed = true;
+        errors.push(format!("{account_id} Sent: {error}"));
+    }
+    for role in optional_roles {
+        if let Err(error) = sync_optional_mailbox_for(&app, &account_id, role).await {
+            full_reconciliation_failed = true;
+            errors.push(format!("{account_id} {role:?}: {error}"));
+        }
+    }
+    if seeded_gmail_cursor
+        && full_reconciliation_failed
+        && let Err(error) = network.discard_gmail_history_cursor()
+    {
+        diagnostics::limited_failure(
+            "gmail_history_cursor_discard_failed",
+            "gmail_history_cursor_discard",
+            Some(&account_id),
+            diagnostics::mail_error_kind(&error),
+        );
+    }
+    errors
+}
+
 async fn perform_inbox_reconciliation_all(app: &AppHandle) -> Result<(), String> {
     let runtime = app.state::<DesktopRuntime>();
     let _batch_guard = runtime.batch_sync_gate.lock().await;
-    let _access_guard = runtime.acquire_sync_access().await;
     runtime.record_sync_start()?;
     let account_runtime = app.state::<AccountRuntime>();
     let backend_state = app.state::<BackendState>();
-    let refresh_error = account_runtime
-        .refresh_oauth_backends(&backend_state)
-        .await
-        .err();
     emit_account_status(app, &account_runtime, &backend_state);
-    let mut errors = Vec::new();
     let account_ids = prioritize_active_account(
         account_runtime.account_ids(),
         backend_state.active_account_id().as_deref(),
     );
-    for account_id in account_ids {
-        if !backend_state.network_ready_for(&account_id) {
-            continue;
-        }
-        let network = match backend_state.network_for(&account_id) {
-            Ok(network) => network,
-            Err(error) => {
-                errors.push(format!("{account_id} runtime: {error}"));
-                continue;
-            }
-        };
-        let mutation_activity_before_flush = network
-            .has_message_mutation_activity(&account_id)
-            .unwrap_or(false);
-        let mutation_activity = match ensure_message_mutation_flush(app, &account_id).await {
-            Ok(report) => report.completed > 0,
-            Err(error) => {
-                errors.push(format!("{account_id} queued mutations: {error}"));
-                false
-            }
-        } || mutation_activity_before_flush
-            || network
-                .has_message_mutation_activity(&account_id)
-                .unwrap_or(false);
-        let optional_roles = network
-            .get_mailbox_capabilities(&account_id)
-            .map(|capabilities| {
-                [MailboxRole::Archive, MailboxRole::Trash]
-                    .into_iter()
-                    .filter(|role| {
-                        optional_role_participates_periodically(
-                            *role,
-                            &capabilities,
-                            role_has_local_history(&network, &account_id, *role),
-                            mutation_activity,
-                        )
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-
-        // Only OAuth-authorized Gmail accounts can consume the provider's
-        // account-wide change log. A custom app-password account pointing at
-        // imap.gmail.com remains on the IMAP branch. History failures also
-        // fall through without advancing the cursor.
-        match network.sync_gmail_history().await {
-            Ok(Some(changed_roles)) => {
-                let inbox_changed = changed_roles.contains(&MailboxRole::Inbox);
-                for role in changed_roles {
-                    match role {
-                        MailboxRole::Inbox => {}
-                        MailboxRole::Sent => diagnostics::emit_event(
-                            app,
-                            "mail:sent-updated",
-                            SentUpdatedEvent {
-                                account_id: account_id.clone(),
-                                completed: 0,
-                                total: Some(0),
-                                is_complete: true,
-                                report: None,
-                                error: None,
-                            },
-                        ),
-                        _ => diagnostics::emit_event(
-                            app,
-                            "mail:mailbox-updated",
-                            MailboxUpdatedEvent {
-                                account_id: account_id.clone(),
-                                role,
-                            },
-                        ),
-                    }
-                }
-                if inbox_changed {
-                    let report = SyncReport {
-                        mailbox: "INBOX".to_owned(),
-                        ..SyncReport::default()
-                    };
-                    if let Err(error) = finish_inbox_sync(app, &account_id, network.clone(), report)
-                    {
-                        errors.push(format!("{account_id} Inbox: {error}"));
-                    }
-                }
-                continue;
-            }
-            Ok(None) => {}
-            Err(error) => diagnostics::limited_failure(
-                "gmail_history_sync_failed",
-                "gmail_history_sync",
-                Some(&account_id),
-                diagnostics::mail_error_kind(&error),
-            ),
-        }
-        let seeded_gmail_cursor = match network.initialize_gmail_history_cursor().await {
-            Ok(seeded) => seeded,
-            Err(error) => {
-                diagnostics::limited_failure(
-                    "gmail_history_cursor_failed",
-                    "gmail_history_cursor_initialize",
-                    Some(&account_id),
-                    diagnostics::mail_error_kind(&error),
-                );
-                false
-            }
-        };
-        let (inbox, sent) = tokio::join!(
-            sync_inbox_for(app, &account_id),
-            sync_sent_for(app, &account_id),
-        );
-        let mut full_reconciliation_failed = false;
-        if let Err(error) = inbox {
-            full_reconciliation_failed = true;
-            errors.push(format!("{account_id} Inbox: {error}"));
-        }
-        if let Err(error) = sent {
-            full_reconciliation_failed = true;
-            errors.push(format!("{account_id} Sent: {error}"));
-        }
-        for role in optional_roles {
-            if let Err(error) = sync_optional_mailbox_for(app, &account_id, role).await {
-                full_reconciliation_failed = true;
-                errors.push(format!("{account_id} {role:?}: {error}"));
+    let pipeline_app = app.clone();
+    let outcomes = run_bounded_account_pipelines(account_ids, move |account_id| {
+        let app = pipeline_app.clone();
+        async move {
+            match tokio::time::timeout(
+                ACCOUNT_SYNC_PIPELINE_TIMEOUT,
+                perform_account_inbox_reconciliation(app, account_id.clone()),
+            )
+            .await
+            {
+                Ok(errors) => errors,
+                Err(_) => vec![format!(
+                    "{account_id} Inbox reconciliation timed out and can be retried"
+                )],
             }
         }
-        if seeded_gmail_cursor && full_reconciliation_failed {
-            if let Err(error) = network.discard_gmail_history_cursor() {
-                diagnostics::limited_failure(
-                    "gmail_history_cursor_discard_failed",
-                    "gmail_history_cursor_discard",
-                    Some(&account_id),
-                    diagnostics::mail_error_kind(&error),
-                );
-            }
-        }
-    }
-    if let Some(error) = refresh_error {
-        errors.push(error);
-    }
+    })
+    .await?;
+    let errors = outcomes
+        .into_iter()
+        .flat_map(|(_, errors)| errors)
+        .collect::<Vec<_>>();
+    emit_account_status(app, &account_runtime, &backend_state);
     if errors.is_empty() {
         Ok(())
     } else {
@@ -2465,33 +2893,75 @@ async fn perform_inbox_reconciliation_all(app: &AppHandle) -> Result<(), String>
     }
 }
 
+async fn perform_account_draft_sync(app: AppHandle, account_id: String) -> Vec<String> {
+    let runtime = app.state::<DesktopRuntime>();
+    let _lifecycle_guard = runtime.acquire_sync_access().await;
+    let _account_guard = match runtime.acquire_account_sync_access(&account_id).await {
+        Ok(guard) => guard,
+        Err(error) => return vec![error],
+    };
+    let _pipeline_guard = match runtime.acquire_account_pipeline_access(&account_id).await {
+        Ok(guard) => guard,
+        Err(error) => return vec![error],
+    };
+    let _pipeline_permit = match runtime.acquire_account_pipeline_permit().await {
+        Ok(permit) => permit,
+        Err(error) => return vec![error],
+    };
+    let account_runtime = app.state::<AccountRuntime>();
+    let backend_state = app.state::<BackendState>();
+    if !account_runtime.account_ids().contains(&account_id)
+        || !backend_state.network_ready_for(&account_id)
+    {
+        return Vec::new();
+    }
+    let mut errors = Vec::new();
+    if let Err(error) = account_runtime
+        .refresh_oauth_backend_for(&backend_state, &account_id)
+        .await
+    {
+        errors.push(error);
+    }
+    emit_account_status(&app, &account_runtime, &backend_state);
+    if let Err(error) = sync_drafts_for(&app, &account_id).await {
+        errors.push(format!("{account_id} Drafts: {error}"));
+    }
+    errors
+}
+
 async fn perform_draft_sync_all(app: &AppHandle) -> Result<(), String> {
     let runtime = app.state::<DesktopRuntime>();
     let _batch_guard = runtime.batch_sync_gate.lock().await;
-    let _access_guard = runtime.acquire_sync_access().await;
     let account_runtime = app.state::<AccountRuntime>();
     let backend_state = app.state::<BackendState>();
-    let refresh_error = account_runtime
-        .refresh_oauth_backends(&backend_state)
-        .await
-        .err();
     emit_account_status(app, &account_runtime, &backend_state);
-    let mut errors = Vec::new();
     let account_ids = prioritize_active_account(
         account_runtime.account_ids(),
         backend_state.active_account_id().as_deref(),
     );
-    for account_id in account_ids {
-        if !backend_state.network_ready_for(&account_id) {
-            continue;
+    let pipeline_app = app.clone();
+    let outcomes = run_bounded_account_pipelines(account_ids, move |account_id| {
+        let app = pipeline_app.clone();
+        async move {
+            match tokio::time::timeout(
+                ACCOUNT_SYNC_PIPELINE_TIMEOUT,
+                perform_account_draft_sync(app, account_id.clone()),
+            )
+            .await
+            {
+                Ok(errors) => errors,
+                Err(_) => vec![format!(
+                    "{account_id} Draft synchronization timed out and can be retried"
+                )],
+            }
         }
-        if let Err(error) = sync_drafts_for(app, &account_id).await {
-            errors.push(format!("{account_id} Drafts: {error}"));
-        }
-    }
-    if let Some(error) = refresh_error {
-        errors.push(error);
-    }
+    })
+    .await?;
+    let errors = outcomes
+        .into_iter()
+        .flat_map(|(_, errors)| errors)
+        .collect::<Vec<_>>();
+    emit_account_status(app, &account_runtime, &backend_state);
     if errors.is_empty() {
         Ok(())
     } else {
@@ -2505,14 +2975,52 @@ async fn perform_incremental_inbox_sync(
 ) -> Result<SyncReport, String> {
     let runtime = app.state::<DesktopRuntime>();
     let _access_guard = runtime.acquire_sync_access().await;
+    let _account_guard = runtime.acquire_account_sync_access(account_id).await?;
     let account_runtime = app.state::<AccountRuntime>();
     let backend_state = app.state::<BackendState>();
-    // Usually a no-op; it ensures a monitor event near OAuth expiry uses the
-    // refreshed backend before opening the short-lived incremental session.
-    let _ = account_runtime.refresh_oauth_backends(&backend_state).await;
-    emit_account_status(app, &account_runtime, &backend_state);
-    ensure_message_mutation_flush(app, account_id).await?;
-    sync_new_inbox_for(app, account_id).await
+    if !account_runtime
+        .account_ids()
+        .iter()
+        .any(|id| id == account_id)
+        || !backend_state.network_ready_for(account_id)
+    {
+        return Ok(SyncReport {
+            mailbox: "INBOX".to_owned(),
+            ..SyncReport::default()
+        });
+    }
+    let runtime_for_operation: &DesktopRuntime = &runtime;
+    let account_runtime_for_operation: &AccountRuntime = &account_runtime;
+    let backend_state_for_operation: &BackendState = &backend_state;
+    runtime
+        .coordinate_inbox_sync(
+            account_id,
+            InboxSyncMode::Incremental,
+            "inbox_incremental",
+            |mode| async move {
+                let _pipeline_permit = runtime_for_operation
+                    .acquire_account_pipeline_permit()
+                    .await?;
+                // Usually a no-op; it ensures a monitor event near OAuth expiry
+                // uses the refreshed backend before opening the short session.
+                let _ = account_runtime_for_operation
+                    .refresh_oauth_backend_for(backend_state_for_operation, account_id)
+                    .await;
+                emit_account_status(
+                    app,
+                    account_runtime_for_operation,
+                    backend_state_for_operation,
+                );
+                ensure_message_mutation_flush(app, account_id).await?;
+                sync_inbox_network_with_operation(
+                    app,
+                    account_id,
+                    mode == InboxSyncMode::Incremental,
+                )
+                .await
+            },
+        )
+        .await
 }
 
 pub(crate) async fn perform_sent_sync(app: &AppHandle) -> Result<SyncReport, String> {
@@ -2521,14 +3029,17 @@ pub(crate) async fn perform_sent_sync(app: &AppHandle) -> Result<SyncReport, Str
     runtime.record_sync_start()?;
     let account_runtime = app.state::<AccountRuntime>();
     let backend_state = app.state::<BackendState>();
+    let account_id = backend_state
+        .active_account_id()
+        .ok_or_else(|| "No mail account is selected.".to_owned())?;
+    let _account_guard = runtime.acquire_account_sync_access(&account_id).await?;
+    let _pipeline_guard = runtime.acquire_account_pipeline_access(&account_id).await?;
+    let _pipeline_permit = runtime.acquire_account_pipeline_permit().await?;
     let refresh_result = account_runtime
         .refresh_active_oauth_backend(&backend_state)
         .await;
     emit_account_status(app, &account_runtime, &backend_state);
     refresh_result?;
-    let account_id = backend_state
-        .active_account_id()
-        .ok_or_else(|| "No mail account is selected.".to_owned())?;
     ensure_message_mutation_flush(app, &account_id).await?;
     sync_sent_for(app, &account_id).await
 }
@@ -2538,14 +3049,17 @@ pub(crate) async fn perform_draft_sync(app: &AppHandle) -> Result<DraftSyncRepor
     let _access_guard = runtime.acquire_sync_access().await;
     let account_runtime = app.state::<AccountRuntime>();
     let backend_state = app.state::<BackendState>();
+    let account_id = backend_state
+        .active_account_id()
+        .ok_or_else(|| "No mail account is selected.".to_owned())?;
+    let _account_guard = runtime.acquire_account_sync_access(&account_id).await?;
+    let _pipeline_guard = runtime.acquire_account_pipeline_access(&account_id).await?;
+    let _pipeline_permit = runtime.acquire_account_pipeline_permit().await?;
     let refresh_result = account_runtime
         .refresh_active_oauth_backend(&backend_state)
         .await;
     emit_account_status(app, &account_runtime, &backend_state);
     refresh_result?;
-    let account_id = backend_state
-        .active_account_id()
-        .ok_or_else(|| "No mail account is selected.".to_owned())?;
     sync_drafts_for(app, &account_id).await
 }
 
@@ -2714,10 +3228,6 @@ async fn sync_inbox_network_with_operation(
             .inbox_counts(report.fetched, report.updated_flags, report.removed),
     );
     Ok(report)
-}
-
-async fn sync_new_inbox_for(app: &AppHandle, account_id: &str) -> Result<SyncReport, String> {
-    sync_inbox_with_operation(app, account_id, true).await
 }
 
 async fn sync_sent_for(app: &AppHandle, account_id: &str) -> Result<SyncReport, String> {
@@ -3842,12 +4352,13 @@ mod tests {
         NotificationBaseline, NotificationDelivery, NotificationSound, StoredDesktopSettings,
     };
     use super::{
-        BeforeExitEvent, DesktopRuntime, EXIT_HANDSHAKE_TIMEOUT, InboxSyncMode,
+        BackgroundBatchKind, BackgroundBatchQueue, BackgroundBatchWork, BeforeExitEvent,
+        DesktopRuntime, EXIT_HANDSHAKE_TIMEOUT, InboxSyncFlight, InboxSyncMode,
         MessageMutationFlight, SyncAllReport, align_notification_axis,
         available_optional_mailbox_roles, consume_open_new_mail_notification,
         effective_notification_delivery, is_seen, notification_candidates, notification_sender,
         notification_sender_email, optional_role_participates_periodically,
-        prioritize_active_account, sanitize_notification_text,
+        prioritize_active_account, run_bounded_account_pipelines, sanitize_notification_text,
         should_deliver_new_mail_notification, trigger_discovers_mailbox_roles,
         windows_notification_content,
     };
@@ -3978,11 +4489,177 @@ mod tests {
         assert_eq!(align_notification_axis(320, 300, 388), 320);
     }
 
+    #[test]
+    fn account_removal_retires_transient_sync_coordinators() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let (runtime, _sync_rx, _shutdown_rx) = DesktopRuntime::open(directory.path());
+        let old_pipeline = runtime
+            .account_pipeline_gate("account-a")
+            .expect("account pipeline gate");
+        let old_mutations = runtime
+            .message_mutation_flight("account-a")
+            .expect("account mutation flight");
+        let old_inbox = Arc::new(InboxSyncFlight::default());
+        runtime
+            .inbox_sync_flights
+            .lock()
+            .expect("Inbox sync flights")
+            .insert("account-a".to_owned(), old_inbox.clone());
+        runtime
+            .pending_inbox_syncs
+            .lock()
+            .expect("pending Inbox requests")
+            .insert("account-a".to_owned());
+
+        runtime
+            .retire_account_sync_state("account-a")
+            .expect("retire account synchronization state");
+
+        assert!(
+            !runtime
+                .pending_inbox_syncs
+                .lock()
+                .expect("pending Inbox requests")
+                .contains("account-a")
+        );
+        assert!(!Arc::ptr_eq(
+            &old_pipeline,
+            &runtime
+                .account_pipeline_gate("account-a")
+                .expect("replacement account pipeline gate")
+        ));
+        assert!(!Arc::ptr_eq(
+            &old_mutations,
+            &runtime
+                .message_mutation_flight("account-a")
+                .expect("replacement account mutation flight")
+        ));
+        assert!(
+            !runtime
+                .inbox_sync_flights
+                .lock()
+                .expect("Inbox sync flights")
+                .contains_key("account-a")
+        );
+    }
+
+    #[test]
+    fn background_batch_queue_coalesces_and_prioritizes_full_sync() {
+        let mut queue = BackgroundBatchQueue::default();
+        queue.enqueue_inbox(None);
+        queue.enqueue_drafts(None);
+        queue.enqueue_sync(false, "window_open");
+        queue.enqueue_sync(true, "tray");
+        queue.enqueue_sync(true, "account_change");
+
+        assert_eq!(
+            queue.pop_next(),
+            Some(BackgroundBatchWork::Sync {
+                force: true,
+                trigger: "account_change",
+            })
+        );
+        assert_eq!(queue.pop_next(), None);
+
+        queue.enqueue_inbox(Some(BackgroundBatchKind::Sync));
+        queue.enqueue_drafts(Some(BackgroundBatchKind::Sync));
+        assert_eq!(queue.pop_next(), None);
+    }
+
+    #[test]
+    fn background_batch_queue_retains_one_periodic_pass_per_kind() {
+        let mut queue = BackgroundBatchQueue::default();
+        queue.enqueue_drafts(None);
+        queue.enqueue_inbox(None);
+        queue.enqueue_drafts(None);
+        queue.enqueue_inbox(None);
+
+        assert_eq!(queue.pop_next(), Some(BackgroundBatchWork::Inbox));
+        assert_eq!(queue.pop_next(), Some(BackgroundBatchWork::Drafts));
+        assert_eq!(queue.pop_next(), None);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn account_pipelines_are_bounded_and_one_stall_does_not_block_ready_work() {
+        let active = Arc::new(AtomicUsize::new(0));
+        let maximum = Arc::new(AtomicUsize::new(0));
+        let stalled_started = Arc::new(Notify::new());
+        let ready_started = Arc::new(Notify::new());
+        let release_stalled = Arc::new(Notify::new());
+        let stalled_wait = stalled_started.notified();
+        let ready_wait = ready_started.notified();
+
+        let task = {
+            let active = active.clone();
+            let maximum = maximum.clone();
+            let stalled_started = stalled_started.clone();
+            let ready_started = ready_started.clone();
+            let release_stalled = release_stalled.clone();
+            tokio::spawn(async move {
+                run_bounded_account_pipelines(
+                    vec![
+                        "active".to_owned(),
+                        "stalled".to_owned(),
+                        "ready".to_owned(),
+                    ],
+                    move |account_id| {
+                        let active = active.clone();
+                        let maximum = maximum.clone();
+                        let stalled_started = stalled_started.clone();
+                        let ready_started = ready_started.clone();
+                        let release_stalled = release_stalled.clone();
+                        async move {
+                            let current = active.fetch_add(1, Ordering::AcqRel) + 1;
+                            maximum.fetch_max(current, Ordering::AcqRel);
+                            if account_id == "stalled" {
+                                stalled_started.notify_one();
+                                release_stalled.notified().await;
+                            } else if account_id == "ready" {
+                                ready_started.notify_one();
+                            }
+                            active.fetch_sub(1, Ordering::AcqRel);
+                            if account_id == "active" {
+                                Err("active failed")
+                            } else {
+                                Ok(account_id)
+                            }
+                        }
+                    },
+                )
+                .await
+            })
+        };
+
+        tokio::time::timeout(Duration::from_millis(100), stalled_wait)
+            .await
+            .expect("the secondary account starts beside the active account");
+        tokio::time::timeout(Duration::from_millis(100), ready_wait)
+            .await
+            .expect("the ready account starts after the active slot is released");
+        assert_eq!(maximum.load(Ordering::Acquire), 2);
+        release_stalled.notify_one();
+
+        let outcomes = task
+            .await
+            .expect("bounded pipeline task")
+            .expect("bounded pipeline result");
+        assert_eq!(outcomes[0], ("active".to_owned(), Err("active failed")));
+        assert_eq!(
+            outcomes[1],
+            ("stalled".to_owned(), Ok("stalled".to_owned()))
+        );
+        assert_eq!(outcomes[2], ("ready".to_owned(), Ok("ready".to_owned())));
+    }
+
     #[tokio::test(flavor = "current_thread")]
-    async fn account_add_and_disconnect_share_access_with_an_existing_sync() {
+    async fn account_lifecycle_waits_only_for_the_target_account() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let (runtime, _sync_rx, _shutdown_rx) = DesktopRuntime::open(directory.path());
         let sync_guard = runtime.acquire_sync_access().await;
+        let account_a_guard = runtime
+            .acquire_account_sync_access("account-a")
+            .await
+            .expect("first account sync access");
 
         let add_guard = tokio::time::timeout(
             Duration::from_millis(20),
@@ -3991,25 +4668,93 @@ mod tests {
         .await
         .expect("adding a distinct account must not wait for an existing sync");
         drop(add_guard);
-        let disconnect_guard = tokio::time::timeout(
+        let account_b_removal = tokio::time::timeout(
             Duration::from_millis(20),
-            runtime.acquire_account_disconnect_access(),
+            runtime.acquire_account_removal_access("account-b"),
         )
         .await
-        .expect("disconnect without cache deletion must not wait for an existing sync");
-        drop(disconnect_guard);
+        .expect("removing another account must not wait for the active account")
+        .expect("second account removal access");
+        drop(account_b_removal);
+
+        let mut account_a_removal = Box::pin(runtime.acquire_account_removal_access("account-a"));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), &mut account_a_removal)
+                .await
+                .is_err(),
+            "removing the active account must wait for its pipeline"
+        );
+        drop(account_a_guard);
+        let _account_a_removal =
+            tokio::time::timeout(Duration::from_millis(100), account_a_removal)
+                .await
+                .expect("target account removal after its pipeline settles")
+                .expect("target account removal access");
 
         let mut exclusive = Box::pin(runtime.acquire_sync_gate());
         assert!(
             tokio::time::timeout(Duration::from_millis(20), &mut exclusive)
                 .await
                 .is_err(),
-            "replacement and cache deletion must still wait for retained handles"
+            "whole-runtime replacement must still wait for retained handles"
         );
         drop(sync_guard);
         let _exclusive_guard = tokio::time::timeout(Duration::from_millis(100), exclusive)
             .await
             .expect("exclusive lifecycle access after the sync settles");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn account_pipeline_capacity_and_single_flight_are_enforced() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let (runtime, _sync_rx, _shutdown_rx) = DesktopRuntime::open(directory.path());
+
+        let first_permit = runtime
+            .acquire_account_pipeline_permit()
+            .await
+            .expect("first account permit");
+        let second_permit = runtime
+            .acquire_account_pipeline_permit()
+            .await
+            .expect("second account permit");
+        let mut third_permit = Box::pin(runtime.acquire_account_pipeline_permit());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), &mut third_permit)
+                .await
+                .is_err(),
+            "a third network pipeline must wait for capacity"
+        );
+        drop(first_permit);
+        let _third_permit = tokio::time::timeout(Duration::from_millis(100), third_permit)
+            .await
+            .expect("third pipeline after a permit is released")
+            .expect("third account permit");
+        drop(second_permit);
+
+        let first_account = runtime
+            .acquire_account_pipeline_access("account-a")
+            .await
+            .expect("first account pipeline");
+        let other_account = tokio::time::timeout(
+            Duration::from_millis(20),
+            runtime.acquire_account_pipeline_access("account-b"),
+        )
+        .await
+        .expect("a different account can run independently")
+        .expect("different account pipeline");
+        drop(other_account);
+        let mut same_account = Box::pin(runtime.acquire_account_pipeline_access("account-a"));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), &mut same_account)
+                .await
+                .is_err(),
+            "the same account must keep one pipeline in flight"
+        );
+        drop(first_account);
+        let _same_account = tokio::time::timeout(Duration::from_millis(100), same_account)
+            .await
+            .expect("same account pipeline after the first settles")
+            .expect("same account pipeline access");
     }
 
     #[tokio::test(flavor = "current_thread")]

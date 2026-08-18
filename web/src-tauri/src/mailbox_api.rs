@@ -753,6 +753,9 @@ pub(crate) async fn sync_mailbox(
         let runtime = app.state::<desktop::DesktopRuntime>();
         let access_started = Instant::now();
         let _access_guard = runtime.acquire_sync_access().await;
+        let _account_guard = runtime.acquire_account_sync_access(&account_id).await?;
+        let _pipeline_guard = runtime.acquire_account_pipeline_access(&account_id).await?;
+        let _pipeline_permit = runtime.acquire_account_pipeline_permit().await?;
         diagnostics::info(
             "mailbox_sync_stage_completed",
             Fields::default()

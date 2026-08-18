@@ -151,6 +151,18 @@ existing visual system normally changes this document rather than `DESIGN.md`.
   incremental refresh. Incremental requests may join a running full pass; a full
   request arriving during an incremental pass queues exactly one full pass and
   waits for that stronger result, including when the incremental pass fails.
+- Background batch requests are accepted without waiting for the current batch
+  and coalesce by strength. Full-account work supersedes redundant scheduled
+  Inbox and Draft passes; an in-flight batch is never multiplied into an
+  unbounded task backlog.
+- At most two account network pipelines run concurrently. The active account is
+  admitted first, each account retains one batch pipeline, and credential
+  refresh, queued mutations, and mailbox roles stay inside that account's
+  pipeline. A slow, timed-out, or unauthorized account does not prevent another
+  ready account from starting or publishing its settled updates.
+- Manual all-account refresh waits until every admitted network-ready account has
+  succeeded, failed, or reached its bounded timeout, then returns one aggregate
+  result. One account failure never cancels the remaining account work.
 - Opening Archive or Trash paints cached summaries first and then synchronizes
   that role. Mine Mail never empties Trash automatically.
 - When an active folder has no cached rows and its initial read, import, or
@@ -169,8 +181,11 @@ existing visual system normally changes this document rather than `DESIGN.md`.
   a filter with no result shows **没有符合当前筛选条件的邮件**. Neither is an
   empty-mailbox success.
 - Concurrent work is scoped so one account or mailbox does not unnecessarily
-  block another. Account replacement and removal remain exclusive life-cycle
-  operations.
+  block another. Account replacement remains a whole-runtime exclusive
+  life-cycle operation. Disconnecting or removing an account waits for and
+  excludes only that account's retained synchronization work, prevents later
+  writes or events for the removed account, and leaves other account pipelines
+  running.
 - With background mode enabled, closing the main window hides it to the tray.
   Tray actions are **打开 / 刷新 / 退出**.
 - Login autostart defaults off. When enabled, system login starts Mine Mail hidden

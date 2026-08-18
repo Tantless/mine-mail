@@ -2946,37 +2946,32 @@ async fn remove_account(
         }
 
         let lifecycle_wait_started = Instant::now();
-        let removal_result = if request.delete_local_data {
-            let _sync_guard = desktop_runtime.acquire_sync_gate().await;
-            diagnostics::info(
-                "account_removal_stage_completed",
-                DiagnosticFields::default()
-                    .operation_id(operation_id.clone())
-                    .account(&account_id)
-                    .operation("lifecycle_gate_wait")
-                    .mode("exclusive_cache_delete")
-                    .outcome("completed")
-                    .duration(lifecycle_wait_started.elapsed()),
-            );
-            account
-                .remove_account(&backend, &request, google_authorization_revoked)
-                .await
-        } else {
-            let _disconnect_guard = desktop_runtime.acquire_account_disconnect_access().await;
-            diagnostics::info(
-                "account_removal_stage_completed",
-                DiagnosticFields::default()
-                    .operation_id(operation_id.clone())
-                    .account(&account_id)
-                    .operation("lifecycle_gate_wait")
-                    .mode("shared_disconnect")
-                    .outcome("completed")
-                    .duration(lifecycle_wait_started.elapsed()),
-            );
-            account
-                .remove_account(&backend, &request, google_authorization_revoked)
-                .await
-        };
+        let _removal_guard = desktop_runtime
+            .acquire_account_removal_access(&account_id)
+            .await?;
+        diagnostics::info(
+            "account_removal_stage_completed",
+            DiagnosticFields::default()
+                .operation_id(operation_id.clone())
+                .account(&account_id)
+                .operation("lifecycle_gate_wait")
+                .mode(if request.delete_local_data {
+                    "exclusive_cache_delete"
+                } else {
+                    "exclusive_account_disconnect"
+                })
+                .outcome("completed")
+                .duration(lifecycle_wait_started.elapsed()),
+        );
+        let removal_result = account
+            .remove_account(&backend, &request, google_authorization_revoked)
+            .await;
+        if removal_result.is_ok()
+            && let Err(error) = desktop_runtime.retire_account_sync_state(&account_id)
+        {
+            desktop_runtime.record_startup_error(error);
+        }
+        drop(_removal_guard);
         let mut result = match removal_result {
             Ok(result) => result,
             Err(error) => {

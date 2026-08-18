@@ -307,32 +307,33 @@ usage scenario before changing visible behavior or interaction.
   `perform_inbox_mailbox_sync`, and `sync_inbox_with_operation` in
   [`web/src-tauri/src/desktop/mod.rs`](../web/src-tauri/src/desktop/mod.rs).
 
-- [ ] **SYNC-03 — Prevent one slow account from unnecessarily blocking other
+- [x] **SYNC-03 — Prevent one slow account from unnecessarily blocking other
   accounts.** The background loop executes one request at a time and
   `perform_sync_all` processes accounts sequentially, although Inbox, Sent, and
   Drafts run concurrently inside one account. With three accounts, a slow or
   offline secondary account can delay later work and the completion of a manual
-  all-account refresh. **Agreed plan — pending implementation.** Split batch work
-  into independently coordinated per-account pipelines and make the background
-  loop a non-blocking request intake/coalescing dispatcher. Run at most two
-  account pipelines concurrently, prioritizing the active account and explicit
-  user work; retain at most one synchronization flight per account and its
-  SYNC-02 strength semantics. Keep credential refresh, queued-mutation draining,
-  core roles, and optional roles inside the owning account pipeline so another
-  account's latency or authorization failure cannot stop ready accounts from
-  starting. Preserve the existing bounded role concurrency within each account
-  and do not spawn unbounded network work. Emit each account's updates as it
-  settles, while a manual all-account request still waits for every requested
-  account to succeed, fail, or reach its bounded timeout before returning one
-  deterministic aggregate result; one failure must not cancel other accounts.
-  Account disconnect/removal must safely await or retire only that account's
-  retained work and prevent post-removal writes/events, without corrupting
-  notification baselines or other account state. Close with controlled tests for
-  the two-account concurrency cap, active/user priority, a stalled secondary not
-  blocking ready work, per-account single-flight behavior, partial-failure
-  aggregation, lifecycle removal, and strict account-data isolation. Evidence:
-  `start_background_loop` and `perform_sync_all` in
-  [`web/src-tauri/src/desktop/mod.rs`](../web/src-tauri/src/desktop/mod.rs).
+  all-account refresh. **Implemented and verified.** The background loop is now
+  a non-blocking intake and coalescing dispatcher: one pending full-account pass
+  supersedes redundant scheduled Inbox and Draft work, while incremental Inbox
+  notifications run through the existing strength-aware account coordinator.
+  Full, periodic Inbox, and Draft batches use independent account pipelines with
+  an application-wide two-account network cap and active-account-first admission.
+  Each owning pipeline performs its credential refresh, mutation drain, core
+  roles, and optional roles; one account's ordinary failure or bounded timeout is
+  aggregated only after the other admitted pipelines settle and never cancels
+  them. Explicit all-account refresh therefore retains a deterministic aggregate
+  result while account events remain available as each pipeline progresses.
+  Per-account lifecycle read access now blocks removal only for its owning
+  account; removal obtains that account's exclusive access, rechecks prevent
+  queued work from acting on a removed account, and unrelated account pipelines
+  remain available. Tests cover request coalescing and priority, the two-account
+  cap, a stalled secondary beside ready work, deterministic partial-failure
+  aggregation, active-account ordering, per-account batch single-flight, Inbox
+  strength joining, and target-only removal waiting. Evidence:
+  `start_background_loop`, `run_bounded_account_pipelines`,
+  `perform_sync_all`, and account lifecycle coordination in
+  [`web/src-tauri/src/desktop/mod.rs`](../web/src-tauri/src/desktop/mod.rs), plus
+  account removal in [`web/src-tauri/src/lib.rs`](../web/src-tauri/src/lib.rs).
 
 ### P1 — architecture and scaling risks
 
