@@ -126,6 +126,25 @@ where
     }
 }
 
+fn advance_summary_sync_progress<F>(
+    persisted: Result<usize>,
+    requested: usize,
+    completed: &mut usize,
+    total: usize,
+    on_progress: &mut F,
+) -> Result<usize>
+where
+    F: FnMut(SyncBatchProgress),
+{
+    let fetched = persisted?;
+    *completed += requested;
+    on_progress(SyncBatchProgress {
+        completed: *completed,
+        total,
+    });
+    Ok(fetched)
+}
+
 struct BodyImapSession {
     connection: ImapConnection,
     last_used: Instant,
@@ -1518,21 +1537,16 @@ impl MailBackend {
         } else {
             connection.fetch_summaries(uids).await?
         };
-        let fetched = remotes.len();
-        for remote in remotes {
-            let gmail_message_id = remote.gmail_message_id;
-            let uid = remote.uid;
-            let message = self.parse_remote_summary(mailbox, remote);
-            self.repository.upsert_message_summary(&message)?;
-            if let Some(gmail_message_id) = gmail_message_id {
-                self.repository.upsert_gmail_message_id(
-                    &self.config.account_id,
-                    mailbox,
-                    uid,
-                    gmail_message_id,
-                )?;
-            }
-        }
+        let messages = remotes
+            .into_iter()
+            .map(|remote| {
+                let gmail_message_id = remote.gmail_message_id;
+                let message = self.parse_remote_summary(mailbox, remote);
+                (message, gmail_message_id)
+            })
+            .collect::<Vec<_>>();
+        let fetched = messages.len();
+        self.repository.upsert_message_summary_batch(&messages)?;
         Ok(fetched)
     }
 
@@ -1555,21 +1569,16 @@ impl MailBackend {
                     .to_owned(),
             ));
         }
-        let fetched = remotes.len();
-        for remote in remotes {
-            let gmail_message_id = remote.gmail_message_id;
-            let uid = remote.uid;
-            let message = self.parse_remote_summary(mailbox, remote);
-            self.repository.upsert_message_summary(&message)?;
-            if let Some(gmail_message_id) = gmail_message_id {
-                self.repository.upsert_gmail_message_id(
-                    &self.config.account_id,
-                    mailbox,
-                    uid,
-                    gmail_message_id,
-                )?;
-            }
-        }
+        let messages = remotes
+            .into_iter()
+            .map(|remote| {
+                let gmail_message_id = remote.gmail_message_id;
+                let message = self.parse_remote_summary(mailbox, remote);
+                (message, gmail_message_id)
+            })
+            .collect::<Vec<_>>();
+        let fetched = messages.len();
+        self.repository.upsert_message_summary_batch(&messages)?;
         Ok(fetched)
     }
 
@@ -1786,17 +1795,28 @@ impl MailBackend {
         let mut fetched = 0;
         let mut completed = 0;
         for batch in requested.chunks(SUMMARY_BATCH_SIZE) {
-            fetched += self
+            let persisted = self
                 .fetch_and_cache_required_summaries(connection, mailbox, batch)
-                .await?;
-            completed += batch.len();
-            on_progress(SyncBatchProgress { completed, total });
+                .await;
+            fetched += advance_summary_sync_progress(
+                persisted,
+                batch.len(),
+                &mut completed,
+                total,
+                on_progress,
+            )?;
         }
         for batch in preview_backfill.chunks(SUMMARY_BATCH_SIZE) {
-            self.fetch_and_cache_summaries(connection, mailbox, batch)
-                .await?;
-            completed += batch.len();
-            on_progress(SyncBatchProgress { completed, total });
+            let persisted = self
+                .fetch_and_cache_summaries(connection, mailbox, batch)
+                .await;
+            advance_summary_sync_progress(
+                persisted,
+                batch.len(),
+                &mut completed,
+                total,
+                on_progress,
+            )?;
         }
 
         let existing_remote_uids: Vec<u32> =
@@ -2040,7 +2060,8 @@ impl MailBackend {
                         )
                     })?;
                     let message = self.parse_remote_summary(mailbox, remote);
-                    self.repository.upsert_message_summary(&message)?;
+                    self.repository
+                        .upsert_message_summary_batch(&[(message, Some(remote_gmail_id))])?;
                     let stale_uids: HashSet<u32> = cached_locations
                         .iter()
                         .filter_map(|(cached_mailbox, cached_uid)| {
@@ -2060,12 +2081,6 @@ impl MailBackend {
                             &remaining,
                         )?;
                     }
-                    self.repository.upsert_gmail_message_id(
-                        &self.config.account_id,
-                        mailbox,
-                        uid,
-                        remote_gmail_id,
-                    )?;
                     if !changed_roles.contains(role) {
                         changed_roles.push(*role);
                     }
@@ -2193,17 +2208,28 @@ impl MailBackend {
         let mut fetched = 0;
         let mut completed = 0;
         for batch in requested.chunks(SUMMARY_BATCH_SIZE) {
-            fetched += self
+            let persisted = self
                 .fetch_and_cache_summaries(&mut connection, INBOX, batch)
-                .await?;
-            completed += batch.len();
-            on_progress(SyncBatchProgress { completed, total });
+                .await;
+            fetched += advance_summary_sync_progress(
+                persisted,
+                batch.len(),
+                &mut completed,
+                total,
+                &mut on_progress,
+            )?;
         }
         for batch in preview_backfill.chunks(SUMMARY_BATCH_SIZE) {
-            self.fetch_and_cache_summaries(&mut connection, INBOX, batch)
-                .await?;
-            completed += batch.len();
-            on_progress(SyncBatchProgress { completed, total });
+            let persisted = self
+                .fetch_and_cache_summaries(&mut connection, INBOX, batch)
+                .await;
+            advance_summary_sync_progress(
+                persisted,
+                batch.len(),
+                &mut completed,
+                total,
+                &mut on_progress,
+            )?;
         }
 
         let highest_uid = requested
@@ -8031,9 +8057,9 @@ mod tests {
         BODY_PREFETCH_PRIORITY_NEIGHBOR, BODY_PREFETCH_PRIORITY_PAGE,
         BODY_PREFETCH_PRIORITY_RECENT, BodyDownloadKey, BodyDownloadOwner, BodyPrefetchQueue,
         DraftReconciliation, INBOX, InboxUidScope, MailBackend, RemoteDraftCandidate,
-        RemoteForkPreservation, advance_draft_sync_progress, archive_folder_candidates,
-        bounded_body_prefetch_ids, changed_flags_cursor, classify_draft_reconciliation,
-        classify_inbox_uid_scope, configured_archive_capability,
+        RemoteForkPreservation, advance_draft_sync_progress, advance_summary_sync_progress,
+        archive_folder_candidates, bounded_body_prefetch_ids, changed_flags_cursor,
+        classify_draft_reconciliation, classify_inbox_uid_scope, configured_archive_capability,
         confirmed_created_mailbox_capability, discovered_mailbox_capability,
         draft_record_matches_remote, earlier_history_bound, mailbox_hint_changed,
         mailbox_snapshot_has_usable_epoch, mailbox_snapshot_requires_confirmation,
@@ -8372,6 +8398,34 @@ mod tests {
         }
 
         assert_eq!(updates, vec![(10, 25), (20, 25), (25, 25)]);
+    }
+
+    #[test]
+    fn summary_sync_progress_advances_only_after_persistence_succeeds() {
+        let mut completed = 0;
+        let mut updates = Vec::new();
+
+        assert!(
+            advance_summary_sync_progress(
+                Err(MailError::Validation("injected batch failure".to_owned(),)),
+                10,
+                &mut completed,
+                20,
+                &mut |progress| updates.push((progress.completed, progress.total)),
+            )
+            .is_err()
+        );
+        assert_eq!(completed, 0);
+        assert!(updates.is_empty());
+
+        assert_eq!(
+            advance_summary_sync_progress(Ok(10), 10, &mut completed, 20, &mut |progress| updates
+                .push((progress.completed, progress.total)),)
+            .expect("committed summary batch"),
+            10
+        );
+        assert_eq!(completed, 10);
+        assert_eq!(updates, vec![(10, 20)]);
     }
 
     fn remote_mailbox(

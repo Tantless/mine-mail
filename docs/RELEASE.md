@@ -254,31 +254,34 @@ usage scenario before changing visible behavior or interaction.
   [`web/src-tauri/src/account.rs`](../web/src-tauri/src/account.rs), and the
   cached-body fast path in [`src/backend.rs`](../src/backend.rs).
 
-- [ ] **DATA-02 — Persist fetched summary batches in bounded transactions.** IMAP
-  summary fetches are batched, but each returned message calls an upsert that
-  opens its own SQLite connection and autocommits several statements; Gmail
-  identity persistence adds another per-message operation. Initial import and
-  preview backfill can therefore create hundreds of connections and commits.
-  **Agreed plan — pending implementation.** Add one repository batch API shared
-  by ordinary incremental synchronization, initial history import, and preview
-  backfill. Keep the existing network batch bound (normally ten summaries), but
-  persist each returned batch through one SQLite connection and one immediate
-  transaction. Within that transaction, upsert the mailbox once as needed, all
-  message summaries, Gmail stable-ID mappings, and related derived-index work;
-  reuse prepared statements where practical. Preserve stable public identities,
-  already-fetched bodies and attachment data, and merge pending local Seen and
-  Flagged intent into every incoming server summary. Commit before emitting batch
-  progress so a reported ten-message batch is fully readable. Any row or related
-  mapping failure rolls the whole batch back instead of exposing a partially
-  persisted success. Do not enlarge the transaction to the complete mailbox or
-  change network/full-versus-incremental synchronization semantics. Close with
-  tests for bounded connection/commit counts, complete rollback on an injected
+- [x] **DATA-02 — Persist fetched summary batches in bounded transactions.** IMAP
+  summary fetches were batched, but each returned message called an upsert that
+  opened its own SQLite connection and autocommitted several statements; Gmail
+  identity persistence added another per-message operation. Initial import and
+  preview backfill could therefore create hundreds of connections and commits.
+  **Implemented and verified.** One repository batch API is now shared by
+  ordinary incremental synchronization, initial history import, preview
+  backfill, and Gmail History reconciliation. The existing network batch bound
+  remains unchanged (normally ten summaries), while each returned batch is
+  persisted through one SQLite connection and one immediate
+  transaction. That transaction upserts the mailbox once as needed, all message
+  summaries, Gmail stable-ID mappings, and related derived-index work; prepared
+  statements are reused within the connection. Stable public identities and
+  already-fetched bodies and attachment data remain preserved, while pending
+  local Seen and Flagged intent is merged into every incoming server summary.
+  The commit completes before batch progress is emitted, so a reported
+  ten-message batch is fully readable. Any row or related mapping failure rolls
+  the whole batch back instead of exposing a partially persisted success.
+  Transactions are capped at 50 summaries and do not encompass a complete
+  mailbox; network and
+  full-versus-incremental synchronization semantics are unchanged. Tests cover
+  bounded connection/commit counts, complete rollback on an injected
   mid-batch failure, Gmail mapping/rebinding, preservation of cached bodies and
   pending flags, derived-index consistency, and progress only after commit.
   Evidence: `fetch_and_cache_summaries` and
   `fetch_and_cache_required_summaries` in
   [`src/backend.rs`](../src/backend.rs), and
-  `upsert_message_with_preview_state` plus `upsert_gmail_message_id` in
+  `upsert_message_summary_batch` in
   [`src/database.rs`](../src/database.rs).
 
 - [ ] **SYNC-02 — Preserve explicit full-Inbox refresh semantics when an

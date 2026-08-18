@@ -6,6 +6,12 @@ use std::{
     time::Duration,
 };
 
+#[cfg(test)]
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering as AtomicOrdering},
+};
+
 use rusqlite::{
     Connection, OptionalExtension, Row, TransactionBehavior, named_params, params, types::Type,
 };
@@ -75,6 +81,7 @@ const MAX_SEARCH_QUERY_CHARS: usize = 256;
 const MAX_MAILBOX_DISPLAY_CHARS: usize = 1_024;
 const MAX_IDENTITY_MESSAGE_ID_CHARS: usize = 1_024;
 const MAX_IDENTITY_DATE_CHARS: usize = 128;
+const MAX_SUMMARY_PERSIST_BATCH_SIZE: usize = 50;
 
 /// Persisted IMAP synchronization cursor for one account/mailbox pair.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -265,6 +272,15 @@ pub(crate) enum PreparedForwardInsert {
 #[derive(Clone, Debug)]
 pub(crate) struct Repository {
     path: PathBuf,
+    #[cfg(test)]
+    test_metrics: Arc<RepositoryTestMetrics>,
+}
+
+#[cfg(test)]
+#[derive(Debug, Default)]
+struct RepositoryTestMetrics {
+    connections: AtomicUsize,
+    summary_batch_commits: AtomicUsize,
 }
 
 impl Repository {
@@ -277,7 +293,11 @@ impl Repository {
             fs::create_dir_all(parent)?;
         }
 
-        let repository = Self { path };
+        let repository = Self {
+            path,
+            #[cfg(test)]
+            test_metrics: Arc::new(RepositoryTestMetrics::default()),
+        };
         let connection = Connection::open(&repository.path)?;
         configure_connection(&connection)?;
         connection.execute_batch(
@@ -657,7 +677,21 @@ impl Repository {
     fn connection(&self) -> Result<Connection> {
         let connection = Connection::open(&self.path)?;
         configure_connection(&connection)?;
+        #[cfg(test)]
+        self.test_metrics
+            .connections
+            .fetch_add(1, AtomicOrdering::Relaxed);
         Ok(connection)
+    }
+
+    #[cfg(test)]
+    fn summary_batch_metrics(&self) -> (usize, usize) {
+        (
+            self.test_metrics.connections.load(AtomicOrdering::Relaxed),
+            self.test_metrics
+                .summary_batch_commits
+                .load(AtomicOrdering::Relaxed),
+        )
     }
 
     /// Stores only the stable account id and public email address. The
@@ -842,23 +876,12 @@ impl Repository {
     ) -> Result<()> {
         let mut connection = self.connection()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let gmail_message_id = gmail_message_id.to_string();
-        // Gmail may assign a new mailbox-local UID when the same provider
-        // message leaves and later re-enters a label. Rebind its stable ID
-        // without requiring the stale cached row to be deleted first.
-        transaction.execute(
-            "DELETE FROM gmail_message_ids
-             WHERE account_id = ?1 AND mailbox = ?2
-               AND gmail_message_id = ?3 AND uid <> ?4",
-            params![account_id, mailbox, gmail_message_id, uid],
-        )?;
-        transaction.execute(
-            "INSERT INTO gmail_message_ids (
-                 account_id, mailbox, uid, gmail_message_id
-             ) VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(account_id, mailbox, uid) DO UPDATE SET
-                 gmail_message_id = excluded.gmail_message_id",
-            params![account_id, mailbox, uid, gmail_message_id],
+        upsert_gmail_message_id_on_connection(
+            &transaction,
+            account_id,
+            mailbox,
+            uid,
+            gmail_message_id,
         )?;
         transaction.commit()?;
         Ok(())
@@ -1475,6 +1498,7 @@ impl Repository {
     /// Persists a bounded preview attempt. An empty preview is still resolved:
     /// it may represent a genuinely body-free or attachment-only message and
     /// must not be downloaded again on every synchronization.
+    #[cfg(test)]
     pub(crate) fn upsert_message_summary(&self, message: &InboxMessage) -> Result<i64> {
         self.upsert_message_with_preview_state(message, true)
     }
@@ -1485,109 +1509,62 @@ impl Repository {
         preview_fetched: bool,
     ) -> Result<i64> {
         let connection = self.connection()?;
-        let public_id = Uuid::new_v4().to_string();
         connection.execute(
             "INSERT INTO mailboxes (account_id, name) VALUES (?1, ?2)
              ON CONFLICT(account_id, name) DO NOTHING",
             params![message.account_id, message.mailbox],
         )?;
-        let sender_json = message.sender.as_ref().map(encode_json).transpose()?;
-        let flags = flags_with_pending_updates(
-            &connection,
-            &message.account_id,
-            &message.mailbox,
-            message.uid,
-            &message.flags,
+        upsert_message_with_preview_state_on_connection(&connection, message, preview_fetched)
+    }
+
+    /// Persists one bounded network summary batch atomically. The message rows,
+    /// Gmail stable identities, and trigger-maintained derived indexes become
+    /// visible together only after the immediate transaction commits.
+    pub(crate) fn upsert_message_summary_batch(
+        &self,
+        messages: &[(InboxMessage, Option<u64>)],
+    ) -> Result<usize> {
+        let Some((first, _)) = messages.first() else {
+            return Ok(0);
+        };
+        if messages.len() > MAX_SUMMARY_PERSIST_BATCH_SIZE {
+            return Err(MailError::Validation(format!(
+                "a summary persistence batch cannot exceed {MAX_SUMMARY_PERSIST_BATCH_SIZE} messages"
+            )));
+        }
+        if messages.iter().any(|(message, _)| {
+            message.account_id != first.account_id || message.mailbox != first.mailbox
+        }) {
+            return Err(MailError::Validation(
+                "a summary batch must belong to one account mailbox".to_owned(),
+            ));
+        }
+
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute(
+            "INSERT INTO mailboxes (account_id, name) VALUES (?1, ?2)
+             ON CONFLICT(account_id, name) DO NOTHING",
+            params![first.account_id, first.mailbox],
         )?;
-        connection.execute(
-            "INSERT INTO messages (
-                 account_id, mailbox, uid, message_id, in_reply_to_json, references_json, subject, sender_json,
-                 to_json, cc_json, bcc_json, sent_at, internal_date, flags_json, size_bytes,
-                 preview, preview_fetched, body_text, body_html, attachment_names_json, body_fetched,
-                 raw_rfc822, body_cached_bytes, body_last_accessed_at, synced_at, public_id
-             ) VALUES (
-                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
-                 ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22,
-                 CASE
-                     WHEN ?21 THEN
-                         length(?22)
-                         + length(CAST(COALESCE(?18, '') AS BLOB))
-                         + length(CAST(COALESCE(?19, '') AS BLOB))
-                         + length(CAST(?20 AS BLOB))
-                     ELSE 0
-                 END,
-                 CASE
-                     WHEN ?21 THEN strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-                     ELSE NULL
-                 END,
-                 ?23, ?24
-             )
-             ON CONFLICT(account_id, mailbox, uid) DO UPDATE SET
-                 message_id = excluded.message_id,
-                 in_reply_to_json = excluded.in_reply_to_json,
-                 references_json = excluded.references_json,
-                 subject = excluded.subject,
-                 sender_json = excluded.sender_json,
-                 to_json = excluded.to_json,
-                 cc_json = excluded.cc_json,
-                 bcc_json = excluded.bcc_json,
-                 sent_at = excluded.sent_at,
-                 internal_date = excluded.internal_date,
-                 flags_json = excluded.flags_json,
-                 size_bytes = excluded.size_bytes,
-                 preview = CASE
-                     WHEN excluded.preview_fetched THEN excluded.preview
-                     ELSE messages.preview
-                 END,
-                 preview_fetched = MAX(messages.preview_fetched, excluded.preview_fetched),
-                 body_text = CASE WHEN excluded.body_fetched THEN excluded.body_text ELSE messages.body_text END,
-                 body_html = CASE WHEN excluded.body_fetched THEN excluded.body_html ELSE messages.body_html END,
-                 attachment_names_json = CASE WHEN excluded.body_fetched THEN excluded.attachment_names_json ELSE messages.attachment_names_json END,
-                 body_fetched = MAX(messages.body_fetched, excluded.body_fetched),
-                 raw_rfc822 = CASE WHEN excluded.body_fetched THEN excluded.raw_rfc822 ELSE messages.raw_rfc822 END,
-                 body_cached_bytes = CASE
-                     WHEN excluded.body_fetched THEN excluded.body_cached_bytes
-                     ELSE messages.body_cached_bytes
-                 END,
-                 body_last_accessed_at = CASE
-                     WHEN excluded.body_fetched THEN excluded.body_last_accessed_at
-                     ELSE messages.body_last_accessed_at
-                 END,
-                 synced_at = excluded.synced_at",
-            params![
-                message.account_id,
-                message.mailbox,
-                message.uid,
-                message.message_id,
-                encode_json(&message.in_reply_to)?,
-                encode_json(&message.references)?,
-                message.subject,
-                sender_json,
-                encode_json(&message.to)?,
-                encode_json(&message.cc)?,
-                encode_json(&message.bcc)?,
-                message.sent_at,
-                message.internal_date,
-                encode_json(&flags)?,
-                message.size_bytes,
-                message.preview,
-                preview_fetched,
-                message.body_text,
-                message.body_html,
-                encode_json(&message.attachment_names)?,
-                message.body_fetched,
-                message.raw_rfc822,
-                message.synced_at,
-                public_id,
-            ],
-        )?;
-        connection
-            .query_row(
-                "SELECT id FROM messages WHERE account_id = ?1 AND mailbox = ?2 AND uid = ?3",
-                params![message.account_id, message.mailbox, message.uid],
-                |row| row.get(0),
-            )
-            .map_err(Into::into)
+        for (message, gmail_message_id) in messages {
+            upsert_message_with_preview_state_on_connection(&transaction, message, true)?;
+            if let Some(gmail_message_id) = gmail_message_id {
+                upsert_gmail_message_id_on_connection(
+                    &transaction,
+                    &message.account_id,
+                    &message.mailbox,
+                    message.uid,
+                    *gmail_message_id,
+                )?;
+            }
+        }
+        transaction.commit()?;
+        #[cfg(test)]
+        self.test_metrics
+            .summary_batch_commits
+            .fetch_add(1, AtomicOrdering::Relaxed);
+        Ok(messages.len())
     }
 
     #[cfg(test)]
@@ -7589,6 +7566,144 @@ fn migrate_contact_activity_v25(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn upsert_message_with_preview_state_on_connection(
+    connection: &Connection,
+    message: &InboxMessage,
+    preview_fetched: bool,
+) -> Result<i64> {
+    let public_id = Uuid::new_v4().to_string();
+    let sender_json = message.sender.as_ref().map(encode_json).transpose()?;
+    let flags = flags_with_pending_updates(
+        connection,
+        &message.account_id,
+        &message.mailbox,
+        message.uid,
+        &message.flags,
+    )?;
+    connection
+        .prepare_cached(
+            "INSERT INTO messages (
+                 account_id, mailbox, uid, message_id, in_reply_to_json, references_json, subject, sender_json,
+                 to_json, cc_json, bcc_json, sent_at, internal_date, flags_json, size_bytes,
+                 preview, preview_fetched, body_text, body_html, attachment_names_json, body_fetched,
+                 raw_rfc822, body_cached_bytes, body_last_accessed_at, synced_at, public_id
+             ) VALUES (
+                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
+                 ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22,
+                 CASE
+                     WHEN ?21 THEN
+                         length(?22)
+                         + length(CAST(COALESCE(?18, '') AS BLOB))
+                         + length(CAST(COALESCE(?19, '') AS BLOB))
+                         + length(CAST(?20 AS BLOB))
+                     ELSE 0
+                 END,
+                 CASE
+                     WHEN ?21 THEN strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                     ELSE NULL
+                 END,
+                 ?23, ?24
+             )
+             ON CONFLICT(account_id, mailbox, uid) DO UPDATE SET
+                 message_id = excluded.message_id,
+                 in_reply_to_json = excluded.in_reply_to_json,
+                 references_json = excluded.references_json,
+                 subject = excluded.subject,
+                 sender_json = excluded.sender_json,
+                 to_json = excluded.to_json,
+                 cc_json = excluded.cc_json,
+                 bcc_json = excluded.bcc_json,
+                 sent_at = excluded.sent_at,
+                 internal_date = excluded.internal_date,
+                 flags_json = excluded.flags_json,
+                 size_bytes = excluded.size_bytes,
+                 preview = CASE
+                     WHEN excluded.preview_fetched THEN excluded.preview
+                     ELSE messages.preview
+                 END,
+                 preview_fetched = MAX(messages.preview_fetched, excluded.preview_fetched),
+                 body_text = CASE WHEN excluded.body_fetched THEN excluded.body_text ELSE messages.body_text END,
+                 body_html = CASE WHEN excluded.body_fetched THEN excluded.body_html ELSE messages.body_html END,
+                 attachment_names_json = CASE WHEN excluded.body_fetched THEN excluded.attachment_names_json ELSE messages.attachment_names_json END,
+                 body_fetched = MAX(messages.body_fetched, excluded.body_fetched),
+                 raw_rfc822 = CASE WHEN excluded.body_fetched THEN excluded.raw_rfc822 ELSE messages.raw_rfc822 END,
+                 body_cached_bytes = CASE
+                     WHEN excluded.body_fetched THEN excluded.body_cached_bytes
+                     ELSE messages.body_cached_bytes
+                 END,
+                 body_last_accessed_at = CASE
+                     WHEN excluded.body_fetched THEN excluded.body_last_accessed_at
+                     ELSE messages.body_last_accessed_at
+                 END,
+                 synced_at = excluded.synced_at",
+        )?
+        .execute(params![
+            message.account_id,
+            message.mailbox,
+            message.uid,
+            message.message_id,
+            encode_json(&message.in_reply_to)?,
+            encode_json(&message.references)?,
+            message.subject,
+            sender_json,
+            encode_json(&message.to)?,
+            encode_json(&message.cc)?,
+            encode_json(&message.bcc)?,
+            message.sent_at,
+            message.internal_date,
+            encode_json(&flags)?,
+            message.size_bytes,
+            message.preview,
+            preview_fetched,
+            message.body_text,
+            message.body_html,
+            encode_json(&message.attachment_names)?,
+            message.body_fetched,
+            message.raw_rfc822,
+            message.synced_at,
+            public_id,
+        ])?;
+    connection
+        .prepare_cached(
+            "SELECT id FROM messages WHERE account_id = ?1 AND mailbox = ?2 AND uid = ?3",
+        )?
+        .query_row(
+            params![message.account_id, message.mailbox, message.uid],
+            |row| row.get(0),
+        )
+        .map_err(Into::into)
+}
+
+fn upsert_gmail_message_id_on_connection(
+    connection: &Connection,
+    account_id: &str,
+    mailbox: &str,
+    uid: u32,
+    gmail_message_id: u64,
+) -> Result<()> {
+    let gmail_message_id = gmail_message_id.to_string();
+    // Gmail may assign a new mailbox-local UID when the same provider
+    // message leaves and later re-enters a label. Rebind its stable ID
+    // without requiring the stale cached row to be deleted first.
+    connection
+        .prepare_cached(
+            "DELETE FROM gmail_message_ids
+             WHERE account_id = ?1 AND mailbox = ?2
+               AND gmail_message_id = ?3 AND uid <> ?4",
+        )?
+        .execute(params![account_id, mailbox, gmail_message_id, uid])?;
+    connection
+        .prepare_cached(
+            "INSERT INTO gmail_message_ids (
+                 account_id, mailbox, uid, gmail_message_id
+             ) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(account_id, mailbox, uid) DO UPDATE SET
+                 gmail_message_id = excluded.gmail_message_id",
+        )?
+        .execute(params![account_id, mailbox, uid, gmail_message_id])?;
+    Ok(())
+}
+
 fn flags_with_pending_updates(
     connection: &Connection,
     account_id: &str,
@@ -7597,7 +7712,7 @@ fn flags_with_pending_updates(
     flags: &[String],
 ) -> Result<Vec<String>> {
     let pending_seen: Option<bool> = connection
-        .query_row(
+        .prepare_cached(
             "SELECT q.desired
              FROM pending_seen_updates q
              JOIN mailboxes b
@@ -7606,16 +7721,15 @@ fn flags_with_pending_updates(
               AND b.uid_validity = q.source_uid_validity
              WHERE q.account_id = ?1 AND q.mailbox = ?2 AND q.uid = ?3
                AND q.status <> 'confirmed'",
-            params![account_id, mailbox, uid],
-            |row| row.get(0),
-        )
+        )?
+        .query_row(params![account_id, mailbox, uid], |row| row.get(0))
         .optional()?;
     let mut flags = flags.to_vec();
     if let Some(desired) = pending_seen {
         set_system_flag(&mut flags, "\\Seen", desired);
     }
     let pending_flagged: Option<bool> = connection
-        .query_row(
+        .prepare_cached(
             "SELECT q.desired
              FROM pending_flagged_updates q
              JOIN mailboxes b
@@ -7624,9 +7738,8 @@ fn flags_with_pending_updates(
               AND b.uid_validity = q.source_uid_validity
              WHERE q.account_id = ?1 AND q.mailbox = ?2 AND q.uid = ?3
                AND q.status <> 'confirmed'",
-            params![account_id, mailbox, uid],
-            |row| row.get(0),
-        )
+        )?
+        .query_row(params![account_id, mailbox, uid], |row| row.get(0))
         .optional()?;
     if let Some(desired) = pending_flagged {
         set_system_flag(&mut flags, "\\Flagged", desired);
@@ -9994,9 +10107,9 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        DraftRecord, GmailSyncState, MAX_MESSAGE_CURSORS_PER_ACCOUNT, MESSAGE_CURSOR_TTL_SECONDS,
-        MailboxHistory, MailboxState, NewDraftAttachment, Repository, StarredMailboxHistory,
-        migrate_message_previews_v10,
+        DraftRecord, GmailSyncState, MAX_MESSAGE_CURSORS_PER_ACCOUNT,
+        MAX_SUMMARY_PERSIST_BATCH_SIZE, MESSAGE_CURSOR_TTL_SECONDS, MailboxHistory, MailboxState,
+        NewDraftAttachment, Repository, StarredMailboxHistory, migrate_message_previews_v10,
     };
     use crate::{
         AccountConfig, AttachmentDisposition, AttachmentMeta, ComposeFormat, Draft, ForwardContext,
@@ -10345,6 +10458,208 @@ mod tests {
             },
             synced_at: "2026-07-14T01:00:02Z".to_owned(),
         }
+    }
+
+    #[test]
+    fn summary_batch_uses_one_connection_and_one_commit() {
+        let (_directory, repository, account) = setup();
+        let messages = (1..=10)
+            .map(|uid| {
+                let mut message = message(&account.account_id, false);
+                message.uid = uid;
+                message.message_id = Some(format!("batch-{uid}@example.com"));
+                (message, Some(u64::from(uid) + 10_000))
+            })
+            .collect::<Vec<_>>();
+        let before = repository.summary_batch_metrics();
+
+        assert_eq!(
+            repository
+                .upsert_message_summary_batch(&messages)
+                .expect("summary batch"),
+            messages.len()
+        );
+        let after = repository.summary_batch_metrics();
+
+        assert_eq!(after.0 - before.0, 1);
+        assert_eq!(after.1 - before.1, 1);
+        let before_empty = repository.summary_batch_metrics();
+        assert_eq!(
+            repository
+                .upsert_message_summary_batch(&[])
+                .expect("empty batch"),
+            0
+        );
+        assert_eq!(repository.summary_batch_metrics(), before_empty);
+
+        let oversized = vec![messages[0].clone(); MAX_SUMMARY_PERSIST_BATCH_SIZE + 1];
+        assert!(repository.upsert_message_summary_batch(&oversized).is_err());
+        let mut other_mailbox = messages[1].clone();
+        other_mailbox.0.mailbox = "Sent".to_owned();
+        assert!(
+            repository
+                .upsert_message_summary_batch(&[messages[0].clone(), other_mailbox])
+                .is_err()
+        );
+        assert_eq!(repository.summary_batch_metrics(), before_empty);
+    }
+
+    #[test]
+    fn summary_batch_rolls_back_messages_mappings_and_commit_on_mid_batch_failure() {
+        let (_directory, repository, account) = setup();
+        let mut first = message(&account.account_id, false);
+        first.uid = 1;
+        first.message_id = Some("rollback-first@example.com".to_owned());
+        let mut invalid = message(&account.account_id, false);
+        invalid.uid = 0;
+        invalid.message_id = Some("rollback-invalid@example.com".to_owned());
+        let before = repository.summary_batch_metrics();
+
+        assert!(
+            repository
+                .upsert_message_summary_batch(&[(first, Some(88)), (invalid, Some(99))])
+                .is_err()
+        );
+        let after = repository.summary_batch_metrics();
+
+        assert_eq!(after.0 - before.0, 1);
+        assert_eq!(after.1, before.1);
+        assert_eq!(
+            repository
+                .count_messages(&account.account_id, "INBOX")
+                .expect("rolled-back message count"),
+            0
+        );
+        assert!(
+            repository
+                .cached_gmail_message_locations(&account.account_id, 88)
+                .expect("rolled-back Gmail mapping")
+                .is_empty()
+        );
+        assert!(
+            repository
+                .list_contact_source_messages_for_email(
+                    &account.account_id,
+                    "alice@example.com",
+                    10,
+                )
+                .expect("rolled-back contact index")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn summary_batch_preserves_body_flags_identity_and_derived_contact_index() {
+        let (_directory, repository, account) = setup();
+        let mut full = message(&account.account_id, true);
+        full.flags = vec!["\\Seen".to_owned()];
+        full.attachment_names = vec!["retained.pdf".to_owned()];
+        let original_row_id = repository.upsert_message(&full).expect("complete body");
+        repository
+            .upsert_mailbox_state(&MailboxState {
+                account_id: account.account_id.clone(),
+                mailbox: "INBOX".to_owned(),
+                uid_validity: Some(91),
+                uid_next: Some(43),
+                highest_uid: Some(42),
+                highest_modseq: None,
+                last_synced_at: Some("2026-08-18T00:00:00Z".to_owned()),
+            })
+            .expect("mailbox state");
+        repository
+            .queue_system_flag_mutation(
+                &account.account_id,
+                "INBOX",
+                full.uid,
+                SystemFlagKind::Seen,
+                false,
+            )
+            .expect("pending unread intent");
+        repository
+            .queue_system_flag_mutation(
+                &account.account_id,
+                "INBOX",
+                full.uid,
+                SystemFlagKind::Flagged,
+                true,
+            )
+            .expect("pending starred intent");
+
+        let mut refreshed = message(&account.account_id, false);
+        refreshed.subject = "Refreshed summary".to_owned();
+        refreshed.sender = Some(crate::MailAddress {
+            name: Some("Carol".to_owned()),
+            email: "carol@example.com".to_owned(),
+        });
+        refreshed.flags = vec!["\\Seen".to_owned()];
+        let mut second = message(&account.account_id, false);
+        second.uid = 43;
+        second.message_id = Some("batch-second@example.com".to_owned());
+        second.sender = Some(crate::MailAddress {
+            name: Some("Bob".to_owned()),
+            email: "bob@example.com".to_owned(),
+        });
+        repository
+            .upsert_message_summary_batch(&[(refreshed, Some(1_001)), (second, Some(1_002))])
+            .expect("atomic summary batch");
+
+        let stored = repository
+            .get_message_by_uid(&account.account_id, "INBOX", full.uid)
+            .expect("refreshed cached message");
+        assert_eq!(stored.id, original_row_id);
+        assert_eq!(stored.subject, "Refreshed summary");
+        assert_eq!(stored.body_text.as_deref(), Some("Full body"));
+        assert_eq!(stored.raw_rfc822, b"full raw message");
+        assert_eq!(stored.attachment_names, vec!["retained.pdf".to_owned()]);
+        assert!(!stored.flags.iter().any(|flag| flag == "\\Seen"));
+        assert!(stored.flags.iter().any(|flag| flag == "\\Flagged"));
+        assert_eq!(
+            repository
+                .cached_gmail_message_locations(&account.account_id, 1_001)
+                .expect("first Gmail mapping"),
+            vec![("INBOX".to_owned(), 42)]
+        );
+        assert!(
+            repository
+                .list_contact_source_messages_for_email(
+                    &account.account_id,
+                    "alice@example.com",
+                    10,
+                )
+                .expect("removed contact index")
+                .is_empty()
+        );
+        assert_eq!(
+            repository
+                .list_contact_source_messages_for_email(
+                    &account.account_id,
+                    "carol@example.com",
+                    10,
+                )
+                .expect("updated contact index")
+                .len(),
+            1
+        );
+        assert_eq!(
+            repository
+                .list_contact_source_messages_for_email(&account.account_id, "bob@example.com", 10,)
+                .expect("inserted contact index")
+                .len(),
+            1
+        );
+
+        let mut rebound = message(&account.account_id, false);
+        rebound.uid = 44;
+        rebound.message_id = Some("batch-rebound@example.com".to_owned());
+        repository
+            .upsert_message_summary_batch(&[(rebound, Some(1_001))])
+            .expect("rebound Gmail identity");
+        assert_eq!(
+            repository
+                .cached_gmail_message_locations(&account.account_id, 1_001)
+                .expect("rebound Gmail mapping"),
+            vec![("INBOX".to_owned(), 44)]
+        );
     }
 
     #[test]

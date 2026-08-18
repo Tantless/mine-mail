@@ -144,6 +144,9 @@ existing visual system normally changes this document rather than `DESIGN.md`.
   checks for deletion safety.
 - Startup and explicit refresh discover available mailbox roles and synchronize
   bounded summaries. They do not eagerly download every body or attachment.
+- Each bounded network summary batch is committed through one SQLite transaction
+  before synchronization progress advances. A failed batch leaves the prior
+  cache readable and never exposes a partially persisted batch as completed.
 - Opening Archive or Trash paints cached summaries first and then synchronizes
   that role. Mine Mail never empties Trash automatically.
 - When an active folder has no cached rows and its initial read, import, or
