@@ -93,6 +93,25 @@ describe("MailList folder contracts", () => {
     expect(container.querySelector(".mail-tab")).toBeNull();
   });
 
+  it.each(["starred", "drafts", "outbox"])(
+    "uses a compact count row when %s has no tabs",
+    (folderRole) => {
+      const { container } = renderMailList({ folderRole });
+
+      expect(
+        container.querySelector(".mail-tabs")?.getAttribute("data-compact"),
+      ).toBe("true");
+    },
+  );
+
+  it("keeps the full-height status row when folder tabs are present", () => {
+    const { container } = renderMailList({ folderRole: "inbox" });
+
+    expect(
+      container.querySelector(".mail-tabs")?.getAttribute("data-compact"),
+    ).toBeNull();
+  });
+
   it.each(["drafts", "outbox", "trash"])(
     "does not expose meaningless star controls in %s",
     (folderRole) => {

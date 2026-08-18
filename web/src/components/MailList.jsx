@@ -442,7 +442,11 @@ export function MailList({
       </div>
 
       <div className="mail-list-status-region">
-        <div className="mail-tabs" aria-label="邮件列表状态">
+        <div
+          className="mail-tabs"
+          data-compact={visibleTabs.length === 0 || undefined}
+          aria-label="邮件列表状态"
+        >
           {visibleTabs.map((tab) => (
             <button
               key={tab.id}

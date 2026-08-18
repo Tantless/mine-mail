@@ -190,6 +190,9 @@ applied at the root.
 - Starred has no **全部 / 未读** tabs. Unstarring a row keeps it in the current
   visit so the action can be undone; leaving or explicitly refreshing rebuilds
   the list from current star state.
+- A folder with no filter tabs uses a compact count row below its heading rather
+  than reserving the full tab-row height. Folders with tabs keep the established
+  tab geometry.
 - The reader uses one outer scrollbar. Native text and semantic HTML participate
   in that surface; complex sender HTML remains sanitized and isolated according
   to `docs/MAIL_RENDERING.md`.

@@ -2108,6 +2108,10 @@ html[data-surface="new-mail-notification"] #root {
   border-bottom: 1px solid var(--color-divider);
 }
 
+.mail-tabs[data-compact="true"] {
+  height: 20px;
+}
+
 .mail-tab {
   align-self: stretch;
   min-width: 40px;
