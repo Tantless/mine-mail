@@ -9,6 +9,13 @@ mod mailbox_api;
 mod mcp;
 mod storage;
 
+// tauri-build attaches its Common Controls v6 manifest only to application
+// binaries. The Windows library test harness links the dialog plugin too, so it
+// must opt into the same generated resource before the process can start.
+#[cfg(all(test, target_os = "windows"))]
+#[link(name = "resource", kind = "static")]
+unsafe extern "C" {}
+
 use std::{collections::HashMap, time::Instant};
 
 use mine_mail::{

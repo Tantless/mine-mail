@@ -43,5 +43,29 @@ fn main() {
     )
     .expect("generated Google OAuth configuration could not be written");
 
-    tauri_build::build()
+    tauri_build::build();
+    link_windows_resources_into_tests(&output_dir);
+}
+
+fn link_windows_resources_into_tests(output_dir: &std::path::Path) {
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
+        return;
+    }
+
+    let resource_file = if env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
+        "resource.lib"
+    } else {
+        "libresource.a"
+    };
+    let resource_path = output_dir.join(resource_file);
+    assert!(
+        resource_path.is_file(),
+        "Tauri's compiled Windows resources are missing at {}",
+        resource_path.display()
+    );
+
+    // tauri-build links its manifest resource only into application binaries.
+    // Expose the generated resource so the Windows library test harness can
+    // opt into it without linking a second copy into production binaries.
+    println!("cargo:rustc-link-search=native={}", output_dir.display());
 }
