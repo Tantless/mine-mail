@@ -7,11 +7,15 @@ short and durable.
 ## Source of truth
 
 - Read this file before changing the repository.
-- Read `DESIGN.md` before changing any visible UI, interaction, theme, copy
-  hierarchy, asset, or layout. It is the only visual specification.
+- Read `DESIGN.md` before changing the reusable visual system: visual identity,
+  theme or semantic tokens, typography, spatial hierarchy, shell geometry,
+  component appearance, motion, visual assets, or accessibility presentation. It
+  is the only visual specification. Adding a feature or changing product copy
+  with existing visual patterns does not by itself require a `DESIGN.md` change.
 - Read the relevant section of `docs/PRODUCT.md` before changing user-visible
-  behavior, synchronization, accounts, drafts, sending, notifications, contacts,
-  or identity rules.
+  behavior, workflows, feature availability, durable product copy,
+  synchronization, accounts, drafts, sending, notifications, contacts, or
+  identity rules.
 - Read `docs/MAIL_RENDERING.md` before changing MIME parsing, HTML sanitization,
   body render modes, remote images, or reply-history parsing.
 - Read `docs/MCP.md` before changing or configuring Mine Mail's local MCP
@@ -24,8 +28,10 @@ short and durable.
 
 When documents conflict, this file controls agent behavior; the domain document
 controls its named domain. Existing code or an old screenshot does not silently
-override a documented decision. Durable product, architecture, or design changes
-require the user's approval and an update to the corresponding canonical document.
+override a documented decision. Durable product, architecture, or visual-system
+changes require the user's approval and an update to the corresponding canonical
+document. Product behavior and durable product copy belong in `docs/PRODUCT.md`;
+only reusable visual rules belong in `DESIGN.md`.
 
 ## Architecture and safety invariants
 
@@ -102,8 +108,12 @@ screen-specific copy, timing constants, pixel values, or speculative future plan
 - User-visible failures must preserve recoverable local state and explain the next
   action. Do not use browser-native `alert`, `confirm`, `prompt`, validation
   bubbles, or native select styling in product UI.
-- A durable behavior or design change is incomplete until its canonical document
-  and relevant tests change with the implementation.
+- A durable product-behavior or product-copy change is incomplete until
+  `docs/PRODUCT.md` and relevant tests change with the implementation. Update
+  `DESIGN.md` only when the change introduces or revises a reusable visual rule,
+  component appearance, motion pattern, or other product-wide visual language;
+  using the existing visual system for a new feature is not a design-system
+  change.
 - Do not commit dated QA journals, AI discussion notes, generated comparison
   boards, screenshots, absolute local paths, or alternate “final” design files.
   Keep temporary evidence in the OS temporary directory and retain durable

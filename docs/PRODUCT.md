@@ -1,14 +1,16 @@
 # Mine Mail Product Contracts
 
-This document defines durable user-visible behavior. It complements the
-repository-wide architecture and safety rules in `../AGENTS.md`, the visual
-system in `../DESIGN.md`, and the untrusted-mail boundary in
-`MAIL_RENDERING.md`.
+This document defines durable user-visible behavior, workflows, feature
+availability, state transitions, defaults, and product copy whose exact meaning
+is part of the approved experience. It complements the repository-wide
+architecture and safety rules in `../AGENTS.md`, the reusable visual system in
+`../DESIGN.md`, and the untrusted-mail boundary in `MAIL_RENDERING.md`.
 
 This edition records the approved behavior of the current application. Keep
-internal DTO shapes, cache budgets, parser thresholds, and protocol helper
-details beside the code and tests. Update this document only when a durable
-product decision changes.
+routine wording corrections, internal DTO shapes, cache budgets, parser
+thresholds, and protocol helper details beside the code and tests. Update this
+document only when a durable product decision changes. A feature that reuses the
+existing visual system normally changes this document rather than `DESIGN.md`.
 
 ## Product boundary
 
@@ -48,6 +50,19 @@ product decision changes.
   flow.
 - Routine success is represented by the resulting UI state or nearby status.
   Repeated background failures are not turned into repeated notifications.
+
+## Desktop interface behavior
+
+- App chrome and navigation do not participate in text selection. Text fields,
+  opened message content, and AI assistant conversation content remain
+  selectable; controls inside those regions do not start or extend a selection.
+- The desktop WebView suppresses the browser context menu. The explicit Vite
+  demo may retain normal browser behavior.
+- Retracting the wide mail/contact list closes any open detail, hides the current
+  sidebar selection, and leaves the empty-reader area active. Reopening a
+  destination restores its selection and list.
+- The empty-reader quotation exists only while no message is open. Opening mail
+  unmounts it, and a hidden window pauses its animation.
 
 ## Accounts and identity
 
@@ -159,8 +174,9 @@ product decision changes.
   Reopening an evicted body fetches it again.
 - Inbox, Sent, Archive, Trash, and Starred load bounded pages and append history
   automatically near the list end. Loading another page preserves visible rows,
-  selection, and scroll position. There is no manual load-more control or
-  persistent end card.
+  selection, and scroll position. The bounded loading row says
+  **正在加载更多邮件…**. There is no manual load-more control or persistent end
+  card.
 - Each page distinguishes local history, possible remote history, offline
   unavailability, and an authoritative end internally; those distinctions must
   not produce misleading empty or completion claims in the list.
@@ -262,6 +278,9 @@ product decision changes.
 
 ## Drafts and compose
 
+- Compose opens as one floating, draggable, edge-resizable surface over the app
+  scrim. It restores the last valid normal geometry inside the visible app
+  bounds, and clicking the scrim minimizes it.
 - Drafts synchronize in both directions. One stable draft ID and SQLite
   `local_version` protect each editing session.
 - A stale save creates a conflict copy rather than overwriting the canonical
@@ -295,6 +314,9 @@ product decision changes.
   composing.
 - Selecting a different draft while compose is minimized first stabilizes the
   current edit. A failed save prevents the switch.
+- Choosing a recipient suggestion closes the suggestion surface and moves focus
+  to Subject. Pressing unmodified Enter in Subject moves focus to the body
+  editor.
 - Reply/forward context is immutable and separate from the authored editor.
   Forwarded ordinary attachments are visible and removable before sending.
 - Compose exposes a dedicated optimization action for the authored subject and
@@ -737,6 +759,10 @@ product decision changes.
 - Avatar resolution is exact local override, built-in known-domain map, then
   deterministic initials. Selected PNG, JPEG, or WebP overrides are stored
   locally and bounded in size. Mine Mail never queries a remote avatar service.
+- Large contact sets window offscreen rows without changing the visible row
+  density.
+- Contact detail has a persistent back action. Opening correspondence reuses the
+  mail reader and provides a clear return to that contact's history.
 
 ## Settings, local data, and diagnostics
 
@@ -745,9 +771,10 @@ product decision changes.
 - Appearance is device-global rather than account-scoped. The four built-in
   themes remain immutable; users may add any number of local custom theme presets,
   rename them, replace their images, adjust normalized focal points, choose a
-  complete curated semantic palette, and delete them. Each palette owns its light
-  or dark presentation together with app-owned glass, panel, text, interaction,
-  and status tones; there is no separate night-mode preference. Focus and palette
+  complete curated semantic palette, and delete them. The palette tray groups
+  twelve bright and twelve dark choices. Each palette owns its light or dark
+  presentation together with app-owned glass, panel, text, interaction, and
+  status tones; there is no separate night-mode preference. Focus and palette
   controls remain visible for every theme, while built-in themes expose their
   fixed values as disabled controls. The current selection and each preset's
   settings persist in Rust-owned local state.
