@@ -333,6 +333,34 @@ function appendMailboxItems(current, incoming) {
   return appended;
 }
 
+function preserveStarredVisitMessages(snapshotItems, currentItems) {
+  if (!snapshotItems.length) {
+    return currentItems.filter((message) => hasFlag(message, "\\Flagged"));
+  }
+  const currentById = new Map(
+    currentItems
+      .map((message) => [localMessageId(message), message])
+      .filter(([id]) => id !== null),
+  );
+  const snapshotIds = new Set(
+    snapshotItems.map(localMessageId).filter((id) => id !== null),
+  );
+  const stableItems = snapshotItems.map((message) => {
+    const messageId = localMessageId(message);
+    return messageId === null
+      ? message
+      : currentById.get(messageId) || message;
+  });
+  return appendMailboxItems(
+    stableItems,
+    currentItems.filter(
+      (message) =>
+        hasFlag(message, "\\Flagged") &&
+        !snapshotIds.has(localMessageId(message)),
+    ),
+  );
+}
+
 export function mergeRefreshedMailboxItems(current, refreshed) {
   // The refreshed first page is authoritative for duplicate summaries and
   // order, while already loaded older pages remain mounted behind it.
@@ -4280,61 +4308,22 @@ export function App() {
       : null;
   }, [selectedContactAccountId, selectedContactEmail, visibleContacts]);
 
-  const folderMessages = useMemo(() => {
-    const normalizedQuery = normalizedMailboxQuery(query);
-    const activeSearch =
-      normalizedQuery &&
-      remoteSearch?.accountId === activeAccountId &&
-      remoteSearch?.folder === activeFolder &&
-      remoteSearch?.query === normalizedQuery
-        ? remoteSearch
-        : null;
-    if (activeSearch && activeFolder !== "starred") {
-      return activeSearch.items;
-    }
+  const baseFolderMessages = useMemo(() => {
     if (activeFolder === "inbox") return messages;
     if (activeFolder === "starred") {
       const snapshotItems =
         starredViewRetention.accountId === activeAccountId
           ? starredViewRetention.items
           : [];
-      const currentItems = activeSearch
-        ? activeSearch.items
-        : appendMailboxItems([], [
-            ...starredMailboxRoles.flatMap(
-              (role) => starredMailboxPageStates[role]?.items || [],
-            ),
-            ...messages,
-            ...sentMessages,
-            ...archiveMessages,
-          ]);
-      if (!snapshotItems.length) {
-        return currentItems.filter((message) =>
-          hasFlag(message, "\\Flagged"),
-        );
-      }
-      const currentById = new Map(
-        currentItems
-          .map((message) => [localMessageId(message), message])
-          .filter(([id]) => id !== null),
-      );
-      const snapshotIds = new Set(
-        snapshotItems.map(localMessageId).filter((id) => id !== null),
-      );
-      const stableItems = snapshotItems.map((message) => {
-        const messageId = localMessageId(message);
-        return messageId === null
-          ? message
-          : currentById.get(messageId) || message;
-      });
-      return appendMailboxItems(
-        stableItems,
-        currentItems.filter(
-          (message) =>
-            hasFlag(message, "\\Flagged") &&
-            !snapshotIds.has(localMessageId(message)),
+      const currentItems = appendMailboxItems([], [
+        ...starredMailboxRoles.flatMap(
+          (role) => starredMailboxPageStates[role]?.items || [],
         ),
-      );
+        ...messages,
+        ...sentMessages,
+        ...archiveMessages,
+      ]);
+      return preserveStarredVisitMessages(snapshotItems, currentItems);
     }
     if (activeFolder === "drafts") {
       return drafts
@@ -4354,12 +4343,39 @@ export function App() {
     drafts,
     messages,
     outboxMessages,
-    query,
-    remoteSearch,
     sentMessages,
     starredMailboxPageStates,
     starredViewRetention,
     trashMessages,
+  ]);
+
+  const folderMessages = useMemo(() => {
+    const normalizedQuery = normalizedMailboxQuery(query);
+    const activeSearch =
+      normalizedQuery &&
+      remoteSearch?.accountId === activeAccountId &&
+      remoteSearch?.folder === activeFolder &&
+      remoteSearch?.query === normalizedQuery
+        ? remoteSearch
+        : null;
+    if (!activeSearch) return baseFolderMessages;
+    if (activeFolder !== "starred") return activeSearch.items;
+
+    const snapshotItems =
+      starredViewRetention.accountId === activeAccountId
+        ? starredViewRetention.items
+        : [];
+    return preserveStarredVisitMessages(
+      snapshotItems,
+      activeSearch.items,
+    );
+  }, [
+    activeFolder,
+    activeAccountId,
+    baseFolderMessages,
+    query,
+    remoteSearch,
+    starredViewRetention,
   ]);
 
   const visibleMessages = useMemo(() => {
@@ -7950,6 +7966,7 @@ export function App() {
                     folderRole={activeFolder}
                     folderLabel={folderLabels[activeFolder]}
                     messages={visibleMessages}
+                    hasFolderMessages={baseFolderMessages.length > 0}
                     selectedMessageId={selectedMessageId}
                     selectedMessage={selectedMessage}
                     onSelect={handleSelect}

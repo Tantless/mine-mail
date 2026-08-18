@@ -1,11 +1,13 @@
 import {
   ArrowClockwise,
+  CheckCircle,
   CircleNotch,
   FunnelSimple,
   List,
   MagnifyingGlass,
   SidebarSimple,
   Star,
+  WarningCircle,
 } from "@phosphor-icons/react";
 import { useEffect, useLayoutEffect, useRef } from "react";
 import { IconButton } from "./IconButton.jsx";
@@ -173,42 +175,59 @@ function SyncFeedbackRow({ feedback }) {
   );
 }
 
-function emptyMailboxLoadFeedback(loadState, config, title) {
-  if (loadState?.phase === "loading") {
-    return {
-      state: "syncing",
-      message:
-        config === folderConfigurations.drafts
-          ? "正在读取本地草稿…"
-          : config === folderConfigurations.outbox
-            ? "正在读取发件队列…"
-            : "正在读取本地邮件…",
-    };
-  }
-  if (loadState?.phase === "syncing") {
-    const completed = Number(loadState.completed);
-    const total = Number(loadState.total);
-    return {
-      state: "syncing",
-      message:
-        Number.isFinite(completed) && Number.isFinite(total) && total > 0
-          ? `${config.syncingLabel}，已加载 ${completed}/${total} 封…`
-          : `${config.syncingLabel}…`,
-    };
-  }
-  if (loadState?.phase === "error") {
-    return {
-      state: "error",
-      message: `${title}暂时没有加载完成，请点击右上角重试`,
-    };
-  }
-  return null;
+function MailListCenterState({ state }) {
+  const configuration = {
+    loading: {
+      label: "加载中…",
+      icon: CircleNotch,
+      role: "status",
+    },
+    success: {
+      label: "加载成功",
+      icon: CheckCircle,
+      role: "status",
+    },
+    error: {
+      label: "加载失败，请点击右上角重试",
+      icon: WarningCircle,
+      role: "alert",
+    },
+    search: {
+      label: "没有匹配的已同步邮件",
+      icon: null,
+      role: "status",
+    },
+    filter: {
+      label: "没有符合当前筛选条件的邮件",
+      icon: null,
+      role: "status",
+    },
+  }[state];
+  if (!configuration) return null;
+  const StateIcon = configuration.icon;
+
+  return (
+    <div
+      className="mail-list-center-state"
+      data-state={state}
+      role={configuration.role}
+      aria-live={state === "error" ? "assertive" : "polite"}
+      aria-atomic="true"
+      aria-busy={state === "loading" || undefined}
+    >
+      {StateIcon ? (
+        <StateIcon size={18} weight="regular" aria-hidden="true" />
+      ) : null}
+      <span>{configuration.label}</span>
+    </div>
+  );
 }
 
 export function MailList({
   folderRole,
   folderLabel,
   messages = [],
+  hasFolderMessages,
   selectedMessageId,
   selectedMessage = null,
   onSelect = null,
@@ -245,11 +264,10 @@ export function MailList({
   const config = folderConfigurations[role];
   const title = folderLabel || config.title;
   const isSyncing = syncState === "syncing";
-  const automaticLoadFeedback =
-    messages.length === 0 && !query.trim() && filter === "all"
-      ? emptyMailboxLoadFeedback(loadState, config, title)
-      : null;
-  const visibleSyncFeedback = syncFeedback || automaticLoadFeedback;
+  const folderHasMessages =
+    typeof hasFolderMessages === "boolean"
+      ? hasFolderMessages
+      : messages.length > 0;
   const capabilityUnavailable = Boolean(
     config.mailboxLabel &&
       mailboxCapability &&
@@ -257,6 +275,36 @@ export function MailList({
   );
   const paginationPhase = resolvedPaginationPhase(loadMoreState);
   const isLoadingMore = paginationPhase === "loading";
+  const emptyFolderIsLoading =
+    !folderHasMessages &&
+    (["loading", "syncing"].includes(loadState?.phase) ||
+      syncFeedback?.state === "syncing" ||
+      paginationPhase === "loading");
+  const emptyFolderHasFailed =
+    !folderHasMessages &&
+    (loadState?.phase === "error" ||
+      syncFeedback?.state === "error" ||
+      paginationPhase === "retry");
+  const emptyFolderIsSettled =
+    !folderHasMessages &&
+    loadState?.phase === "ready" &&
+    paginationPhase === "complete" &&
+    !capabilityUnavailable;
+  const centerState =
+    messages.length > 0
+      ? null
+      : emptyFolderIsLoading
+        ? "loading"
+        : emptyFolderHasFailed
+          ? "error"
+          : query.trim()
+            ? "search"
+            : filter !== "all"
+              ? "filter"
+              : emptyFolderIsSettled
+                ? "success"
+                : null;
+  const visibleSyncFeedback = folderHasMessages ? syncFeedback : null;
   const selectedNavigationKey = messageNavigationKey(selectedMessage);
   const selectedRowKey =
     selectedNavigationKey ||
@@ -474,7 +522,8 @@ export function MailList({
 
       <div
         className="message-list vertical-scroll-surface"
-        aria-busy={automaticLoadFeedback?.state === "syncing" || undefined}
+        data-centered-state={centerState || undefined}
+        aria-busy={centerState === "loading" || undefined}
         ref={messageListRef}
         onScroll={(event) => {
           const surface = event.currentTarget;
@@ -632,7 +681,9 @@ export function MailList({
               ) : null}
             </div>
           </>
-        ) : null}
+        ) : (
+          <MailListCenterState state={centerState} />
+        )}
       </div>
     </section>
   );

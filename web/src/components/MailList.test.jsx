@@ -153,12 +153,17 @@ describe("MailList folder contracts", () => {
     expect(sync.classList.contains("is-spinning")).toBe(false);
   });
 
-  it("shows initial synchronization in the shared status row while an empty mailbox loads", () => {
+  it("centers loading feedback while an empty mailbox loads", () => {
     const { container, rerenderMailList } = renderMailList({
       loadState: { phase: "syncing", completed: 0, total: null },
     });
 
-    expect(screen.getByText("正在同步收件箱…")).toBeTruthy();
+    const loading = screen.getByText("加载中…").closest(
+      ".mail-list-center-state",
+    );
+    expect(loading?.dataset.state).toBe("loading");
+    expect(loading?.querySelector("svg")?.getAttribute("width")).toBe("18");
+    expect(container.querySelector(".mail-sync-feedback")).toBeNull();
     expect(
       container.querySelector(".message-list")?.getAttribute("aria-busy"),
     ).toBe("true");
@@ -171,7 +176,52 @@ describe("MailList folder contracts", () => {
     rerenderMailList({
       loadState: { phase: "syncing", completed: 10, total: 100 },
     });
-    expect(screen.getByText("正在同步收件箱，已加载 10/100 封…")).toBeTruthy();
+    expect(screen.getByText("加载中…")).toBeTruthy();
+  });
+
+  it("keeps authoritative empty success visible until the folder state changes", () => {
+    vi.useFakeTimers();
+    try {
+      const { container, rerenderMailList } = renderMailList({
+        loadState: { phase: "ready", completed: 0, total: null },
+        loadMoreState: "complete",
+      });
+
+      const success = screen.getByText("加载成功").closest(
+        ".mail-list-center-state",
+      );
+      expect(success?.dataset.state).toBe("success");
+      expect(success?.querySelector("svg")?.getAttribute("width")).toBe("18");
+      expect(
+        container.querySelector(".message-list")?.getAttribute("aria-busy"),
+      ).toBeNull();
+
+      act(() => vi.advanceTimersByTime(10_000));
+      expect(screen.getByText("加载成功")).toBeTruthy();
+
+      rerenderMailList({
+        messages: [firstMessage],
+        hasFolderMessages: true,
+      });
+      expect(screen.queryByText("加载成功")).toBeNull();
+      expect(screen.getByText("项目进度")).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("centers a retryable failure when an empty mailbox cannot load", () => {
+    const { container } = renderMailList({
+      loadState: { phase: "error", completed: 0, total: null },
+    });
+
+    const failure = screen
+      .getByText("加载失败，请点击右上角重试")
+      .closest(".mail-list-center-state");
+    expect(failure?.dataset.state).toBe("error");
+    expect(failure?.getAttribute("role")).toBe("alert");
+    expect(failure?.querySelector("svg")?.getAttribute("width")).toBe("18");
+    expect(container.querySelector(".mail-sync-feedback")).toBeNull();
   });
 
   it("keeps background synchronization quiet when cached rows are visible", () => {
@@ -192,6 +242,8 @@ describe("MailList folder contracts", () => {
     "renders %s synchronization feedback in the shared inline row",
     (state, message, role, hasIcon) => {
       const { container } = renderMailList({
+        messages: [firstMessage],
+        hasFolderMessages: true,
         syncFeedback: { state, message },
       });
 
@@ -524,20 +576,32 @@ describe("MailList controlled controls", () => {
 describe("MailList state distinctions", () => {
   afterEach(cleanup);
 
-  it("keeps empty, search, and capability states visually quiet", () => {
+  it("distinguishes authoritative empty, query, filter, and capability states", () => {
     const { container, rerenderMailList } = renderMailList();
-    expect(container.querySelector(".empty-list")).toBeNull();
-    expect(container.querySelector(".mail-loading-state")).toBeNull();
+    expect(screen.queryByText("加载成功")).toBeNull();
 
     rerenderMailList({
+      hasFolderMessages: true,
       query: "不存在",
     });
-    expect(screen.queryByText("没有匹配的已同步邮件")).toBeNull();
-    expect(screen.queryByText("部分邮件暂时没有加载完成")).toBeNull();
+    expect(screen.getByText("没有匹配的已同步邮件")).toBeTruthy();
+    expect(screen.queryByText("加载成功")).toBeNull();
+
+    rerenderMailList({
+      hasFolderMessages: true,
+      query: "",
+      filter: "unread",
+    });
+    expect(screen.getByText("没有符合当前筛选条件的邮件")).toBeTruthy();
+    expect(screen.queryByText("加载成功")).toBeNull();
 
     rerenderMailList({
       folderRole: "archive",
       query: "",
+      filter: "all",
+      hasFolderMessages: false,
+      loadState: { phase: "ready", completed: 0, total: null },
+      loadMoreState: "complete",
       mailboxCapability: {
         role: "archive",
         status: "needs_creation_confirmation",
@@ -545,7 +609,8 @@ describe("MailList state distinctions", () => {
       },
     });
     expect(screen.queryByText("尚未设置归档文件夹")).toBeNull();
-    expect(container.querySelector(".empty-list")).toBeNull();
+    expect(screen.queryByText("加载成功")).toBeNull();
+    expect(container.querySelector(".mail-list-center-state")).toBeNull();
   });
 });
 

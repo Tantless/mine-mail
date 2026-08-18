@@ -165,7 +165,9 @@ applied at the root.
   redundant state icon.
 - Embedded progress and status feedback remains borderless unless separation is
   necessary for legibility; informational and in-progress indicators may retain
-  their icons.
+  their icons. A centered empty-mailbox result may pair loading, authoritative
+  success, or failure copy with a Phosphor icon, using only the palette's
+  primary, success, or danger role and no card surface, border, or shadow.
 
 ### Lists, overlays, and scrolling
 
@@ -191,9 +193,12 @@ a state exists, which actions are available, what they do, and what they say.
 
 ### Mail list and reader
 
-- Loading and refresh feedback uses the compact status band below the list
-  heading. Additional history uses one bounded end buffer rather than a
-  persistent card.
+- With cached mail present, explicit refresh feedback uses a transparent compact
+  line below the list heading without replacing or moving rows. With no cached
+  mail, loading, authoritative success, and failure use one compact icon-and-text
+  state centered in the list. Search and filter zero-results use centered text
+  without a success icon. Additional history uses one bounded end buffer rather
+  than a persistent card.
 - A folder with no filter tabs uses a compact count row below its heading rather
   than reserving the full tab-row height. Folders with tabs keep the established
   tab geometry.

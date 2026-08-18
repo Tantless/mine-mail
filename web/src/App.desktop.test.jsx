@@ -1677,7 +1677,7 @@ describe("Mine Mail desktop state bridge", () => {
       expect(desktop.listeners.has("mail:inbox-updated")).toBe(true),
     );
     expect(screen.queryByText("没有找到邮件")).toBeNull();
-    expect(screen.getByText("正在同步收件箱…")).toBeTruthy();
+    expect(screen.getByText("加载中…")).toBeTruthy();
     const contactsCallsBeforeProgress =
       desktop.mailApi.listContacts.mock.calls.length;
     desktop.fixtures.inboxPageSource.mockResolvedValue(
@@ -1727,7 +1727,7 @@ describe("Mine Mail desktop state bridge", () => {
     });
 
     expect(await screen.findByText("Progress mail 10")).toBeTruthy();
-    expect(screen.queryByText(/正在同步收件箱/)).toBeNull();
+    expect(screen.queryByText("加载中…")).toBeNull();
     await waitFor(() =>
       expect(desktop.mailApi.listContacts.mock.calls.length).toBeGreaterThan(
         contactsCallsBeforeProgress,
@@ -1781,7 +1781,7 @@ describe("Mine Mail desktop state bridge", () => {
     await waitFor(() =>
       expect(desktop.listeners.has("mail:inbox-updated")).toBe(true),
     );
-    expect(screen.getByText("正在同步收件箱…")).toBeTruthy();
+    expect(screen.getByText("加载中…")).toBeTruthy();
 
     await user.click(screen.getByRole("button", { name: "设置" }));
     expect(await screen.findByRole("region", { name: "设置" })).toBeTruthy();
@@ -1798,9 +1798,9 @@ describe("Mine Mail desktop state bridge", () => {
     });
 
     const loadingFeedback = screen
-      .getByText("正在同步收件箱…")
-      .closest(".mail-sync-feedback");
-    expect(loadingFeedback?.dataset.state).toBe("syncing");
+      .getByText("加载中…")
+      .closest(".mail-list-center-state");
+    expect(loadingFeedback?.dataset.state).toBe("loading");
     expect(loadingFeedback?.querySelector("svg")).toBeTruthy();
     expect(
       screen
@@ -1819,9 +1819,14 @@ describe("Mine Mail desktop state bridge", () => {
         },
       });
     });
-    await waitFor(() =>
-      expect(screen.queryByText("正在同步收件箱…")).toBeNull(),
-    );
+    await waitFor(() => expect(screen.getByText("加载成功")).toBeTruthy());
+    expect(screen.queryByText("加载中…")).toBeNull();
+    expect(
+      screen
+        .getByText("加载成功")
+        .closest(".mail-list-center-state")
+        ?.querySelector("svg"),
+    ).toBeTruthy();
   });
 
   it("keeps scheduled synchronization failures silent but reports an explicit tray refresh", async () => {

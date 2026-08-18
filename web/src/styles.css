@@ -272,22 +272,6 @@
     var(--color-danger) 34%,
     var(--color-border)
   );
-  --sync-feedback-row-surface: color-mix(
-    in srgb,
-    var(--mail-list-surface) 44%,
-    var(--row-hover-surface)
-  );
-  --sync-feedback-surface: color-mix(
-    in srgb,
-    var(--sync-feedback-row-surface) 94%,
-    var(--color-text)
-  );
-  --sync-feedback-error-surface: color-mix(
-    in srgb,
-    var(--sync-feedback-row-surface) 82%,
-    var(--color-danger)
-  );
-  --sync-feedback-text: var(--color-text-secondary);
   --focus-ring: 0 0 0 2px var(--color-panel), 0 0 0 4px var(--color-primary);
 }
 
@@ -2146,20 +2130,17 @@ html[data-surface="new-mail-notification"] #root {
 }
 
 .mail-sync-feedback {
-  display: grid;
-  width: calc(100% + 2px);
+  display: flex;
   min-width: 0;
   min-height: 26px;
-  grid-template-columns: 34px minmax(0, 1fr) 40px;
   align-items: center;
-  column-gap: 9px;
-  margin: 0 -1px;
-  padding: 5px 16px 5px 19px;
+  gap: 7px;
+  padding: 5px 14px;
   overflow: hidden;
   border: 0;
   border-radius: 0;
-  background: var(--sync-feedback-surface);
-  color: var(--sync-feedback-text);
+  background: transparent;
+  color: var(--color-text-muted);
   box-shadow: none;
   font-size: 11px;
   font-weight: 400;
@@ -2167,18 +2148,12 @@ html[data-surface="new-mail-notification"] #root {
   animation: mail-sync-feedback-in var(--motion-fast) ease-out both;
 }
 
-.mail-sync-feedback[data-state="success"] {
-  grid-template-columns: minmax(0, 1fr);
-}
-
 .mail-sync-feedback[data-state="error"] {
-  grid-template-columns: minmax(0, 1fr);
-  background: var(--sync-feedback-error-surface);
+  color: var(--color-text-secondary);
 }
 
 .mail-sync-feedback svg {
-  justify-self: start;
-  margin-inline-start: 9px;
+  flex: 0 0 auto;
   color: var(--color-text-muted);
 }
 
@@ -2207,6 +2182,41 @@ html[data-surface="new-mail-notification"] #root {
 .message-list {
   min-height: 0;
   padding: 6px 8px 12px;
+}
+
+.message-list[data-centered-state] {
+  display: grid;
+  place-items: center;
+  padding-block: 6px;
+}
+
+.mail-list-center-state {
+  display: inline-flex;
+  max-width: min(100%, 300px);
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  color: var(--color-text-muted);
+  font-size: 11px;
+  line-height: 1.4;
+  text-align: center;
+}
+
+.mail-list-center-state svg {
+  flex: 0 0 auto;
+}
+
+.mail-list-center-state[data-state="loading"] svg {
+  color: var(--color-primary);
+  animation: spin 850ms linear infinite;
+}
+
+.mail-list-center-state[data-state="success"] svg {
+  color: var(--color-success);
+}
+
+.mail-list-center-state[data-state="error"] svg {
+  color: var(--color-danger);
 }
 
 .message-list > ul {
@@ -12333,6 +12343,7 @@ html[data-surface="new-mail-notification"] #root {
   }
 
   .mail-sync-feedback[data-state="syncing"] svg,
+  .mail-list-center-state[data-state="loading"] svg,
   .attachment-card[aria-busy="true"] > svg:last-child,
   .attachment-card[data-state="saving"] > svg:last-child {
     animation: none !important;

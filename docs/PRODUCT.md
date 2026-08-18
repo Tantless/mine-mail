@@ -144,12 +144,21 @@ existing visual system normally changes this document rather than `DESIGN.md`.
   bounded summaries. They do not eagerly download every body or attachment.
 - Opening Archive or Trash paints cached summaries first and then synchronizes
   that role. Mine Mail never empties Trash automatically.
-- When an active folder has no cached rows and its initial read/import is still
-  running, show compact nearby loading feedback. A genuinely empty settled list
-  remains visually quiet.
+- When an active folder has no cached rows and its initial read, import, or
+  explicit refresh is still running, show centered **加载中…** feedback in the
+  list. After the folder load settles and remote history reaches an authoritative
+  end with no mail, keep centered **加载成功** feedback visible. A read or sync
+  failure instead shows **加载失败，请点击右上角重试**. A `ready` phase, an empty
+  current array, a search/filter zero-result, offline or unavailable network
+  work, and unchecked or possibly remaining remote history do not individually
+  prove an authoritative empty result and must not show loading success.
 - An explicit folder refresh owns its inline progress and bounded completion
-  result. Routine background reconciliation does not restart that foreground
-  indicator or create a success toast.
+  result. With cached mail it uses the compact status line while keeping those
+  rows mounted; with no cached mail it uses the centered states above. Routine
+  background reconciliation does not restart that foreground indicator or
+  create a success toast. A search with no result shows **没有匹配的已同步邮件**;
+  a filter with no result shows **没有符合当前筛选条件的邮件**. Neither is an
+  empty-mailbox success.
 - Concurrent work is scoped so one account or mailbox does not unnecessarily
   block another. Account replacement and removal remain exclusive life-cycle
   operations.

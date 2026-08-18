@@ -334,64 +334,58 @@ describe("mail workspace motion contract", () => {
 });
 
 describe("mail synchronization feedback material contract", () => {
-  it("forms a full-width structural band instead of another floating card", () => {
-    const root = declarationsFor(":root");
+  it("uses a quiet inline row and palette-owned centered empty states", () => {
     const feedback = declarationsFor("\\.mail-sync-feedback");
     const feedbackIcon = declarationsFor("\\.mail-sync-feedback svg");
-    const successFeedback = declarationsFor(
-      '\\.mail-sync-feedback\\[data-state="success"\\]',
+    const centeredList = declarationsFor(
+      '\\.message-list\\[data-centered-state\\]',
     );
     const errorFeedback = declarationsFor(
       '\\.mail-sync-feedback\\[data-state="error"\\]',
     );
+    const centerState = declarationsFor("\\.mail-list-center-state");
+    const loadingIcon = declarationsFor(
+      '\\.mail-list-center-state\\[data-state="loading"\\] svg',
+    );
+    const successIcon = declarationsFor(
+      '\\.mail-list-center-state\\[data-state="success"\\] svg',
+    );
+    const errorIcon = declarationsFor(
+      '\\.mail-list-center-state\\[data-state="error"\\] svg',
+    );
     const entrance = nestedBlockFor("@keyframes mail-sync-feedback-in");
+    const reducedMotion = nestedBlockFor(
+      "@media (prefers-reduced-motion: reduce)",
+    );
 
-    expect(styles.match(/--sync-feedback-row-surface:/g)).toHaveLength(1);
-    expect(styles.match(/--sync-feedback-surface:/g)).toHaveLength(1);
-    expect(styles.match(/--sync-feedback-error-surface:/g)).toHaveLength(1);
-    expect(root).toMatch(
-      /--sync-feedback-row-surface:\s*color-mix\(\s*in srgb,\s*var\(--mail-list-surface\)\s*44%,\s*var\(--row-hover-surface\)\s*\)/,
-    );
-    expect(root).toMatch(
-      /--sync-feedback-surface:\s*color-mix\(\s*in srgb,\s*var\(--sync-feedback-row-surface\)\s*94%,\s*var\(--color-text\)\s*\)/,
-    );
-    expect(root).toMatch(
-      /--sync-feedback-error-surface:\s*color-mix\(\s*in srgb,\s*var\(--sync-feedback-row-surface\)\s*82%,\s*var\(--color-danger\)\s*\)/,
-    );
-    expect(feedback).toMatch(/width:\s*calc\(100%\s*\+\s*2px\)/);
-    expect(feedback).toMatch(/margin:\s*0\s+-1px/);
-    expect(feedback).toMatch(/display:\s*grid/);
-    expect(feedback).toMatch(
-      /grid-template-columns:\s*34px\s+minmax\(0,\s*1fr\)\s+40px/,
-    );
-    expect(feedback).toMatch(/column-gap:\s*9px/);
-    expect(feedback).toMatch(/padding:\s*5px\s+16px\s+5px\s+19px/);
+    expect(styles).not.toMatch(/--sync-feedback-(?:row-)?surface:/);
+    expect(styles).not.toMatch(/--sync-feedback-error-surface:/);
+    expect(feedback).toMatch(/display:\s*flex/);
+    expect(feedback).toMatch(/gap:\s*7px/);
+    expect(feedback).toMatch(/padding:\s*5px\s+14px/);
     expect(feedback).toMatch(/border:\s*0/);
     expect(feedback).toMatch(/border-radius:\s*0/);
     expect(feedback).toMatch(/box-shadow:\s*none/);
-    expect(feedback).toMatch(
-      /background:\s*var\(--sync-feedback-surface\)/,
-    );
+    expect(feedback).toMatch(/background:\s*transparent/);
     expect(feedback).toMatch(/min-height:\s*26px/);
     expect(feedback).toMatch(/font-weight:\s*400/);
-    expect(feedback).toMatch(/color:\s*var\(--sync-feedback-text\)/);
-    expect(root).toMatch(
-      /--sync-feedback-text:\s*var\(--color-text-secondary\)/,
-    );
-    expect(feedbackIcon).toMatch(/justify-self:\s*start/);
-    expect(feedbackIcon).toMatch(/margin-inline-start:\s*9px/);
-    expect(successFeedback).toMatch(
-      /grid-template-columns:\s*minmax\(0,\s*1fr\)/,
-    );
-    expect(errorFeedback).toMatch(
-      /grid-template-columns:\s*minmax\(0,\s*1fr\)/,
-    );
-    expect(errorFeedback).toMatch(
-      /background:\s*var\(--sync-feedback-error-surface\)/,
-    );
-    expect(successFeedback).not.toMatch(/border(?:-color)?:/);
-    expect(errorFeedback).not.toMatch(/border(?:-color)?:/);
+    expect(feedback).toMatch(/color:\s*var\(--color-text-muted\)/);
+    expect(feedbackIcon).toMatch(/flex:\s*0\s+0\s+auto/);
+    expect(errorFeedback).toMatch(/color:\s*var\(--color-text-secondary\)/);
+    expect(errorFeedback).not.toMatch(/background|border|box-shadow/);
+    expect(centeredList).toMatch(/display:\s*grid/);
+    expect(centeredList).toMatch(/place-items:\s*center/);
+    expect(centeredList).toMatch(/padding-block:\s*6px/);
+    expect(centerState).toMatch(/display:\s*inline-flex/);
+    expect(centerState).not.toMatch(/background|border|box-shadow/);
+    expect(loadingIcon).toMatch(/color:\s*var\(--color-primary\)/);
+    expect(loadingIcon).toMatch(/animation:\s*spin 850ms linear infinite/);
+    expect(successIcon).toMatch(/color:\s*var\(--color-success\)/);
+    expect(errorIcon).toMatch(/color:\s*var\(--color-danger\)/);
     expect(entrance).not.toMatch(/transform/);
+    expect(reducedMotion).toMatch(
+      /\.mail-list-center-state\[data-state="loading"\] svg,[\s\S]*animation:\s*none !important/,
+    );
   });
 });
 
