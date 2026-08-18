@@ -139,14 +139,14 @@ usage scenario before changing visible behavior or interaction.
   `handleMailboxUpdate`, manual synchronization, and
   `reconcileSentAfterDelivery` in [`web/src/App.jsx`](../web/src/App.jsx).
 
-- [ ] **DATA-01 — Bound persistent mailbox-page cursor state.** Every
+- [x] **DATA-01 — Bound persistent mailbox-page cursor state.** Every
   non-terminal mailbox page currently inserts a new row in
   `message_page_cursors`. Cursors older than 24 hours are deleted, but an
   identical cursor is not reused, a cursor superseded by React remains until
   expiry, and there is no per-account hard limit. This creates short-lived
   garbage and turns otherwise local list reads into repeated SQLite/WAL writes.
 
-  **Agreed plan — pending implementation.** Keep SQLite cursor storage for now
+  **Implemented.** Keep SQLite cursor storage for now
   because it is the existing privacy-safe bridge between the separate local and
   network `MailBackend` instances. Reuse the existing opaque token when the full
   validated cursor payload is identical. Keep the current 24-hour TTL and add a

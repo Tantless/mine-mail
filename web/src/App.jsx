@@ -12,6 +12,7 @@ import { emptyCompose } from "./models/compose.js";
 import {
   isTauri,
   isTauriRuntime,
+  isStaleMailboxCursorError,
   isUnsupportedRuntime,
   mailApi,
 } from "./services/mailApi.js";
@@ -1904,6 +1905,7 @@ export function App() {
       mergeExisting = false,
       selectFirst = false,
       preserveSyncing = false,
+      recoveringCursor = false,
     }) => {
       if (!accountId || !paginatedMailboxRoles.includes(role)) return null;
       const normalizedQuery = normalizedMailboxQuery(pageQuery);
@@ -2052,6 +2054,41 @@ export function App() {
           state: committedPageState,
         };
       } catch (error) {
+        if (
+          append &&
+          !recoveringCursor &&
+          isStaleMailboxCursorError(error)
+        ) {
+          try {
+            const recovered = await loadMailboxRolePage({
+              accountId,
+              role,
+              query: normalizedQuery,
+              mergeExisting: !normalizedQuery,
+              preserveSyncing: true,
+              recoveringCursor: true,
+            });
+            return recovered
+              ? { ...recovered, cursorRecovered: true }
+              : recovered;
+          } catch (recoveryError) {
+            if (!normalizedQuery && activeAccountIdRef.current === accountId) {
+              commitMailboxPageState(
+                role,
+                (current) => ({
+                  ...current,
+                  loadMorePhase: "retry",
+                  loadMoreError: describeError(
+                    recoveryError,
+                    "更早邮件暂时无法加载",
+                  ),
+                }),
+                accountId,
+              );
+            }
+            throw recoveryError;
+          }
+        }
         if (mailboxPageRequestsRef.current.get(requestKey) === requestToken) {
           if (!normalizedQuery && activeAccountIdRef.current === accountId) {
             updateMailboxLoadState(role, (current) => ({
@@ -2093,6 +2130,8 @@ export function App() {
       cursor = null,
       query: pageQuery = null,
       append = false,
+      mergeExisting = false,
+      recoveringCursor = false,
     }) => {
       if (!accountId || !starredMailboxRoles.includes(role)) return null;
       const normalizedQuery = normalizedMailboxQuery(pageQuery);
@@ -2158,9 +2197,12 @@ export function App() {
           existingView.starredMailboxPageStates ||
           createStarredMailboxPageStates();
         const existingItems = existingPages[role]?.items || [];
-        const committedItems = append
-          ? appendMailboxItems(existingItems, normalized.items)
-          : normalized.items;
+        const committedItems =
+          mergeExisting && !append && existingItems.length > 0
+            ? mergeRefreshedMailboxItems(existingItems, normalized.items)
+            : append
+              ? appendMailboxItems(existingItems, normalized.items)
+              : normalized.items;
         commitStarredMailboxPageState(
           role,
           {
@@ -2173,6 +2215,40 @@ export function App() {
         );
         return { ...normalized, items: committedItems };
       } catch (error) {
+        if (
+          append &&
+          !recoveringCursor &&
+          isStaleMailboxCursorError(error)
+        ) {
+          try {
+            const recovered = await loadStarredMailboxRolePage({
+              accountId,
+              role,
+              query: normalizedQuery,
+              mergeExisting: !normalizedQuery,
+              recoveringCursor: true,
+            });
+            return recovered
+              ? { ...recovered, cursorRecovered: true }
+              : recovered;
+          } catch (recoveryError) {
+            if (!normalizedQuery) {
+              commitStarredMailboxPageState(
+                role,
+                (current) => ({
+                  ...current,
+                  loadMorePhase: "retry",
+                  loadMoreError: describeError(
+                    recoveryError,
+                    "收藏邮件暂时无法加载",
+                  ),
+                }),
+                accountId,
+              );
+            }
+            throw recoveryError;
+          }
+        }
         if (
           mailboxPageRequestsRef.current.get(requestKey) === requestToken &&
           !normalizedQuery
@@ -2876,9 +2952,15 @@ export function App() {
               role,
               {
                 ...page.state,
-                items: append
-                  ? appendMailboxItems(previousSource?.items, page.items)
-                  : page.items,
+                items:
+                  append && page.cursorRecovered
+                    ? mergeRefreshedMailboxItems(
+                        previousSource?.items,
+                        page.items,
+                      )
+                    : append
+                      ? appendMailboxItems(previousSource?.items, page.items)
+                      : page.items,
               },
             ];
           }),

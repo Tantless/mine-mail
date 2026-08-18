@@ -147,10 +147,25 @@ const commandFailureMessages = Object.freeze({
 });
 
 function commandError(error, command) {
-  return toUserFacingError(
+  const userError = toUserFacingError(
     error,
     commandFailureMessages[command] || "该操作没有完成",
   );
+  if (
+    ["load_older_mailbox_page", "load_older_starred_mailbox_page"].includes(
+      command,
+    ) &&
+    /continuation cursor is invalid or expired/i.test(
+      typeof error === "string" ? error : error?.message || "",
+    )
+  ) {
+    userError.code = "stale_mailbox_cursor";
+  }
+  return userError;
+}
+
+export function isStaleMailboxCursorError(error) {
+  return error?.code === "stale_mailbox_cursor";
 }
 
 async function desktopInvoke(command, args) {

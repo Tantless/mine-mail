@@ -53,6 +53,7 @@ pub(crate) fn mail_error_kind(error: &mine_mail::MailError) -> ErrorKind {
     match error {
         MailError::Config(_) => ErrorKind::Config,
         MailError::Validation(_) => ErrorKind::Validation,
+        MailError::StaleCursor => ErrorKind::Validation,
         MailError::Database(_) => ErrorKind::Database,
         MailError::Io(_) => ErrorKind::Io,
         MailError::Serialization(_) => ErrorKind::Serialization,

@@ -3026,6 +3026,7 @@ fn safe_mail_error(error: mine_mail::MailError) -> String {
 
     match error {
         MailError::Validation(message) => format!("Validation failed: {message}"),
+        MailError::StaleCursor => "The continuation cursor is invalid or expired.".to_owned(),
         MailError::NotFound { entity, id } => format!("{entity} was not found: {id}"),
         MailError::Timeout { operation } => format!("{operation} timed out. Please try again."),
         MailError::Imap(_) => "The mail server could not complete the Inbox request.".to_owned(),

@@ -667,6 +667,24 @@ describe("mailApi desktop IPC contract", () => {
     ]);
   });
 
+  it("classifies expired opaque mailbox cursors for local pagination recovery", async () => {
+    ipc.invoke.mockRejectedValue(
+      "The continuation cursor is invalid or expired.",
+    );
+    const { isStaleMailboxCursorError, mailApi } = await import("./mailApi.js");
+
+    const error = await mailApi
+      .loadOlderMailboxPage("account-a", "inbox", "expired-cursor", 50)
+      .catch((failure) => failure);
+
+    expect(isStaleMailboxCursorError(error)).toBe(true);
+    expect(error).toMatchObject({
+      name: "UserFacingError",
+      code: "stale_mailbox_cursor",
+      message: "操作未完成：邮件列表状态已变化，请刷新后重试。",
+    });
+  });
+
   it("passes mailbox bcc and explicit outbox recipient groups through unchanged", async () => {
     const mailboxPage = {
       items: [

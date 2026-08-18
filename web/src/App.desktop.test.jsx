@@ -96,6 +96,8 @@ const desktop = vi.hoisted(() => {
 vi.mock("./services/mailApi.js", () => ({
   isTauri: true,
   isTauriRuntime: true,
+  isStaleMailboxCursorError: (error) =>
+    error?.code === "stale_mailbox_cursor",
   isUnsupportedRuntime: false,
   mailApi: desktop.mailApi,
 }));
@@ -3515,6 +3517,85 @@ describe("Mine Mail desktop state bridge", () => {
     expect(screen.getByText("Newest refreshed summary")).toBeTruthy();
     expect(screen.getByText("Older local page")).toBeTruthy();
     expect(screen.queryByText("Newest local page")).toBeNull();
+  });
+
+  it("preserves visible rows and rebuilds pagination after a stale cursor", async () => {
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: 600,
+    });
+    const newest = {
+      ...summary("cursor-newest", "Cursor newest"),
+      uid: undefined,
+      flags: ["\\Seen"],
+    };
+    const visibleOlder = {
+      ...summary("cursor-visible-older", "Already visible older row"),
+      uid: undefined,
+      flags: ["\\Seen"],
+    };
+    const arrival = {
+      ...summary("cursor-arrival", "Arrival during cursor recovery"),
+      uid: undefined,
+      flags: ["\\Seen"],
+    };
+    let inboxFirstPageReads = 0;
+    desktop.mailApi.listMailboxPage.mockImplementation(
+      async (_, role, cursor, _pageSize, query) => {
+        if (role !== "inbox" || query) return mailboxPage([], role);
+        expect(cursor).toBeNull();
+        inboxFirstPageReads += 1;
+        return inboxFirstPageReads === 1
+          ? mailboxPage([newest, visibleOlder], role, {
+              next_cursor: "stale-page-cursor",
+              has_more_local: true,
+              remote_history_state: "not_checked",
+              end_reached: false,
+            })
+          : mailboxPage(
+              [arrival, { ...newest, subject: "Cursor newest refreshed" }],
+              role,
+              {
+                next_cursor: "replacement-page-cursor",
+                has_more_local: true,
+                remote_history_state: "not_checked",
+                end_reached: false,
+              },
+            );
+      },
+    );
+    desktop.mailApi.loadOlderMailboxPage.mockRejectedValue(
+      Object.assign(new Error("邮件列表状态已变化"), {
+        code: "stale_mailbox_cursor",
+      }),
+    );
+    render(<App />);
+
+    expect(await screen.findByText("Cursor newest")).toBeTruthy();
+    expect(screen.getByText("Already visible older row")).toBeTruthy();
+    const list = screen.getByLabelText("收件箱邮件列表");
+    const scrollSurface = list.querySelector(".message-list");
+    Object.defineProperties(scrollSurface, {
+      scrollHeight: { configurable: true, value: 800 },
+      clientHeight: { configurable: true, value: 400 },
+      scrollTop: { configurable: true, value: 350 },
+    });
+    fireEvent.scroll(scrollSurface);
+
+    await waitFor(() =>
+      expect(desktop.mailApi.loadOlderMailboxPage).toHaveBeenCalledWith(
+        "desktop-account",
+        "inbox",
+        "stale-page-cursor",
+        50,
+        null,
+      ),
+    );
+    expect(await screen.findByText("Arrival during cursor recovery")).toBeTruthy();
+    expect(screen.getByText("Cursor newest refreshed")).toBeTruthy();
+    expect(screen.getByText("Already visible older row")).toBeTruthy();
+    expect(inboxFirstPageReads).toBe(2);
+    expect(list.querySelector(".mail-pagination-notice")).toBeNull();
   });
 
   it("keeps cached rows visible while backend mailbox search is pending", async () => {

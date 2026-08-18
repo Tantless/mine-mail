@@ -12,6 +12,9 @@ pub enum MailError {
     #[error("validation error: {0}")]
     Validation(String),
 
+    #[error("the continuation cursor is invalid or expired")]
+    StaleCursor,
+
     #[error("database error: {0}")]
     Database(#[from] rusqlite::Error),
 

@@ -70,6 +70,7 @@ const DEFAULT_MESSAGE_PAGE_SIZE: usize = 50;
 const MAX_MESSAGE_PAGE_SIZE: usize = 100;
 const MAX_CURSOR_TOKEN_BYTES: usize = 64;
 const MESSAGE_CURSOR_TTL_SECONDS: i64 = 24 * 60 * 60;
+const MAX_MESSAGE_CURSORS_PER_ACCOUNT: i64 = 128;
 const MAX_SEARCH_QUERY_CHARS: usize = 256;
 const MAX_MAILBOX_DISPLAY_CHARS: usize = 1_024;
 const MAX_IDENTITY_MESSAGE_ID_CHARS: usize = 1_024;
@@ -555,6 +556,8 @@ impl Repository {
              );
              CREATE INDEX IF NOT EXISTS idx_message_page_cursors_expiry
                  ON message_page_cursors(created_at);
+             CREATE INDEX IF NOT EXISTS idx_message_page_cursors_account_age
+                 ON message_page_cursors(account_id, created_at DESC, token DESC);
 
              CREATE TABLE IF NOT EXISTS drafts (
                  id TEXT PRIMARY KEY NOT NULL,
@@ -629,6 +632,7 @@ impl Repository {
         migrate_move_to_inbox_v21(&connection)?;
         migrate_message_public_id_aliases_v22(&connection)?;
         migrate_gmail_incremental_sync_v23(&connection)?;
+        migrate_message_page_cursors_v24(&connection)?;
         connection.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_drafts_remote_identity
                  ON drafts(account_id, remote_mailbox, remote_uid);
@@ -638,7 +642,7 @@ impl Repository {
              CREATE INDEX IF NOT EXISTS idx_messages_body_cache_lru
                  ON messages(account_id, body_last_accessed_at, id)
                  WHERE body_fetched = 1;
-             PRAGMA user_version = 23;",
+             PRAGMA user_version = 24;",
         )?;
         Ok(repository)
     }
@@ -3204,7 +3208,7 @@ impl Repository {
                 .unwrap_or_default();
             (history.before_uid, history.complete)
         };
-        let connection = self.connection()?;
+        let mut connection = self.connection()?;
         let decoded_cursor = cursor
             .map(|cursor| {
                 load_and_validate_message_cursor(
@@ -3277,7 +3281,7 @@ impl Repository {
                 .or_else(|| state.highest_uid.and_then(|uid| uid.checked_add(1)))
                 .unwrap_or(1);
             Some(issue_message_cursor(
-                &connection,
+                &mut connection,
                 MessageCursorPayload {
                     account_id: account_id.to_owned(),
                     mailbox,
@@ -7206,6 +7210,78 @@ fn migrate_gmail_incremental_sync_v23(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn migrate_message_page_cursors_v24(connection: &Connection) -> Result<()> {
+    let schema_version: u32 =
+        connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    if schema_version < 24 {
+        let transaction = connection.unchecked_transaction()?;
+        transaction.execute(
+            "DELETE FROM message_page_cursors
+             WHERE created_at < unixepoch() - ?1",
+            params![MESSAGE_CURSOR_TTL_SECONDS],
+        )?;
+        transaction.execute_batch(
+            "DELETE FROM message_page_cursors AS cursor
+             WHERE EXISTS (
+                 SELECT 1
+                 FROM message_page_cursors AS newer
+                 WHERE newer.account_id = cursor.account_id
+                   AND newer.role = cursor.role
+                   AND newer.mailbox = cursor.mailbox
+                   AND newer.uid_validity IS cursor.uid_validity
+                   AND newer.sort_at IS cursor.sort_at
+                   AND newer.uid IS cursor.uid
+                   AND newer.message_row_id IS cursor.message_row_id
+                   AND newer.remote_before_uid = cursor.remote_before_uid
+                   AND newer.query_normalized = cursor.query_normalized
+                   AND newer.flagged_only = cursor.flagged_only
+                   AND (
+                       newer.created_at > cursor.created_at
+                       OR (
+                           newer.created_at = cursor.created_at
+                           AND newer.token > cursor.token
+                       )
+                   )
+             );",
+        )?;
+        transaction.execute(
+            "DELETE FROM message_page_cursors
+             WHERE token IN (
+                 SELECT token
+                 FROM (
+                     SELECT token,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY account_id
+                                ORDER BY created_at DESC, token DESC
+                            ) AS account_rank
+                     FROM message_page_cursors
+                 )
+                 WHERE account_rank > ?1
+             )",
+            params![MAX_MESSAGE_CURSORS_PER_ACCOUNT],
+        )?;
+        transaction.commit()?;
+    }
+    connection.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_message_page_cursors_account_age
+             ON message_page_cursors(account_id, created_at DESC, token DESC);
+         CREATE UNIQUE INDEX IF NOT EXISTS idx_message_page_cursors_payload
+             ON message_page_cursors(
+                 account_id,
+                 role,
+                 mailbox,
+                 COALESCE(uid_validity, -1),
+                 COALESCE(sort_at, ''),
+                 COALESCE(uid, -1),
+                 COALESCE(message_row_id, -1),
+                 remote_before_uid,
+                 query_normalized,
+                 flagged_only
+             );",
+    )?;
+    Ok(())
+}
+
 fn flags_with_pending_updates(
     connection: &Connection,
     account_id: &str,
@@ -7809,36 +7885,86 @@ fn validate_history_advance(
 }
 
 fn issue_message_cursor(
-    connection: &Connection,
+    connection: &mut Connection,
     payload: MessageCursorPayload,
 ) -> Result<MessagePageCursor> {
     validate_message_cursor_payload(&payload)?;
-    connection.execute(
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute(
         "DELETE FROM message_page_cursors
          WHERE created_at < unixepoch() - ?1",
         params![MESSAGE_CURSOR_TTL_SECONDS],
     )?;
+    let existing = transaction
+        .query_row(
+            "SELECT token
+             FROM message_page_cursors
+             WHERE account_id = ?1
+               AND role = ?2
+               AND mailbox = ?3
+               AND uid_validity IS ?4
+               AND sort_at IS ?5
+               AND uid IS ?6
+               AND message_row_id IS ?7
+               AND remote_before_uid = ?8
+               AND query_normalized = ?9
+               AND flagged_only = ?10
+             ORDER BY created_at DESC, token DESC
+             LIMIT 1",
+            params![
+                &payload.account_id,
+                payload.role.as_str(),
+                &payload.mailbox,
+                payload.uid_validity,
+                payload.sort_at.as_deref(),
+                payload.uid,
+                payload.id,
+                payload.remote_before_uid,
+                &payload.query_normalized,
+                payload.flagged_only,
+            ],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    if let Some(token) = existing {
+        transaction.commit()?;
+        return Ok(MessagePageCursor::new(token));
+    }
+
     let token = Uuid::now_v7().to_string();
-    connection.execute(
+    transaction.execute(
         "INSERT INTO message_page_cursors (
              token, account_id, role, mailbox, uid_validity,
              sort_at, uid, message_row_id, remote_before_uid, query_normalized,
              flagged_only
          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         params![
-            token,
-            payload.account_id,
+            &token,
+            &payload.account_id,
             payload.role.as_str(),
-            payload.mailbox,
+            &payload.mailbox,
             payload.uid_validity,
-            payload.sort_at,
+            payload.sort_at.as_deref(),
             payload.uid,
             payload.id,
             payload.remote_before_uid,
-            payload.query_normalized,
+            &payload.query_normalized,
             payload.flagged_only,
         ],
     )?;
+    transaction.execute(
+        "DELETE FROM message_page_cursors
+         WHERE account_id = ?1
+           AND token NOT IN (
+               SELECT token
+               FROM message_page_cursors
+               WHERE account_id = ?1
+               ORDER BY created_at DESC, token DESC
+               LIMIT ?2
+           )",
+        params![&payload.account_id, MAX_MESSAGE_CURSORS_PER_ACCOUNT],
+    )?;
+    transaction.commit()?;
     Ok(MessagePageCursor::new(token))
 }
 
@@ -7933,9 +8059,7 @@ fn validate_message_cursor_payload(payload: &MessageCursorPayload) -> Result<()>
 }
 
 fn invalid_message_cursor() -> MailError {
-    MailError::Validation(
-        "the message cursor does not belong to this account, mailbox epoch, or search".to_owned(),
-    )
+    MailError::StaleCursor
 }
 
 fn validate_message_public_id(public_id: &str) -> Result<()> {
@@ -9549,8 +9673,9 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        DraftRecord, GmailSyncState, MailboxHistory, MailboxState, NewDraftAttachment, Repository,
-        StarredMailboxHistory, migrate_message_previews_v10,
+        DraftRecord, GmailSyncState, MAX_MESSAGE_CURSORS_PER_ACCOUNT, MESSAGE_CURSOR_TTL_SECONDS,
+        MailboxHistory, MailboxState, NewDraftAttachment, Repository, StarredMailboxHistory,
+        migrate_message_previews_v10,
     };
     use crate::{
         AccountConfig, AttachmentDisposition, AttachmentMeta, ComposeFormat, Draft, ForwardContext,
@@ -12604,6 +12729,205 @@ mod tests {
     }
 
     #[test]
+    fn identical_message_page_payload_reuses_one_opaque_cursor() {
+        let (_directory, repository, account) = setup();
+        initialize_mailbox(
+            &repository,
+            &account.account_id,
+            MailboxRole::Inbox,
+            "INBOX",
+            90,
+        );
+
+        let first = repository
+            .list_mailbox_page(&account.account_id, MailboxRole::Inbox, None, 10, None)
+            .expect("first page")
+            .next_cursor
+            .expect("first cursor");
+        let repeated = repository
+            .list_mailbox_page(&account.account_id, MailboxRole::Inbox, None, 10, None)
+            .expect("repeated page")
+            .next_cursor
+            .expect("reused cursor");
+
+        assert_eq!(repeated, first);
+        let stored: i64 = repository
+            .connection()
+            .expect("connection")
+            .query_row(
+                "SELECT COUNT(*) FROM message_page_cursors WHERE account_id = ?1",
+                params![account.account_id],
+                |row| row.get(0),
+            )
+            .expect("cursor count");
+        assert_eq!(stored, 1);
+    }
+
+    #[test]
+    fn message_page_cursor_cap_is_per_account_and_prunes_oldest_rows() {
+        let (_directory, repository, account) = setup();
+        initialize_mailbox(
+            &repository,
+            &account.account_id,
+            MailboxRole::Inbox,
+            "INBOX",
+            91,
+        );
+        let other = secondary_account(&account);
+        repository
+            .initialize_account(&other)
+            .expect("other account");
+        initialize_mailbox(
+            &repository,
+            &other.account_id,
+            MailboxRole::Inbox,
+            "INBOX",
+            91,
+        );
+        let other_cursor = repository
+            .list_mailbox_page(
+                &other.account_id,
+                MailboxRole::Inbox,
+                None,
+                10,
+                Some("other"),
+            )
+            .expect("other account page")
+            .next_cursor
+            .expect("other account cursor");
+
+        let oldest = repository
+            .list_mailbox_page(
+                &account.account_id,
+                MailboxRole::Inbox,
+                None,
+                10,
+                Some("query-0"),
+            )
+            .expect("oldest page")
+            .next_cursor
+            .expect("oldest cursor");
+        repository
+            .connection()
+            .expect("connection")
+            .execute(
+                "UPDATE message_page_cursors
+                 SET created_at = unixepoch() - 1
+                 WHERE token = ?1",
+                params![oldest.as_str()],
+            )
+            .expect("age oldest cursor");
+        for index in 1..=MAX_MESSAGE_CURSORS_PER_ACCOUNT {
+            repository
+                .list_mailbox_page(
+                    &account.account_id,
+                    MailboxRole::Inbox,
+                    None,
+                    10,
+                    Some(&format!("query-{index}")),
+                )
+                .expect("bounded cursor page");
+        }
+
+        let connection = repository.connection().expect("connection");
+        let primary_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM message_page_cursors WHERE account_id = ?1",
+                params![account.account_id],
+                |row| row.get(0),
+            )
+            .expect("primary cursor count");
+        let other_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM message_page_cursors WHERE account_id = ?1",
+                params![other.account_id],
+                |row| row.get(0),
+            )
+            .expect("other cursor count");
+        assert_eq!(primary_count, MAX_MESSAGE_CURSORS_PER_ACCOUNT);
+        assert_eq!(other_count, 1);
+        assert!(matches!(
+            repository.message_page_cursor_context(&oldest),
+            Err(MailError::StaleCursor)
+        ));
+        assert!(
+            repository
+                .message_page_cursor_context(&other_cursor)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn expired_message_page_cursor_is_rejected_and_reissued() {
+        let (_directory, repository, account) = setup();
+        initialize_mailbox(
+            &repository,
+            &account.account_id,
+            MailboxRole::Inbox,
+            "INBOX",
+            92,
+        );
+        let expired = repository
+            .list_mailbox_page(&account.account_id, MailboxRole::Inbox, None, 10, None)
+            .expect("initial page")
+            .next_cursor
+            .expect("initial cursor");
+        repository
+            .connection()
+            .expect("connection")
+            .execute(
+                "UPDATE message_page_cursors
+                 SET created_at = unixepoch() - ?1 - 1
+                 WHERE token = ?2",
+                params![MESSAGE_CURSOR_TTL_SECONDS, expired.as_str()],
+            )
+            .expect("expire cursor");
+
+        assert!(matches!(
+            repository.message_page_cursor_context(&expired),
+            Err(MailError::StaleCursor)
+        ));
+        let replacement = repository
+            .list_mailbox_page(&account.account_id, MailboxRole::Inbox, None, 10, None)
+            .expect("replacement page")
+            .next_cursor
+            .expect("replacement cursor");
+        assert_ne!(replacement, expired);
+        assert!(repository.message_page_cursor_context(&replacement).is_ok());
+    }
+
+    #[test]
+    fn deleting_an_account_cascades_its_message_page_cursors() {
+        let (_directory, repository, account) = setup();
+        initialize_mailbox(
+            &repository,
+            &account.account_id,
+            MailboxRole::Inbox,
+            "INBOX",
+            93,
+        );
+        let cursor = repository
+            .list_mailbox_page(&account.account_id, MailboxRole::Inbox, None, 10, None)
+            .expect("page")
+            .next_cursor
+            .expect("cursor");
+
+        repository
+            .connection()
+            .expect("connection")
+            .execute(
+                "DELETE FROM accounts WHERE id = ?1",
+                params![account.account_id],
+            )
+            .expect("delete account");
+
+        assert!(matches!(
+            repository.message_page_cursor_context(&cursor),
+            Err(MailError::StaleCursor)
+        ));
+    }
+
+    #[test]
     fn starred_pages_filter_flags_and_keep_their_cursor_and_history_isolated() {
         let (_directory, repository, account) = setup();
         initialize_mailbox(
@@ -14433,6 +14757,122 @@ mod tests {
     }
 
     #[test]
+    fn v24_migrates_cursor_rows_before_enforcing_payload_uniqueness() {
+        let (_directory, repository, account) = setup();
+        initialize_mailbox(
+            &repository,
+            &account.account_id,
+            MailboxRole::Inbox,
+            "INBOX",
+            94,
+        );
+        let duplicate_source = repository
+            .list_mailbox_page(
+                &account.account_id,
+                MailboxRole::Inbox,
+                None,
+                10,
+                Some("duplicate"),
+            )
+            .expect("duplicate source page")
+            .next_cursor
+            .expect("duplicate source cursor");
+        let expired = repository
+            .list_mailbox_page(
+                &account.account_id,
+                MailboxRole::Inbox,
+                None,
+                10,
+                Some("expired"),
+            )
+            .expect("expired source page")
+            .next_cursor
+            .expect("expired source cursor");
+        let duplicate_replacement = uuid::Uuid::now_v7().to_string();
+        let path = repository.path.clone();
+        let connection = repository.connection().expect("connection");
+        connection
+            .execute_batch("DROP INDEX idx_message_page_cursors_payload;")
+            .expect("drop v24 uniqueness");
+        connection
+            .execute(
+                "UPDATE message_page_cursors
+                 SET created_at = unixepoch() - 1
+                 WHERE token = ?1",
+                params![duplicate_source.as_str()],
+            )
+            .expect("age duplicate source");
+        connection
+            .execute(
+                "INSERT INTO message_page_cursors (
+                     token, account_id, role, mailbox, uid_validity,
+                     sort_at, uid, message_row_id, remote_before_uid,
+                     query_normalized, flagged_only, created_at
+                 )
+                 SELECT ?1, account_id, role, mailbox, uid_validity,
+                        sort_at, uid, message_row_id, remote_before_uid,
+                        query_normalized, flagged_only, unixepoch()
+                 FROM message_page_cursors
+                 WHERE token = ?2",
+                params![&duplicate_replacement, duplicate_source.as_str()],
+            )
+            .expect("legacy duplicate cursor");
+        connection
+            .execute(
+                "UPDATE message_page_cursors
+                 SET created_at = unixepoch() - ?1 - 1
+                 WHERE token = ?2",
+                params![MESSAGE_CURSOR_TTL_SECONDS, expired.as_str()],
+            )
+            .expect("legacy expired cursor");
+        connection
+            .pragma_update(None, "user_version", 23)
+            .expect("v23 marker");
+        drop(connection);
+        drop(repository);
+
+        let upgraded = Repository::open(&path).expect("v24 upgrade");
+        let connection = upgraded.connection().expect("upgraded connection");
+        let duplicate_tokens = connection
+            .prepare(
+                "SELECT token FROM message_page_cursors
+                 WHERE account_id = ?1 AND query_normalized = 'duplicate'",
+            )
+            .expect("duplicate query")
+            .query_map(params![&account.account_id], |row| row.get::<_, String>(0))
+            .expect("duplicate rows")
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .expect("duplicate tokens");
+        assert_eq!(duplicate_tokens, [duplicate_replacement]);
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM message_page_cursors WHERE token = ?1",
+                    params![expired.as_str()],
+                    |row| row.get::<_, i64>(0),
+                )
+                .expect("expired count"),
+            0
+        );
+        let version: u32 = connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("schema version");
+        assert_eq!(version, 24);
+        let payload_index_exists: bool = connection
+            .query_row(
+                "SELECT EXISTS(
+                     SELECT 1 FROM sqlite_master
+                     WHERE type = 'index'
+                       AND name = 'idx_message_page_cursors_payload'
+                 )",
+                [],
+                |row| row.get(0),
+            )
+            .expect("payload index");
+        assert!(payload_index_exists);
+    }
+
+    #[test]
     fn v14_migrates_existing_message_public_id_once_and_enforces_integrity() {
         let directory = TempDir::new().expect("temporary directory");
         let path = directory.path().join("real-v13-public-id.sqlite3");
@@ -14485,7 +14925,7 @@ mod tests {
         let version: u32 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("schema version");
-        assert_eq!(version, 23);
+        assert_eq!(version, 24);
         assert!(
             connection
                 .execute(
@@ -14542,7 +14982,7 @@ mod tests {
         let version: u32 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("schema version");
-        assert_eq!(version, 23);
+        assert_eq!(version, 24);
         assert!(
             super::table_has_column(&connection, "mailboxes", "starred_history_before_uid")
                 .unwrap()
@@ -14699,7 +15139,7 @@ mod tests {
                     .expect("schema version connection")
                     .pragma_query_value(None, "user_version", |row| row.get::<_, u32>(0))
                     .expect("schema version"),
-                23
+                24
             );
 
             assert_eq!(
@@ -15438,7 +15878,7 @@ mod tests {
         let version: u32 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("schema version");
-        assert_eq!(version, 23);
+        assert_eq!(version, 24);
         for column in ["source_cleanup_pending", "destination_reconciled"] {
             assert!(
                 super::table_has_column(&connection, "pending_message_actions", column).unwrap()
@@ -15583,7 +16023,7 @@ mod tests {
         let version: u32 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("schema version");
-        assert_eq!(version, 23);
+        assert_eq!(version, 24);
         for column in [
             "operation_id",
             "source_uid_validity",
@@ -15732,7 +16172,7 @@ Body' AS BLOB)
         let version: u32 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("schema version");
-        assert_eq!(version, 23);
+        assert_eq!(version, 24);
         for column in [
             "local_version",
             "has_unsupported_content",
