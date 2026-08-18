@@ -61,7 +61,9 @@ use mailbox_api::{
     prepare_permanent_delete, save_message_attachment, set_message_seen, set_message_starred_by_id,
     sync_mailbox, validate_account_id,
 };
-use storage::{PreparedStorageMigrationDto, StorageRuntime, StorageStatusDto};
+use storage::{
+    PreparedStorageMigrationDto, PreparedWebviewCacheCleanupDto, StorageRuntime, StorageStatusDto,
+};
 
 const INBOX_SYNC_LIMIT: usize = 100;
 const INBOX_LIST_LIMIT: usize = 250;
@@ -2348,6 +2350,38 @@ fn cancel_storage_migration(storage: State<'_, StorageRuntime>) -> CommandResult
 }
 
 #[tauri::command]
+fn prepare_webview_cache_cleanup(
+    storage: State<'_, StorageRuntime>,
+) -> CommandResult<PreparedWebviewCacheCleanupDto> {
+    diagnostics::command_lifecycle(
+        "prepare_webview_cache_cleanup",
+        DiagnosticFields::default(),
+        || {
+            let _gate = storage
+                .migration_gate
+                .lock()
+                .map_err(|_| "缓存清理操作发生冲突，请重试。".to_owned())?;
+            storage.prepare_webview_cache_cleanup()
+        },
+    )
+}
+
+#[tauri::command]
+fn cancel_webview_cache_cleanup(storage: State<'_, StorageRuntime>) -> CommandResult<()> {
+    diagnostics::command_lifecycle(
+        "cancel_webview_cache_cleanup",
+        DiagnosticFields::default(),
+        || {
+            let _gate = storage
+                .migration_gate
+                .lock()
+                .map_err(|_| "缓存清理操作发生冲突，请重试。".to_owned())?;
+            storage.cancel_pending_webview_cache_cleanup()
+        },
+    )
+}
+
+#[tauri::command]
 fn get_desktop_settings(
     app: AppHandle,
     runtime: State<'_, DesktopRuntime>,
@@ -3306,6 +3340,8 @@ pub fn run() {
             get_storage_status,
             prepare_storage_migration,
             cancel_storage_migration,
+            prepare_webview_cache_cleanup,
+            cancel_webview_cache_cleanup,
             get_desktop_settings,
             update_desktop_settings,
             get_new_mail_notification,

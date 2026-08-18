@@ -1051,6 +1051,7 @@ describe("SettingsPanel account flow", () => {
         locationKind: "install_directory",
         available: true,
         totalBytes: 1_610_612_736,
+        reclaimableWebviewBytes: 536_870_912,
         categories: [
           {
             id: "mail",
@@ -1064,6 +1065,7 @@ describe("SettingsPanel account flow", () => {
           },
         ],
         migrationNotice: null,
+        cacheCleanupNotice: null,
       }),
       chooseDirectory: vi.fn().mockResolvedValue("E:\\Mine Mail Data"),
       prepareMigration: vi.fn().mockResolvedValue({
@@ -1071,6 +1073,10 @@ describe("SettingsPanel account flow", () => {
         totalBytes: 1_610_612_736,
       }),
       cancelMigration: vi.fn().mockResolvedValue(undefined),
+      prepareWebviewCacheCleanup: vi.fn().mockResolvedValue({
+        reclaimableBytes: 536_870_912,
+      }),
+      cancelWebviewCacheCleanup: vi.fn().mockResolvedValue(undefined),
       relaunch: vi.fn().mockResolvedValue(undefined),
     };
     const user = userEvent.setup();
@@ -1152,6 +1158,74 @@ describe("SettingsPanel account flow", () => {
     expect(
       screen.getByRole("dialog", { name: "迁移本地数据" }),
     ).toBeTruthy();
+  });
+
+  it("confirms regenerable interface cache cleanup before relaunching", async () => {
+    const storageClient = {
+      isSupported: true,
+      getStatus: vi.fn().mockResolvedValue({
+        dataPath: "D:\\Mine Mail\\Data",
+        locationKind: "install_directory",
+        available: true,
+        totalBytes: 536_870_912,
+        reclaimableWebviewBytes: 402_653_184,
+        categories: [
+          {
+            id: "webview",
+            label: "界面与浏览器缓存",
+            bytes: 536_870_912,
+          },
+        ],
+        migrationNotice: null,
+        cacheCleanupNotice: null,
+      }),
+      chooseDirectory: vi.fn(),
+      prepareMigration: vi.fn(),
+      cancelMigration: vi.fn(),
+      prepareWebviewCacheCleanup: vi.fn().mockResolvedValue({
+        reclaimableBytes: 402_653_184,
+      }),
+      cancelWebviewCacheCleanup: vi.fn().mockResolvedValue(undefined),
+      relaunch: vi.fn().mockResolvedValue(undefined),
+    };
+    const user = userEvent.setup();
+    render(<SettingsPanel {...panelProps({ storageClient })} />);
+
+    await user.click(screen.getByRole("button", { name: "关于 Mine Mail" }));
+    const releaseButton = await screen.findByRole("button", {
+      name: "释放缓存",
+    });
+    expect(screen.getByText(/可释放约 384 MiB/)).toBeTruthy();
+
+    await user.click(releaseButton);
+    const dialog = await screen.findByRole("dialog", {
+      name: "释放界面缓存",
+    });
+    expect(within(dialog).getByText(/账户、邮件、壁纸和登录状态不会被删除/))
+      .toBeTruthy();
+    expect(document.activeElement).toBe(
+      within(dialog).getByRole("button", { name: "取消" }),
+    );
+
+    fireEvent.keyDown(dialog, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "释放界面缓存" })).toBeNull();
+    expect(document.activeElement).toBe(releaseButton);
+
+    await user.click(releaseButton);
+    const reopenedDialog = await screen.findByRole("dialog", {
+      name: "释放界面缓存",
+    });
+    await user.click(
+      within(reopenedDialog).getByRole("button", { name: "清理并重启" }),
+    );
+
+    await waitFor(() =>
+      expect(storageClient.prepareWebviewCacheCleanup).toHaveBeenCalledOnce(),
+    );
+    expect(storageClient.relaunch).toHaveBeenCalledOnce();
+    expect(reopenedDialog.getAttribute("aria-busy")).toBe("true");
+    fireEvent.keyDown(reopenedDialog, { key: "Escape" });
+    expect(screen.getByRole("dialog", { name: "释放界面缓存" })).toBeTruthy();
   });
 
   it("cancels a queued storage migration when relaunch fails", async () => {

@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     env, fs,
     io::{self, Write},
     path::{Component, Path, PathBuf},
@@ -24,10 +24,24 @@ const STORAGE_SCHEMA_VERSION: u8 = 1;
 const STORAGE_LOCATOR_FILE: &str = "storage-location.json";
 const STORAGE_MIGRATION_FILE: &str = "storage-migration.json";
 const STORAGE_MIGRATION_RESULT_FILE: &str = "storage-migration-result.json";
+const WEBVIEW_CACHE_CLEANUP_FILE: &str = "webview-cache-cleanup.json";
 const APP_UPDATE_RELAUNCH_FILE: &str = "app-update-relaunch.json";
 const DATA_ROOT_MARKER_FILE: &str = ".mine-mail-data.json";
 const INSTALL_DATA_DIRECTORY_NAME: &str = "Data";
 const WEBVIEW_DATA_DIRECTORY_NAME: &str = "EBWebView";
+const WEBVIEW_CACHE_DIRECTORY_NAMES: &[&str] = &[
+    "Cache",
+    "Code Cache",
+    "GPUCache",
+    "DawnGraphiteCache",
+    "DawnWebGPUCache",
+    "GPUPersistentCache",
+    "GrShaderCache",
+    "ShaderCache",
+    "component_crx_cache",
+    "extensions_crx_cache",
+    "AutofillAiModelCache",
+];
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct StorageLocator {
@@ -57,6 +71,11 @@ struct StorageMigrationRequest {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+struct WebviewCacheCleanupRequest {
+    schema_version: u8,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct StoredMigrationResult {
     status: MigrationResultStatus,
     moved_bytes: u64,
@@ -72,6 +91,11 @@ struct AppUpdateRelaunchRequest {
 struct MigrationExecution {
     moved_bytes: u64,
     cleanup_warning: bool,
+}
+
+struct WebviewCacheCleanupExecution {
+    removed_bytes: u64,
+    failed_directories: usize,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
@@ -99,6 +123,14 @@ pub(crate) struct StorageMigrationNoticeDto {
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct WebviewCacheCleanupNoticeDto {
+    status: MigrationResultStatus,
+    removed_bytes: u64,
+    message: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct StorageStatusDto {
     // The user-visible data directory label. The raw path still crosses the
     // UI boundary by explicit product decision so the settings page can show
@@ -107,8 +139,10 @@ pub(crate) struct StorageStatusDto {
     location_kind: StorageLocationKind,
     available: bool,
     total_bytes: u64,
+    reclaimable_webview_bytes: u64,
     categories: Vec<StorageCategoryDto>,
     migration_notice: Option<StorageMigrationNoticeDto>,
+    cache_cleanup_notice: Option<WebviewCacheCleanupNoticeDto>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -125,6 +159,12 @@ pub(crate) struct PreparedStorageMigrationDto {
     total_bytes: u64,
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PreparedWebviewCacheCleanupDto {
+    reclaimable_bytes: u64,
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct StorageRuntime {
     bootstrap_dir: PathBuf,
@@ -132,6 +172,7 @@ pub(crate) struct StorageRuntime {
     install_data_root: Option<PathBuf>,
     location_kind: StorageLocationKind,
     migration_notice: Option<StorageMigrationNoticeDto>,
+    cache_cleanup_notice: Option<WebviewCacheCleanupNoticeDto>,
     /// Serializes prepare/cancel migration commands so concurrent calls cannot
     /// interleave writes to the migration task file.
     pub(crate) migration_gate: Arc<Mutex<()>>,
@@ -156,6 +197,7 @@ impl StorageRuntime {
                         install_data_root: None,
                         location_kind: StorageLocationKind::LocalAppData,
                         migration_notice: None,
+                        cache_cleanup_notice: None,
                         migration_gate: Arc::new(Mutex::new(())),
                     },
                     runtime_data_root: degraded,
@@ -176,6 +218,7 @@ impl StorageRuntime {
                     install_data_root: None,
                     location_kind: StorageLocationKind::LocalAppData,
                     migration_notice: None,
+                    cache_cleanup_notice: None,
                     migration_gate: Arc::new(Mutex::new(())),
                 },
                 runtime_data_root: degraded,
@@ -250,6 +293,27 @@ impl StorageRuntime {
             }
         };
 
+        let cache_cleanup_notice =
+            process_pending_webview_cache_cleanup(&bootstrap_dir, &data_root);
+        if let Some(notice) = cache_cleanup_notice.as_ref() {
+            let fields = DiagnosticFields::default()
+                .operation("webview_cache_cleanup")
+                .outcome(match notice.status {
+                    MigrationResultStatus::Completed => "completed",
+                    MigrationResultStatus::Failed => "partial_or_failed",
+                })
+                .moved_bytes(notice.removed_bytes);
+            match notice.status {
+                MigrationResultStatus::Completed => {
+                    diagnostics::info("webview_cache_cleanup_completed", fields)
+                }
+                MigrationResultStatus::Failed => diagnostics::error(
+                    "webview_cache_cleanup_failed",
+                    fields.error(DiagnosticErrorKind::Io),
+                ),
+            }
+        }
+
         let runtime_data_root = if startup_error.is_some() {
             env::temp_dir().join("mine-mail-degraded")
         } else {
@@ -263,6 +327,7 @@ impl StorageRuntime {
                 install_data_root,
                 location_kind,
                 migration_notice,
+                cache_cleanup_notice,
                 migration_gate: Arc::new(Mutex::new(())),
             },
             runtime_data_root,
@@ -330,14 +395,28 @@ impl StorageRuntime {
             },
         ];
         let total_bytes = categories.iter().map(|category| category.bytes).sum();
+        let reclaimable_webview_bytes =
+            reclaimable_webview_cache_bytes(&self.data_root, &self.bootstrap_dir).unwrap_or_else(
+                |_| {
+                    diagnostics::limited_failure(
+                        "webview_cache_measurement_failed",
+                        "measure_webview_cache",
+                        None,
+                        DiagnosticErrorKind::Io,
+                    );
+                    0
+                },
+            );
 
         Ok(StorageStatusDto {
             data_path: self.data_root.to_string_lossy().into_owned(),
             location_kind: self.location_kind,
             available,
             total_bytes,
+            reclaimable_webview_bytes,
             categories,
             migration_notice: self.migration_notice.clone(),
+            cache_cleanup_notice: self.cache_cleanup_notice.clone(),
         })
     }
 
@@ -430,6 +509,45 @@ impl StorageRuntime {
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
             Err(_) => Err("无法撤销待执行的数据迁移任务。".to_owned()),
+        }
+    }
+
+    pub(crate) fn prepare_webview_cache_cleanup(
+        &self,
+    ) -> Result<PreparedWebviewCacheCleanupDto, String> {
+        let reclaimable_bytes =
+            reclaimable_webview_cache_bytes(&self.data_root, &self.bootstrap_dir)
+                .map_err(|_| "无法计算可释放的界面缓存大小。".to_owned())?;
+        write_json_atomically(
+            &self.bootstrap_dir.join(WEBVIEW_CACHE_CLEANUP_FILE),
+            &WebviewCacheCleanupRequest {
+                schema_version: STORAGE_SCHEMA_VERSION,
+            },
+        )
+        .map_err(|_| "无法保存缓存清理任务，请确认系统数据目录可写。".to_owned())?;
+
+        diagnostics::info(
+            "webview_cache_cleanup_prepared",
+            DiagnosticFields::default()
+                .operation("webview_cache_cleanup")
+                .outcome("restart_required")
+                .moved_bytes(reclaimable_bytes),
+        );
+
+        Ok(PreparedWebviewCacheCleanupDto { reclaimable_bytes })
+    }
+
+    pub(crate) fn cancel_pending_webview_cache_cleanup(&self) -> Result<(), String> {
+        match fs::remove_file(self.bootstrap_dir.join(WEBVIEW_CACHE_CLEANUP_FILE)) {
+            Ok(()) => {
+                diagnostics::info(
+                    "webview_cache_cleanup_cancelled",
+                    DiagnosticFields::default().operation("webview_cache_cleanup"),
+                );
+                Ok(())
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(_) => Err("无法撤销待执行的界面缓存清理任务。".to_owned()),
         }
     }
 }
@@ -626,6 +744,158 @@ fn validate_and_prepare_migration_target(
     }
     probe_directory_write(&target).map_err(|_| "所选数据目录不可写。".to_owned())?;
     Ok(target)
+}
+
+fn process_pending_webview_cache_cleanup(
+    bootstrap_dir: &Path,
+    data_root: &Path,
+) -> Option<WebviewCacheCleanupNoticeDto> {
+    let request_path = bootstrap_dir.join(WEBVIEW_CACHE_CLEANUP_FILE);
+    if !request_path.exists() {
+        return None;
+    }
+
+    let outcome = read_json::<WebviewCacheCleanupRequest>(&request_path)
+        .map_err(|_| "缓存清理任务损坏，未删除任何数据。".to_owned())
+        .and_then(|request| {
+            if request.schema_version != STORAGE_SCHEMA_VERSION {
+                return Err("缓存清理任务版本不受支持，未删除任何数据。".to_owned());
+            }
+            cleanup_webview_caches(data_root, bootstrap_dir)
+                .map_err(|_| "无法读取界面缓存目录，缓存未完成清理。".to_owned())
+        });
+
+    match fs::remove_file(&request_path) {
+        Ok(()) => diagnostics::limited_recovery(
+            "webview_cache_cleanup_request_removal_failed",
+            "webview_cache_cleanup_request_removal_recovered",
+            "process_webview_cache_cleanup",
+            None,
+        ),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(_) => diagnostics::limited_failure(
+            "webview_cache_cleanup_request_removal_failed",
+            "process_webview_cache_cleanup",
+            None,
+            DiagnosticErrorKind::Io,
+        ),
+    }
+
+    Some(match outcome {
+        Ok(execution) if execution.failed_directories == 0 => WebviewCacheCleanupNoticeDto {
+            status: MigrationResultStatus::Completed,
+            removed_bytes: execution.removed_bytes,
+            message: if execution.removed_bytes == 0 {
+                "当前没有需要释放的界面缓存。".to_owned()
+            } else {
+                "界面缓存已释放。".to_owned()
+            },
+        },
+        Ok(execution) => WebviewCacheCleanupNoticeDto {
+            status: MigrationResultStatus::Failed,
+            removed_bytes: execution.removed_bytes,
+            message: "已释放部分界面缓存；仍有文件被系统占用，可再次重试。".to_owned(),
+        },
+        Err(message) => WebviewCacheCleanupNoticeDto {
+            status: MigrationResultStatus::Failed,
+            removed_bytes: 0,
+            message,
+        },
+    })
+}
+
+fn reclaimable_webview_cache_bytes(data_root: &Path, bootstrap_dir: &Path) -> io::Result<u64> {
+    let targets = collect_reclaimable_webview_cache_directories(data_root, bootstrap_dir)?;
+    let mut total = 0u64;
+    for target in targets {
+        total = total.saturating_add(entry_size(&target)?);
+    }
+    Ok(total)
+}
+
+fn cleanup_webview_caches(
+    data_root: &Path,
+    bootstrap_dir: &Path,
+) -> io::Result<WebviewCacheCleanupExecution> {
+    let targets = collect_reclaimable_webview_cache_directories(data_root, bootstrap_dir)?;
+    let mut execution = WebviewCacheCleanupExecution {
+        removed_bytes: 0,
+        failed_directories: 0,
+    };
+    for target in targets {
+        let bytes = match entry_size(&target) {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                execution.failed_directories += 1;
+                continue;
+            }
+        };
+        match fs::remove_dir_all(&target) {
+            Ok(()) => execution.removed_bytes = execution.removed_bytes.saturating_add(bytes),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(_) => execution.failed_directories += 1,
+        }
+    }
+    Ok(execution)
+}
+
+fn collect_reclaimable_webview_cache_directories(
+    data_root: &Path,
+    bootstrap_dir: &Path,
+) -> io::Result<Vec<PathBuf>> {
+    let mut targets = BTreeSet::new();
+    collect_webview_cache_directories(
+        &bootstrap_dir.join(WEBVIEW_DATA_DIRECTORY_NAME),
+        &mut targets,
+    )?;
+    if data_root != bootstrap_dir && is_trusted_cleanup_data_root(data_root) {
+        collect_webview_cache_directories(
+            &data_root.join(WEBVIEW_DATA_DIRECTORY_NAME),
+            &mut targets,
+        )?;
+    }
+    Ok(targets.into_iter().collect())
+}
+
+fn is_trusted_cleanup_data_root(path: &Path) -> bool {
+    read_data_root_marker(path).is_ok_and(|marker| {
+        marker.schema_version == STORAGE_SCHEMA_VERSION
+            && marker.identifier == "com.minemail.desktop"
+            && marker.state == DataRootState::Ready
+    })
+}
+
+fn collect_webview_cache_directories(
+    path: &Path,
+    targets: &mut BTreeSet<PathBuf>,
+) -> io::Result<()> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Ok(());
+    }
+
+    for entry in fs::read_dir(path)? {
+        let entry = entry?;
+        let metadata = fs::symlink_metadata(entry.path())?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            continue;
+        }
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if WEBVIEW_CACHE_DIRECTORY_NAMES
+            .iter()
+            .any(|candidate| name.eq_ignore_ascii_case(candidate))
+        {
+            targets.insert(entry.path());
+        } else {
+            collect_webview_cache_directories(&entry.path(), targets)?;
+        }
+    }
+    Ok(())
 }
 
 fn process_pending_migration(bootstrap_dir: &Path) -> Option<StorageMigrationNoticeDto> {
@@ -1056,10 +1326,14 @@ fn managed_entries(path: &Path) -> io::Result<impl Iterator<Item = io::Result<fs
 fn is_bootstrap_entry(name: &str) -> bool {
     matches!(
         name,
-        STORAGE_LOCATOR_FILE | STORAGE_MIGRATION_FILE | STORAGE_MIGRATION_RESULT_FILE
+        STORAGE_LOCATOR_FILE
+            | STORAGE_MIGRATION_FILE
+            | STORAGE_MIGRATION_RESULT_FILE
+            | WEBVIEW_CACHE_CLEANUP_FILE
     ) || name.starts_with("storage-location.json.tmp-")
         || name.starts_with("storage-migration.json.tmp-")
         || name.starts_with("storage-migration-result.json.tmp-")
+        || name.starts_with("webview-cache-cleanup.json.tmp-")
 }
 
 fn managed_tree_size(path: &Path) -> io::Result<u64> {
@@ -1652,6 +1926,7 @@ mod tests {
             install_data_root: None,
             location_kind: StorageLocationKind::LocalAppData,
             migration_notice: None,
+            cache_cleanup_notice: None,
             migration_gate: Arc::new(Mutex::new(())),
         };
 
@@ -1663,5 +1938,101 @@ mod tests {
             .expect("second cancellation");
 
         assert!(!bootstrap.join(STORAGE_MIGRATION_FILE).exists());
+    }
+
+    #[test]
+    fn webview_cache_cleanup_removes_only_regenerable_directories() {
+        let directory = tempdir().expect("temporary directory");
+        let bootstrap = directory.path().join("bootstrap");
+        let data_root = directory.path().join("data");
+        let legacy_profile = bootstrap.join("EBWebView/Default");
+        let active_profile = data_root.join("EBWebView/EBWebView/Default");
+        fs::create_dir_all(&data_root).expect("data root");
+        write_data_root_marker(&data_root, DataRootState::Ready).expect("data root marker");
+
+        for path in [
+            legacy_profile.join("Cache"),
+            legacy_profile.join("Code Cache/js"),
+            active_profile.join("GPUCache"),
+            data_root.join("EBWebView/GrShaderCache"),
+            active_profile.join("Local Storage/leveldb"),
+            active_profile.join("IndexedDB"),
+        ] {
+            fs::create_dir_all(path).expect("cache fixture directory");
+        }
+        fs::write(legacy_profile.join("Cache/http.bin"), b"http-cache").expect("http cache");
+        fs::write(legacy_profile.join("Code Cache/js/module.bin"), b"js-cache")
+            .expect("code cache");
+        fs::write(active_profile.join("GPUCache/gpu.bin"), b"gpu-cache").expect("gpu cache");
+        fs::write(
+            data_root.join("EBWebView/GrShaderCache/shader.bin"),
+            b"shader-cache",
+        )
+        .expect("shader cache");
+        fs::write(
+            active_profile.join("Local Storage/leveldb/state.bin"),
+            b"persistent-state",
+        )
+        .expect("local storage");
+        fs::write(active_profile.join("IndexedDB/mail.bin"), b"indexed-db").expect("indexed db");
+
+        let reclaimable =
+            reclaimable_webview_cache_bytes(&data_root, &bootstrap).expect("cache size");
+        let execution = cleanup_webview_caches(&data_root, &bootstrap).expect("cache cleanup");
+
+        assert_eq!(execution.failed_directories, 0);
+        assert_eq!(execution.removed_bytes, reclaimable);
+        assert!(reclaimable > 0);
+        assert!(!legacy_profile.join("Cache").exists());
+        assert!(!legacy_profile.join("Code Cache").exists());
+        assert!(!active_profile.join("GPUCache").exists());
+        assert!(!data_root.join("EBWebView/GrShaderCache").exists());
+        assert!(
+            active_profile
+                .join("Local Storage/leveldb/state.bin")
+                .is_file()
+        );
+        assert!(active_profile.join("IndexedDB/mail.bin").is_file());
+    }
+
+    #[test]
+    fn pending_webview_cache_cleanup_is_versioned_and_one_shot() {
+        let directory = tempdir().expect("temporary directory");
+        let bootstrap = directory.path().join("bootstrap");
+        let cache = bootstrap.join("EBWebView/Default/Cache");
+        fs::create_dir_all(&cache).expect("cache directory");
+        fs::write(cache.join("item.bin"), b"cache").expect("cache item");
+        write_json_atomically(
+            &bootstrap.join(WEBVIEW_CACHE_CLEANUP_FILE),
+            &WebviewCacheCleanupRequest {
+                schema_version: STORAGE_SCHEMA_VERSION,
+            },
+        )
+        .expect("cleanup marker");
+
+        let notice =
+            process_pending_webview_cache_cleanup(&bootstrap, &bootstrap).expect("cleanup notice");
+
+        assert!(matches!(notice.status, MigrationResultStatus::Completed));
+        assert_eq!(notice.removed_bytes, 5);
+        assert!(!cache.exists());
+        assert!(!bootstrap.join(WEBVIEW_CACHE_CLEANUP_FILE).exists());
+        assert!(process_pending_webview_cache_cleanup(&bootstrap, &bootstrap).is_none());
+    }
+
+    #[test]
+    fn webview_cache_cleanup_ignores_an_untrusted_configured_root() {
+        let directory = tempdir().expect("temporary directory");
+        let bootstrap = directory.path().join("bootstrap");
+        let untrusted = directory.path().join("untrusted");
+        let cache = untrusted.join("EBWebView/Default/Cache");
+        fs::create_dir_all(&bootstrap).expect("bootstrap");
+        fs::create_dir_all(&cache).expect("untrusted cache");
+        fs::write(cache.join("keep.bin"), b"keep").expect("untrusted cache item");
+
+        let execution = cleanup_webview_caches(&untrusted, &bootstrap).expect("safe cleanup");
+
+        assert_eq!(execution.removed_bytes, 0);
+        assert!(cache.join("keep.bin").is_file());
     }
 }

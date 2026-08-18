@@ -378,8 +378,11 @@ applied at the root.
   minimized compose bar.
 - About shows the version first, then the exact active product-data directory,
   total use, one segmented composition bar, and the icon-only **更改位置**
-  action. Storage migration uses the shared consequential confirmation surface
-  and the platform folder picker.
+  action. A compact maintenance row beneath the composition bar reports
+  reclaimable interface cache and exposes **释放缓存** without competing with
+  the storage total. Storage migration and cache cleanup both use the shared
+  consequential confirmation surface; migration uses the platform folder
+  picker.
 
 ### Compose
 

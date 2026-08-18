@@ -8088,6 +8088,51 @@ html[data-surface="new-mail-notification"] #root {
   --storage-category-color: var(--storage-category-other);
 }
 
+.settings-storage-cleanup {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: 36px minmax(0, 1fr) auto;
+  gap: 11px;
+  align-items: center;
+  padding-top: 14px;
+  border-top: 1px solid color-mix(in srgb, var(--compose-divider) 70%, transparent);
+}
+
+.settings-storage-cleanup__icon {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--color-primary) 9%, var(--compose-control-surface));
+  color: var(--color-primary);
+}
+
+.settings-storage-cleanup__copy {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.settings-storage-cleanup__copy strong {
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  font-weight: 640;
+}
+
+.settings-storage-cleanup__copy small {
+  overflow: hidden;
+  color: var(--color-text-muted);
+  font-size: 10px;
+  line-height: 1.5;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-storage-cleanup__action {
+  padding-inline: 13px;
+}
+
 .settings-storage-message {
   min-height: 15px;
   margin: -4px 2px 0;
@@ -8103,6 +8148,10 @@ html[data-surface="new-mail-notification"] #root {
 
 .storage-migration-dialog {
   width: min(470px, calc(100vw - 36px));
+}
+
+.storage-cache-cleanup-dialog {
+  width: min(450px, calc(100vw - 36px));
 }
 
 .storage-migration-dialog__path {

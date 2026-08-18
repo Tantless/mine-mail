@@ -791,6 +791,12 @@ product decision changes.
 - About shows the exact active data directory, total use, and a category
   composition. This is the only ordinary product surface allowed to receive the
   complete active product-data path.
+- About also shows the currently reclaimable WebView interface cache. **释放缓存**
+  requires one compact confirmation and restarts Mine Mail so WebView files are
+  no longer locked. The startup task removes only regenerable HTTP, script,
+  graphics, shader, and component caches from the active and legacy Mine Mail
+  WebView profiles. It preserves accounts, mail, drafts, Outbox data, user
+  assets, credentials, cookies, Local Storage, and IndexedDB.
 - **更改位置** uses the platform folder picker. The selected directory must be
   empty, writable, absolute, local, and separate from the current data tree.
 - **迁移本地数据** with **迁移并重启** schedules a restart migration. Mine Mail

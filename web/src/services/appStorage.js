@@ -10,6 +10,7 @@ const demoStatus = {
   locationKind: "local_app_data",
   available: false,
   totalBytes: 0,
+  reclaimableWebviewBytes: 0,
   categories: [
     { id: "mail", label: "邮件与本地资料", bytes: 0 },
     { id: "webview", label: "界面与浏览器缓存", bytes: 0 },
@@ -19,6 +20,7 @@ const demoStatus = {
     { id: "other", label: "其他数据", bytes: 0 },
   ],
   migrationNotice: null,
+  cacheCleanupNotice: null,
 };
 
 export const appStorageApi = {
@@ -50,6 +52,18 @@ export const appStorageApi = {
   async cancelMigration() {
     if (!isTauriRuntime) return;
     return invoke("cancel_storage_migration");
+  },
+
+  async prepareWebviewCacheCleanup() {
+    if (!isTauriRuntime) {
+      throw new Error("浏览器预览不执行界面缓存清理。");
+    }
+    return invoke("prepare_webview_cache_cleanup");
+  },
+
+  async cancelWebviewCacheCleanup() {
+    if (!isTauriRuntime) return;
+    return invoke("cancel_webview_cache_cleanup");
   },
 
   async relaunch() {

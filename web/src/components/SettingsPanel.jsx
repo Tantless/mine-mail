@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
   ArrowsLeftRight,
+  Broom,
   CaretRight,
   DotsThree,
   DownloadSimple,
@@ -387,6 +388,9 @@ export function SettingsPanel({
   const [storageState, setStorageState] = useState("idle");
   const [storageMessage, setStorageMessage] = useState(null);
   const [pendingStorageDirectory, setPendingStorageDirectory] = useState(null);
+  const [isCacheCleanupDialogOpen, setIsCacheCleanupDialogOpen] =
+    useState(false);
+  const [cacheCleanupState, setCacheCleanupState] = useState("idle");
   const [isRemoteImageHelpOpen, setIsRemoteImageHelpOpen] = useState(false);
   const [isMcpHelpOpen, setIsMcpHelpOpen] = useState(false);
   const [isMcpEnablePending, setIsMcpEnablePending] = useState(false);
@@ -397,9 +401,11 @@ export function SettingsPanel({
   const previousAccountSubmitStatusRef = useRef(accountSubmitStatus);
   const accountActionReturnFocusRef = useRef(null);
   const storageDialogReturnFocusRef = useRef(null);
+  const cacheCleanupReturnFocusRef = useRef(null);
   const updateDialogReturnFocusRef = useRef(null);
   const settingsCloseRef = useRef(null);
   const storageCancelRef = useRef(null);
+  const cacheCleanupCancelRef = useRef(null);
   const updateCancelRef = useRef(null);
   const mcpEnableCancelRef = useRef(null);
   const mcpHelpCloseRef = useRef(null);
@@ -463,6 +469,20 @@ export function SettingsPanel({
                 : status.migrationNotice.message,
             tone:
               status.migrationNotice.status === "failed" ? "danger" : "success",
+          });
+        } else if (status.cacheCleanupNotice) {
+          const removedBytes = Number(
+            status.cacheCleanupNotice.removedBytes || 0,
+          );
+          setStorageMessage({
+            text:
+              removedBytes > 0 && status.cacheCleanupNotice.status !== "failed"
+                ? `${status.cacheCleanupNotice.message} 共释放 ${formatStorageBytes(removedBytes)}。`
+                : status.cacheCleanupNotice.message,
+            tone:
+              status.cacheCleanupNotice.status === "failed"
+                ? "danger"
+                : "success",
           });
         } else if (!status.available) {
           setStorageMessage({
@@ -703,6 +723,41 @@ export function SettingsPanel({
     if (storageState !== "migrating") setPendingStorageDirectory(null);
   };
 
+  const closeCacheCleanupDialog = () => {
+    if (cacheCleanupState !== "preparing") {
+      setIsCacheCleanupDialogOpen(false);
+    }
+  };
+
+  const cleanWebviewCache = async () => {
+    if (cacheCleanupState === "preparing") return;
+    setCacheCleanupState("preparing");
+    setStorageMessage(null);
+    let cleanupPrepared = false;
+    try {
+      await storageClient.prepareWebviewCacheCleanup();
+      cleanupPrepared = true;
+      await storageClient.relaunch();
+    } catch (error) {
+      let cleanupCancelled = true;
+      if (cleanupPrepared) {
+        try {
+          await storageClient.cancelWebviewCacheCleanup();
+        } catch {
+          cleanupCancelled = false;
+        }
+      }
+      setCacheCleanupState("error");
+      setIsCacheCleanupDialogOpen(false);
+      setStorageMessage({
+        text: cleanupCancelled
+          ? errorMessage(error, "缓存清理没有开始，现有数据不会改变。")
+          : "应用重启失败，待执行的缓存清理任务也无法撤销。请先不要重启 Mine Mail，并确认系统数据目录可写。",
+        tone: "danger",
+      });
+    }
+  };
+
   const focusSettingsCloseAfterUpdateMinimize = () => {
     Promise.resolve().then(() => settingsCloseRef.current?.focus());
   };
@@ -731,6 +786,13 @@ export function SettingsPanel({
     initialFocusRef: storageCancelRef,
     returnFocusRef: storageDialogReturnFocusRef,
     onCancel: closeStorageDialog,
+  });
+  const cacheCleanupDialogFocus = useConfirmDialogFocus({
+    open: isCacheCleanupDialogOpen,
+    isPending: cacheCleanupState === "preparing",
+    initialFocusRef: cacheCleanupCancelRef,
+    returnFocusRef: cacheCleanupReturnFocusRef,
+    onCancel: closeCacheCleanupDialog,
   });
   const updateDialogFocus = useConfirmDialogFocus({
     open: Boolean(availableUpdate && isUpdateDialogOpen),
@@ -1701,6 +1763,37 @@ export function SettingsPanel({
                   </div>
                 </div>
 
+                <div className="settings-storage-cleanup">
+                  <span className="settings-storage-cleanup__icon" aria-hidden="true">
+                    <Broom size={18} weight="duotone" />
+                  </span>
+                  <span className="settings-storage-cleanup__copy">
+                    <strong>界面缓存</strong>
+                    <small>
+                      {Number(storageStatus?.reclaimableWebviewBytes || 0) > 0
+                        ? `可释放约 ${formatStorageBytes(storageStatus.reclaimableWebviewBytes)}，清理时将重启 Mine Mail。`
+                        : "当前没有可释放的界面缓存。"}
+                    </small>
+                  </span>
+                  <button
+                    ref={cacheCleanupReturnFocusRef}
+                    type="button"
+                    className="secondary-button settings-storage-cleanup__action"
+                    onClick={() => {
+                      setCacheCleanupState("idle");
+                      setIsCacheCleanupDialogOpen(true);
+                    }}
+                    disabled={
+                      !storageClient.isSupported ||
+                      storageState === "loading" ||
+                      cacheCleanupState === "preparing" ||
+                      Number(storageStatus?.reclaimableWebviewBytes || 0) <= 0
+                    }
+                  >
+                    释放缓存
+                  </button>
+                </div>
+
                 <p
                   className="settings-storage-message"
                   data-tone={storageMessage?.tone}
@@ -1913,6 +2006,72 @@ export function SettingsPanel({
             <ConfirmDialogStatus>
               {storageState === "migrating"
                 ? "正在准备数据迁移并重启…"
+                : null}
+            </ConfirmDialogStatus>
+          </section>
+        </div>
+      ) : null}
+
+      {isCacheCleanupDialogOpen ? (
+        <div
+          className="confirm-layer"
+          data-pending={cacheCleanupState === "preparing" || undefined}
+          onPointerDown={cacheCleanupDialogFocus.onBackdropPointerDown}
+        >
+          <section
+            ref={cacheCleanupDialogFocus.dialogRef}
+            className="confirm-dialog storage-cache-cleanup-dialog"
+            role="dialog"
+            tabIndex={-1}
+            aria-modal="true"
+            aria-busy={cacheCleanupState === "preparing" || undefined}
+            aria-labelledby="storage-cache-cleanup-title"
+            aria-describedby="storage-cache-cleanup-description"
+            onKeyDown={cacheCleanupDialogFocus.onDialogKeyDown}
+          >
+            <header>
+              <span className="confirm-dialog__icon" aria-hidden="true">
+                <Broom size={22} weight="duotone" />
+              </span>
+              <IconButton
+                label="取消释放界面缓存"
+                onClick={closeCacheCleanupDialog}
+                disabled={cacheCleanupState === "preparing"}
+              >
+                <X size={18} />
+              </IconButton>
+            </header>
+            <h2 id="storage-cache-cleanup-title">释放界面缓存</h2>
+            <p id="storage-cache-cleanup-description">
+              Mine Mail 将在重启前清理约{" "}
+              {formatStorageBytes(storageStatus?.reclaimableWebviewBytes)}
+              的可再生 WebView 缓存。账户、邮件、壁纸和登录状态不会被删除。
+            </p>
+            <footer>
+              <button
+                ref={cacheCleanupCancelRef}
+                type="button"
+                className="secondary-button"
+                onClick={closeCacheCleanupDialog}
+                disabled={cacheCleanupState === "preparing"}
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                className="send-button"
+                onClick={() => void cleanWebviewCache()}
+                disabled={cacheCleanupState === "preparing"}
+              >
+                <Broom size={17} weight="bold" />
+                {cacheCleanupState === "preparing"
+                  ? "正在准备…"
+                  : "清理并重启"}
+              </button>
+            </footer>
+            <ConfirmDialogStatus>
+              {cacheCleanupState === "preparing"
+                ? "正在准备释放缓存并重启…"
                 : null}
             </ConfirmDialogStatus>
           </section>
