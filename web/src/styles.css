@@ -2083,6 +2083,16 @@ html[data-surface="new-mail-notification"] #root {
   letter-spacing: -0.035em;
 }
 
+.list-heading__meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.list-heading__meta .mail-tabs__count {
+  margin-left: 0;
+}
+
 .mail-tabs {
   display: flex;
   align-items: center;
@@ -2093,7 +2103,8 @@ html[data-surface="new-mail-notification"] #root {
 }
 
 .mail-tabs[data-compact="true"] {
-  height: 20px;
+  height: 1px;
+  padding: 0;
 }
 
 .mail-tab {

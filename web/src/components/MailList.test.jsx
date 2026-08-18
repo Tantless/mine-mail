@@ -101,6 +101,12 @@ describe("MailList folder contracts", () => {
       expect(
         container.querySelector(".mail-tabs")?.getAttribute("data-compact"),
       ).toBe("true");
+      expect(
+        container.querySelector(".list-heading__meta .mail-tabs__count"),
+      ).toBeTruthy();
+      expect(
+        container.querySelector(".mail-tabs > .mail-tabs__count"),
+      ).toBeNull();
     },
   );
 
@@ -109,6 +115,12 @@ describe("MailList folder contracts", () => {
 
     expect(
       container.querySelector(".mail-tabs")?.getAttribute("data-compact"),
+    ).toBeNull();
+    expect(
+      container.querySelector(".mail-tabs > .mail-tabs__count"),
+    ).toBeTruthy();
+    expect(
+      container.querySelector(".list-heading__meta .mail-tabs__count"),
     ).toBeNull();
   });
 

@@ -199,9 +199,9 @@ a state exists, which actions are available, what they do, and what they say.
   state centered in the list. Search and filter zero-results use centered text
   without a success icon. Additional history uses one bounded end buffer rather
   than a persistent card.
-- A folder with no filter tabs uses a compact count row below its heading rather
-  than reserving the full tab-row height. Folders with tabs keep the established
-  tab geometry.
+- A folder with no filter tabs places its count beside the heading actions and
+  collapses the absent tab row to the list divider. Folders with tabs keep the
+  count and established geometry in the tab row.
 - The reader uses one outer scrollbar. Native text and semantic HTML participate
   in that surface; isolated sender HTML must not introduce a competing app-level
   scrollbar.

@@ -410,6 +410,19 @@ export function MailList({
     return () => observer.disconnect();
   }, [messages.length, onLoadMore, paginationPhase]);
 
+  const hasVisibleTabs = visibleTabs.length > 0;
+  const messageCount = (
+    <span
+      className="mail-tabs__count"
+      role="status"
+      aria-live="polite"
+      aria-atomic="true"
+      aria-label={`${title}当前显示 ${messages.length} 封邮件`}
+    >
+      {messages.length} 封
+    </span>
+  );
+
   return (
     <section
       id="mail-list-panel"
@@ -471,29 +484,35 @@ export function MailList({
           <p className="eyebrow">{config.eyebrow}</p>
           <h1>{title}</h1>
         </div>
-        {typeof onSync === "function" ? (
-          <IconButton
-            label={isSyncing ? config.syncingLabel : config.syncLabel}
-            title={
-              syncIsDisabled && !isSyncing
-                ? syncDisabledReason || undefined
-                : undefined
-            }
-            onClick={onSync}
-            disabled={syncIsDisabled}
-            aria-busy={isSyncing || undefined}
-            className={isSyncing ? "is-spinning" : ""}
-          >
-            <ArrowClockwise size={19} />
-          </IconButton>
+        {typeof onSync === "function" || !hasVisibleTabs ? (
+          <div className="list-heading__meta">
+            {typeof onSync === "function" ? (
+              <IconButton
+                label={isSyncing ? config.syncingLabel : config.syncLabel}
+                title={
+                  syncIsDisabled && !isSyncing
+                    ? syncDisabledReason || undefined
+                    : undefined
+                }
+                onClick={onSync}
+                disabled={syncIsDisabled}
+                aria-busy={isSyncing || undefined}
+                className={isSyncing ? "is-spinning" : ""}
+              >
+                <ArrowClockwise size={19} />
+              </IconButton>
+            ) : null}
+            {!hasVisibleTabs ? messageCount : null}
+          </div>
         ) : null}
       </div>
 
       <div className="mail-list-status-region">
         <div
           className="mail-tabs"
-          data-compact={visibleTabs.length === 0 || undefined}
-          aria-label="邮件列表状态"
+          data-compact={!hasVisibleTabs || undefined}
+          aria-label={hasVisibleTabs ? "邮件列表状态" : undefined}
+          aria-hidden={!hasVisibleTabs || undefined}
         >
           {visibleTabs.map((tab) => (
             <button
@@ -507,15 +526,7 @@ export function MailList({
               {tab.label}
             </button>
           ))}
-          <span
-            className="mail-tabs__count"
-            role="status"
-            aria-live="polite"
-            aria-atomic="true"
-            aria-label={`${title}当前显示 ${messages.length} 封邮件`}
-          >
-            {messages.length} 封
-          </span>
+          {hasVisibleTabs ? messageCount : null}
         </div>
         <SyncFeedbackRow feedback={visibleSyncFeedback} />
       </div>
