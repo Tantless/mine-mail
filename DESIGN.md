@@ -35,9 +35,10 @@ transitions, defaults, and exact product copy belong in `docs/PRODUCT.md`.
 
 Mine Mail is quiet, atmospheric, compact, and content-first.
 
-- One painterly landscape wallpaper spans the native window. The sidebar remains
-  part of that scene; mail, contacts, settings, and compose use layered frosted
-  material above it.
+- The shell supports two material expressions without changing its geometry:
+  the default minimal expression uses calm near-solid palette surfaces, while
+  the optional image expression lets one painterly landscape wallpaper span the
+  native window beneath layered frosted material.
 - Glass communicates depth without turning every item into a floating card.
   Hierarchy comes from spacing, typography, surface density, and one restrained
   theme accent.
@@ -53,15 +54,18 @@ Mine Mail is quiet, atmospheric, compact, and content-first.
   introduce alternate mascots or logo variants.
 - The sidebar owns the only shell-level Mine Mail lockup. At compact width it
   keeps the centered fox and hides the wordmark rather than wrapping it.
-- Daylight, Night, Dusk, and Forest are the four built-in visual themes, backed
-  by `web/src/assets/wallpaper-*.png`. Built-in and custom themes share the same
-  geometry and component anatomy; themes vary wallpaper, semantic color,
-  material opacity, contrast, and optical weight rather than page structure.
-- A custom palette is a complete visual system. App-owned glass, panels,
+- Daylight, Night, Dusk, and Forest are the four built-in background themes,
+  backed by `web/src/assets/wallpaper-*.png`. Built-in and custom backgrounds
+  share the same geometry and component anatomy. Each built-in theme retains
+  its original complete palette as its image-mode default; custom backgrounds
+  keep the currently selected palette. The palette remains independently
+  selectable, and background selection is dormant while minimal mode is active.
+- Every appearance palette is a complete visual system. App-owned canvas, panels,
   controls, text hierarchy, edges, selection, focus, correspondence, data
   visualization, and status feedback all resolve through it. Semantic states
   retain recognizable hue families while contrast and intensity follow the
-  palette.
+  palette. The four original built-in palettes and every general-purpose palette
+  must support both the near-solid minimal material and wallpaper-backed material.
 - External brands, avatars, sender HTML, wallpaper pixels, and platform-owned
   surfaces remain outside theme recoloring.
 - Product icons use Phosphor Icons. Do not substitute emoji, text glyphs,
@@ -114,9 +118,10 @@ mobile or hosted Web product.
 
 ## Material and shared components
 
-All app-owned color and material decisions flow through custom properties in
-`:root`, the built-in theme blocks, and the complete custom semantic palette
-applied at the root.
+All app-owned color decisions flow through the complete semantic palette applied
+at `:root`. Background themes select their original palette by default only in
+image mode; otherwise they supply imagery and focal position. Material-mode
+tokens decide whether surfaces are near-solid or wallpaper-backed.
 
 - Foundation tokens cover text, borders, controls, panels, accent, success,
   warning, danger, focus, geometry, and motion.
@@ -125,10 +130,12 @@ applied at the root.
 - Do not reference undeclared tokens or add page-local palettes where a semantic
   role fits. Hard-coded color is limited to external brands, platform-standard
   controls, and sender-owned mail content.
-- The list is a denser glass surface; the reader is slightly more atmospheric;
-  settings uses a denser shell with a distinct rail; compose uses a floating
-  writing surface; menus, tooltips, confirmations, and notifications use compact
-  high-legibility material.
+- In image mode, the list is denser glass and the reader is slightly more
+  atmospheric. In minimal mode, shell regions use opaque or near-opaque palette
+  surfaces with subtle borders, highlights, and restrained shadow preserving
+  depth without wallpaper or decorative imagery. Settings keeps a distinct
+  rail, compose keeps a floating writing surface, and compact overlays remain
+  high-legibility in both modes.
 - Reuse `IconButton`, `TooltipTarget`, `ProfileAvatar`,
   `EditableProfileAvatar`, `ThemedSelect`, and the shared confirmation
   primitives.

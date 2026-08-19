@@ -592,26 +592,42 @@ function normalizeAiConfig(config = {}) {
 function normalizeAppearance(appearance = {}) {
   const activeTheme = appearance.activeTheme ?? appearance.active_theme ?? {};
   const customPresets = appearance.customPresets ?? appearance.custom_presets ?? [];
+  const legacyActivePreset = customPresets.find(
+    (preset) => String(preset.id || "") === String(activeTheme.id || ""),
+  );
+  const legacyPaletteByTheme = {
+    daylight: "daylight",
+    night: "night",
+    dusk: "dusk",
+    forest: "forest",
+  };
+  const legacyMode =
+    legacyActivePreset?.effectiveMode ??
+    legacyActivePreset?.effective_mode ??
+    (legacyActivePreset?.mode === "dark" ? "dark" : "light");
   return {
     selectionInitialized: Boolean(
       appearance.selectionInitialized ?? appearance.selection_initialized,
+    ),
+    paletteId: normalizeAppearancePaletteId(
+      appearance.paletteId ??
+        appearance.palette_id ??
+        legacyActivePreset?.paletteId ??
+        legacyActivePreset?.palette_id ??
+        legacyPaletteByTheme[activeTheme.id],
+      legacyMode,
+    ),
+    minimalModeEnabled: Boolean(
+      appearance.minimalModeEnabled ?? appearance.minimal_mode_enabled ?? false,
     ),
     activeTheme: {
       kind: activeTheme.kind === "custom" ? "custom" : "builtin",
       id: String(activeTheme.id || "daylight"),
     },
     customPresets: customPresets.map((preset) => {
-      const legacyMode =
-        preset.effectiveMode ??
-        preset.effective_mode ??
-        (preset.mode === "dark" ? "dark" : "light");
       return {
         id: String(preset.id || ""),
         name: String(preset.name || "自定义主题"),
-        paletteId: normalizeAppearancePaletteId(
-          preset.paletteId ?? preset.palette_id,
-          legacyMode,
-        ),
         focalX: Number(preset.focalX ?? preset.focal_x ?? 0.5),
         focalY: Number(preset.focalY ?? preset.focal_y ?? 0.5),
         thumbnailDataUrl:
@@ -1463,6 +1479,18 @@ export const mailApi = {
     return normalizeAppearance(response);
   },
 
+  async updateAppearancePreferences(request) {
+    const response = isTauri
+      ? await desktopInvoke("update_appearance_preferences", {
+          request: {
+            paletteId: request.paletteId ?? null,
+            minimalModeEnabled: request.minimalModeEnabled ?? null,
+          },
+        })
+      : await callDemo("updateAppearancePreferences", request);
+    return normalizeAppearance(response);
+  },
+
   async importCustomTheme(request) {
     const response = isTauri
       ? await desktopInvoke("import_custom_theme", {
@@ -1481,7 +1509,6 @@ export const mailApi = {
           request: {
             id: request.id,
             name: request.name ?? null,
-            paletteId: request.paletteId ?? null,
             focalX: request.focalX ?? null,
             focalY: request.focalY ?? null,
             imageDataUrl: request.imageDataUrl ?? null,

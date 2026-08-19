@@ -35,7 +35,7 @@ import { hasFlag } from "./utils/formatters.js";
 import { messageNavigationKey } from "./utils/messageNavigation.js";
 import { userFacingErrorMessage } from "./utils/userFacingError.js";
 import {
-  appearanceFromLegacyTheme,
+  appearanceFromSavedAppearance,
   applyAppearanceToDocument,
   builtinAppearanceThemes,
 } from "./appearanceThemes.js";
@@ -551,9 +551,7 @@ function messageBodyIsReady(message) {
 }
 
 function getInitialAppearance() {
-  return appearanceFromLegacyTheme(
-    window.localStorage.getItem("mine-mail-theme"),
-  );
+  return appearanceFromSavedAppearance();
 }
 
 function describeError(error, fallback) {
@@ -3490,13 +3488,23 @@ export function App() {
           const legacyIsBuiltin = builtinAppearanceThemes.some(
             (theme) => theme.id === legacyTheme,
           );
-          const resolved =
-            !value.selectionInitialized && legacyIsBuiltin
-              ? await mailApi.selectAppearanceTheme({
-                  kind: "builtin",
-                  id: legacyTheme,
-                })
-              : value;
+          let resolved = value;
+          if (!value.selectionInitialized && legacyIsBuiltin) {
+            if (!value.minimalModeEnabled) {
+              const legacyPalette = builtinAppearanceThemes.find(
+                (theme) => theme.id === legacyTheme,
+              )?.paletteId;
+              if (legacyPalette) {
+                resolved = await mailApi.updateAppearancePreferences({
+                  paletteId: legacyPalette,
+                });
+              }
+            }
+            resolved = await mailApi.selectAppearanceTheme({
+              kind: "builtin",
+              id: legacyTheme,
+            });
+          }
           if (!cancelled) setAppearance(resolved);
         })
         .catch((error) => {
@@ -7221,6 +7229,12 @@ export function App() {
     return updated;
   };
 
+  const handleUpdateAppearancePreferences = async (request) => {
+    const updated = await mailApi.updateAppearancePreferences(request);
+    setAppearance(updated);
+    return updated;
+  };
+
   const handleImportCustomTheme = async (request) => {
     const updated = await mailApi.importCustomTheme(request);
     setAppearance(updated);
@@ -8343,6 +8357,7 @@ export function App() {
               focusTarget={settingsFocusTarget}
               appearance={appearance}
               onSelectAppearance={handleSelectAppearance}
+              onUpdateAppearancePreferences={handleUpdateAppearancePreferences}
               onImportCustomTheme={handleImportCustomTheme}
               onUpdateCustomTheme={handleUpdateCustomTheme}
               onDeleteCustomTheme={handleDeleteCustomTheme}

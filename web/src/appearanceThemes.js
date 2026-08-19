@@ -1,16 +1,88 @@
 const paletteFamilies = Object.freeze([
-  { id: "green", name: "青绿", main: "#79b96a", soft: "#b8e89d", deep: "#4e7f43" },
-  { id: "teal", name: "薄荷", main: "#66d3b6", soft: "#9cebd6", deep: "#198f76" },
-  { id: "cyan", name: "湖蓝", main: "#67c7d8", soft: "#9ae2eb", deep: "#338b9d" },
-  { id: "sky", name: "晴蓝", main: "#78b9ee", soft: "#b5dcfa", deep: "#3e7fb4" },
-  { id: "blue", name: "群青", main: "#858fe7", soft: "#c1c8fa", deep: "#545eae" },
-  { id: "indigo", name: "靛青", main: "#9c7fdf", soft: "#d1bdf6", deep: "#6b4cac" },
-  { id: "violet", name: "紫罗兰", main: "#b37bd8", soft: "#dfb9f0", deep: "#7b49a0" },
-  { id: "purple", name: "木槿", main: "#cc7ed5", soft: "#edb9ee", deep: "#934a9b" },
-  { id: "magenta", name: "莓粉", main: "#df82b0", soft: "#f5bdd7", deep: "#a64d78" },
-  { id: "rose", name: "珊瑚", main: "#e98c7a", soft: "#ffc3b5", deep: "#b15549" },
-  { id: "orange", name: "暖橙", main: "#e9a24f", soft: "#ffd19a", deep: "#ad6c25" },
-  { id: "yellow", name: "麦黄", main: "#d4c34f", soft: "#f3e781", deep: "#948529" },
+  {
+    id: "green",
+    name: "青绿",
+    main: "#79b96a",
+    soft: "#b8e89d",
+    deep: "#4e7f43",
+  },
+  {
+    id: "teal",
+    name: "薄荷",
+    main: "#66d3b6",
+    soft: "#9cebd6",
+    deep: "#198f76",
+  },
+  {
+    id: "cyan",
+    name: "湖蓝",
+    main: "#67c7d8",
+    soft: "#9ae2eb",
+    deep: "#338b9d",
+  },
+  {
+    id: "sky",
+    name: "晴蓝",
+    main: "#78b9ee",
+    soft: "#b5dcfa",
+    deep: "#3e7fb4",
+  },
+  {
+    id: "blue",
+    name: "群青",
+    main: "#858fe7",
+    soft: "#c1c8fa",
+    deep: "#545eae",
+  },
+  {
+    id: "indigo",
+    name: "靛青",
+    main: "#9c7fdf",
+    soft: "#d1bdf6",
+    deep: "#6b4cac",
+  },
+  {
+    id: "violet",
+    name: "紫罗兰",
+    main: "#b37bd8",
+    soft: "#dfb9f0",
+    deep: "#7b49a0",
+  },
+  {
+    id: "purple",
+    name: "木槿",
+    main: "#cc7ed5",
+    soft: "#edb9ee",
+    deep: "#934a9b",
+  },
+  {
+    id: "magenta",
+    name: "莓粉",
+    main: "#df82b0",
+    soft: "#f5bdd7",
+    deep: "#a64d78",
+  },
+  {
+    id: "rose",
+    name: "珊瑚",
+    main: "#e98c7a",
+    soft: "#ffc3b5",
+    deep: "#b15549",
+  },
+  {
+    id: "orange",
+    name: "暖橙",
+    main: "#e9a24f",
+    soft: "#ffd19a",
+    deep: "#ad6c25",
+  },
+  {
+    id: "yellow",
+    name: "麦黄",
+    main: "#d4c34f",
+    soft: "#f3e781",
+    deep: "#948529",
+  },
 ]);
 
 const semanticByScheme = Object.freeze({
@@ -71,11 +143,24 @@ function buildSemanticPalette(family, scheme) {
   const semantic = semanticByScheme[scheme];
   const accent = dark ? family.main : family.deep;
   const panel = mix(family.soft, dark ? 7 : 9, semantic.surfaceBase);
-  const panelSubtle = mix(family.soft, dark ? 5 : 8, semantic.surfaceSubtleBase);
+  const panelSubtle = mix(
+    family.soft,
+    dark ? 5 : 8,
+    semantic.surfaceSubtleBase,
+  );
+  const canvas = mix(family.soft, dark ? 4 : 7, semantic.surfaceSubtleBase);
   const control = mix(family.soft, dark ? 7 : 11, semantic.controlBase);
-  const glass = mix(dark ? family.deep : family.soft, dark ? 18 : 16, semantic.glassBase);
+  const glass = mix(
+    dark ? family.deep : family.soft,
+    dark ? 18 : 16,
+    semantic.glassBase,
+  );
   const text = mix(family.deep, dark ? 4 : 7, semantic.textBase);
-  const textSecondary = mix(family.deep, dark ? 5 : 8, semantic.textSecondaryBase);
+  const textSecondary = mix(
+    family.deep,
+    dark ? 5 : 8,
+    semantic.textSecondaryBase,
+  );
   const textMuted = mix(family.deep, dark ? 5 : 7, semantic.textMutedBase);
   const border = mix(family.main, dark ? 12 : 14, semantic.borderBase);
   const divider = mix(family.main, dark ? 9 : 11, semantic.dividerBase);
@@ -130,6 +215,7 @@ function buildSemanticPalette(family, scheme) {
     swatches: Object.freeze([glass, accent, selection, border]),
     tokens: Object.freeze({
       scheme,
+      canvas,
       glass,
       panel,
       panelSubtle,
@@ -169,11 +255,167 @@ function buildSemanticPalette(family, scheme) {
   });
 }
 
-export const appearancePalettes = Object.freeze(
-  ["light", "dark"].flatMap((scheme) =>
+function buildThemePalette(spec) {
+  const generated = buildSemanticPalette(spec, spec.scheme);
+  const tokens = Object.freeze({ ...generated.tokens, ...spec.tokens });
+  return Object.freeze({
+    ...generated,
+    id: spec.id,
+    familyId: `theme-${spec.id}`,
+    name: spec.name,
+    swatches: Object.freeze([
+      tokens.glass,
+      tokens.accent,
+      tokens.selection,
+      tokens.border,
+    ]),
+    tokens,
+  });
+}
+
+const builtinThemePalettes = Object.freeze([
+  buildThemePalette({
+    id: "daylight",
+    name: "日间原色",
+    scheme: "light",
+    main: "#0878f9",
+    soft: "#cfe4fb",
+    deep: "#0062d5",
+    tokens: {
+      canvas: "#f6f8fa",
+      glass: "#ecf4f8",
+      panel: "#fcfcfd",
+      panelSubtle: "#f6f8fa",
+      control: "#f2f5f7",
+      text: "#171a1f",
+      textSecondary: "#414852",
+      textMuted: "#727b86",
+      border: "#d9dee5",
+      divider: "#e1e5ea",
+      accent: "#0878f9",
+      accentSoft: "#cfe4fb",
+      accentDeep: "#0062d5",
+      accentHover: "#006dea",
+      accentPressed: "#0062d5",
+      onAccent: "#ffffff",
+      selection: "#eaf4ff",
+      selectionBorder: "#cfe4fb",
+      hover: "#f2f5f8",
+      success: "#31b56c",
+      warning: "#aa6a13",
+      danger: "#d34747",
+      favorite: "#e4a82c",
+      incoming: "#2563b8",
+      outgoing: "#237a49",
+      chart: ["#2f80dd", "#2f9f98", "#806bc4", "#d18a2f", "#ca626c", "#7f8a96"],
+    },
+  }),
+  buildThemePalette({
+    id: "night",
+    name: "夜间原色",
+    scheme: "dark",
+    main: "#72aefc",
+    soft: "#b8d7ff",
+    deep: "#315278",
+    tokens: {
+      canvas: "#151a22",
+      glass: "#111720",
+      panel: "#171b23",
+      panelSubtle: "#1d222c",
+      control: "#232934",
+      text: "#f2f4f7",
+      textSecondary: "#c4cad3",
+      textMuted: "#8f98a6",
+      border: "#313945",
+      divider: "#2a313c",
+      accent: "#72aefc",
+      accentSoft: "#b8d7ff",
+      accentDeep: "#315278",
+      accentHover: "#8abdff",
+      accentPressed: "#5a9cf4",
+      onAccent: "#10243c",
+      selection: "#23344b",
+      selectionBorder: "#315278",
+      hover: "#202630",
+      success: "#63c98c",
+      warning: "#dda04d",
+      danger: "#e9818a",
+      favorite: "#e8bd55",
+      incoming: "#79b8ff",
+      outgoing: "#5fd08a",
+      chart: ["#6ca7f4", "#56c3b8", "#a28ce6", "#e7b755", "#e9818a", "#98a3b1"],
+    },
+  }),
+  buildThemePalette({
+    id: "dusk",
+    name: "黄昏原色",
+    scheme: "light",
+    main: "#c45f4f",
+    soft: "#eccfc1",
+    deep: "#913f34",
+    tokens: {
+      canvas: "#fbf2ea",
+      glass: "#f7ede5",
+      panel: "#fffaf5",
+      panelSubtle: "#fbf2ea",
+      control: "#f7ede5",
+      text: "#2b2123",
+      textSecondary: "#57484a",
+      textMuted: "#837174",
+      border: "#e6d5ce",
+      divider: "#eaded8",
+      accent: "#b95848",
+      accentSoft: "#eccfc1",
+      accentDeep: "#913f34",
+      accentHover: "#a64b3d",
+      accentPressed: "#913f34",
+      onAccent: "#ffffff",
+      selection: "#fae9df",
+      selectionBorder: "#eccfc1",
+      hover: "#fbf1eb",
+      incoming: "#356f9f",
+      outgoing: "#2f7a4f",
+    },
+  }),
+  buildThemePalette({
+    id: "forest",
+    name: "森林原色",
+    scheme: "light",
+    main: "#347d58",
+    soft: "#c6decf",
+    deep: "#255d3f",
+    tokens: {
+      canvas: "#edf2eb",
+      glass: "#e2eee3",
+      panel: "#f5f8f3",
+      panelSubtle: "#edf2eb",
+      control: "#e8eee6",
+      text: "#17231d",
+      textSecondary: "#3e5046",
+      textMuted: "#6e7c74",
+      border: "#d1dbd2",
+      divider: "#d9e1da",
+      accent: "#357a55",
+      accentSoft: "#c6decf",
+      accentDeep: "#255d3f",
+      accentHover: "#2d6c4a",
+      accentPressed: "#255d3f",
+      onAccent: "#ffffff",
+      selection: "#e1eee5",
+      selectionBorder: "#c6decf",
+      hover: "#eaf0e9",
+      incoming: "#306ba6",
+      outgoing: "#2b744b",
+    },
+  }),
+]);
+
+export const appearancePalettes = Object.freeze([
+  ...builtinThemePalettes,
+  ...["light", "dark"].flatMap((scheme) =>
     paletteFamilies.map((family) => buildSemanticPalette(family, scheme)),
   ),
-);
+]);
 
 const paletteIds = new Set(appearancePalettes.map((palette) => palette.id));
 const familyIds = new Set(paletteFamilies.map((family) => family.id));
@@ -185,7 +427,7 @@ export function normalizeAppearancePaletteId(value, legacyMode = "light") {
     const scheme = legacyMode === "dark" ? "dark" : "light";
     return `${id}-${scheme}`;
   }
-  return "sky-light";
+  return "daylight";
 }
 
 export const builtinAppearanceThemes = Object.freeze([
@@ -193,95 +435,128 @@ export const builtinAppearanceThemes = Object.freeze([
     id: "daylight",
     name: "日间",
     englishName: "Daylight",
-    paletteId: "sky-light",
+    paletteId: "daylight",
   },
   {
     id: "night",
     name: "夜间",
     englishName: "Night",
-    paletteId: "sky-dark",
+    paletteId: "night",
   },
   {
     id: "dusk",
     name: "黄昏",
     englishName: "Dusk",
-    paletteId: "rose-light",
+    paletteId: "dusk",
   },
   {
     id: "forest",
     name: "森林",
     englishName: "Forest",
-    paletteId: "green-light",
+    paletteId: "forest",
   },
 ]);
 
 export const defaultAppearance = Object.freeze({
   selectionInitialized: false,
+  paletteId: "daylight",
+  minimalModeEnabled: true,
   activeTheme: { kind: "builtin", id: "daylight" },
   customPresets: [],
   activeBackgroundDataUrl: null,
 });
 
 export function appearanceFromLegacyTheme(theme) {
-  const valid = builtinAppearanceThemes.some((item) => item.id === theme);
+  const builtin = builtinAppearanceThemes.find((item) => item.id === theme);
   return {
     ...defaultAppearance,
-    activeTheme: { kind: "builtin", id: valid ? theme : "daylight" },
+    paletteId: builtin?.paletteId || "daylight",
+    minimalModeEnabled: theme == null,
+    activeTheme: { kind: "builtin", id: builtin?.id || "daylight" },
+  };
+}
+
+export function appearanceFromSavedAppearance(storage = window.localStorage) {
+  const legacyTheme = storage.getItem("mine-mail-theme");
+  const appearance = appearanceFromLegacyTheme(legacyTheme);
+  const explicitPalette = storage.getItem("mine-mail-appearance-palette");
+  const legacyCustomPalette = storage.getItem("mine-mail-custom-palette");
+  const explicitMinimal = storage.getItem("mine-mail-minimal-mode");
+  return {
+    ...appearance,
+    paletteId: normalizeAppearancePaletteId(
+      explicitPalette || legacyCustomPalette || appearance.paletteId,
+    ),
+    minimalModeEnabled:
+      explicitMinimal == null
+        ? appearance.minimalModeEnabled
+        : explicitMinimal === "true",
   };
 }
 
 export function activeCustomPreset(appearance) {
   if (appearance?.activeTheme?.kind !== "custom") return null;
-  return appearance.customPresets?.find(
-    (preset) => preset.id === appearance.activeTheme.id,
-  ) || null;
+  return (
+    appearance.customPresets?.find(
+      (preset) => preset.id === appearance.activeTheme.id,
+    ) || null
+  );
 }
 
-const customPaletteVariables = Object.freeze({
-  scheme: "--custom-color-scheme",
-  glass: "--custom-glass",
-  panel: "--custom-panel",
-  panelSubtle: "--custom-panel-subtle",
-  control: "--custom-control",
-  text: "--custom-text",
-  textSecondary: "--custom-text-secondary",
-  textMuted: "--custom-text-muted",
-  border: "--custom-border",
-  divider: "--custom-divider",
-  accent: "--custom-accent",
-  accentSoft: "--custom-accent-soft",
-  accentDeep: "--custom-accent-deep",
-  accentHover: "--custom-accent-hover",
-  accentPressed: "--custom-accent-pressed",
-  onAccent: "--custom-on-accent",
-  selection: "--custom-selection",
-  selectionBorder: "--custom-selection-border",
-  hover: "--custom-hover",
-  edge: "--custom-edge",
-  highlight: "--custom-highlight",
-  overlay: "--custom-overlay",
-  sidebarText: "--custom-sidebar-text",
-  sidebarMuted: "--custom-sidebar-muted",
-  sidebarScrimTop: "--custom-sidebar-scrim-top",
-  sidebarScrimBottom: "--custom-sidebar-scrim-bottom",
-  success: "--custom-success",
-  warning: "--custom-warning",
-  danger: "--custom-danger",
-  favorite: "--custom-favorite",
-  incoming: "--custom-incoming",
-  outgoing: "--custom-outgoing",
-  brightness: "--custom-brightness",
-  saturation: "--custom-saturation",
-  panelShadow: "--custom-panel-shadow",
+const paletteVariables = Object.freeze({
+  scheme: "--palette-color-scheme",
+  canvas: "--palette-canvas",
+  glass: "--palette-glass",
+  panel: "--palette-panel",
+  panelSubtle: "--palette-panel-subtle",
+  control: "--palette-control",
+  text: "--palette-text",
+  textSecondary: "--palette-text-secondary",
+  textMuted: "--palette-text-muted",
+  border: "--palette-border",
+  divider: "--palette-divider",
+  accent: "--palette-accent",
+  accentSoft: "--palette-accent-soft",
+  accentDeep: "--palette-accent-deep",
+  accentHover: "--palette-accent-hover",
+  accentPressed: "--palette-accent-pressed",
+  onAccent: "--palette-on-accent",
+  selection: "--palette-selection",
+  selectionBorder: "--palette-selection-border",
+  hover: "--palette-hover",
+  edge: "--palette-edge",
+  highlight: "--palette-highlight",
+  overlay: "--palette-overlay",
+  sidebarText: "--palette-sidebar-text",
+  sidebarMuted: "--palette-sidebar-muted",
+  sidebarScrimTop: "--palette-sidebar-scrim-top",
+  sidebarScrimBottom: "--palette-sidebar-scrim-bottom",
+  success: "--palette-success",
+  warning: "--palette-warning",
+  danger: "--palette-danger",
+  favorite: "--palette-favorite",
+  incoming: "--palette-incoming",
+  outgoing: "--palette-outgoing",
+  brightness: "--palette-brightness",
+  saturation: "--palette-saturation",
+  panelShadow: "--palette-panel-shadow",
 });
 
-function clearCustomPalette(root) {
-  Object.values(customPaletteVariables).forEach((property) => {
-    root.style.removeProperty(property);
+export function applyAppearancePaletteToRoot(root, paletteId) {
+  const normalizedId = normalizeAppearancePaletteId(paletteId);
+  const palette =
+    appearancePalettes.find((item) => item.id === normalizedId) ||
+    appearancePalettes.find((item) => item.id === "daylight");
+  Object.entries(paletteVariables).forEach(([token, property]) => {
+    root.style.setProperty(property, palette.tokens[token]);
   });
-  for (let index = 0; index < 6; index += 1) {
-    root.style.removeProperty(`--custom-chart-${index + 1}`);
-  }
+  palette.tokens.chart.forEach((color, index) => {
+    root.style.setProperty(`--palette-chart-${index + 1}`, color);
+  });
+  return palette;
+}
+
+function clearCustomBackground(root) {
   root.style.removeProperty("--custom-wallpaper");
   root.style.removeProperty("--custom-focal-x");
   root.style.removeProperty("--custom-focal-y");
@@ -291,42 +566,45 @@ export function applyAppearanceToDocument(appearance) {
   const root = document.documentElement;
   const active = appearance?.activeTheme || defaultAppearance.activeTheme;
   const preset = activeCustomPreset(appearance);
+  const palette = applyAppearancePaletteToRoot(
+    root,
+    appearance?.paletteId || defaultAppearance.paletteId,
+  );
+  const minimalModeEnabled = appearance?.minimalModeEnabled !== false;
+  root.dataset.appearanceMode = minimalModeEnabled ? "minimal" : "image";
   if (active.kind !== "custom" || !preset) {
     const theme = builtinAppearanceThemes.some((item) => item.id === active.id)
       ? active.id
       : "daylight";
     root.dataset.theme = theme;
     delete root.dataset.colorMode;
-    clearCustomPalette(root);
+    clearCustomBackground(root);
     window.localStorage.setItem("mine-mail-theme", theme);
-    window.localStorage.removeItem("mine-mail-custom-mode");
-    window.localStorage.removeItem("mine-mail-custom-palette");
-    return;
+    if (!minimalModeEnabled && palette.id === theme) {
+      root.dataset.paletteSource = "theme-original";
+    } else {
+      root.dataset.paletteSource = "selected";
+    }
+  } else {
+    root.dataset.theme = "custom";
+    root.dataset.paletteSource = "selected";
+    delete root.dataset.colorMode;
+    root.style.setProperty(
+      "--custom-wallpaper",
+      appearance.activeBackgroundDataUrl
+        ? `url("${appearance.activeBackgroundDataUrl}")`
+        : "none",
+    );
+    root.style.setProperty("--custom-focal-x", `${preset.focalX * 100}%`);
+    root.style.setProperty("--custom-focal-y", `${preset.focalY * 100}%`);
+    window.localStorage.setItem("mine-mail-theme", "custom");
   }
 
-  const legacyMode =
-    preset.effectiveMode || (preset.mode === "dark" ? "dark" : "light");
-  const paletteId = normalizeAppearancePaletteId(preset.paletteId, legacyMode);
-  const palette =
-    appearancePalettes.find((item) => item.id === paletteId) ||
-    appearancePalettes.find((item) => item.id === "sky-light");
-  root.dataset.theme = "custom";
-  delete root.dataset.colorMode;
-  Object.entries(customPaletteVariables).forEach(([token, property]) => {
-    root.style.setProperty(property, palette.tokens[token]);
-  });
-  palette.tokens.chart.forEach((color, index) => {
-    root.style.setProperty(`--custom-chart-${index + 1}`, color);
-  });
-  root.style.setProperty(
-    "--custom-wallpaper",
-    appearance.activeBackgroundDataUrl
-      ? `url("${appearance.activeBackgroundDataUrl}")`
-      : "none",
+  window.localStorage.setItem("mine-mail-appearance-palette", palette.id);
+  window.localStorage.setItem(
+    "mine-mail-minimal-mode",
+    String(minimalModeEnabled),
   );
-  root.style.setProperty("--custom-focal-x", `${preset.focalX * 100}%`);
-  root.style.setProperty("--custom-focal-y", `${preset.focalY * 100}%`);
-  window.localStorage.setItem("mine-mail-theme", "custom");
   window.localStorage.removeItem("mine-mail-custom-mode");
-  window.localStorage.setItem("mine-mail-custom-palette", palette.id);
+  window.localStorage.removeItem("mine-mail-custom-palette");
 }

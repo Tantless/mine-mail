@@ -52,7 +52,7 @@ use desktop::{
     AppearanceSettingsDto, DeleteCustomThemeRequest, DeleteProfileAvatarRequest, DesktopRuntime,
     DesktopSettingsDto, DesktopSettingsUpdate, ImportCustomThemeRequest, NewMailNotificationDto,
     NotificationSound, ProfileAvatarDto, SaveProfileAvatarRequest, SelectAppearanceThemeRequest,
-    UpdateCustomThemeRequest,
+    UpdateAppearancePreferencesRequest, UpdateCustomThemeRequest,
 };
 use diagnostics::{ErrorKind as DiagnosticErrorKind, Fields as DiagnosticFields};
 use mail_html::{
@@ -2520,6 +2520,18 @@ fn select_appearance_theme(
 }
 
 #[tauri::command]
+fn update_appearance_preferences(
+    runtime: State<'_, DesktopRuntime>,
+    request: UpdateAppearancePreferencesRequest,
+) -> CommandResult<AppearanceSettingsDto> {
+    diagnostics::command_lifecycle(
+        "update_appearance_preferences",
+        DiagnosticFields::default(),
+        || runtime.update_appearance_preferences(request),
+    )
+}
+
+#[tauri::command]
 fn import_custom_theme(
     runtime: State<'_, DesktopRuntime>,
     request: ImportCustomThemeRequest,
@@ -3385,6 +3397,7 @@ pub fn run() {
             delete_profile_avatar,
             get_appearance_settings,
             select_appearance_theme,
+            update_appearance_preferences,
             import_custom_theme,
             update_custom_theme,
             delete_custom_theme,

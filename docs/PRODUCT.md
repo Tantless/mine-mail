@@ -827,27 +827,46 @@ existing visual system normally changes this document rather than `DESIGN.md`.
 
 - Settings is an embedded workspace. Preferences save immediately and there is no
   global Save/Cancel footer.
-- Appearance is device-global rather than account-scoped. The four built-in
-  themes remain immutable; users may add any number of local custom theme presets,
-  rename them, replace their images, adjust normalized focal points, choose a
-  complete curated semantic palette, and delete them. The palette tray groups
-  twelve bright and twelve dark choices. Each palette owns its light or dark
-  presentation together with app-owned glass, panel, text, interaction, and
-  status tones; there is no separate night-mode preference. Focus and palette
-  controls remain visible for every theme, while built-in themes expose their
-  fixed values as disabled controls. The current selection and each preset's
-  settings persist in Rust-owned local state.
+- Appearance is device-global rather than account-scoped. Its settings separate
+  **极简模式**, **调色盘**, and **主题背景**. The palette is independent of the
+  selected background and is the sole source of app-owned canvas, panel, text,
+  interaction, correspondence, visualization, and status colors. The palette
+  tray includes the four original Daylight, Night, Dusk, and Forest palettes in
+  addition to twelve bright and twelve dark general-purpose choices; there is no
+  separate night-mode preference, and every choice must fully support minimal
+  mode.
+- **极简模式** defaults on only for a fresh installation. It hides all built-in
+  and custom background imagery and renders the existing shell with near-solid
+  palette surfaces while retaining restrained edges, highlights, and shadow.
+  Turning it on does not delete or reset the selected background, custom image,
+  focal point, or background schedule; those settings remain editable and resume
+  rendering when the mode is turned off. An existing installation is migrated
+  with minimal mode off and its previously effective palette, so an upgrade does
+  not replace the user's appearance. While minimal mode is on, selecting or
+  scheduling a background never changes the palette or visible colors.
+- The four built-in background themes remain immutable. Users may add any number
+  of local custom background presets, rename them, replace their images, adjust
+  normalized focal points, and delete them. In image mode, selecting a built-in
+  theme restores its original complete palette; the user may then override it
+  from the independent palette control. Turning image mode on while a built-in
+  theme is selected likewise restores that theme's original palette. Custom
+  backgrounds retain the current palette. **设置焦点** belongs to the active custom
+  background within the **主题背景** group, not to the independent palette. The
+  global palette, minimal-mode flag, current background selection, and each custom
+  preset's background settings persist in Rust-owned local state.
 - The device-global **主页诗歌** appearance preference defaults on. Turning it off
   suppresses the rotating quotation and its animation whenever no message is
   open, including the disconnected-account workspace, without changing the
   wallpaper, account prompt, theme selection, or opened-message behavior.
-- The device-global **定时切换主题** appearance preference defaults off. When
+- The device-global **定时切换主题背景** appearance preference defaults off. When
   enabled, Mine Mail follows the local machine clock and switches among the
   Daylight, Dusk, and Night built-in themes at three configurable wall-clock
   boundaries (default 06:00, 18:00, and 21:00). The schedule applies on startup,
   when the switch is turned on, and again whenever a boundary passes; a manual
-  theme selection stays in effect until the next boundary, and custom themes are
-  never overridden automatically. Times persist in Rust-owned local state and are
+  background selection stays in effect until the next boundary, and custom
+  backgrounds are never overridden automatically. In minimal mode the scheduled
+  selection continues to update as dormant state without changing the global
+  palette or displaying imagery. Times persist in Rust-owned local state and are
   validated as ordered HH:MM values; the appearance panel refuses an unordered or
   malformed combination before it reaches the save path and explains the required
   day-then-dusk-then-night order inline, and Rust also rejects such a schedule on
@@ -859,14 +878,12 @@ existing visual system normally changes this document rather than `DESIGN.md`.
   receives the original or managed complete path. Images below 1600 × 900 are
   accepted with a quality warning. SVG, animated images, and remote URLs are not
   accepted.
-- New custom backgrounds are analyzed across the full image with extra weight on
-  the left shell region. Mine Mail maps hue and luminance together to the closest
-  complete bright or dark palette; neutral or unstable results fall back to the
-  corresponding blue palette. Users may choose any other complete palette.
-  Existing custom presets migrate their former palette and effective light/dark
-  value into one equivalent palette identifier. Deleting the current custom preset
-  restores a recent still-valid selection when possible, otherwise Daylight, and
-  removes only Mine Mail's managed copy.
+- Importing or replacing a custom background never derives or changes the global
+  palette. During migration, an existing custom preset's former palette and
+  effective light/dark value become the equivalent global palette when that
+  preset is the effective selection. Deleting the current custom preset restores
+  a recent still-valid background selection when possible, otherwise Daylight,
+  and removes only Mine Mail's managed copy.
 - The legacy `mine-mail-theme` browser value is used only once to migrate a valid
   built-in selection into Rust-owned appearance state. The explicit browser demo
   keeps a local mock of the same interaction without becoming a parallel Web mail

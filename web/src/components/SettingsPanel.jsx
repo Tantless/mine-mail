@@ -335,6 +335,7 @@ export function SettingsPanel({
   focusTarget,
   appearance,
   onSelectAppearance,
+  onUpdateAppearancePreferences,
   onImportCustomTheme,
   onUpdateCustomTheme,
   onDeleteCustomTheme,
@@ -1523,6 +1524,7 @@ export function SettingsPanel({
                 updateSettings((current) => ({ ...current, ...patch }))
               }
               onSelect={onSelectAppearance}
+              onUpdatePreferences={onUpdateAppearancePreferences}
               onImport={onImportCustomTheme}
               onUpdate={onUpdateCustomTheme}
               onDelete={onDeleteCustomTheme}

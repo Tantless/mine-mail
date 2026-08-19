@@ -1,4 +1,5 @@
 import { demoDrafts, demoMessages } from "../data/demoMail.js";
+import { normalizeAppearancePaletteId } from "../appearanceThemes.js";
 
 const demoPageSizeMax = 100;
 const demoQueryCharsMax = 256;
@@ -299,6 +300,8 @@ function createDemoState() {
     profileAvatars: [],
     appearance: {
       selectionInitialized: false,
+      paletteId: "daylight",
+      minimalModeEnabled: true,
       activeTheme: { kind: "builtin", id: "daylight" },
       previousTheme: null,
       customPresets: [],
@@ -2031,12 +2034,34 @@ function createDemoActions(
       state.appearance = {
         ...state.appearance,
         selectionInitialized: true,
+        ...(request.kind === "builtin" && !state.appearance.minimalModeEnabled
+          ? { paletteId: request.id }
+          : {}),
         previousTheme: unchanged
           ? state.appearance.previousTheme
           : structuredClone(state.appearance.activeTheme),
         activeTheme: structuredClone(request),
         activeBackgroundDataUrl:
           request.kind === "custom" ? preset?.imageDataUrl || null : null,
+      };
+      return structuredClone(state.appearance);
+    },
+
+    updateAppearancePreferences(request) {
+      const enablingImageMode =
+        request.minimalModeEnabled === false &&
+        state.appearance.minimalModeEnabled &&
+        state.appearance.activeTheme.kind === "builtin";
+      state.appearance = {
+        ...state.appearance,
+        ...(request.paletteId != null
+          ? { paletteId: normalizeAppearancePaletteId(request.paletteId) }
+          : enablingImageMode
+            ? { paletteId: state.appearance.activeTheme.id }
+            : {}),
+        ...(request.minimalModeEnabled != null
+          ? { minimalModeEnabled: Boolean(request.minimalModeEnabled) }
+          : {}),
       };
       return structuredClone(state.appearance);
     },
@@ -2051,7 +2076,6 @@ function createDemoActions(
       const preset = {
         id,
         name: request.name?.trim() || `自定义主题 ${nextNumber}`,
-        paletteId: "sky-light",
         focalX: 0.5,
         focalY: 0.5,
         thumbnailDataUrl: request.imageDataUrl,
@@ -2076,7 +2100,6 @@ function createDemoActions(
       const next = {
         ...current,
         ...(request.name != null ? { name: request.name.trim() } : {}),
-        ...(request.paletteId != null ? { paletteId: request.paletteId } : {}),
         ...(request.focalX != null ? { focalX: request.focalX } : {}),
         ...(request.focalY != null ? { focalY: request.focalY } : {}),
         ...(request.imageDataUrl

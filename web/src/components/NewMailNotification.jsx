@@ -3,7 +3,10 @@ import { X } from "@phosphor-icons/react";
 import { mailApi } from "../services/mailApi.js";
 import { playWebNotificationSound } from "../utils/notificationSound.js";
 import { ProfileAvatar } from "./ProfileAvatar.jsx";
-import { appearancePalettes } from "../appearanceThemes.js";
+import {
+  applyAppearancePaletteToRoot,
+  appearanceFromSavedAppearance,
+} from "../appearanceThemes.js";
 
 const visibleDurationMs = 8000;
 const notificationCountLimit = 99;
@@ -46,23 +49,14 @@ function notificationCountLabel(count) {
 function applySavedTheme() {
   const saved = window.localStorage.getItem("mine-mail-theme");
   const root = document.documentElement;
-  if (saved !== "custom") {
-    root.dataset.theme = validThemes.has(saved) ? saved : "daylight";
-    delete root.dataset.colorMode;
-    return;
-  }
-  const paletteId = window.localStorage.getItem("mine-mail-custom-palette");
-  const palette =
-    appearancePalettes.find((item) => item.id === paletteId) ||
-    appearancePalettes.find((item) => item.id === "sky");
-  root.dataset.theme = "custom";
-  root.dataset.colorMode =
-    window.localStorage.getItem("mine-mail-custom-mode") === "dark"
-      ? "dark"
-      : "light";
-  root.style.setProperty("--custom-accent", palette.main);
-  root.style.setProperty("--custom-accent-soft", palette.soft);
-  root.style.setProperty("--custom-accent-deep", palette.deep);
+  const appearance = appearanceFromSavedAppearance();
+  root.dataset.theme =
+    saved === "custom" ? "custom" : validThemes.has(saved) ? saved : "daylight";
+  root.dataset.appearanceMode = appearance.minimalModeEnabled
+    ? "minimal"
+    : "image";
+  delete root.dataset.colorMode;
+  applyAppearancePaletteToRoot(root, appearance.paletteId);
 }
 
 export function NewMailNotification() {

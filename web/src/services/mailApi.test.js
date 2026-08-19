@@ -1150,6 +1150,7 @@ describe("mailApi desktop IPC contract", () => {
       .mockResolvedValueOnce(response)
       .mockResolvedValueOnce(response)
       .mockResolvedValueOnce(response)
+      .mockResolvedValueOnce(response)
       .mockResolvedValueOnce({
         ...response,
         activeTheme: { kind: "builtin", id: "daylight" },
@@ -1159,17 +1160,23 @@ describe("mailApi desktop IPC contract", () => {
     const { mailApi } = await import("./mailApi.js");
 
     const loaded = await mailApi.getAppearanceSettings();
+    expect(loaded.paletteId).toBe("teal-dark");
+    expect(loaded.minimalModeEnabled).toBe(false);
     expect(loaded.customPresets[0]).toEqual(
-      expect.objectContaining({ name: "海岸", paletteId: "teal-dark" }),
+      expect.objectContaining({ name: "海岸" }),
     );
+    expect(loaded.customPresets[0]).not.toHaveProperty("paletteId");
     expect(JSON.stringify(loaded)).not.toContain("asset_file_name");
     await mailApi.selectAppearanceTheme({ kind: "custom", id: "preset-1" });
+    await mailApi.updateAppearancePreferences({
+      paletteId: "rose-light",
+      minimalModeEnabled: true,
+    });
     await mailApi.importCustomTheme({
       imageDataUrl: "data:image/png;base64,AQID",
     });
     await mailApi.updateCustomTheme({
       id: "preset-1",
-      paletteId: "rose-light",
       focalX: 0.4,
     });
     await mailApi.deleteCustomTheme("preset-1");
@@ -1178,23 +1185,28 @@ describe("mailApi desktop IPC contract", () => {
     expect(ipc.invoke).toHaveBeenNthCalledWith(2, "select_appearance_theme", {
       request: { kind: "custom", id: "preset-1" },
     });
-    expect(ipc.invoke).toHaveBeenNthCalledWith(3, "import_custom_theme", {
+    expect(ipc.invoke).toHaveBeenNthCalledWith(3, "update_appearance_preferences", {
+      request: {
+        paletteId: "rose-light",
+        minimalModeEnabled: true,
+      },
+    });
+    expect(ipc.invoke).toHaveBeenNthCalledWith(4, "import_custom_theme", {
       request: {
         name: null,
         imageDataUrl: "data:image/png;base64,AQID",
       },
     });
-    expect(ipc.invoke).toHaveBeenNthCalledWith(4, "update_custom_theme", {
+    expect(ipc.invoke).toHaveBeenNthCalledWith(5, "update_custom_theme", {
       request: {
         id: "preset-1",
         name: null,
-        paletteId: "rose-light",
         focalX: 0.4,
         focalY: null,
         imageDataUrl: null,
       },
     });
-    expect(ipc.invoke).toHaveBeenNthCalledWith(5, "delete_custom_theme", {
+    expect(ipc.invoke).toHaveBeenNthCalledWith(6, "delete_custom_theme", {
       request: { id: "preset-1" },
     });
   });

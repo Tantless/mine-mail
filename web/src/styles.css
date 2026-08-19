@@ -925,6 +925,135 @@ html[data-surface="new-mail-notification"] #root {
   --switch-thumb-on: var(--custom-panel);
 }
 
+/*
+ * The palette is an independent appearance layer. Built-in themes can select
+ * their preserved original palette in image mode, while every built-in and
+ * custom background receives the same complete semantic palette contract.
+ */
+:root[data-theme]:not([data-palette-source="theme-original"]) {
+  color-scheme: var(--palette-color-scheme, light);
+  --app-canvas: var(--palette-canvas, #f1f5f3);
+  --color-panel: var(--palette-panel, #f9fbfa);
+  --color-panel-subtle: var(--palette-panel-subtle, #f1f5f3);
+  --color-control: var(--palette-control, #edf3f1);
+  --color-text: var(--palette-text, #172027);
+  --color-text-secondary: var(--palette-text-secondary, #445159);
+  --color-text-muted: var(--palette-text-muted, #748087);
+  --color-border: var(--palette-border, #d5dfdc);
+  --color-divider: var(--palette-divider, #dde5e2);
+  --color-primary: var(--palette-accent, #3e7fb4);
+  --color-primary-hover: var(--palette-accent-hover, #326b98);
+  --color-primary-pressed: var(--palette-accent-pressed, #285679);
+  --color-on-primary: var(--palette-on-accent, #fff);
+  --color-selection: var(--palette-selection, #e7f2f8);
+  --color-selection-border: var(--palette-selection-border, #bfd5e0);
+  --color-hover: var(--palette-hover, #eef3f5);
+  --color-unread: var(--color-primary);
+  --color-success: var(--palette-success, #2f8a59);
+  --color-warning: var(--palette-warning, #a66a18);
+  --color-danger: var(--palette-danger, #c94a4a);
+  --color-favorite: var(--palette-favorite, #c28a20);
+  --correspondence-incoming-icon: var(--palette-incoming, #356f9f);
+  --correspondence-outgoing-icon: var(--palette-outgoing, #2f7a4f);
+  --storage-category-mail: var(--palette-chart-1, var(--color-primary));
+  --storage-category-webview: var(--palette-chart-2, #2f9f98);
+  --storage-category-user-assets: var(--palette-chart-3, #806bc4);
+  --storage-category-cache: var(--palette-chart-4, var(--color-warning));
+  --storage-category-logs: var(--palette-chart-5, var(--color-danger));
+  --storage-category-other: var(--palette-chart-6, var(--color-text-muted));
+  --sidebar-text: var(--palette-sidebar-text, #f5f8fa);
+  --sidebar-muted: var(--palette-sidebar-muted, rgba(239, 246, 248, 0.76));
+  --sidebar-hover: color-mix(in srgb, var(--sidebar-text) 12%, transparent);
+  --sidebar-selected: color-mix(in srgb, var(--sidebar-text) 21%, transparent);
+  --sidebar-scrim-top: var(--palette-sidebar-scrim-top, rgba(13, 24, 29, 0.14));
+  --sidebar-scrim-bottom: var(--palette-sidebar-scrim-bottom, rgba(7, 18, 22, 0.58));
+  --titlebar-text: var(--sidebar-text);
+  --titlebar-hover: color-mix(in srgb, var(--sidebar-text) 13%, transparent);
+  --overlay: var(--palette-overlay, rgba(13, 20, 28, 0.38));
+  --panel-border: color-mix(in srgb, var(--palette-border) 72%, transparent);
+  --panel-shadow: var(--palette-panel-shadow, 0 16px 38px rgba(15, 30, 38, 0.22));
+  --mail-list-surface: color-mix(in srgb, var(--palette-glass) 75%, transparent);
+  --reader-surface: color-mix(in srgb, var(--palette-glass) 69%, transparent);
+  --reader-toolbar-surface: color-mix(in srgb, var(--palette-panel) 14%, transparent);
+  --reader-content-surface: color-mix(in srgb, var(--palette-panel) 10%, transparent);
+  --settings-shell-surface: color-mix(in srgb, var(--palette-glass) 73%, transparent);
+  --settings-rail-surface: color-mix(in srgb, var(--palette-glass) 63%, transparent);
+  --settings-detail-surface: color-mix(in srgb, var(--palette-panel) 10%, transparent);
+  --settings-wallpaper-echo: 0.24;
+  --surface-edge: color-mix(in srgb, var(--palette-edge) 54%, transparent);
+  --surface-highlight: color-mix(in srgb, var(--palette-highlight) 34%, transparent);
+  --surface-saturation: var(--palette-saturation, 1.1);
+  --surface-brightness: var(--palette-brightness, 1.02);
+  --control-surface: color-mix(in srgb, var(--palette-control) 76%, transparent);
+  --row-hover-surface: color-mix(in srgb, var(--palette-hover) 68%, transparent);
+  --row-selection-surface: color-mix(in srgb, var(--palette-selection) 72%, transparent);
+  --row-selection-edge: color-mix(in srgb, var(--palette-selection-border) 78%, var(--surface-edge));
+  --sidebar-count-surface: color-mix(in srgb, var(--palette-accent) 28%, var(--sidebar-selected));
+  --sidebar-count-text: color-mix(in srgb, var(--sidebar-text) 76%, var(--palette-accent));
+  --account-card-hover-surface: color-mix(in srgb, var(--sidebar-text) 12%, transparent);
+  --account-card-active-surface: color-mix(in srgb, var(--palette-accent) 14%, var(--sidebar-selected));
+  --account-card-active-edge: color-mix(in srgb, var(--palette-accent) 46%, var(--surface-edge));
+  --mail-list-wallpaper-echo: 0.08;
+  --reader-wallpaper-echo: 0.13;
+  --compose-wallpaper-echo: 0.1;
+  --compose-panel-surface: color-mix(in srgb, var(--palette-glass) 69%, transparent);
+  --compose-content-surface: color-mix(in srgb, var(--palette-panel) 34%, transparent);
+  --compose-control-surface: color-mix(in srgb, var(--palette-control) 50%, transparent);
+  --compose-control-hover: color-mix(in srgb, var(--palette-hover) 64%, transparent);
+  --compose-divider: color-mix(in srgb, var(--palette-divider) 72%, transparent);
+  --compose-page-surface: var(--palette-panel-subtle);
+  --compose-paper-surface: var(--palette-panel);
+  --compose-paper-rule: color-mix(in srgb, var(--palette-accent) 24%, var(--palette-divider));
+  --compose-surface: color-mix(in srgb, var(--palette-accent) 72%, transparent);
+  --compose-surface-hover: color-mix(in srgb, var(--palette-accent-hover) 78%, transparent);
+  --compose-surface-pressed: color-mix(in srgb, var(--palette-accent-pressed) 84%, transparent);
+  --compose-edge: color-mix(in srgb, var(--palette-edge) 42%, transparent);
+  --compose-highlight: color-mix(in srgb, var(--palette-highlight) 24%, transparent);
+  --reader-idle-ink: color-mix(in srgb, var(--palette-text) 82%, var(--palette-accent));
+  --switch-off-surface: color-mix(in srgb, var(--palette-text-muted) 26%, transparent);
+  --switch-off-surface-hover: color-mix(in srgb, var(--palette-text-muted) 34%, transparent);
+  --switch-off-edge: color-mix(in srgb, var(--palette-border) 88%, transparent);
+  --switch-off-edge-hover: color-mix(in srgb, var(--palette-accent) 28%, var(--palette-border));
+  --switch-thumb-off: var(--palette-panel);
+  --switch-thumb-on: var(--palette-panel);
+}
+
+:root[data-appearance-mode="minimal"] {
+  --wallpaper: none;
+  --wallpaper-position: center;
+  --titlebar-text: var(--palette-text);
+  --titlebar-hover: var(--palette-hover);
+  --sidebar-scrim-top: color-mix(in srgb, var(--palette-accent-deep) 82%, var(--palette-glass));
+  --sidebar-scrim-bottom: var(--sidebar-scrim-top);
+  --mail-list-surface: var(--palette-glass);
+  --reader-surface: var(--palette-panel);
+  --reader-toolbar-surface: var(--palette-panel-subtle);
+  --reader-content-surface: var(--palette-panel);
+  --settings-shell-surface: var(--palette-panel);
+  --settings-rail-surface: var(--palette-panel-subtle);
+  --settings-detail-surface: var(--palette-panel);
+  --control-surface: var(--palette-control);
+  --row-hover-surface: var(--palette-hover);
+  --row-selection-surface: var(--palette-selection);
+  --row-selection-edge: var(--palette-selection-border);
+  --compose-panel-surface: var(--palette-panel);
+  --compose-content-surface: var(--palette-panel-subtle);
+  --compose-control-surface: var(--palette-control);
+  --compose-control-hover: var(--palette-hover);
+  --compose-divider: var(--palette-divider);
+  --compose-surface: var(--palette-accent);
+  --compose-surface-hover: var(--palette-accent-hover);
+  --compose-surface-pressed: var(--palette-accent-pressed);
+  --settings-wallpaper-echo: 0;
+  --mail-list-wallpaper-echo: 0;
+  --reader-wallpaper-echo: 0;
+  --compose-wallpaper-echo: 0;
+  --surface-blur-list: 0px;
+  --surface-blur-reader: 0px;
+  --surface-saturation: 1;
+  --surface-brightness: 1;
+}
+
 .compose-ai-conversation :is(button, [role="button"], summary) {
   -webkit-user-select: none;
   user-select: none;
@@ -1056,7 +1185,7 @@ html[data-surface="new-mail-notification"] #root {
   position: absolute;
   inset: 0;
   z-index: -2;
-  background-color: #9fb2b8;
+  background-color: var(--app-canvas, #9fb2b8);
   background-image: var(--wallpaper);
   background-position: var(--wallpaper-position);
   background-repeat: no-repeat;
@@ -7609,6 +7738,10 @@ html[data-surface="new-mail-notification"] #root {
   line-height: 1.5;
 }
 
+:root[data-appearance-mode="minimal"] .sidebar__scrim {
+  background: var(--sidebar-scrim-top);
+}
+
 .settings-preference-row small[data-tone="danger"] {
   color: var(--color-danger);
 }
@@ -8368,6 +8501,10 @@ html[data-surface="new-mail-notification"] #root {
   pointer-events: none;
 }
 
+:root[data-appearance-mode="minimal"] .settings-workspace::after {
+  background: none;
+}
+
 .settings-workspace > :not(.confirm-layer) {
   position: relative;
   z-index: 1;
@@ -8947,6 +9084,10 @@ html[data-surface="new-mail-notification"] #root {
   border: 1px solid color-mix(in srgb, var(--color-border) 72%, transparent);
   border-radius: var(--control-radius);
   background: color-mix(in srgb, var(--compose-content-surface) 52%, transparent);
+}
+
+.appearance-theme-focus {
+  margin-top: 14px;
 }
 
 .appearance-config__row {
@@ -11723,6 +11864,7 @@ html[data-surface="new-mail-notification"] #root {
     height: auto;
     border: 1px solid rgba(255, 255, 255, 0.24);
     border-radius: var(--panel-radius);
+    background-color: var(--sidebar-scrim-top);
     background-image: var(--wallpaper);
     background-position: var(--wallpaper-position);
     background-size: auto 100vh;

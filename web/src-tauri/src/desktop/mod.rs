@@ -41,7 +41,7 @@ use crate::{
 use appearance::AppearanceStore;
 pub(crate) use appearance::{
     AppearanceSettingsDto, DeleteCustomThemeRequest, ImportCustomThemeRequest,
-    SelectAppearanceThemeRequest, UpdateCustomThemeRequest,
+    SelectAppearanceThemeRequest, UpdateAppearancePreferencesRequest, UpdateCustomThemeRequest,
 };
 pub(crate) use settings::{
     DeleteProfileAvatarRequest, DesktopSettingsDto, DesktopSettingsUpdate, MCP_ENDPOINT,
@@ -476,6 +476,8 @@ impl DesktopRuntime {
         mpsc::Receiver<BackgroundRequest>,
         watch::Receiver<bool>,
     ) {
+        let settings_database_path = app_data.join(SETTINGS_DATABASE_NAME);
+        let existing_install = settings_database_path.exists();
         let (store, settings, startup_error) = if fs::create_dir_all(app_data).is_err() {
             diagnostics::error(
                 "settings_store_open_failed",
@@ -487,7 +489,7 @@ impl DesktopRuntime {
                 Some("The desktop settings directory is unavailable.".to_owned()),
             )
         } else {
-            match DesktopSettingsStore::open(app_data.join(SETTINGS_DATABASE_NAME)) {
+            match DesktopSettingsStore::open(&settings_database_path) {
                 Ok(store) => match store.load() {
                     Ok(settings) => {
                         diagnostics::info(
@@ -527,7 +529,7 @@ impl DesktopRuntime {
                 }
             }
         };
-        let appearance_store = AppearanceStore::open(app_data.join(SETTINGS_DATABASE_NAME))
+        let appearance_store = AppearanceStore::open(&settings_database_path, existing_install)
             .map_err(|_| {
                 diagnostics::error(
                     "appearance_store_open_failed",
@@ -722,6 +724,16 @@ impl DesktopRuntime {
             .as_ref()
             .ok_or_else(|| "Appearance storage is unavailable.".to_owned())?
             .select(request)
+    }
+
+    pub(crate) fn update_appearance_preferences(
+        &self,
+        request: UpdateAppearancePreferencesRequest,
+    ) -> Result<AppearanceSettingsDto, String> {
+        self.appearance_store
+            .as_ref()
+            .ok_or_else(|| "Appearance storage is unavailable.".to_owned())?
+            .update_preferences(request)
     }
 
     pub(crate) fn import_custom_theme(

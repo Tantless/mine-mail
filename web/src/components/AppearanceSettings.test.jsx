@@ -5,12 +5,13 @@ import { AppearanceSettings } from "./AppearanceSettings.jsx";
 
 const appearance = {
   selectionInitialized: true,
+  paletteId: "teal-light",
+  minimalModeEnabled: true,
   activeTheme: { kind: "custom", id: "preset-1" },
   customPresets: [
     {
       id: "preset-1",
       name: "海岸",
-      paletteId: "teal-light",
       focalX: 0.5,
       focalY: 0.5,
       thumbnailDataUrl: "data:image/jpeg;base64,AQID",
@@ -21,6 +22,8 @@ const appearance = {
 
 const builtinAppearance = {
   selectionInitialized: true,
+  paletteId: "night",
+  minimalModeEnabled: false,
   activeTheme: { kind: "builtin", id: "night" },
   customPresets: appearance.customPresets,
   activeBackgroundDataUrl: null,
@@ -32,6 +35,7 @@ function props(overrides = {}) {
     idlePoetryEnabled: true,
     onIdlePoetryEnabledChange: vi.fn(),
     onSelect: vi.fn().mockResolvedValue(appearance),
+    onUpdatePreferences: vi.fn().mockResolvedValue(appearance),
     onImport: vi.fn().mockResolvedValue(appearance),
     onUpdate: vi.fn().mockResolvedValue(appearance),
     onDelete: vi.fn().mockResolvedValue(appearance),
@@ -68,12 +72,12 @@ describe("AppearanceSettings", () => {
   it("selects curated palettes and persists a normalized focal point", async () => {
     const user = userEvent.setup();
     const onUpdate = vi.fn().mockResolvedValue(appearance);
-    render(<AppearanceSettings {...props({ onUpdate })} />);
+    const onUpdatePreferences = vi.fn().mockResolvedValue(appearance);
+    render(<AppearanceSettings {...props({ onUpdate, onUpdatePreferences })} />);
 
-    await user.click(screen.getByRole("button", { name: /^调色盘/ }));
+    await user.click(screen.getByRole("button", { name: /^界面配色/ }));
     await user.click(screen.getByRole("button", { name: "珊瑚明亮调色板" }));
-    expect(onUpdate).toHaveBeenCalledWith({
-      id: "preset-1",
+    expect(onUpdatePreferences).toHaveBeenCalledWith({
       paletteId: "rose-light",
     });
 
@@ -103,32 +107,64 @@ describe("AppearanceSettings", () => {
     );
   });
 
-  it("keeps both theme controls visible and disabled for built-in themes", () => {
+  it("offers every built-in theme's original palette in minimal mode", async () => {
+    const user = userEvent.setup();
+    const onUpdatePreferences = vi.fn().mockResolvedValue(appearance);
+    render(<AppearanceSettings {...props({ onUpdatePreferences })} />);
+
+    await user.click(screen.getByRole("button", { name: /^界面配色/ }));
+    for (const name of ["日间原色", "夜间原色", "黄昏原色", "森林原色"]) {
+      expect(screen.getByRole("button", { name: new RegExp(`^${name}`) })).toBeTruthy();
+    }
+    await user.click(screen.getByRole("button", { name: /^森林原色/ }));
+    expect(onUpdatePreferences).toHaveBeenCalledWith({ paletteId: "forest" });
+  });
+
+  it("keeps the global palette editable and hides focal controls for built-in backgrounds", async () => {
+    const user = userEvent.setup();
+    const onUpdatePreferences = vi.fn().mockResolvedValue(builtinAppearance);
     render(
       <AppearanceSettings
-        {...props({ appearance: builtinAppearance })}
+        {...props({ appearance: builtinAppearance, onUpdatePreferences })}
       />,
     );
 
-    expect(screen.getByRole("button", { name: /^设置焦点/ }).disabled).toBe(true);
-    expect(screen.getByRole("button", { name: /^调色盘/ }).disabled).toBe(true);
+    expect(screen.queryByRole("button", { name: /^设置焦点/ })).toBeNull();
+    const paletteControl = screen.getByRole("button", { name: /^界面配色/ });
+    expect(paletteControl.disabled).toBe(false);
+    await user.click(paletteControl);
+    await user.click(screen.getByRole("button", { name: "薄荷明亮调色板" }));
+    expect(onUpdatePreferences).toHaveBeenCalledWith({ paletteId: "teal-light" });
     expect(screen.queryByRole("checkbox", { name: /夜间模式/ })).toBeNull();
-    expect(screen.queryByText(/内置主题，配置仅供查看/)).toBeNull();
   });
 
   it("selects a complete dark palette without a separate night-mode switch", async () => {
     const user = userEvent.setup();
-    const onUpdate = vi.fn().mockResolvedValue(appearance);
-    render(<AppearanceSettings {...props({ onUpdate })} />);
+    const onUpdatePreferences = vi.fn().mockResolvedValue(appearance);
+    render(<AppearanceSettings {...props({ onUpdatePreferences })} />);
 
-    await user.click(screen.getByRole("button", { name: /^调色盘/ }));
+    await user.click(screen.getByRole("button", { name: /^界面配色/ }));
     await user.click(screen.getByRole("button", { name: "晴蓝深色调色板" }));
 
-    expect(onUpdate).toHaveBeenCalledWith({
-      id: "preset-1",
+    expect(onUpdatePreferences).toHaveBeenCalledWith({
       paletteId: "sky-dark",
     });
     expect(screen.queryByRole("checkbox", { name: /夜间模式/ })).toBeNull();
+  });
+
+  it("toggles minimal mode without changing the selected background", async () => {
+    const user = userEvent.setup();
+    const onUpdatePreferences = vi.fn().mockResolvedValue(appearance);
+    const onSelect = vi.fn().mockResolvedValue(appearance);
+    render(<AppearanceSettings {...props({ onUpdatePreferences, onSelect })} />);
+
+    const toggle = screen.getByRole("checkbox", { name: "启用极简模式" });
+    expect(toggle.checked).toBe(true);
+    await user.click(toggle);
+    expect(onUpdatePreferences).toHaveBeenCalledWith({
+      minimalModeEnabled: false,
+    });
+    expect(onSelect).not.toHaveBeenCalled();
   });
 
   it("exposes the homepage poetry preference as an independent appearance bar", async () => {
@@ -193,7 +229,7 @@ describe("AppearanceSettings", () => {
       />,
     );
 
-    const toggle = screen.getByRole("checkbox", { name: "定时切换主题" });
+    const toggle = screen.getByRole("checkbox", { name: "定时切换主题背景" });
     expect(toggle.checked).toBe(false);
     expect(screen.queryByRole("combobox", { name: /日间开始小时/ })).toBeNull();
 

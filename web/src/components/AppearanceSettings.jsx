@@ -110,13 +110,13 @@ function PaletteDisc({ palette, selected = false }) {
   );
 }
 
-function PaletteSwatch({ palette, selected, onSelect, disabled, fixed }) {
+function PaletteSwatch({ palette, selected, onSelect, disabled }) {
   return (
     <button
       type="button"
       className="appearance-palette"
       data-selected={selected || undefined}
-      aria-label={`${palette.name}${palette.schemeLabel}调色板${fixed ? "（内置主题固定）" : ""}`}
+      aria-label={`${palette.name}${palette.schemeLabel}调色板`}
       aria-pressed={selected}
       title={`${palette.name} · ${palette.schemeLabel}`}
       disabled={disabled}
@@ -211,6 +211,7 @@ export function AppearanceSettings({
   themeScheduleNightStart = "21:00",
   onThemeScheduleChange,
   onSelect,
+  onUpdatePreferences,
   onImport,
   onUpdate,
   onDelete,
@@ -242,18 +243,11 @@ export function AppearanceSettings({
           (preset) => preset.id === appearance.activeTheme.id,
         )
       : null;
-  const activeBuiltin =
-    appearance?.activeTheme?.kind === "builtin"
-      ? builtinAppearanceThemes.find(
-          (theme) => theme.id === appearance.activeTheme.id,
-        ) || builtinAppearanceThemes[0]
-      : null;
-  const activePaletteId =
-    activePreset?.paletteId || activeBuiltin?.paletteId || "sky-light";
+  const activePaletteId = appearance?.paletteId || "daylight";
   const activePalette =
     appearancePalettes.find((palette) => palette.id === activePaletteId) ||
-    appearancePalettes.find((palette) => palette.id === "sky-light");
-  const controlsDisabled = !activePreset || Boolean(busyAction);
+    appearancePalettes.find((palette) => palette.id === "daylight");
+  const controlsDisabled = Boolean(busyAction);
 
   useEffect(() => {
     if (!renameId) return;
@@ -263,7 +257,6 @@ export function AppearanceSettings({
 
   useEffect(() => {
     setFocusOpen(false);
-    setPaletteOpen(false);
   }, [appearance?.activeTheme?.kind, appearance?.activeTheme?.id]);
 
   const run = async (key, action) => {
@@ -353,15 +346,112 @@ export function AppearanceSettings({
         <span>
           <p className="eyebrow">APPEARANCE</p>
           <h3 id="settings-appearance-title">外观</h3>
-          <p>选择固定主题，或把自己的图片保存为可重复使用的主题预设。</p>
+          <p>使用纯色极简界面，或保留主题背景的氛围与层次。</p>
         </span>
       </header>
+
+      <section className="appearance-section appearance-preference-bar" aria-label="极简模式">
+        <label className="settings-preference-row settings-preference-row--toggle">
+          <span>
+            <strong>极简模式</strong>
+            <small>隐藏主题图片，以当前调色盘呈现接近纯色的区块。</small>
+          </span>
+          <input
+            type="checkbox"
+            aria-label="启用极简模式"
+            checked={appearance?.minimalModeEnabled !== false}
+            disabled={controlsDisabled}
+            onChange={(event) =>
+              void run("minimal-mode", () =>
+                onUpdatePreferences({
+                  minimalModeEnabled: event.target.checked,
+                }),
+              )
+            }
+          />
+        </label>
+      </section>
+
+      <section
+        className="appearance-section appearance-config"
+        aria-labelledby="appearance-palette-title"
+      >
+        <header className="appearance-section__heading">
+          <span>
+            <strong id="appearance-palette-title">调色盘</strong>
+            <small>极简模式完全由当前色盘配色；四个内置主题的原色也可单独选用。</small>
+          </span>
+        </header>
+        <div className="appearance-config__rows">
+          <button
+            type="button"
+            className="appearance-config__row appearance-config__disclosure"
+            aria-expanded={paletteOpen}
+            aria-controls="appearance-palette-panel"
+            disabled={controlsDisabled}
+            onClick={() => setPaletteOpen((current) => !current)}
+          >
+            <span>
+              <strong>界面配色</strong>
+              <small>
+                {activePalette
+                  ? `${activePalette.name} · ${activePalette.schemeLabel}`
+                  : "日间原色 · 明亮"}
+              </small>
+            </span>
+            <span className="appearance-config__palette-value" aria-hidden="true">
+              <PaletteDisc palette={activePalette} />
+              <CaretDown size={18} weight="bold" />
+            </span>
+          </button>
+          {paletteOpen ? (
+            <div id="appearance-palette-panel" className="appearance-config__panel appearance-config__panel--palette">
+              <p>
+                色盘统一控制背景、面板、文字、边框、交互色和状态色。关闭极简模式后，选择内置主题会恢复它的原色，你仍可在这里改用其他色盘。
+              </p>
+              {[
+                { scheme: "light", label: "明亮界面" },
+                { scheme: "dark", label: "深色界面" },
+              ].map((group) => (
+                <section
+                  key={group.scheme}
+                  className="appearance-palette-group"
+                  aria-label={group.label}
+                >
+                  <strong>{group.label}</strong>
+                  <div className="appearance-palette-list">
+                    {appearancePalettes
+                      .filter((palette) => palette.scheme === group.scheme)
+                      .map((palette) => (
+                        <PaletteSwatch
+                          key={palette.id}
+                          palette={palette}
+                          selected={activePaletteId === palette.id}
+                          disabled={controlsDisabled}
+                          onSelect={() =>
+                            void run(`palette:${palette.id}`, () =>
+                              onUpdatePreferences({ paletteId: palette.id }),
+                            )
+                          }
+                        />
+                      ))}
+                  </div>
+                </section>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      </section>
 
       <section className="appearance-section" aria-labelledby="appearance-themes-title">
         <header className="appearance-section__heading">
           <span>
-            <strong id="appearance-themes-title">主题预设</strong>
-            <small>固定主题保持原有配色；自定义主题可选择完整界面色盘。</small>
+            <strong id="appearance-themes-title">主题背景</strong>
+            <small>
+              {appearance?.minimalModeEnabled !== false
+                ? "极简模式下保留选择与设置，但不会显示背景图片。"
+                : "内置主题默认使用各自原色；也可以把自己的图片保存为预设。"}
+            </small>
           </span>
         </header>
         <div className="appearance-theme-grid">
@@ -474,20 +564,8 @@ export function AppearanceSettings({
             if (file && id) void run(`replace:${id}`, () => importFile(file, id));
           }}
         />
-      </section>
-
-      <section
-        className="appearance-section appearance-config"
-        aria-labelledby="appearance-config-title"
-        data-readonly={!activePreset || undefined}
-      >
-        <header className="appearance-section__heading">
-          <span>
-            <strong id="appearance-config-title">主题配置</strong>
-          </span>
-        </header>
-
-        <div className="appearance-config__rows">
+        {activePreset ? (
+          <div className="appearance-config__rows appearance-theme-focus">
           <button
             type="button"
             className="appearance-config__row appearance-config__disclosure"
@@ -527,77 +605,20 @@ export function AppearanceSettings({
               <p>点击预览中最重要的位置，窗口裁切时会优先保留这里。</p>
             </div>
           ) : null}
-
-          <button
-            type="button"
-            className="appearance-config__row appearance-config__disclosure"
-            aria-expanded={paletteOpen}
-            aria-controls="appearance-palette-panel"
-            disabled={controlsDisabled}
-            onClick={() => setPaletteOpen((current) => !current)}
-          >
-            <span>
-              <strong>调色盘</strong>
-              <small>
-                {activePalette
-                  ? `${activePalette.name} · ${activePalette.schemeLabel}`
-                  : "晴蓝 · 明亮"}
-              </small>
-            </span>
-            <span className="appearance-config__palette-value" aria-hidden="true">
-              <PaletteDisc palette={activePalette} />
-              <CaretDown size={18} weight="bold" />
-            </span>
-          </button>
-          {paletteOpen ? (
-            <div id="appearance-palette-panel" className="appearance-config__panel appearance-config__panel--palette">
-              <p>色盘统一控制玻璃框体、面板、文字、边框、交互色和状态色。</p>
-              {[
-                { scheme: "light", label: "明亮界面" },
-                { scheme: "dark", label: "深色界面" },
-              ].map((group) => (
-                <section
-                  key={group.scheme}
-                  className="appearance-palette-group"
-                  aria-label={group.label}
-                >
-                  <strong>{group.label}</strong>
-                  <div className="appearance-palette-list">
-                    {appearancePalettes
-                      .filter((palette) => palette.scheme === group.scheme)
-                      .map((palette) => (
-                        <PaletteSwatch
-                          key={palette.id}
-                          palette={palette}
-                          selected={activePaletteId === palette.id}
-                          disabled={controlsDisabled}
-                          fixed={!activePreset}
-                          onSelect={() => {
-                            if (!activePreset) return;
-                            void run(`palette:${activePreset.id}`, () =>
-                              onUpdate({ id: activePreset.id, paletteId: palette.id }),
-                            );
-                          }}
-                        />
-                      ))}
-                  </div>
-                </section>
-              ))}
-            </div>
-          ) : null}
-        </div>
+          </div>
+        ) : null}
       </section>
 
       <section className="appearance-section" aria-labelledby="appearance-schedule-title">
         <header className="appearance-section__heading">
           <span>
-            <strong id="appearance-schedule-title">定时切换主题</strong>
-            <small>随本机时间在日间、黄昏、夜间主题之间自动切换。</small>
+            <strong id="appearance-schedule-title">定时切换主题背景</strong>
+            <small>随本机时间切换背景；极简模式开启时选择会保留但不显示。</small>
           </span>
           <input
             className="appearance-config__toggle"
             type="checkbox"
-            aria-label="定时切换主题"
+            aria-label="定时切换主题背景"
             checked={themeScheduleEnabled}
             disabled={Boolean(busyAction)}
             onChange={(event) =>
