@@ -2553,10 +2553,11 @@ async fn update_desktop_settings(
                 "The system startup setting could not be read; no settings were changed.".to_owned()
             })?;
 
+            let autostart_enabled = settings.autostart_enabled;
             runtime.update_settings(settings)?;
 
             let autostart_enabled = if let Some(enabled) =
-                requested_autostart_change(previous_autostart, settings.autostart_enabled)
+                requested_autostart_change(previous_autostart, autostart_enabled)
             {
                 if set_autostart_enabled(&app, enabled).is_err() {
                     let local_rollback_failed = runtime.update_settings(previous_settings).is_err();

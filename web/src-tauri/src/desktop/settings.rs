@@ -5,6 +5,9 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
 pub(super) const DEFAULT_POLL_INTERVAL_MINUTES: u8 = 5;
+pub(super) const DEFAULT_THEME_SCHEDULE_DAY_START: u16 = 6 * 60;
+pub(super) const DEFAULT_THEME_SCHEDULE_DUSK_START: u16 = 18 * 60;
+pub(super) const DEFAULT_THEME_SCHEDULE_NIGHT_START: u16 = 21 * 60;
 pub(crate) const MCP_ENDPOINT: &str = "http://127.0.0.1:46321/mcp";
 const MAX_PROFILE_AVATAR_BYTES: usize = 2 * 1024 * 1024;
 
@@ -165,6 +168,10 @@ pub(super) struct StoredDesktopSettings {
     pub mcp_send_enabled: bool,
     pub notification_baseline_initialized: bool,
     pub notification_baseline_uid: u32,
+    pub theme_schedule_enabled: bool,
+    pub theme_schedule_day_start: u16,
+    pub theme_schedule_dusk_start: u16,
+    pub theme_schedule_night_start: u16,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -190,11 +197,15 @@ impl Default for StoredDesktopSettings {
             mcp_send_enabled: false,
             notification_baseline_initialized: false,
             notification_baseline_uid: 0,
+            theme_schedule_enabled: false,
+            theme_schedule_day_start: DEFAULT_THEME_SCHEDULE_DAY_START,
+            theme_schedule_dusk_start: DEFAULT_THEME_SCHEDULE_DUSK_START,
+            theme_schedule_night_start: DEFAULT_THEME_SCHEDULE_NIGHT_START,
         }
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub(crate) struct DesktopSettingsUpdate {
     pub background_enabled: Option<bool>,
     pub poll_interval_minutes: Option<u8>,
@@ -208,6 +219,10 @@ pub(crate) struct DesktopSettingsUpdate {
     pub mcp_enabled: Option<bool>,
     pub mcp_information_enabled: Option<bool>,
     pub mcp_send_enabled: Option<bool>,
+    pub theme_schedule_enabled: Option<bool>,
+    pub theme_schedule_day_start: Option<String>,
+    pub theme_schedule_dusk_start: Option<String>,
+    pub theme_schedule_night_start: Option<String>,
     pub autostart_enabled: Option<bool>,
 }
 
@@ -226,6 +241,10 @@ pub(crate) struct DesktopSettingsDto {
     pub mcp_enabled: bool,
     pub mcp_information_enabled: bool,
     pub mcp_send_enabled: bool,
+    pub theme_schedule_enabled: bool,
+    pub theme_schedule_day_start: String,
+    pub theme_schedule_dusk_start: String,
+    pub theme_schedule_night_start: String,
     pub mcp_endpoint: &'static str,
     pub autostart_enabled: bool,
     pub startup_error: Option<String>,
@@ -274,6 +293,14 @@ impl DesktopSettingsStore {
                      CHECK (mcp_information_enabled IN (0, 1)),
                  mcp_send_enabled INTEGER NOT NULL DEFAULT 0
                      CHECK (mcp_send_enabled IN (0, 1)),
+                 theme_schedule_enabled INTEGER NOT NULL DEFAULT 0
+                     CHECK (theme_schedule_enabled IN (0, 1)),
+                 theme_schedule_day_start INTEGER NOT NULL DEFAULT 360
+                     CHECK (theme_schedule_day_start >= 0 AND theme_schedule_day_start < 1440),
+                 theme_schedule_dusk_start INTEGER NOT NULL DEFAULT 1080
+                     CHECK (theme_schedule_dusk_start >= 0 AND theme_schedule_dusk_start < 1440),
+                 theme_schedule_night_start INTEGER NOT NULL DEFAULT 1260
+                     CHECK (theme_schedule_night_start >= 0 AND theme_schedule_night_start < 1440),
                  updated_at TEXT NOT NULL
                      DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
              );
@@ -380,6 +407,50 @@ impl DesktopSettingsStore {
         }
         if !existing_columns
             .iter()
+            .any(|column| column == "theme_schedule_enabled")
+        {
+            connection.execute(
+                "ALTER TABLE desktop_settings
+                 ADD COLUMN theme_schedule_enabled INTEGER NOT NULL DEFAULT 0
+                     CHECK (theme_schedule_enabled IN (0, 1))",
+                [],
+            )?;
+        }
+        if !existing_columns
+            .iter()
+            .any(|column| column == "theme_schedule_day_start")
+        {
+            connection.execute(
+                "ALTER TABLE desktop_settings
+                 ADD COLUMN theme_schedule_day_start INTEGER NOT NULL DEFAULT 360
+                     CHECK (theme_schedule_day_start >= 0 AND theme_schedule_day_start < 1440)",
+                [],
+            )?;
+        }
+        if !existing_columns
+            .iter()
+            .any(|column| column == "theme_schedule_dusk_start")
+        {
+            connection.execute(
+                "ALTER TABLE desktop_settings
+                 ADD COLUMN theme_schedule_dusk_start INTEGER NOT NULL DEFAULT 1080
+                     CHECK (theme_schedule_dusk_start >= 0 AND theme_schedule_dusk_start < 1440)",
+                [],
+            )?;
+        }
+        if !existing_columns
+            .iter()
+            .any(|column| column == "theme_schedule_night_start")
+        {
+            connection.execute(
+                "ALTER TABLE desktop_settings
+                 ADD COLUMN theme_schedule_night_start INTEGER NOT NULL DEFAULT 1260
+                     CHECK (theme_schedule_night_start >= 0 AND theme_schedule_night_start < 1440)",
+                [],
+            )?;
+        }
+        if !existing_columns
+            .iter()
             .any(|column| column == "foreground_notifications_enabled")
         {
             connection.execute(
@@ -439,7 +510,9 @@ impl DesktopSettingsStore {
                     remote_image_mode, notification_sound_enabled,
                     notification_sound, ai_assistant_default_open,
                     idle_poetry_enabled, mcp_enabled, mcp_information_enabled,
-                    mcp_send_enabled
+                    mcp_send_enabled, theme_schedule_enabled,
+                    theme_schedule_day_start, theme_schedule_dusk_start,
+                    theme_schedule_night_start
              FROM desktop_settings WHERE id = 1",
             [],
             |row| {
@@ -464,6 +537,10 @@ impl DesktopSettingsStore {
                     mcp_enabled: row.get::<_, i64>(11)? != 0,
                     mcp_information_enabled: row.get::<_, i64>(12)? != 0,
                     mcp_send_enabled: row.get::<_, i64>(13)? != 0,
+                    theme_schedule_enabled: row.get::<_, i64>(14)? != 0,
+                    theme_schedule_day_start: row.get(15)?,
+                    theme_schedule_dusk_start: row.get(16)?,
+                    theme_schedule_night_start: row.get(17)?,
                 })
             },
         )
@@ -487,6 +564,10 @@ impl DesktopSettingsStore {
                  mcp_enabled = ?12,
                  mcp_information_enabled = ?13,
                  mcp_send_enabled = ?14,
+                 theme_schedule_enabled = ?15,
+                 theme_schedule_day_start = ?16,
+                 theme_schedule_dusk_start = ?17,
+                 theme_schedule_night_start = ?18,
                  updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
              WHERE id = 1",
             params![
@@ -504,6 +585,10 @@ impl DesktopSettingsStore {
                 settings.mcp_enabled,
                 settings.mcp_information_enabled,
                 settings.mcp_send_enabled,
+                settings.theme_schedule_enabled,
+                settings.theme_schedule_day_start,
+                settings.theme_schedule_dusk_start,
+                settings.theme_schedule_night_start,
             ],
         )?;
         Ok(())
@@ -692,6 +777,43 @@ pub(super) fn valid_poll_interval(value: u8) -> bool {
     matches!(value, 1 | 3 | 5)
 }
 
+/// Parses an "HH:MM" wall-clock time into minutes since midnight.
+pub(super) fn parse_schedule_time(value: &str) -> Option<u16> {
+    let bytes = value.as_bytes();
+    if bytes.len() != 5 || bytes[2] != b':' {
+        return None;
+    }
+    let digit = |byte: u8| {
+        byte.checked_sub(b'0')
+            .filter(|value| *value < 10)
+            .map(u16::from)
+    };
+    let hours = digit(bytes[0])?.checked_mul(10)?.checked_add(digit(bytes[1])?)?;
+    let minutes = digit(bytes[3])?
+        .checked_mul(10)?
+        .checked_add(digit(bytes[4])?)?;
+    if hours >= 24 || minutes >= 60 {
+        return None;
+    }
+    Some(hours * 60 + minutes)
+}
+
+pub(super) fn format_schedule_time(minutes: u16) -> String {
+    format!("{:02}:{:02}", minutes / 60, minutes % 60)
+}
+
+/// Rejects values outside "HH:MM" and any schedule whose boundaries are not
+/// strictly ordered day < dusk < night.
+pub(super) fn valid_theme_schedule(
+    day_start: u16,
+    dusk_start: u16,
+    night_start: u16,
+) -> bool {
+    day_start < 1440 && dusk_start < 1440 && night_start < 1440
+        && day_start < dusk_start
+        && dusk_start < night_start
+}
+
 #[cfg(test)]
 mod tests {
     use tempfile::tempdir;
@@ -777,6 +899,10 @@ mod tests {
         assert!(defaults.mcp_information_enabled);
         assert!(!defaults.mcp_send_enabled);
         assert!(!defaults.notification_baseline_initialized);
+        assert!(!defaults.theme_schedule_enabled);
+        assert_eq!(defaults.theme_schedule_day_start, 360);
+        assert_eq!(defaults.theme_schedule_dusk_start, 1_080);
+        assert_eq!(defaults.theme_schedule_night_start, 1_260);
 
         let updated = StoredDesktopSettings {
             background_enabled: false,
@@ -793,6 +919,10 @@ mod tests {
             mcp_send_enabled: true,
             notification_baseline_initialized: true,
             notification_baseline_uid: 42,
+            theme_schedule_enabled: true,
+            theme_schedule_day_start: 420,
+            theme_schedule_dusk_start: 1_020,
+            theme_schedule_night_start: 1_260,
         };
         store.save(updated).expect("save settings");
         assert_eq!(store.load().expect("updated settings"), updated);
@@ -836,6 +966,10 @@ mod tests {
         assert!(!migrated.mcp_enabled);
         assert!(migrated.mcp_information_enabled);
         assert!(!migrated.mcp_send_enabled);
+        assert!(!migrated.theme_schedule_enabled);
+        assert_eq!(migrated.theme_schedule_day_start, 360);
+        assert_eq!(migrated.theme_schedule_dusk_start, 1_080);
+        assert_eq!(migrated.theme_schedule_night_start, 1_260);
     }
 
     #[test]
@@ -919,5 +1053,33 @@ mod tests {
             })
             .expect_err("SVG must be rejected");
         assert!(error.contains("PNG, JPEG, and WebP"));
+    }
+
+    #[test]
+    fn theme_schedule_time_helpers_validate_and_format() {
+        assert_eq!(super::parse_schedule_time("06:00"), Some(360));
+        assert_eq!(super::parse_schedule_time("18:30"), Some(1_110));
+        assert_eq!(super::parse_schedule_time("23:59"), Some(1_439));
+        assert_eq!(super::parse_schedule_time("00:00"), Some(0));
+        assert_eq!(super::parse_schedule_time("24:00"), None);
+        assert_eq!(super::parse_schedule_time("06:60"), None);
+        assert_eq!(super::parse_schedule_time("6:00"), None);
+        assert_eq!(super::parse_schedule_time("06:0"), None);
+        assert_eq!(super::parse_schedule_time("a6:00"), None);
+        assert_eq!(super::parse_schedule_time(":6:00"), None);
+        assert_eq!(super::parse_schedule_time("06:a0"), None);
+        assert_eq!(super::parse_schedule_time(""), None);
+        assert_eq!(super::format_schedule_time(360), "06:00");
+        assert_eq!(super::format_schedule_time(1_080), "18:00");
+        assert_eq!(super::format_schedule_time(0), "00:00");
+        assert_eq!(super::format_schedule_time(1_439), "23:59");
+
+        assert!(super::valid_theme_schedule(360, 1_080, 1_260));
+        assert!(super::valid_theme_schedule(0, 12, 24));
+        assert!(!super::valid_theme_schedule(1_080, 360, 1_260));
+        assert!(!super::valid_theme_schedule(360, 360, 1_260));
+        assert!(!super::valid_theme_schedule(360, 1_080, 1_080));
+        assert!(!super::valid_theme_schedule(1_440, 1_080, 1_260));
+        assert!(!super::valid_theme_schedule(360, 1_080, 1_440));
     }
 }

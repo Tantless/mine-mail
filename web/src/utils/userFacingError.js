@@ -38,6 +38,16 @@ const translatedErrors = [
     message: "请检查输入：邮箱账户设置无效。",
   },
   {
+    pattern: /Theme schedule times must use HH:MM format/i,
+    kind: "input",
+    message: "请检查输入：定时切换主题的时间请使用 HH:MM 格式（例如 06:00）。",
+  },
+  {
+    pattern: /Theme schedule times must be ordered day, dusk, then night/i,
+    kind: "input",
+    message: "请检查输入：定时切换主题需要按日间、黄昏、夜间的顺序排列时间。",
+  },
+  {
     pattern: /Recipient confirmation did not match/i,
     kind: "operation",
     message: "操作未完成：收件人信息已变化，请重新确认后发送。",

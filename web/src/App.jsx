@@ -30,6 +30,7 @@ import { Toast } from "./components/Toast.jsx";
 import { UpdateProgressNotice } from "./components/UpdateProgressNotice.jsx";
 import { normalizeAvatarEmail } from "./components/ProfileAvatar.jsx";
 import { useAppUpdate } from "./hooks/useAppUpdate.js";
+import { useThemeSchedule } from "./hooks/useThemeSchedule.js";
 import { hasFlag } from "./utils/formatters.js";
 import { messageNavigationKey } from "./utils/messageNavigation.js";
 import { userFacingErrorMessage } from "./utils/userFacingError.js";
@@ -80,6 +81,10 @@ const defaultSettings = {
   mcpEnabled: false,
   mcpInformationEnabled: true,
   mcpSendEnabled: false,
+  themeScheduleEnabled: false,
+  themeScheduleDayStart: "06:00",
+  themeScheduleDuskStart: "18:00",
+  themeScheduleNightStart: "21:00",
   mcpEndpoint: "http://127.0.0.1:46321/mcp",
 };
 const supportedAvatarTypes = new Set(["image/png", "image/jpeg", "image/webp"]);
@@ -7222,6 +7227,18 @@ export function App() {
     setAppearance(updated);
     return updated;
   };
+
+  useThemeSchedule({
+    enabled: settings.themeScheduleEnabled,
+    schedule: {
+      dayStart: settings.themeScheduleDayStart,
+      duskStart: settings.themeScheduleDuskStart,
+      nightStart: settings.themeScheduleNightStart,
+    },
+    activeTheme: appearance?.activeTheme,
+    onApply: (themeId) =>
+      handleSelectAppearance({ kind: "builtin", id: themeId }),
+  });
 
   const restoreComposerAfterFailedAccountConnection = useCallback(
     (sessionId) => {

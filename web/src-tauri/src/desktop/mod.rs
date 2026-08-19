@@ -49,7 +49,8 @@ pub(crate) use settings::{
 };
 use settings::{
     DesktopSettingsStore, NotificationBaseline, NotificationDelivery, ProfileAvatarOwnerType,
-    StoredDesktopSettings, valid_poll_interval,
+    StoredDesktopSettings, format_schedule_time, parse_schedule_time, valid_poll_interval,
+    valid_theme_schedule,
 };
 
 const DRAFT_SYNC_INTERVAL: Duration = Duration::from_secs(5 * 60);
@@ -590,6 +591,10 @@ impl DesktopRuntime {
             mcp_enabled: settings.mcp_enabled,
             mcp_information_enabled: settings.mcp_information_enabled,
             mcp_send_enabled: settings.mcp_send_enabled,
+            theme_schedule_enabled: settings.theme_schedule_enabled,
+            theme_schedule_day_start: format_schedule_time(settings.theme_schedule_day_start),
+            theme_schedule_dusk_start: format_schedule_time(settings.theme_schedule_dusk_start),
+            theme_schedule_night_start: format_schedule_time(settings.theme_schedule_night_start),
             mcp_endpoint: MCP_ENDPOINT,
             autostart_enabled,
             startup_error: self
@@ -640,6 +645,36 @@ impl DesktopRuntime {
         }
         if let Some(value) = update.mcp_send_enabled {
             settings.mcp_send_enabled = value;
+        }
+        if let Some(value) = update.theme_schedule_enabled {
+            settings.theme_schedule_enabled = value;
+        }
+        if let Some(value) = update.theme_schedule_day_start.as_deref() {
+            let Some(parsed) = parse_schedule_time(value) else {
+                return Err("Theme schedule times must use HH:MM format.".to_owned());
+            };
+            settings.theme_schedule_day_start = parsed;
+        }
+        if let Some(value) = update.theme_schedule_dusk_start.as_deref() {
+            let Some(parsed) = parse_schedule_time(value) else {
+                return Err("Theme schedule times must use HH:MM format.".to_owned());
+            };
+            settings.theme_schedule_dusk_start = parsed;
+        }
+        if let Some(value) = update.theme_schedule_night_start.as_deref() {
+            let Some(parsed) = parse_schedule_time(value) else {
+                return Err("Theme schedule times must use HH:MM format.".to_owned());
+            };
+            settings.theme_schedule_night_start = parsed;
+        }
+        if !valid_theme_schedule(
+            settings.theme_schedule_day_start,
+            settings.theme_schedule_dusk_start,
+            settings.theme_schedule_night_start,
+        ) {
+            return Err(
+                "Theme schedule times must be ordered day, dusk, then night.".to_owned(),
+            );
         }
 
         self.persist_settings(settings, "Desktop settings could not be saved.")?;
@@ -771,6 +806,10 @@ impl DesktopRuntime {
             mcp_enabled: Some(settings.mcp_enabled),
             mcp_information_enabled: Some(settings.mcp_information_enabled),
             mcp_send_enabled: Some(settings.mcp_send_enabled),
+            theme_schedule_enabled: Some(settings.theme_schedule_enabled),
+            theme_schedule_day_start: Some(format_schedule_time(settings.theme_schedule_day_start)),
+            theme_schedule_dusk_start: Some(format_schedule_time(settings.theme_schedule_dusk_start)),
+            theme_schedule_night_start: Some(format_schedule_time(settings.theme_schedule_night_start)),
             autostart_enabled: None,
         })
     }
