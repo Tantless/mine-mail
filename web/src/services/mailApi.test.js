@@ -790,6 +790,10 @@ describe("mailApi desktop IPC contract", () => {
         remote_image_mode: "ask",
         ai_assistant_default_open: true,
         idle_poetry_enabled: true,
+        theme_schedule_enabled: true,
+        theme_schedule_day_start: "07:30",
+        theme_schedule_dusk_start: "18:30",
+        theme_schedule_night_start: "22:00",
       })
       .mockResolvedValueOnce({
         poll_interval_minutes: 1,
@@ -833,6 +837,10 @@ describe("mailApi desktop IPC contract", () => {
       mcpEnabled: false,
       mcpInformationEnabled: true,
       mcpSendEnabled: false,
+      themeScheduleEnabled: true,
+      themeScheduleDayStart: "07:30",
+      themeScheduleDuskStart: "18:30",
+      themeScheduleNightStart: "22:00",
       mcpEndpoint: "http://127.0.0.1:46321/mcp",
       startupError: null,
     });
@@ -847,6 +855,10 @@ describe("mailApi desktop IPC contract", () => {
       remoteImageMode: "blocked",
       aiAssistantDefaultOpen: false,
       idlePoetryEnabled: false,
+      themeScheduleEnabled: true,
+      themeScheduleDayStart: "07:30",
+      themeScheduleDuskStart: "18:30",
+      themeScheduleNightStart: "22:00",
     });
     expect(await mailApi.getAccountStatus()).toMatchObject({
       configured: true,
@@ -875,6 +887,10 @@ describe("mailApi desktop IPC contract", () => {
         mcp_enabled: false,
         mcp_information_enabled: true,
         mcp_send_enabled: false,
+        theme_schedule_enabled: true,
+        theme_schedule_day_start: "07:30",
+        theme_schedule_dusk_start: "18:30",
+        theme_schedule_night_start: "22:00",
       },
     });
     expect(ipc.invoke).toHaveBeenNthCalledWith(4, "configure_account", {

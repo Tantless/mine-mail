@@ -1472,6 +1472,13 @@ export function SettingsPanel({
                   idlePoetryEnabled,
                 }))
               }
+              themeScheduleEnabled={value.themeScheduleEnabled === true}
+              themeScheduleDayStart={value.themeScheduleDayStart || "06:00"}
+              themeScheduleDuskStart={value.themeScheduleDuskStart || "18:00"}
+              themeScheduleNightStart={value.themeScheduleNightStart || "21:00"}
+              onThemeScheduleChange={(patch) =>
+                updateSettings((current) => ({ ...current, ...patch }))
+              }
               onSelect={onSelectAppearance}
               onImport={onImportCustomTheme}
               onUpdate={onUpdateCustomTheme}
