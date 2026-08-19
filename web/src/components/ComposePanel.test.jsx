@@ -945,9 +945,15 @@ it("routes an Agent turn through the model selected beside the mode", async () =
       name: "kimi-k2.5 · Backup Kimi",
     }),
   );
+  await waitFor(() => {
+    expect(modelSelect.getAttribute("aria-expanded")).toBe("false");
+    expect(modelSelect.textContent).toContain("kimi-k2.5 · Backup Kimi");
+    expect(document.activeElement).toBe(modelSelect);
+  });
   const input = within(assistant).getByRole("textbox", {
     name: "向 AI 助理发送消息",
   });
+  await user.click(input);
   await user.type(input, "检查语气{Enter}");
 
   await waitFor(() => expect(runAiTurn).toHaveBeenCalled());

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ThemedSelect } from "./ThemedSelect.jsx";
 
@@ -27,7 +27,8 @@ describe("ThemedSelect", () => {
       />,
     );
 
-    await user.click(screen.getByRole("combobox", { name: "完整校准间隔" }));
+    const trigger = screen.getByRole("combobox", { name: "完整校准间隔" });
+    await user.click(trigger);
     expect(screen.getByRole("listbox", { name: "完整校准间隔" }).style.maxHeight).toBe(
       "166px",
     );
@@ -38,6 +39,44 @@ describe("ThemedSelect", () => {
     await user.click(screen.getByRole("option", { name: "3 分钟" }));
     expect(onValueChange).toHaveBeenCalledWith(3);
     expect(screen.queryByRole("listbox")).toBeNull();
+    await waitFor(() => expect(document.activeElement).toBe(trigger));
+  });
+
+  it("does not steal focus moved outside before deferred trigger focus", async () => {
+    const frames = new Map();
+    let nextFrameId = 1;
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      const frameId = nextFrameId;
+      nextFrameId += 1;
+      frames.set(frameId, callback);
+      return frameId;
+    });
+    vi.spyOn(window, "cancelAnimationFrame").mockImplementation((frameId) => {
+      frames.delete(frameId);
+    });
+    const user = userEvent.setup();
+    render(
+      <>
+        <ThemedSelect
+          label="完整校准间隔"
+          value={5}
+          options={options}
+          onValueChange={vi.fn()}
+        />
+        <input aria-label="后续输入" />
+      </>,
+    );
+
+    await user.click(screen.getByRole("combobox", { name: "完整校准间隔" }));
+    await user.click(screen.getByRole("option", { name: "3 分钟" }));
+    const nextInput = screen.getByRole("textbox", { name: "后续输入" });
+    nextInput.focus();
+
+    const pendingFrames = [...frames.values()];
+    frames.clear();
+    act(() => pendingFrames.forEach((callback) => callback(16)));
+
+    expect(document.activeElement).toBe(nextInput);
   });
 
   it("supports Escape before deferred option focus without changing the value", async () => {

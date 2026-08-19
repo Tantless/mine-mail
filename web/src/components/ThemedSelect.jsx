@@ -26,6 +26,7 @@ export function ThemedSelect({
   const rootRef = useRef(null);
   const triggerRef = useRef(null);
   const optionRefs = useRef([]);
+  const returnFocusFrameRef = useRef(null);
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(() => optionIndex(options, value));
   const menuLayout = useBoundedDropdown({
@@ -54,12 +55,36 @@ export function ThemedSelect({
 
   useEffect(() => {
     if (!open) return;
-    window.requestAnimationFrame(() => optionRefs.current[activeIndex]?.focus());
+    const frame = window.requestAnimationFrame(() =>
+      optionRefs.current[activeIndex]?.focus(),
+    );
+    return () => window.cancelAnimationFrame(frame);
   }, [activeIndex, open]);
+
+  useEffect(
+    () => () => {
+      if (returnFocusFrameRef.current !== null) {
+        window.cancelAnimationFrame(returnFocusFrameRef.current);
+      }
+    },
+    [],
+  );
 
   const closeAndFocus = () => {
     setOpen(false);
-    window.requestAnimationFrame(() => triggerRef.current?.focus());
+    if (returnFocusFrameRef.current !== null) {
+      window.cancelAnimationFrame(returnFocusFrameRef.current);
+    }
+    returnFocusFrameRef.current = window.requestAnimationFrame(() => {
+      returnFocusFrameRef.current = null;
+      const activeElement = document.activeElement;
+      const focusMovedOutside =
+        activeElement &&
+        activeElement !== document.body &&
+        activeElement !== document.documentElement &&
+        !rootRef.current?.contains(activeElement);
+      if (!focusMovedOutside) triggerRef.current?.focus();
+    });
   };
 
   const choose = (option) => {
