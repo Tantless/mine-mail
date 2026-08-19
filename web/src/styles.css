@@ -158,11 +158,6 @@
   --settings-rail-surface: color-mix(in srgb, var(--color-panel) 58%, transparent);
   --settings-detail-surface: color-mix(in srgb, var(--color-panel) 10%, transparent);
   --settings-wallpaper-echo: 0.28;
-  --email-document-surface: color-mix(
-    in srgb,
-    var(--color-panel) 28%,
-    rgba(255, 255, 255, 0.76)
-  );
   --surface-edge: rgba(255, 255, 255, 0.58);
   --surface-highlight: rgba(255, 255, 255, 0.42);
   --surface-blur-list: 24px;
@@ -893,7 +888,6 @@ html[data-surface="new-mail-notification"] #root {
   --settings-rail-surface: color-mix(in srgb, var(--custom-glass) 63%, transparent);
   --settings-detail-surface: color-mix(in srgb, var(--custom-panel) 10%, transparent);
   --settings-wallpaper-echo: 0.24;
-  --email-document-surface: color-mix(in srgb, var(--custom-panel) 82%, transparent);
   --surface-edge: color-mix(in srgb, var(--custom-edge) 54%, transparent);
   --surface-highlight: color-mix(in srgb, var(--custom-highlight) 34%, transparent);
   --surface-saturation: var(--custom-saturation, 1.1);
@@ -3848,7 +3842,7 @@ html[data-surface="new-mail-notification"] #root {
   border: 0;
   border-radius: 10px;
   overflow: hidden;
-  background: var(--email-document-surface, rgba(255, 255, 255, 0.9));
+  background: transparent;
   color-scheme: light;
   opacity: 0;
   transition: opacity 90ms ease-out;

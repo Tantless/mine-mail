@@ -208,7 +208,7 @@ export function buildEmailDocument(fragment, allowRemoteImages = false) {
       html, body {
         margin: 0;
         padding: 0;
-        background: transparent;
+        background: #ffffff;
         overflow: hidden !important;
         scrollbar-width: none !important;
       }

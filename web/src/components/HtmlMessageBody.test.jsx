@@ -26,6 +26,9 @@ describe("HTML message body", () => {
     expect(document).not.toContain("img-src data: blob: http: https:");
     expect(document).toContain('img[src^="https://"]');
     expect(document).toContain("overflow: hidden !important");
+    expect(document).toContain("background: #ffffff");
+    expect(document).toContain("color: #272327");
+    expect(document).not.toContain("background: transparent");
     expect(document).toContain("pre {");
     expect(document).toContain("overflow: visible");
   });

@@ -87,7 +87,17 @@ describe("custom appearance semantic palette", () => {
     expect(customTheme).toMatch(/--compose-paper-surface:\s*var\(--custom-panel\)/);
     expect(customTheme).toMatch(/--color-text:\s*var\(--custom-text/);
     expect(customTheme).toMatch(/--color-danger:\s*var\(--custom-danger/);
+    expect(customTheme).not.toMatch(/--email-document-surface/);
     expect(styles).not.toMatch(/data-color-mode/);
+  });
+});
+
+describe("isolated mail document surface", () => {
+  it("leaves the iframe shell transparent for its own fixed document canvas", () => {
+    expect(declarationsFor("\\.html-message__frame")).toMatch(
+      /background:\s*transparent/,
+    );
+    expect(styles).not.toMatch(/--email-document-surface/);
   });
 });
 

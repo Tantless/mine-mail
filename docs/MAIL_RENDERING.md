@@ -71,6 +71,9 @@ large documents, image-heavy content, and structures outside the tested bounds.
 
 - Sanitize before rendering.
 - Scripts and active form behavior remain disabled.
+- The isolated document owns a fixed light fallback canvas and dark fallback ink
+  as one readable pair. Application themes and custom palettes do not recolor
+  that fallback; later sanitized sender styles may replace it.
 - Keep the sender's sanitized document structure intact rather than partially
   restyling it into a broken native layout.
 
