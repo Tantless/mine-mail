@@ -177,4 +177,75 @@ describe("AppearanceSettings", () => {
 
     expect(onDelete).toHaveBeenCalledWith("preset-1");
   });
+
+  it("toggles the theme schedule and reveals its three time rows", async () => {
+    const user = userEvent.setup();
+    const onThemeScheduleChange = vi.fn();
+    render(
+      <AppearanceSettings
+        {...props({
+          themeScheduleEnabled: false,
+          themeScheduleDayStart: "06:00",
+          themeScheduleDuskStart: "18:00",
+          themeScheduleNightStart: "21:00",
+          onThemeScheduleChange,
+        })}
+      />,
+    );
+
+    const toggle = screen.getByRole("checkbox", { name: "定时切换主题" });
+    expect(toggle.checked).toBe(false);
+    expect(screen.queryByRole("combobox", { name: /日间开始小时/ })).toBeNull();
+
+    await user.click(toggle);
+    expect(onThemeScheduleChange).toHaveBeenCalledWith({
+      themeScheduleEnabled: true,
+    });
+  });
+
+  it("shows the configured time rows while enabled and emits partial updates", async () => {
+    const user = userEvent.setup();
+    const onThemeScheduleChange = vi.fn();
+    render(
+      <AppearanceSettings
+        {...props({
+          themeScheduleEnabled: true,
+          themeScheduleDayStart: "07:00",
+          themeScheduleDuskStart: "18:30",
+          themeScheduleNightStart: "21:00",
+          onThemeScheduleChange,
+        })}
+      />,
+    );
+
+    expect(
+      screen.getByRole("combobox", { name: "日间开始小时" }).textContent,
+    ).toContain("07");
+    expect(
+      screen.getByRole("combobox", { name: "黄昏开始分钟" }).textContent,
+    ).toContain("30");
+
+    await user.click(screen.getByRole("combobox", { name: "夜间开始小时" }));
+    await user.click(await screen.findByRole("option", { name: "22" }));
+    expect(onThemeScheduleChange).toHaveBeenLastCalledWith({
+      themeScheduleNightStart: "22:00",
+    });
+  });
+
+  it("keeps the time rows hidden while the schedule is disabled", () => {
+    render(
+      <AppearanceSettings
+        {...props({
+          themeScheduleEnabled: false,
+          themeScheduleDayStart: "06:00",
+          themeScheduleDuskStart: "18:00",
+          themeScheduleNightStart: "21:00",
+          onThemeScheduleChange: vi.fn(),
+        })}
+      />,
+    );
+
+    expect(screen.queryByRole("combobox", { name: /开始小时/ })).toBeNull();
+    expect(screen.queryByRole("combobox", { name: /开始分钟/ })).toBeNull();
+  });
 });

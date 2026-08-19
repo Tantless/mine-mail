@@ -820,6 +820,15 @@ existing visual system normally changes this document rather than `DESIGN.md`.
   suppresses the rotating quotation and its animation whenever no message is
   open, including the disconnected-account workspace, without changing the
   wallpaper, account prompt, theme selection, or opened-message behavior.
+- The device-global **定时切换主题** appearance preference defaults off. When
+  enabled, Mine Mail follows the local machine clock and switches among the
+  Daylight, Dusk, and Night built-in themes at three configurable wall-clock
+  boundaries (default 06:00, 18:00, and 21:00). The schedule applies on startup,
+  when the switch is turned on, and again whenever a boundary passes; a manual
+  theme selection stays in effect until the next boundary, and custom themes are
+  never overridden automatically. Times persist in Rust-owned local state and are
+  validated as ordered HH:MM values, so an invalid or unordered schedule is
+  rejected on save rather than applied.
 - Custom background import accepts PNG, JPEG, and WebP only. Rust rejects sources
   above 20 MB or roughly 50 megapixels, applies embedded orientation, strips
   metadata by re-encoding, limits the long edge to 5120 pixels, creates a bounded

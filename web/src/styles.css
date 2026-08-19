@@ -8642,6 +8642,49 @@ html[data-surface="new-mail-notification"] #root {
   border-bottom: 0;
 }
 
+.appearance-schedule-list {
+  display: grid;
+  gap: 10px;
+  padding-top: 4px;
+}
+
+.appearance-schedule-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  min-height: 48px;
+  padding: 6px 2px;
+  border-bottom: 1px solid color-mix(in srgb, var(--compose-divider) 72%, transparent);
+}
+
+.appearance-schedule-row:last-child {
+  border-bottom: 0;
+}
+
+.appearance-schedule-row__label {
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.appearance-schedule-row__controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.appearance-schedule-row__controls .themed-select__trigger {
+  min-width: 74px;
+  justify-content: space-between;
+}
+
+.appearance-schedule-row__colon {
+  color: var(--color-text-muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
 .appearance-theme-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(130px, 1fr));

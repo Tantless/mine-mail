@@ -922,6 +922,10 @@ describe("Mine Mail MVP", () => {
         mcpEnabled: false,
         mcpInformationEnabled: true,
         mcpSendEnabled: false,
+        themeScheduleEnabled: false,
+        themeScheduleDayStart: "06:00",
+        themeScheduleDuskStart: "18:00",
+        themeScheduleNightStart: "21:00",
         mcpEndpoint: "http://127.0.0.1:46321/mcp",
       }),
     );

@@ -18,6 +18,49 @@ import {
   useConfirmDialogFocus,
 } from "./ConfirmDialogPrimitives.jsx";
 import { IconButton } from "./IconButton.jsx";
+import { ThemedSelect } from "./ThemedSelect.jsx";
+
+const scheduleHourOptions = Array.from({ length: 24 }, (_, hour) => {
+  const value = String(hour).padStart(2, "0");
+  return { value, label: value };
+});
+
+function scheduleMinuteOptions(current) {
+  const minutes = Array.from({ length: 12 }, (_, index) => {
+    const value = String(index * 5).padStart(2, "0");
+    return { value, label: value };
+  });
+  if (current && !minutes.some((option) => option.value === current)) {
+    minutes.push({ value: current, label: current });
+  }
+  return minutes;
+}
+
+function ScheduleTimeRow({ label, value, disabled, onValueChange }) {
+  const [hour, minute] = String(value || "06:00").split(":");
+  return (
+    <div className="appearance-schedule-row">
+      <strong className="appearance-schedule-row__label">{label}</strong>
+      <span className="appearance-schedule-row__controls">
+        <ThemedSelect
+          label={`${label}小时`}
+          value={hour}
+          options={scheduleHourOptions}
+          disabled={disabled}
+          onValueChange={(nextHour) => onValueChange(`${nextHour}:${minute}`)}
+        />
+        <span className="appearance-schedule-row__colon" aria-hidden="true">:</span>
+        <ThemedSelect
+          label={`${label}分钟`}
+          value={minute}
+          options={scheduleMinuteOptions(minute)}
+          disabled={disabled}
+          onValueChange={(nextMinute) => onValueChange(`${hour}:${nextMinute}`)}
+        />
+      </span>
+    </div>
+  );
+}
 
 const supportedTypes = new Set(["image/png", "image/jpeg", "image/webp"]);
 const maxSourceBytes = 20 * 1024 * 1024;
@@ -161,6 +204,11 @@ export function AppearanceSettings({
   appearance,
   idlePoetryEnabled = true,
   onIdlePoetryEnabledChange,
+  themeScheduleEnabled = false,
+  themeScheduleDayStart = "06:00",
+  themeScheduleDuskStart = "18:00",
+  themeScheduleNightStart = "21:00",
+  onThemeScheduleChange,
   onSelect,
   onImport,
   onUpdate,
@@ -513,6 +561,53 @@ export function AppearanceSettings({
             </div>
           ) : null}
         </div>
+      </section>
+
+      <section className="appearance-section" aria-labelledby="appearance-schedule-title">
+        <header className="appearance-section__heading">
+          <span>
+            <strong id="appearance-schedule-title">定时切换主题</strong>
+            <small>随本机时间在日间、黄昏、夜间主题之间自动切换。</small>
+          </span>
+          <input
+            className="appearance-config__toggle"
+            type="checkbox"
+            aria-label="定时切换主题"
+            checked={themeScheduleEnabled}
+            disabled={Boolean(busyAction)}
+            onChange={(event) =>
+              onThemeScheduleChange?.({ themeScheduleEnabled: event.target.checked })
+            }
+          />
+        </header>
+        {themeScheduleEnabled ? (
+          <div className="appearance-schedule-list">
+            <ScheduleTimeRow
+              label="日间开始"
+              value={themeScheduleDayStart}
+              disabled={Boolean(busyAction)}
+              onValueChange={(themeScheduleDayStart) =>
+                onThemeScheduleChange?.({ themeScheduleDayStart })
+              }
+            />
+            <ScheduleTimeRow
+              label="黄昏开始"
+              value={themeScheduleDuskStart}
+              disabled={Boolean(busyAction)}
+              onValueChange={(themeScheduleDuskStart) =>
+                onThemeScheduleChange?.({ themeScheduleDuskStart })
+              }
+            />
+            <ScheduleTimeRow
+              label="夜间开始"
+              value={themeScheduleNightStart}
+              disabled={Boolean(busyAction)}
+              onValueChange={(themeScheduleNightStart) =>
+                onThemeScheduleChange?.({ themeScheduleNightStart })
+              }
+            />
+          </div>
+        ) : null}
       </section>
 
       <section className="appearance-section appearance-preference-bar" aria-label="主页展示">

@@ -176,6 +176,12 @@ async function desktopInvoke(command, args) {
   }
 }
 
+function normalizeScheduleTime(value, fallback) {
+  const time = String(value || "");
+  if (/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) return time;
+  return fallback;
+}
+
 function normalizeSettings(settings = {}) {
   const interval = Number(
     settings.pollingIntervalMinutes ??
@@ -233,6 +239,21 @@ function normalizeSettings(settings = {}) {
     mcpSendEnabled: Boolean(
       settings.mcpSendEnabled ?? settings.mcp_send_enabled ?? false,
     ),
+    themeScheduleEnabled: Boolean(
+      settings.themeScheduleEnabled ?? settings.theme_schedule_enabled ?? false,
+    ),
+    themeScheduleDayStart: normalizeScheduleTime(
+      settings.themeScheduleDayStart ?? settings.theme_schedule_day_start,
+      "06:00",
+    ),
+    themeScheduleDuskStart: normalizeScheduleTime(
+      settings.themeScheduleDuskStart ?? settings.theme_schedule_dusk_start,
+      "18:00",
+    ),
+    themeScheduleNightStart: normalizeScheduleTime(
+      settings.themeScheduleNightStart ?? settings.theme_schedule_night_start,
+      "21:00",
+    ),
     mcpEndpoint:
       settings.mcpEndpoint ??
       settings.mcp_endpoint ??
@@ -262,6 +283,10 @@ function settingsDto(settings) {
     mcp_enabled: normalized.mcpEnabled,
     mcp_information_enabled: normalized.mcpInformationEnabled,
     mcp_send_enabled: normalized.mcpSendEnabled,
+    theme_schedule_enabled: normalized.themeScheduleEnabled,
+    theme_schedule_day_start: normalized.themeScheduleDayStart,
+    theme_schedule_dusk_start: normalized.themeScheduleDuskStart,
+    theme_schedule_night_start: normalized.themeScheduleNightStart,
   };
 }
 
