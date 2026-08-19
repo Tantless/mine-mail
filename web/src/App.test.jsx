@@ -788,6 +788,37 @@ describe("Mine Mail MVP", () => {
     expect(saveDraft.mock.calls[1][1]).toBe("stable-draft-id");
   });
 
+  it("flushes the latest editor body before an immediate send", async () => {
+    const saveDraft = vi
+      .spyOn(mailApi, "saveDraft")
+      .mockImplementation(async (request, draftId, expectedLocalVersion) =>
+        savedOutcome(request, draftId, expectedLocalVersion),
+      );
+    vi.spyOn(mailApi, "sendDraft").mockResolvedValue({ status: "sent" });
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findAllByText("欢迎来到 Mine Mail");
+
+    await user.click(screen.getByRole("button", { name: /写信/ }));
+    fireEvent.change(screen.getByLabelText("收件人"), {
+      target: { value: "friend@example.com" },
+    });
+    fireEvent.keyDown(screen.getByLabelText("收件人"), { key: "Enter" });
+    const composeBody = await screen.findByLabelText("邮件正文");
+    vi.useFakeTimers();
+    await setComposeBody(composeBody, "点击发送前刚刚输入的正文");
+
+    fireEvent.click(screen.getByRole("button", { name: "发送邮件" }));
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(saveDraft).toHaveBeenCalled();
+    expect(saveDraft.mock.calls[0][0].body_text).toBe(
+      "点击发送前刚刚输入的正文",
+    );
+  });
+
   it("keeps saving until the locked composer revision is persisted", async () => {
     render(<App />);
     await screen.findAllByText("欢迎来到 Mine Mail");

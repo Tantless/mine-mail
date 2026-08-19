@@ -509,7 +509,6 @@ function readFileAsDataUrl(file) {
   });
 }
 const localDraftDebounceMs = 900;
-const composeBodyPublishDelayMs = 160;
 
 const cachedBodyFields = [
   "body_text",
@@ -882,7 +881,7 @@ export function App() {
 
   const composerRef = useRef(null);
   const composerSessionsRef = useRef(new Map());
-  const composeBodyPublishTimerRef = useRef(null);
+  const composeBodySnapshotProviderRef = useRef(null);
   const composeBodyAutosaveTimerRef = useRef(null);
   const switchMinimizedComposerDraftRef = useRef(null);
   const draftSaveRef = useRef(null);
@@ -1322,10 +1321,6 @@ export function App() {
   );
 
   const commitComposer = useCallback((valueOrUpdater) => {
-    if (composeBodyPublishTimerRef.current !== null) {
-      window.clearTimeout(composeBodyPublishTimerRef.current);
-      composeBodyPublishTimerRef.current = null;
-    }
     const previous = composerRef.current;
     const next =
       typeof valueOrUpdater === "function"
@@ -1357,10 +1352,6 @@ export function App() {
   }, []);
 
   const activateComposerForAccount = useCallback((accountId) => {
-    if (composeBodyPublishTimerRef.current !== null) {
-      window.clearTimeout(composeBodyPublishTimerRef.current);
-      composeBodyPublishTimerRef.current = null;
-    }
     if (composeBodyAutosaveTimerRef.current !== null) {
       window.clearTimeout(composeBodyAutosaveTimerRef.current);
       composeBodyAutosaveTimerRef.current = null;
@@ -1375,15 +1366,34 @@ export function App() {
 
   useEffect(
     () => () => {
-      if (composeBodyPublishTimerRef.current !== null) {
-        window.clearTimeout(composeBodyPublishTimerRef.current);
-      }
       if (composeBodyAutosaveTimerRef.current !== null) {
         window.clearTimeout(composeBodyAutosaveTimerRef.current);
       }
     },
     [],
   );
+
+  const handleComposeBodySnapshotProviderChange = useCallback(
+    (sessionId, provider) => {
+      if (typeof provider === "function" && sessionId) {
+        composeBodySnapshotProviderRef.current = { sessionId, provider };
+        return;
+      }
+      if (
+        !sessionId ||
+        composeBodySnapshotProviderRef.current?.sessionId === sessionId
+      ) {
+        composeBodySnapshotProviderRef.current = null;
+      }
+    },
+    [],
+  );
+
+  const flushComposeBodySnapshot = useCallback((sessionId) => {
+    const registered = composeBodySnapshotProviderRef.current;
+    if (!sessionId || registered?.sessionId !== sessionId) return null;
+    return registered.provider();
+  }, []);
 
   const openComposer = useCallback(
     (
@@ -3626,6 +3636,7 @@ export function App() {
 
   const saveDraftNow = useCallback(
     async ({ force = false } = {}) => {
+      flushComposeBodySnapshot(composerRef.current?.sessionId);
       const initial = composerRef.current;
       if (!initial) return null;
       if (initial.readOnlyUnsupported) return initial.persistedDraft;
@@ -3721,7 +3732,7 @@ export function App() {
         if (isStable || !force) return draft;
       }
     },
-    [cacheAuthoritativeDrafts, commitComposer, showToast],
+    [cacheAuthoritativeDrafts, commitComposer, flushComposeBodySnapshot, showToast],
   );
 
   const switchMinimizedComposerDraft = useCallback(
@@ -6569,14 +6580,11 @@ export function App() {
     });
   };
 
-  const handleComposeBodyChange = (updater) => {
+  const handleComposeBodyDirty = () => {
     const current = composerRef.current;
     if (!current || current.locked || current.readOnlyUnsupported) return;
-    const nextValue =
-      typeof updater === "function" ? updater(current.value) : updater;
     const next = {
       ...current,
-      value: nextValue,
       dirty: true,
       revision: current.revision + 1,
       saveStatus: "dirty",
@@ -6585,19 +6593,10 @@ export function App() {
     if (accountId) composerSessionsRef.current.set(accountId, next);
     composerRef.current = next;
 
-    if (composeBodyPublishTimerRef.current !== null) {
-      window.clearTimeout(composeBodyPublishTimerRef.current);
-    }
-    const sessionId = next.sessionId;
-    composeBodyPublishTimerRef.current = window.setTimeout(() => {
-      composeBodyPublishTimerRef.current = null;
-      const latest = composerRef.current;
-      if (latest?.sessionId === sessionId) setComposer(latest);
-    }, composeBodyPublishDelayMs);
-
     if (composeBodyAutosaveTimerRef.current !== null) {
       window.clearTimeout(composeBodyAutosaveTimerRef.current);
     }
+    const sessionId = next.sessionId;
     composeBodyAutosaveTimerRef.current = window.setTimeout(() => {
       composeBodyAutosaveTimerRef.current = null;
       const latest = composerRef.current;
@@ -6606,6 +6605,18 @@ export function App() {
         showToast(describeError(error, "草稿自动保存失败"), "error");
       });
     }, localDraftDebounceMs);
+  };
+
+  const handleComposeBodyChange = (updater, { publish = false } = {}) => {
+    const current = composerRef.current;
+    if (!current || current.readOnlyUnsupported) return;
+    const nextValue =
+      typeof updater === "function" ? updater(current.value) : updater;
+    const next = { ...current, value: nextValue };
+    const accountId = activeAccountIdRef.current;
+    if (accountId) composerSessionsRef.current.set(accountId, next);
+    composerRef.current = next;
+    if (publish) setComposer(next);
   };
 
   const handleComposeMinimizedChange = useCallback(
@@ -8472,6 +8483,7 @@ export function App() {
       {composer ? (
         <ComposePanel
           key={composer.sessionId}
+          sessionId={composer.sessionId}
           accountId={activeAccountId}
           value={composer.value}
           draft={composer.persistedDraft}
@@ -8487,7 +8499,9 @@ export function App() {
           onClose={() => void handleCloseComposer()}
           onDiscard={() => void handleDiscardComposer()}
           onChange={handleComposeChange}
+          onBodyDirty={handleComposeBodyDirty}
           onBodyChange={handleComposeBodyChange}
+          onBodySnapshotProviderChange={handleComposeBodySnapshotProviderChange}
           onSaveDraft={handleSaveDraftAndMinimize}
           onRequestSend={() => void handleRequestSend()}
           sendShortcut={platform === "mac" ? "⌘ ↵" : "Ctrl ↵"}

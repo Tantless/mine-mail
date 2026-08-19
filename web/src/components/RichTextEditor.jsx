@@ -18,12 +18,13 @@ import StarterKit from "@tiptap/starter-kit";
 import { BulletList, OrderedList } from "@tiptap/extension-list";
 import { TextAlign } from "@tiptap/extension-text-align";
 import { TextStyleKit } from "@tiptap/extension-text-style";
-import { Plugin } from "@tiptap/pm/state";
+import { Plugin, PluginKey } from "@tiptap/pm/state";
 import { canJoin, findWrapping } from "@tiptap/pm/transform";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import {
   Component,
   Fragment,
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -213,6 +214,9 @@ const paragraphIndentAttribute = "data-first-line-indent";
 const paragraphIndentValue = "tab";
 const paragraphIndentStyle = "2em";
 const legacyParagraphIndentStyle = "4em";
+const composeEditorSnapshotDelayMs = 500;
+const composeGridCellTokensKey = new PluginKey("composeGridCellTokens");
+const composeGridTokenDecorationLimit = 2000;
 
 export function groupGridTextTokens(text) {
   const tokens = [];
@@ -259,6 +263,107 @@ export function groupGridTextTokens(text) {
   }
 
   return tokens;
+}
+
+function createGridTokenDecorations(documentNode, ranges = null) {
+  if (documentNode.content.size > composeGridTokenDecorationLimit) return [];
+  const decorations = [];
+  documentNode.descendants((node, position) => {
+    if (node.isTextblock && ranges) {
+      const blockFrom = position + 1;
+      const blockTo = blockFrom + node.content.size;
+      const included = ranges.some(
+        ({ from, to }) => from <= blockTo && to >= blockFrom,
+      );
+      if (!included) return false;
+    }
+    if (!node.isText || !node.text) return undefined;
+    groupGridTextTokens(node.text).forEach((token) => {
+      decorations.push(
+        Decoration.inline(
+          position + token.from,
+          position + token.to,
+          {
+            class: "compose-grid-cell-token",
+            "data-grid-token-kind": token.kind,
+          },
+          {
+            inclusiveStart: false,
+            inclusiveEnd: false,
+          },
+        ),
+      );
+    });
+    return undefined;
+  });
+  return decorations;
+}
+
+function mergeGridRanges(ranges) {
+  return ranges
+    .sort((left, right) => left.from - right.from)
+    .reduce((result, range) => {
+      const previous = result.at(-1);
+      if (previous && range.from <= previous.to) {
+        previous.to = Math.max(previous.to, range.to);
+      } else {
+        result.push({ ...range });
+      }
+      return result;
+    }, []);
+}
+
+function changedGridTextblockRanges(transaction) {
+  const changed = [];
+  transaction.mapping.maps.forEach((stepMap, mapIndex) => {
+    stepMap.forEach((_oldFrom, _oldTo, nextFrom, nextTo) => {
+      let from = nextFrom;
+      let to = nextTo;
+      for (
+        let followingIndex = mapIndex + 1;
+        followingIndex < transaction.mapping.maps.length;
+        followingIndex += 1
+      ) {
+        const followingMap = transaction.mapping.maps[followingIndex];
+        from = followingMap.map(from, -1);
+        to = followingMap.map(to, 1);
+      }
+      changed.push({
+        from: Math.max(0, from - 1),
+        to: Math.min(transaction.doc.content.size, to + 1),
+      });
+    });
+  });
+
+  if (!changed.length) {
+    return [{ from: 0, to: transaction.doc.content.size }];
+  }
+
+  const blocks = [];
+  transaction.doc.descendants((node, position) => {
+    if (!node.isTextblock) return undefined;
+    const from = position + 1;
+    const to = from + node.content.size;
+    if (changed.some((range) => range.from <= to && range.to >= from)) {
+      blocks.push({ from, to });
+    }
+    return false;
+  });
+  return mergeGridRanges(blocks);
+}
+
+function updateGridTokenDecorations(transaction, decorations) {
+  const mapped = decorations.map(transaction.mapping, transaction.doc);
+  if (!transaction.docChanged) return mapped;
+  const ranges = changedGridTextblockRanges(transaction);
+  const withoutChangedBlocks = ranges.reduce(
+    (current, range) => current.remove(current.find(range.from, range.to)),
+    mapped,
+  );
+  const replacements = createGridTokenDecorations(transaction.doc, ranges);
+  return replacements.length
+    ? withoutChangedBlocks.add(transaction.doc, replacements)
+    : withoutChangedBlocks;
 }
 
 function editorIsUsable(editor) {
@@ -510,33 +615,50 @@ const ComposeGridCellTokens = Extension.create({
     };
   },
   addProseMirrorPlugins() {
+    const isEnabled = () => this.options.isEnabled();
     return [
       new Plugin({
+        key: composeGridCellTokensKey,
+        state: {
+          init: (_, state) =>
+            isEnabled()
+              ? DecorationSet.create(
+                  state.doc,
+                  createGridTokenDecorations(state.doc),
+                )
+              : DecorationSet.empty,
+          apply: (transaction, decorations) => {
+            const stationery = transaction.getMeta("compose-grid-stationery");
+            if (!isEnabled() || (stationery && stationery !== "grid")) {
+              return DecorationSet.empty;
+            }
+            if (transaction.doc.content.size > composeGridTokenDecorationLimit) {
+              return DecorationSet.empty;
+            }
+            if (stationery === "grid") {
+              return DecorationSet.create(
+                transaction.doc,
+                createGridTokenDecorations(transaction.doc),
+              );
+            }
+            if (
+              transaction.docChanged &&
+              transaction.before.content.size > composeGridTokenDecorationLimit
+            ) {
+              return DecorationSet.create(
+                transaction.doc,
+                createGridTokenDecorations(transaction.doc),
+              );
+            }
+            return updateGridTokenDecorations(transaction, decorations);
+          },
+        },
         props: {
           decorations: (state) => {
-            if (!this.options.isEnabled()) return null;
-            const decorations = [];
-            state.doc.descendants((node, position) => {
-              if (!node.isText || !node.text) return;
-              groupGridTextTokens(node.text).forEach((token) => {
-                const tokenFrom = position + token.from;
-                const tokenTo = position + token.to;
-                decorations.push(
-                  Decoration.inline(
-                    tokenFrom,
-                    tokenTo,
-                    {
-                      class: "compose-grid-cell-token",
-                      "data-grid-token-kind": token.kind,
-                    },
-                    {
-                      inclusiveStart: false,
-                      inclusiveEnd: false,
-                    },
-                  ),
-                );
-              });
-            });
+            if (!isEnabled()) return null;
+            const tokenDecorations =
+              composeGridCellTokensKey.getState(state) || DecorationSet.empty;
+            const caretDecorations = [];
 
             if (state.selection.empty) {
               const { $from } = state.selection;
@@ -560,7 +682,7 @@ const ComposeGridCellTokens = Extension.create({
                 const marker = document.createElement("span");
                 marker.className = "compose-grid-space-caret";
                 marker.setAttribute("aria-hidden", "true");
-                decorations.push(
+                caretDecorations.push(
                   Decoration.widget(state.selection.from, marker, {
                     key: "compose-grid-space-caret",
                     side: caretSide,
@@ -569,7 +691,7 @@ const ComposeGridCellTokens = Extension.create({
 
                 if ($from.depth > 0 && $from.parent.isTextblock) {
                   const parentFrom = $from.before($from.depth);
-                  decorations.push(
+                  caretDecorations.push(
                     Decoration.node(
                       parentFrom,
                       parentFrom + $from.parent.nodeSize,
@@ -582,9 +704,9 @@ const ComposeGridCellTokens = Extension.create({
               }
             }
 
-            return decorations.length
-              ? DecorationSet.create(state.doc, decorations)
-              : null;
+            return caretDecorations.length
+              ? tokenDecorations.add(state.doc, caretDecorations)
+              : tokenDecorations;
           },
         },
       }),
@@ -978,10 +1100,14 @@ function RichTextEditorCore({
   stationery = "none",
   disabled = false,
   onChange,
+  onDirty,
   onEditorReady,
+  onSnapshotProviderChange,
 }) {
   const acceptEditorUpdatesRef = useRef(false);
-  const pendingEmittedHtmlRef = useRef([]);
+  const snapshotTimerRef = useRef(null);
+  const flushSnapshotRef = useRef(null);
+  const editorChangedSinceSnapshotRef = useRef(false);
   const linkInputRef = useRef(null);
   const [paperCellSize, setPaperCellSize] = useState(composeBaseFontSize * 2);
   const [paperGridMinHeight, setPaperGridMinHeight] = useState(
@@ -991,22 +1117,35 @@ function RichTextEditorCore({
   const [linkValue, setLinkValue] = useState("");
   const [linkError, setLinkError] = useState(null);
   const editorShellRef = useRef(null);
+  const lastEmittedHtmlRef = useRef(null);
 
   const incomingHtml = useMemo(
-    () => normalizeComposeHtml(format?.body_html || textToHtml(bodyText)),
+    () =>
+      format?.body_html && format.body_html === lastEmittedHtmlRef.current
+        ? format.body_html
+        : normalizeComposeHtml(format?.body_html || textToHtml(bodyText)),
     [bodyText, format?.body_html],
   );
   const incomingEditorHtml = useMemo(
-    () => composeHtmlToEditorHtml(incomingHtml),
+    () =>
+      incomingHtml === lastEmittedHtmlRef.current
+        ? incomingHtml
+        : composeHtmlToEditorHtml(incomingHtml),
     [incomingHtml],
   );
   const stationeryRef = useRef(stationery);
   const latestFormatRef = useRef(format);
+  const latestBodyTextRef = useRef(bodyText);
   const onChangeRef = useRef(onChange);
+  const onDirtyRef = useRef(onDirty);
+  const onSnapshotProviderChangeRef = useRef(onSnapshotProviderChange);
   const lastObservedHtmlRef = useRef(incomingHtml);
   stationeryRef.current = stationery;
   latestFormatRef.current = format;
+  latestBodyTextRef.current = bodyText;
   onChangeRef.current = onChange;
+  onDirtyRef.current = onDirty;
+  onSnapshotProviderChangeRef.current = onSnapshotProviderChange;
   const editorExtensions = useMemo(
     () =>
       createComposeEditorExtensions({
@@ -1020,6 +1159,7 @@ function RichTextEditorCore({
     enableInputRules: composeInputRuleExtensions,
     content: incomingEditorHtml,
     editable: !disabled,
+    shouldRerenderOnTransaction: false,
     editorProps: {
       attributes: {
         "aria-label": "邮件正文",
@@ -1036,31 +1176,52 @@ function RichTextEditorCore({
       ) {
         return;
       }
-      // Tiptap's schema and paste transform already constrain ordinary text.
-      // Avoid reparsing the full document for plain IME input, while retaining
-      // canonical output for links, alignment, fonts, and paragraph metadata.
-      const editorHtml = currentEditor.isEmpty ? "" : currentEditor.getHTML();
-      const html = authoredEditorHtmlNeedsNormalization.test(editorHtml)
-        ? normalizeComposeHtml(editorHtml)
-        : editorHtml;
-      if (html === lastObservedHtmlRef.current) return;
-      lastObservedHtmlRef.current = html;
-      pendingEmittedHtmlRef.current.push(html);
-      if (pendingEmittedHtmlRef.current.length > 32) {
-        pendingEmittedHtmlRef.current.splice(
-          0,
-          pendingEmittedHtmlRef.current.length - 32,
-        );
+      editorChangedSinceSnapshotRef.current = true;
+      onDirtyRef.current?.(!currentEditor.isEmpty);
+      if (snapshotTimerRef.current !== null) {
+        window.clearTimeout(snapshotTimerRef.current);
       }
-      onChangeRef.current?.({
-        body_text: plainTextFromDocument(currentEditor.getJSON()),
-        format: {
-          ...latestFormatRef.current,
-          body_html: html || null,
-        },
-      });
+      snapshotTimerRef.current = window.setTimeout(() => {
+        snapshotTimerRef.current = null;
+        flushSnapshotRef.current?.();
+      }, composeEditorSnapshotDelayMs);
     },
   });
+
+  const flushSnapshot = useCallback((options = {}) => {
+    if (!editorIsUsable(editor)) return null;
+    if (snapshotTimerRef.current !== null) {
+      window.clearTimeout(snapshotTimerRef.current);
+      snapshotTimerRef.current = null;
+    }
+    if (!editorChangedSinceSnapshotRef.current) {
+      return {
+        body_text: latestBodyTextRef.current || "",
+        format: latestFormatRef.current,
+      };
+    }
+    const editorHtml = editor.isEmpty ? "" : editor.getHTML();
+    const html = authoredEditorHtmlNeedsNormalization.test(editorHtml)
+      ? normalizeComposeHtml(editorHtml)
+      : editorHtml;
+    const snapshot = {
+      body_text: plainTextFromDocument(editor.getJSON()),
+      format: {
+        ...latestFormatRef.current,
+        body_html: html || null,
+      },
+    };
+    if (html !== lastObservedHtmlRef.current) {
+      lastObservedHtmlRef.current = html;
+      lastEmittedHtmlRef.current = html;
+      if (options.publish) onChangeRef.current?.(snapshot, { publish: true });
+      else onChangeRef.current?.(snapshot);
+    }
+    editorChangedSinceSnapshotRef.current = false;
+    return snapshot;
+  }, [editor]);
+
+  flushSnapshotRef.current = flushSnapshot;
 
   const currentToolbarState = useEditorState({
     editor,
@@ -1104,23 +1265,34 @@ function RichTextEditorCore({
   }, [editor, onEditorReady]);
 
   useEffect(() => {
+    if (!editorIsUsable(editor)) return undefined;
+    onSnapshotProviderChangeRef.current?.(flushSnapshot);
+    return () => {
+      if (snapshotTimerRef.current !== null) {
+        window.clearTimeout(snapshotTimerRef.current);
+        snapshotTimerRef.current = null;
+      }
+      onSnapshotProviderChangeRef.current?.(null);
+    };
+  }, [editor, flushSnapshot]);
+
+  useEffect(() => {
     if (!editorIsUsable(editor)) return;
-    const pendingIndex = pendingEmittedHtmlRef.current.indexOf(incomingHtml);
-    if (pendingIndex >= 0) {
-      pendingEmittedHtmlRef.current.splice(0, pendingIndex + 1);
+    if (incomingHtml === lastObservedHtmlRef.current) {
       acceptEditorUpdatesRef.current = true;
       return;
     }
 
-    const currentHtml = normalizeComposeHtml(editor.getHTML());
     lastObservedHtmlRef.current = incomingHtml;
-    if (currentHtml !== incomingHtml) {
-      pendingEmittedHtmlRef.current = [];
-      acceptEditorUpdatesRef.current = false;
-      editor.commands.setContent(incomingEditorHtml, { emitUpdate: false });
+    editorChangedSinceSnapshotRef.current = false;
+    if (snapshotTimerRef.current !== null) {
+      window.clearTimeout(snapshotTimerRef.current);
+      snapshotTimerRef.current = null;
     }
+    acceptEditorUpdatesRef.current = false;
+    editor.commands.setContent(incomingEditorHtml, { emitUpdate: false });
     acceptEditorUpdatesRef.current = true;
-  }, [bodyText, editor, format, incomingEditorHtml, incomingHtml]);
+  }, [editor, incomingEditorHtml, incomingHtml]);
 
   useEffect(() => {
     if (!showLinkEditor) return;

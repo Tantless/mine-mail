@@ -513,6 +513,7 @@ function StationeryControl({ format, disabled, onChange }) {
 }
 
 export function ComposePanel({
+  sessionId = null,
   accountId = null,
   value,
   draft = null,
@@ -529,6 +530,8 @@ export function ComposePanel({
   onDiscard,
   onChange,
   onBodyChange = onChange,
+  onBodyDirty = null,
+  onBodySnapshotProviderChange = null,
   onSaveDraft,
   onRequestSend,
   sendShortcut,
@@ -541,8 +544,12 @@ export function ComposePanel({
   onAddAttachments,
   onRemoveAttachment,
 }) {
+  const bodySnapshotProviderRef = useRef(null);
   const [showCopies, setShowCopies] = useState(
     Boolean(value.cc?.length || value.bcc?.length),
+  );
+  const [liveBodyHasContent, setLiveBodyHasContent] = useState(
+    Boolean(String(value.body_text || "").trim()),
   );
   const initialGeometryRef = useRef(null);
   if (initialGeometryRef.current === null) {
@@ -566,6 +573,33 @@ export function ComposePanel({
   const [isAiAssistantOpen, setIsAiAssistantOpen] = useState(
     () => Boolean(defaultAiAssistantOpen),
   );
+  const registerBodySnapshotProvider = useCallback(
+    (provider) => {
+      bodySnapshotProviderRef.current = provider;
+      onBodySnapshotProviderChange?.(sessionId, provider);
+    },
+    [onBodySnapshotProviderChange, sessionId],
+  );
+  const flushBodySnapshot = useCallback((options = {}) => {
+    const snapshot = bodySnapshotProviderRef.current?.(options);
+    return snapshot
+      ? {
+          ...value,
+          body_text: snapshot.body_text,
+          format: snapshot.format,
+        }
+      : value;
+  }, [value]);
+  const handleBodyDirty = useCallback(
+    (hasContent) => {
+      setLiveBodyHasContent(Boolean(hasContent));
+      onBodyDirty?.();
+    },
+    [onBodyDirty],
+  );
+  useEffect(() => {
+    setLiveBodyHasContent(Boolean(String(value.body_text || "").trim()));
+  }, [value.body_text]);
   const interactionRef = useRef(null);
   const geometryRef = useRef(geometry);
   const minimizedGeometryRef = useRef(
@@ -929,6 +963,7 @@ export function ComposePanel({
 
   const toggleMinimized = () => {
     if (restoreComposer()) return;
+    flushBodySnapshot({ publish: true });
     endInteraction();
     minimizedGeometryRef.current = geometryRef.current;
     beginWindowMotion({
@@ -1377,12 +1412,17 @@ export function ComposePanel({
                 format={composeFormat}
                 stationery={composeFormat.stationery}
                 disabled={controlsDisabled}
-                onChange={(next) =>
-                  onBodyChange((current) => ({
-                    ...current,
-                    body_text: next.body_text,
-                    format: next.format,
-                  }))
+                onSnapshotProviderChange={registerBodySnapshotProvider}
+                onDirty={handleBodyDirty}
+                onChange={(next, options) =>
+                  onBodyChange(
+                    (current) => ({
+                      ...current,
+                      body_text: next.body_text,
+                      format: next.format,
+                    }),
+                    options,
+                  )
                 }
               />
             </Suspense>
@@ -1726,6 +1766,8 @@ export function ComposePanel({
                   aiDraft={aiDraft}
                   cacheRef={optimizationCacheRef}
                   value={value}
+                  hasContent={liveBodyHasContent}
+                  getCurrentValue={flushBodySnapshot}
                   disabled={controlsDisabled}
                   onApply={onChange}
                 />
@@ -1782,6 +1824,7 @@ export function ComposePanel({
           hidden={isMinimized || !isAiAssistantOpen}
           aiDraft={aiDraft}
           value={value}
+          getCurrentValue={flushBodySnapshot}
           currentDraft={currentDraftForAi}
           disabled={isBusy}
           readOnly={readOnly}

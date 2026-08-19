@@ -207,7 +207,40 @@ it("emits each authored document change once and keeps an empty body null", asyn
   view.unmount();
 });
 
-it("preserves consecutive authored input in a controlled compose value", async () => {
+it("keeps burst input local until an exact snapshot is requested", () => {
+  const onChange = vi.fn();
+  const onEditorReady = vi.fn();
+  const onSnapshotProviderChange = vi.fn();
+  render(
+    <RichTextEditor
+      bodyText=""
+      format={emptyFormat}
+      stationery="none"
+      onChange={onChange}
+      onEditorReady={onEditorReady}
+      onSnapshotProviderChange={onSnapshotProviderChange}
+    />,
+  );
+  const editor = onEditorReady.mock.calls.at(-1)[0];
+  const snapshotProvider = onSnapshotProviderChange.mock.calls.at(-1)[0];
+
+  act(() => {
+    for (let index = 0; index < 100; index += 1) {
+      editor.commands.insertContent("长");
+    }
+  });
+
+  expect(onChange).not.toHaveBeenCalled();
+  let snapshot;
+  act(() => {
+    snapshot = snapshotProvider();
+  });
+  expect(snapshot.body_text).toBe("长".repeat(100));
+  expect(onChange).toHaveBeenCalledTimes(1);
+  expect(onChange).toHaveBeenLastCalledWith(snapshot);
+});
+
+it("publishes one complete snapshot after consecutive controlled input", async () => {
   const onAuthoredChange = vi.fn();
   const user = userEvent.setup();
 
@@ -233,18 +266,11 @@ it("preserves consecutive authored input in a controlled compose value", async (
   const editor = screen.getByRole("textbox", { name: "邮件正文" });
   await user.type(editor, "这是回复内容");
 
-  expect(
-    onAuthoredChange.mock.calls.map(([next]) => next.body_text),
-  ).toEqual([
-    "这",
-    "这是",
-    "这是回",
-    "这是回复",
-    "这是回复内",
-    "这是回复内容",
-  ]);
+  await waitFor(() => expect(onAuthoredChange).toHaveBeenCalledTimes(1));
+  expect(onAuthoredChange).toHaveBeenLastCalledWith(
+    expect.objectContaining({ body_text: "这是回复内容" }),
+  );
   expect(editor.textContent).toBe("这是回复内容");
-  expect(onAuthoredChange).toHaveBeenCalledTimes(6);
 });
 
 it("normalizes semantically empty compose HTML to the empty contract", () => {
@@ -322,12 +348,14 @@ it("formats the active selection without the deprecated browser command API", as
     const strong = editor.querySelector("strong");
     expect(strong?.textContent).toBe("正文");
   });
-  expect(onChange).toHaveBeenLastCalledWith(
-    expect.objectContaining({
-      format: expect.objectContaining({
-        body_html: expect.stringContaining("<strong>正文</strong>"),
+  await waitFor(() =>
+    expect(onChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        format: expect.objectContaining({
+          body_html: expect.stringContaining("<strong>正文</strong>"),
+        }),
       }),
-    }),
+    ),
   );
 });
 
@@ -496,8 +524,10 @@ it("previews and applies a bundled font with its safe fallback stack", async () 
   await waitFor(() =>
     expect(editor.getHTML()).toContain("ZCOOL XiaoWei"),
   );
-  expect(onChange.mock.calls.at(-1)?.[0].format.body_html).toContain(
-    'face="ZCOOL XiaoWei,Noto Serif SC Variable,Songti SC,SimSun,serif"',
+  await waitFor(() =>
+    expect(onChange.mock.calls.at(-1)?.[0].format.body_html).toContain(
+      'face="ZCOOL XiaoWei,Noto Serif SC Variable,Songti SC,SimSun,serif"',
+    ),
   );
 });
 
@@ -728,6 +758,35 @@ it("keeps Han centered after Latin text is typed into grid paper", async () => {
   expect(editor.textContent).toBe("asd1a暗色");
 });
 
+it("keeps long grid-paper drafts editable without per-character decorations", async () => {
+  const longText = "长".repeat(2200);
+  const onEditorReady = vi.fn();
+  render(
+    <RichTextEditor
+      bodyText={longText}
+      format={{ ...emptyFormat, stationery: "grid" }}
+      stationery="grid"
+      onChange={vi.fn()}
+      onEditorReady={onEditorReady}
+    />,
+  );
+
+  const editor = screen.getByRole("textbox", { name: "邮件正文" });
+  expect(editor.querySelectorAll(".compose-grid-cell-token")).toHaveLength(0);
+
+  act(() => {
+    const engine = onEditorReady.mock.calls.at(-1)[0];
+    engine.commands.setTextSelection(engine.state.doc.content.size - 1);
+    engine.commands.insertContent("续");
+  });
+
+  await waitFor(() => expect(editor.textContent).toBe(`${longText}续`));
+  expect(editor.querySelectorAll(".compose-grid-cell-token")).toHaveLength(0);
+  expect(
+    editor.closest(".compose-editor-shell")?.dataset.stationery,
+  ).toBe("grid");
+});
+
 it("uses Tab for first-line indent and inherits it across new paragraphs", () => {
   const editor = createEngine("<p>第一段</p>");
   editor.commands.setTextSelection(1);
@@ -782,12 +841,14 @@ it("keeps real keyboard focus in the editor when Tab indents a paragraph", async
   expect(editorElement.querySelector("p")?.dataset.firstLineIndent).toBe(
     "tab",
   );
-  expect(onChange).toHaveBeenLastCalledWith(
-    expect.objectContaining({
-      format: expect.objectContaining({
-        body_html: expect.stringContaining('data-first-line-indent="tab"'),
+  await waitFor(() =>
+    expect(onChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        format: expect.objectContaining({
+          body_html: expect.stringContaining('data-first-line-indent="tab"'),
+        }),
       }),
-    }),
+    ),
   );
 });
 
@@ -830,14 +891,16 @@ it("keeps the active paragraph and selection after changing alignment", async ()
       editor.lastElementChild.contains(window.getSelection().anchorNode),
     ).toBe(true),
   );
-  expect(onChange).toHaveBeenLastCalledWith(
-    expect.objectContaining({
-      format: expect.objectContaining({
-        body_html: expect.stringContaining(
-          '<p align="center">第二行</p>',
-        ),
+  await waitFor(() =>
+    expect(onChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        format: expect.objectContaining({
+          body_html: expect.stringContaining(
+            '<p align="center">第二行</p>',
+          ),
+        }),
       }),
-    }),
+    ),
   );
 });
 
@@ -954,8 +1017,10 @@ it("toggles semantic strike from the visible toolbar without losing selection", 
   expect(editor.state.selection.from).toBe(1);
   expect(editor.state.selection.to).toBe(4);
   expect(editor.getHTML()).toContain("<s>旧内容</s>");
-  expect(onChange.mock.calls.at(-1)?.[0].format.body_html).toContain(
-    "<s>旧内容</s>",
+  await waitFor(() =>
+    expect(onChange.mock.calls.at(-1)?.[0].format.body_html).toContain(
+      "<s>旧内容</s>",
+    ),
   );
 });
 
@@ -984,12 +1049,14 @@ it("toggles semantic italic from the visible toolbar without losing selection", 
   expect(editor.state.selection.from).toBe(1);
   expect(editor.state.selection.to).toBe(3);
   expect(editor.getHTML()).toContain("<em>斜体</em>");
-  expect(onChange).toHaveBeenLastCalledWith(
-    expect.objectContaining({
-      format: expect.objectContaining({
-        body_html: expect.stringContaining("<em>斜体</em>"),
+  await waitFor(() =>
+    expect(onChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        format: expect.objectContaining({
+          body_html: expect.stringContaining("<em>斜体</em>"),
+        }),
       }),
-    }),
+    ),
   );
 });
 
@@ -1051,9 +1118,11 @@ it("supports the complete numbered-list flow through real compose keystrokes", a
     (paragraph) => paragraph.textContent,
   );
   expect(paragraphs.at(-1)?.textContent).toBe("后续段落");
-  expect(onChange).toHaveBeenLastCalledWith(
-    expect.objectContaining({
-      body_text: "1. 第一项\n2. 第二项\n后续段落",
-    }),
+  await waitFor(() =>
+    expect(onChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        body_text: "1. 第一项\n2. 第二项\n后续段落",
+      }),
+    ),
   );
 });

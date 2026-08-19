@@ -153,6 +153,8 @@ export function ComposeOptimizeControl({
   aiDraft,
   cacheRef: providedCacheRef,
   disabled,
+  getCurrentValue = null,
+  hasContent: providedHasContent = null,
   onApply,
   value,
 }) {
@@ -236,7 +238,8 @@ export function ComposeOptimizeControl({
     "undoBackup",
     null,
   );
-  const hasContent = Boolean(String(value.body_text || "").trim());
+  const hasContent =
+    providedHasContent ?? Boolean(String(value.body_text || "").trim());
 
   latestValueRef.current = value;
 
@@ -254,12 +257,18 @@ export function ComposeOptimizeControl({
       setReviewOpen(true);
       return;
     }
-    if (disabled || !hasContent || status === "running" || !aiDraft) return;
+    const currentValue = getCurrentValue?.() || latestValueRef.current;
+    if (
+      disabled ||
+      !String(currentValue.body_text || "").trim() ||
+      status === "running" ||
+      !aiDraft
+    ) return;
     const trimmedInstruction = instruction.trim();
     const submitted = {
-      subject: value.subject || "",
-      body_text: value.body_text || "",
-      format: copyFormat(value.format),
+      subject: currentValue.subject || "",
+      body_text: currentValue.body_text || "",
+      format: copyFormat(currentValue.format),
     };
     setErrorMessage("");
     setNoticeMessage("");
@@ -272,7 +281,7 @@ export function ComposeOptimizeControl({
           : "用户未提供额外优化要求。请在保持原意、事实、立场、语气意图和承诺的前提下，对当前邮件正文进行有意义的优化。",
         session_id: null,
         draft_revision: createAiDraftRevision(),
-        draft: { ...aiDraft, compose: value },
+        draft: { ...aiDraft, compose: currentValue },
       });
       const optimized = {
         subject: result.draft?.subject ?? submitted.subject,
@@ -346,7 +355,7 @@ export function ComposeOptimizeControl({
       useLeft ? reviewResult.submitted.format : reviewResult.optimized.format,
     );
     const wasEdited = useLeft ? leftEdited : rightEdited;
-    const live = latestValueRef.current;
+    const live = getCurrentValue?.() || latestValueRef.current;
     setUndoBackup({
       subject: live.subject || "",
       body_text: live.body_text || "",
@@ -1101,6 +1110,7 @@ export function ComposeAiAssistant({
   aiDraft,
   currentDraft,
   disabled,
+  getCurrentValue = null,
   hidden = false,
   onApplyDraft,
   onCollapse,
@@ -1308,6 +1318,7 @@ export function ComposeAiAssistant({
     setActiveRequest({ id: null });
     setErrorMessage("");
     try {
+      const currentValue = getCurrentValue?.() || latestValueRef.current;
       const result = await mailApi.runAiTurn(
         {
           mode,
@@ -1316,7 +1327,7 @@ export function ComposeAiAssistant({
           provider_instance_id: selectedModel.providerInstanceId,
           model_name: selectedModel.modelName,
           draft_revision: createAiDraftRevision(),
-          draft: { ...aiDraft, compose: value },
+          draft: { ...aiDraft, compose: currentValue },
         },
         (event) => {
           if (event?.type === "started") {
@@ -1563,11 +1574,12 @@ export function ComposeAiAssistant({
     setBusyProposal({ messageId, group });
     setErrorMessage("");
     try {
+      const currentValue = getCurrentValue?.() || latestValueRef.current;
       const result = await mailApi.resolveAiProposalGroup({
         proposal_id: proposal.id,
         group,
         action,
-        draft: { ...aiDraft, compose: latestValueRef.current },
+        draft: { ...aiDraft, compose: currentValue },
       });
       onApplyDraft((current) => mergeProposalGroup(current, result.draft, group));
       setSessions((current) =>
