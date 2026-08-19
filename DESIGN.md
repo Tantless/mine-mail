@@ -136,6 +136,13 @@ tokens decide whether surfaces are near-solid or wallpaper-backed.
   depth without wallpaper or decorative imagery. Settings keeps a distinct
   rail, compose keeps a floating writing surface, and compact overlays remain
   high-legibility in both modes.
+- Minimal-mode canvas, sidebar, panels, and controls form one low-chroma tonal
+  ladder derived from the selected palette. Adjacent shell regions differ by one
+  restrained lightness step while retaining the palette hue; light palettes do
+  not collapse into white, dark palettes do not collapse into neutral black,
+  and the sidebar never becomes a disconnected accent block. Foreground colors
+  adapt to each surface instead of assuming white sidebar text. Reserve the
+  full accent for primary actions, selection, focus, and meaningful state.
 - Reuse `IconButton`, `TooltipTarget`, `ProfileAvatar`,
   `EditableProfileAvatar`, `ThemedSelect`, and the shared confirmation
   primitives.

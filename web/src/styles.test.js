@@ -92,6 +92,46 @@ describe("custom appearance semantic palette", () => {
   });
 });
 
+describe("minimal appearance tonal surfaces", () => {
+  it("maps the complete minimal palette into the existing semantic contract", () => {
+    const minimalTheme = declarationsFor(
+      ':root\\[data-theme\\]\\[data-appearance-mode="minimal"\\]',
+    );
+
+    expect(minimalTheme).toMatch(
+      /--app-canvas:\s*var\(--palette-minimal-canvas\)/,
+    );
+    expect(minimalTheme).toMatch(
+      /--sidebar-background:\s*var\(--palette-minimal-sidebar\)/,
+    );
+    expect(minimalTheme).toMatch(
+      /--sidebar-text:\s*var\(--palette-minimal-sidebar-text\)/,
+    );
+    expect(minimalTheme).toMatch(
+      /--mail-list-surface:\s*var\(--palette-minimal-panel-subtle\)/,
+    );
+    expect(minimalTheme).toMatch(
+      /--reader-surface:\s*var\(--palette-minimal-panel\)/,
+    );
+    expect(minimalTheme).toMatch(
+      /--color-on-primary:\s*var\(--palette-minimal-on-accent\)/,
+    );
+    expect(minimalTheme).not.toMatch(/palette-accent-deep[^;]*82%/);
+  });
+
+  it("keeps the empty reader on the tinted canvas and the sidebar truly solid", () => {
+    expect(declarationsFor("\\.reader-panel--empty")).toMatch(
+      /background:\s*transparent/,
+    );
+    expect(declarationsFor("\\.sidebar__scrim")).toMatch(
+      /background:\s*var\([\s\S]*--sidebar-background/,
+    );
+    expect(declarationsFor("\\.compose-button")).toMatch(
+      /color:\s*var\(--color-on-primary\)/,
+    );
+  });
+});
+
 describe("isolated mail document surface", () => {
   it("leaves the iframe shell transparent for its own fixed document canvas", () => {
     expect(declarationsFor("\\.html-message__frame")).toMatch(

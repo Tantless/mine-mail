@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { appearancePalettes } from "../appearanceThemes.js";
 import { AppearanceSettings } from "./AppearanceSettings.jsx";
 
 const appearance = {
@@ -41,6 +42,19 @@ function props(overrides = {}) {
     onDelete: vi.fn().mockResolvedValue(appearance),
     ...overrides,
   };
+}
+
+function normalizedBackground(color) {
+  const sample = document.createElement("span");
+  sample.style.background = color;
+  return sample.style.background;
+}
+
+function palettePreview(button) {
+  return Array.from(
+    button.querySelectorAll(".appearance-palette__segment"),
+    (segment) => segment.style.background,
+  );
 }
 
 describe("AppearanceSettings", () => {
@@ -118,6 +132,34 @@ describe("AppearanceSettings", () => {
     }
     await user.click(screen.getByRole("button", { name: /^森林原色/ }));
     expect(onUpdatePreferences).toHaveBeenCalledWith({ paletteId: "forest" });
+  });
+
+  it("previews the active material mode with the same palette identity", async () => {
+    const user = userEvent.setup();
+    const teal = appearancePalettes.find((palette) => palette.id === "teal-light");
+    render(<AppearanceSettings {...props()} />);
+
+    await user.click(screen.getByRole("button", { name: /^界面配色/ }));
+    expect(
+      palettePreview(
+        screen.getByRole("button", { name: "薄荷明亮调色板" }),
+      ),
+    ).toEqual(teal.minimalSwatches.map(normalizedBackground));
+
+    cleanup();
+    render(
+      <AppearanceSettings
+        {...props({
+          appearance: { ...appearance, minimalModeEnabled: false },
+        })}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: /^界面配色/ }));
+    expect(
+      palettePreview(
+        screen.getByRole("button", { name: "薄荷明亮调色板" }),
+      ),
+    ).toEqual(teal.swatches.map(normalizedBackground));
   });
 
   it("keeps the global palette editable and hides focal controls for built-in backgrounds", async () => {

@@ -134,6 +134,282 @@ const semanticByScheme = Object.freeze({
   },
 });
 
+function clamp(value, minimum = 0, maximum = 1) {
+  return Math.min(maximum, Math.max(minimum, value));
+}
+
+function hexToLinearRgb(hex) {
+  const match = /^#([0-9a-f]{6})$/i.exec(String(hex));
+  if (!match) throw new Error(`Unsupported palette color: ${hex}`);
+  const channels = match[1].match(/.{2}/g).map((channel) =>
+    Number.parseInt(channel, 16) / 255,
+  );
+  return channels.map((channel) =>
+    channel <= 0.04045
+      ? channel / 12.92
+      : ((channel + 0.055) / 1.055) ** 2.4,
+  );
+}
+
+function linearRgbToHex(rgb) {
+  const channels = rgb.map((channel) => {
+    const bounded = clamp(channel);
+    const srgb =
+      bounded <= 0.0031308
+        ? bounded * 12.92
+        : 1.055 * bounded ** (1 / 2.4) - 0.055;
+    return Math.round(clamp(srgb) * 255)
+      .toString(16)
+      .padStart(2, "0");
+  });
+  return `#${channels.join("")}`;
+}
+
+function hexToOklch(hex) {
+  const [red, green, blue] = hexToLinearRgb(hex);
+  const l = Math.cbrt(
+    0.4122214708 * red + 0.5363325363 * green + 0.0514459929 * blue,
+  );
+  const m = Math.cbrt(
+    0.2119034982 * red + 0.6806995451 * green + 0.1073969566 * blue,
+  );
+  const s = Math.cbrt(
+    0.0883024619 * red + 0.2817188376 * green + 0.6299787005 * blue,
+  );
+  const lightness = 0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s;
+  const a = 1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s;
+  const b = 0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s;
+  const chroma = Math.hypot(a, b);
+  const hue = (Math.atan2(b, a) * 180) / Math.PI;
+  return {
+    lightness,
+    chroma,
+    hue: hue < 0 ? hue + 360 : hue,
+  };
+}
+
+function linearRgbFromOklch(lightness, chroma, hue) {
+  const radians = (hue * Math.PI) / 180;
+  const a = chroma * Math.cos(radians);
+  const b = chroma * Math.sin(radians);
+  const l = (lightness + 0.3963377774 * a + 0.2158037573 * b) ** 3;
+  const m = (lightness - 0.1055613458 * a - 0.0638541728 * b) ** 3;
+  const s = (lightness - 0.0894841775 * a - 1.291485548 * b) ** 3;
+  return [
+    4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
+    -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
+    -0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s,
+  ];
+}
+
+function inSrgbGamut(rgb) {
+  return rgb.every((channel) => channel >= 0 && channel <= 1);
+}
+
+function oklchToHex(lightness, chroma, hue) {
+  const boundedLightness = clamp(lightness);
+  let boundedChroma = Math.max(0, chroma);
+  let rgb = linearRgbFromOklch(boundedLightness, boundedChroma, hue);
+  if (!inSrgbGamut(rgb)) {
+    let low = 0;
+    let high = boundedChroma;
+    for (let index = 0; index < 22; index += 1) {
+      const candidate = (low + high) / 2;
+      const candidateRgb = linearRgbFromOklch(
+        boundedLightness,
+        candidate,
+        hue,
+      );
+      if (inSrgbGamut(candidateRgb)) {
+        low = candidate;
+        rgb = candidateRgb;
+      } else {
+        high = candidate;
+      }
+    }
+    boundedChroma = low;
+    rgb = linearRgbFromOklch(boundedLightness, boundedChroma, hue);
+  }
+  return linearRgbToHex(rgb);
+}
+
+function relativeLuminance(hex) {
+  const [red, green, blue] = hexToLinearRgb(hex);
+  return 0.2126 * red + 0.7152 * green + 0.0722 * blue;
+}
+
+function contrastRatio(first, second) {
+  const firstLuminance = relativeLuminance(first);
+  const secondLuminance = relativeLuminance(second);
+  const lighter = Math.max(firstLuminance, secondLuminance);
+  const darker = Math.min(firstLuminance, secondLuminance);
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
+function fitContrast(
+  { lightness, chroma, hue },
+  backgrounds,
+  minimumRatio,
+  direction,
+) {
+  let candidateLightness = lightness;
+  for (let index = 0; index < 101; index += 1) {
+    const candidate = oklchToHex(candidateLightness, chroma, hue);
+    if (
+      backgrounds.every(
+        (background) => contrastRatio(candidate, background) >= minimumRatio,
+      )
+    ) {
+      return candidate;
+    }
+    candidateLightness = clamp(
+      candidateLightness + (direction === "lighter" ? 0.01 : -0.01),
+    );
+  }
+  return direction === "lighter" ? "#ffffff" : "#000000";
+}
+
+function rgbaFromHex(hex, alpha) {
+  const match = /^#([0-9a-f]{6})$/i.exec(hex);
+  const channels = match[1]
+    .match(/.{2}/g)
+    .map((channel) => Number.parseInt(channel, 16));
+  return `rgba(${channels.join(", ")}, ${alpha})`;
+}
+
+function accessibleOnAccent(accent) {
+  const candidates = ["#050b10", "#ffffff"];
+  return candidates.reduce((best, candidate) =>
+    contrastRatio(candidate, accent) > contrastRatio(best, accent)
+      ? candidate
+      : best,
+  );
+}
+
+function buildMinimalTokens(family, scheme, accent) {
+  const dark = scheme === "dark";
+  const surfaceSeed = hexToOklch(dark ? family.deep : family.soft);
+  const warmSurface = surfaceSeed.hue >= 65 && surfaceSeed.hue <= 115;
+  const surfaceColor = (lightness, chromaMultiplier, chromaLimit) =>
+    oklchToHex(
+      lightness,
+      Math.min(
+        surfaceSeed.chroma * chromaMultiplier,
+        chromaLimit * (warmSurface ? 0.8 : 1),
+      ),
+      surfaceSeed.hue,
+    );
+
+  const canvas = dark
+    ? surfaceColor(0.3, 0.5, 0.055)
+    : surfaceColor(0.88, 0.42, 0.035);
+  const sidebar = dark
+    ? surfaceColor(0.34, 0.72, 0.08)
+    : surfaceColor(0.84, 0.72, 0.06);
+  const panel = dark
+    ? surfaceColor(0.35, 0.36, 0.045)
+    : surfaceColor(0.92, 0.26, 0.025);
+  const panelSubtle = dark
+    ? surfaceColor(0.325, 0.44, 0.05)
+    : surfaceColor(0.9, 0.34, 0.03);
+  const control = dark
+    ? surfaceColor(0.38, 0.36, 0.045)
+    : surfaceColor(0.87, 0.34, 0.035);
+  const hover = dark
+    ? surfaceColor(0.39, 0.44, 0.055)
+    : surfaceColor(0.86, 0.44, 0.04);
+  const selection = dark
+    ? surfaceColor(0.42, 0.68, 0.075)
+    : surfaceColor(0.82, 0.82, 0.075);
+  const border = dark
+    ? surfaceColor(0.48, 0.3, 0.035)
+    : surfaceColor(0.7, 0.34, 0.04);
+  const divider = dark
+    ? surfaceColor(0.42, 0.26, 0.03)
+    : surfaceColor(0.79, 0.26, 0.03);
+  const edge = dark
+    ? surfaceColor(0.5, 0.28, 0.035)
+    : surfaceColor(0.74, 0.28, 0.035);
+  const highlight = dark
+    ? surfaceColor(0.58, 0.2, 0.025)
+    : surfaceColor(0.97, 0.14, 0.018);
+  const textBackgrounds = [
+    canvas,
+    sidebar,
+    panel,
+    panelSubtle,
+    control,
+    selection,
+  ];
+  const textDirection = dark ? "lighter" : "darker";
+  const text = fitContrast(
+    {
+      lightness: dark ? 0.92 : 0.23,
+      chroma: 0.012,
+      hue: surfaceSeed.hue,
+    },
+    textBackgrounds,
+    7,
+    textDirection,
+  );
+  const textSecondary = fitContrast(
+    {
+      lightness: dark ? 0.78 : 0.39,
+      chroma: 0.012,
+      hue: surfaceSeed.hue,
+    },
+    textBackgrounds,
+    4.5,
+    textDirection,
+  );
+  const textMuted = fitContrast(
+    {
+      lightness: dark ? 0.68 : 0.46,
+      chroma: 0.01,
+      hue: surfaceSeed.hue,
+    },
+    textBackgrounds,
+    4.5,
+    textDirection,
+  );
+  const selectionBorder = fitContrast(
+    {
+      lightness: dark ? 0.58 : 0.6,
+      chroma: Math.min(surfaceSeed.chroma * 0.72, warmSurface ? 0.08 : 0.1),
+      hue: surfaceSeed.hue,
+    },
+    [selection],
+    3,
+    dark ? "lighter" : "darker",
+  );
+  const shadowSeed = dark ? family.deep : family.main;
+
+  return Object.freeze({
+    canvas,
+    glass: panelSubtle,
+    sidebar,
+    panel,
+    panelSubtle,
+    control,
+    text,
+    textSecondary,
+    textMuted,
+    border,
+    divider,
+    selection,
+    selectionBorder,
+    hover,
+    edge,
+    highlight,
+    sidebarText: text,
+    sidebarMuted: textSecondary,
+    onAccent: accessibleOnAccent(accent),
+    panelShadow: dark
+      ? `0 14px 34px ${rgbaFromHex(shadowSeed, 0.3)}, 0 2px 7px rgba(0, 0, 0, 0.2)`
+      : `0 12px 30px ${rgbaFromHex(shadowSeed, 0.11)}, 0 2px 7px rgba(24, 35, 42, 0.08)`,
+  });
+}
+
 function mix(color, amount, base) {
   return `color-mix(in srgb, ${color} ${amount}%, ${base})`;
 }
@@ -203,6 +479,8 @@ function buildSemanticPalette(family, scheme) {
     ? [family.main, "#56c3b8", "#a28ce6", warning, danger, "#98a3b1"]
     : [family.deep, "#2f9f98", "#806bc4", warning, danger, "#7f8a96"];
 
+  const minimalTokens = buildMinimalTokens(family, scheme, accent);
+
   return Object.freeze({
     id: `${family.id}-${scheme}`,
     familyId: family.id,
@@ -213,6 +491,13 @@ function buildSemanticPalette(family, scheme) {
     soft: family.soft,
     deep: family.deep,
     swatches: Object.freeze([glass, accent, selection, border]),
+    minimalSwatches: Object.freeze([
+      minimalTokens.sidebar,
+      minimalTokens.canvas,
+      minimalTokens.selection,
+      accent,
+    ]),
+    minimalTokens,
     tokens: Object.freeze({
       scheme,
       canvas,
@@ -258,6 +543,7 @@ function buildSemanticPalette(family, scheme) {
 function buildThemePalette(spec) {
   const generated = buildSemanticPalette(spec, spec.scheme);
   const tokens = Object.freeze({ ...generated.tokens, ...spec.tokens });
+  const minimalTokens = buildMinimalTokens(spec, spec.scheme, tokens.accent);
   return Object.freeze({
     ...generated,
     id: spec.id,
@@ -269,6 +555,13 @@ function buildThemePalette(spec) {
       tokens.selection,
       tokens.border,
     ]),
+    minimalSwatches: Object.freeze([
+      minimalTokens.sidebar,
+      minimalTokens.canvas,
+      minimalTokens.selection,
+      tokens.accent,
+    ]),
+    minimalTokens,
     tokens,
   });
 }
@@ -542,6 +835,29 @@ const paletteVariables = Object.freeze({
   panelShadow: "--palette-panel-shadow",
 });
 
+const minimalPaletteVariables = Object.freeze({
+  canvas: "--palette-minimal-canvas",
+  glass: "--palette-minimal-glass",
+  sidebar: "--palette-minimal-sidebar",
+  panel: "--palette-minimal-panel",
+  panelSubtle: "--palette-minimal-panel-subtle",
+  control: "--palette-minimal-control",
+  text: "--palette-minimal-text",
+  textSecondary: "--palette-minimal-text-secondary",
+  textMuted: "--palette-minimal-text-muted",
+  border: "--palette-minimal-border",
+  divider: "--palette-minimal-divider",
+  onAccent: "--palette-minimal-on-accent",
+  selection: "--palette-minimal-selection",
+  selectionBorder: "--palette-minimal-selection-border",
+  hover: "--palette-minimal-hover",
+  edge: "--palette-minimal-edge",
+  highlight: "--palette-minimal-highlight",
+  sidebarText: "--palette-minimal-sidebar-text",
+  sidebarMuted: "--palette-minimal-sidebar-muted",
+  panelShadow: "--palette-minimal-panel-shadow",
+});
+
 export function applyAppearancePaletteToRoot(root, paletteId) {
   const normalizedId = normalizeAppearancePaletteId(paletteId);
   const palette =
@@ -549,6 +865,9 @@ export function applyAppearancePaletteToRoot(root, paletteId) {
     appearancePalettes.find((item) => item.id === "daylight");
   Object.entries(paletteVariables).forEach(([token, property]) => {
     root.style.setProperty(property, palette.tokens[token]);
+  });
+  Object.entries(minimalPaletteVariables).forEach(([token, property]) => {
+    root.style.setProperty(property, palette.minimalTokens[token]);
   });
   palette.tokens.chart.forEach((color, index) => {
     root.style.setProperty(`--palette-chart-${index + 1}`, color);

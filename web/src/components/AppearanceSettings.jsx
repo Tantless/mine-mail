@@ -95,10 +95,11 @@ function validateFile(file) {
   }
 }
 
-function PaletteDisc({ palette, selected = false }) {
+function PaletteDisc({ palette, selected = false, minimal = false }) {
+  const swatches = minimal ? palette.minimalSwatches : palette.swatches;
   return (
     <span className="appearance-palette__disc" aria-hidden="true">
-      {palette.swatches.map((color, index) => (
+      {swatches.map((color, index) => (
         <span
           key={`${palette.id}-${index}`}
           className="appearance-palette__segment"
@@ -110,7 +111,7 @@ function PaletteDisc({ palette, selected = false }) {
   );
 }
 
-function PaletteSwatch({ palette, selected, onSelect, disabled }) {
+function PaletteSwatch({ palette, selected, minimal, onSelect, disabled }) {
   return (
     <button
       type="button"
@@ -122,7 +123,7 @@ function PaletteSwatch({ palette, selected, onSelect, disabled }) {
       disabled={disabled}
       onClick={onSelect}
     >
-      <PaletteDisc palette={palette} selected={selected} />
+      <PaletteDisc palette={palette} selected={selected} minimal={minimal} />
     </button>
   );
 }
@@ -247,6 +248,7 @@ export function AppearanceSettings({
   const activePalette =
     appearancePalettes.find((palette) => palette.id === activePaletteId) ||
     appearancePalettes.find((palette) => palette.id === "daylight");
+  const minimalModeEnabled = appearance?.minimalModeEnabled !== false;
   const controlsDisabled = Boolean(busyAction);
 
   useEffect(() => {
@@ -359,7 +361,7 @@ export function AppearanceSettings({
           <input
             type="checkbox"
             aria-label="启用极简模式"
-            checked={appearance?.minimalModeEnabled !== false}
+            checked={minimalModeEnabled}
             disabled={controlsDisabled}
             onChange={(event) =>
               void run("minimal-mode", () =>
@@ -400,7 +402,10 @@ export function AppearanceSettings({
               </small>
             </span>
             <span className="appearance-config__palette-value" aria-hidden="true">
-              <PaletteDisc palette={activePalette} />
+              <PaletteDisc
+                palette={activePalette}
+                minimal={minimalModeEnabled}
+              />
               <CaretDown size={18} weight="bold" />
             </span>
           </button>
@@ -427,6 +432,7 @@ export function AppearanceSettings({
                           key={palette.id}
                           palette={palette}
                           selected={activePaletteId === palette.id}
+                          minimal={minimalModeEnabled}
                           disabled={controlsDisabled}
                           onSelect={() =>
                             void run(`palette:${palette.id}`, () =>
@@ -448,7 +454,7 @@ export function AppearanceSettings({
           <span>
             <strong id="appearance-themes-title">主题背景</strong>
             <small>
-              {appearance?.minimalModeEnabled !== false
+              {minimalModeEnabled
                 ? "极简模式下保留选择与设置，但不会显示背景图片。"
                 : "内置主题默认使用各自原色；也可以把自己的图片保存为预设。"}
             </small>

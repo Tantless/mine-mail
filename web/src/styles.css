@@ -1018,32 +1018,60 @@ html[data-surface="new-mail-notification"] #root {
   --switch-thumb-on: var(--palette-panel);
 }
 
-:root[data-appearance-mode="minimal"] {
+:root[data-theme][data-appearance-mode="minimal"] {
   --wallpaper: none;
   --wallpaper-position: center;
-  --titlebar-text: var(--palette-text);
-  --titlebar-hover: var(--palette-hover);
-  --sidebar-scrim-top: color-mix(in srgb, var(--palette-accent-deep) 82%, var(--palette-glass));
+  --app-canvas: var(--palette-minimal-canvas);
+  --color-panel: var(--palette-minimal-panel);
+  --color-panel-subtle: var(--palette-minimal-panel-subtle);
+  --color-control: var(--palette-minimal-control);
+  --color-text: var(--palette-minimal-text);
+  --color-text-secondary: var(--palette-minimal-text-secondary);
+  --color-text-muted: var(--palette-minimal-text-muted);
+  --color-border: var(--palette-minimal-border);
+  --color-divider: var(--palette-minimal-divider);
+  --color-on-primary: var(--palette-minimal-on-accent);
+  --color-selection: var(--palette-minimal-selection);
+  --color-selection-border: var(--palette-minimal-selection-border);
+  --color-hover: var(--palette-minimal-hover);
+  --sidebar-background: var(--palette-minimal-sidebar);
+  --sidebar-text: var(--palette-minimal-sidebar-text);
+  --sidebar-muted: var(--palette-minimal-sidebar-muted);
+  --sidebar-hover: color-mix(in srgb, var(--sidebar-text) 10%, transparent);
+  --sidebar-selected: color-mix(in srgb, var(--sidebar-text) 17%, transparent);
+  --sidebar-scrim-top: var(--palette-minimal-sidebar);
   --sidebar-scrim-bottom: var(--sidebar-scrim-top);
-  --mail-list-surface: var(--palette-glass);
-  --reader-surface: var(--palette-panel);
-  --reader-toolbar-surface: var(--palette-panel-subtle);
-  --reader-content-surface: var(--palette-panel);
-  --settings-shell-surface: var(--palette-panel);
-  --settings-rail-surface: var(--palette-panel-subtle);
-  --settings-detail-surface: var(--palette-panel);
-  --control-surface: var(--palette-control);
-  --row-hover-surface: var(--palette-hover);
-  --row-selection-surface: var(--palette-selection);
-  --row-selection-edge: var(--palette-selection-border);
-  --compose-panel-surface: var(--palette-panel);
-  --compose-content-surface: var(--palette-panel-subtle);
-  --compose-control-surface: var(--palette-control);
-  --compose-control-hover: var(--palette-hover);
-  --compose-divider: var(--palette-divider);
+  --titlebar-text: var(--palette-minimal-text);
+  --titlebar-hover: var(--palette-minimal-hover);
+  --panel-border: var(--palette-minimal-border);
+  --panel-shadow: var(--palette-minimal-panel-shadow);
+  --surface-edge: var(--palette-minimal-edge);
+  --surface-highlight: var(--palette-minimal-highlight);
+  --mail-list-surface: var(--palette-minimal-panel-subtle);
+  --reader-surface: var(--palette-minimal-panel);
+  --reader-toolbar-surface: var(--palette-minimal-panel-subtle);
+  --reader-content-surface: var(--palette-minimal-panel);
+  --settings-shell-surface: var(--palette-minimal-panel);
+  --settings-rail-surface: var(--palette-minimal-panel-subtle);
+  --settings-detail-surface: var(--palette-minimal-panel);
+  --control-surface: var(--palette-minimal-control);
+  --row-hover-surface: var(--palette-minimal-hover);
+  --row-selection-surface: var(--palette-minimal-selection);
+  --row-selection-edge: var(--palette-minimal-selection-border);
+  --compose-panel-surface: var(--palette-minimal-panel);
+  --compose-content-surface: var(--palette-minimal-panel-subtle);
+  --compose-control-surface: var(--palette-minimal-control);
+  --compose-control-hover: var(--palette-minimal-hover);
+  --compose-divider: var(--palette-minimal-divider);
+  --compose-page-surface: var(--palette-minimal-panel-subtle);
+  --compose-paper-surface: var(--palette-minimal-panel);
   --compose-surface: var(--palette-accent);
   --compose-surface-hover: var(--palette-accent-hover);
   --compose-surface-pressed: var(--palette-accent-pressed);
+  --compose-edge: var(--palette-minimal-selection-border);
+  --compose-highlight: var(--palette-minimal-highlight);
+  --switch-thumb-off: var(--palette-minimal-panel);
+  --switch-thumb-on: var(--palette-minimal-panel);
   --settings-wallpaper-echo: 0;
   --mail-list-wallpaper-echo: 0;
   --reader-wallpaper-echo: 0;
@@ -1406,7 +1434,15 @@ html[data-surface="new-mail-notification"] #root {
   position: absolute;
   inset: calc(var(--content-top) * -1) 0 calc(var(--window-edge) * -1);
   z-index: -1;
-  background: linear-gradient(180deg, var(--sidebar-scrim-top), rgba(255, 255, 255, 0.02) 48%, var(--sidebar-scrim-bottom));
+  background: var(
+    --sidebar-background,
+    linear-gradient(
+      180deg,
+      var(--sidebar-scrim-top),
+      rgba(255, 255, 255, 0.02) 48%,
+      var(--sidebar-scrim-bottom)
+    )
+  );
 }
 
 .sidebar__content {
@@ -1506,7 +1542,7 @@ html[data-surface="new-mail-notification"] #root {
   border: 1px solid var(--compose-edge);
   border-radius: 10px;
   background: var(--compose-surface);
-  color: #fff;
+  color: var(--color-on-primary);
   box-shadow: var(--compose-shadow);
   font-size: 14px;
   font-weight: 650;
@@ -9305,7 +9341,7 @@ html[data-surface="new-mail-notification"] #root {
   padding: 2px;
   border-radius: 50%;
   background: color-mix(in srgb, var(--color-primary) 84%, #092720);
-  color: #fff;
+  color: var(--color-on-primary);
   transform: translate(-50%, -50%);
 }
 
