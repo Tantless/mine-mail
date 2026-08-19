@@ -374,7 +374,13 @@ existing visual system normally changes this document rather than `DESIGN.md`.
   fields are ignored while permitted subject/body work continues.
 - Optimization may use supported safe rich-text formatting and is instructed to
   adapt paragraphing, lists, emphasis, indentation, spacing, and sign-off to the
-  language and context without imposing a fixed layout. Unless the user requests
+  language and context without imposing a fixed layout beyond the indentation
+  rule. Every ordinary body
+  paragraph uses the composer's fixed two-em first-line indent; greetings, list
+  items, and standalone sign-offs remain unindented. The agent expresses that
+  indent through the supported semantic paragraph metadata and inline style,
+  never through spaces, empty blocks, or unsupported margins. Unless the user
+  requests
   another language or translation, optimization preserves the draft's primary
   language. AI-authored plain text uses one newline between ordinary paragraphs;
   Rust removes blank and whitespace-only lines from AI body writes before they
@@ -620,9 +626,12 @@ existing visual system normally changes this document rather than `DESIGN.md`.
   them, and a named contact must resolve to one reliable local match. When a
   non-empty draft exists and the user does not request another language or
   translation, generated edits preserve the draft's primary language; blank
-  drafts naturally follow the language of the instruction. AI-authored plain
-  text uses one newline between ordinary paragraphs and no blank or
-  whitespace-only lines; rich text uses adjacent blocks without empty blocks.
+  drafts naturally follow the language of the instruction. Every ordinary body
+  paragraph uses the composer's fixed two-em first-line indent; greetings, list
+  items, and standalone sign-offs remain unindented. AI-authored plain text uses
+  one newline between ordinary paragraphs and no blank or whitespace-only lines;
+  rich text carries the semantic indent and uses adjacent blocks without empty
+  blocks.
 - Generation lists attachments before editing and reads their contents only
   when the requested work depends on them. It never infers content from a file
   name or mutates attachments or quoted source. At the user's explicit request,

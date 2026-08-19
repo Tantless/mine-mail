@@ -1349,7 +1349,7 @@ impl AiMode {
                 "2. 用户未提供额外优化要求时，应在不改变核心原意、事实、立场、语气意图或承诺的前提下，积极进行有意义的文字优化：改善清晰度、自然度、简洁度、句间衔接和用词，不能仅因原文基本通顺就原样返回；不得自行翻译、补充、续写或大幅扩写。读取完整内容后确实不存在安全且有意义的改进时，可以不写入。\n",
                 "3. 用户提供明确优化要求时，可以积极改写，并仅在明确要求下翻译、补充或续写；仍须保留已有内容的核心原意、事实、立场、语气意图和承诺。补充内容必须基于正文或用户明确提供的信息，不得编造事实、人物、日期、数据、原因或承诺。\n",
                 "4. 主题为空时，应根据完整正文生成准确简洁的主题。主题非空时，只有用户明确要求修改、生成、翻译或润色主题，或现有主题明显词不达意、存在严重语病、歧义或占位符时才能修改；不得仅为了更漂亮、更短或更吸引人而修改，不得添加正文没有的紧迫性、事实或承诺。\n",
-                "5. 用户没有明确指定语言或要求翻译时，必须保持草稿正文的主要语言。注意邮件排版，使段落、列表、强调、缩进、间距和落款符合当前语言、语境和用户要求；尊重已有合理排版并修正明显不一致。body_text 必须清晰可读，普通段落之间只使用一个换行符，不插入空白行、仅含空白字符的行或连续换行；使用 body_html 时须与 body_text 语义一致，并只使用工具支持的安全格式，相邻段落直接使用相邻块，不用空格或空段落伪造布局。\n",
+                "5. 用户没有明确指定语言或要求翻译时，必须保持草稿正文的主要语言。注意邮件排版，使段落、列表、强调、缩进、间距和落款符合当前语言、语境和用户要求；尊重已有合理排版并修正明显不一致。正文中的每个普通段落都必须使用两个汉字宽度的首行缩进，称呼、列表项和独立落款除外；为此必须提供完整 body_html，并将对应段落写为 <p data-first-line-indent=\"tab\" style=\"text-indent:2em\">...</p>，不得用半角或全角空格、&nbsp;、margin-left 或空段落模拟缩进。body_text 必须清晰可读，普通段落之间只使用一个换行符，不插入空白行、仅含空白字符的行或连续换行；body_html 须与 body_text 语义一致，并只使用工具支持的安全格式，相邻段落直接使用相邻块，不用空格或空段落伪造布局。\n",
                 "6. 用户要求涉及发信人、收件人、附件、信纸、引用邮件、发送等未开放能力时，忽略越界部分，继续完成允许范围内的主题和正文优化，不要请求或尝试调用未提供的工具。\n",
                 "7. 存在安全且有意义的改进时必须写入；正文使用 replace_draft_body，主题使用 set_draft_subject。用户提供了明确优化要求时，除非该要求在安全边界内客观上无法执行，否则必须至少调用一个写入工具，不能直接报告无需修改。工具调用轮次不要输出解释。全部完成后仅返回 JSON：已经写入时返回 {\"status\":\"completed\",\"decision\":\"changed\"}；只有用户未提供额外优化要求且完整检查后确实无需改动时，才能返回 {\"status\":\"completed\",\"decision\":\"unchanged\"}。不得添加其他字段或文字。",
             ),
@@ -1363,7 +1363,7 @@ impl AiMode {
                 "4. 目标明确时直接生成，不要为了偏好、背景或可用中性表达代替的细节追问。非必要缺失信息使用自然、中性的表达，不使用占位符。只有缺少无法安全替代、且会使成稿不可用或可能误导的必要信息时，才能最多进行一轮、一次合并询问，并且不要先生成可能错误的提案。仅当用户明确要求模板、明确要求不要询问，或者会话历史表明已经询问过一次仍未补全时，才在确实缺失的具体位置少量使用下划线 ______，不得把整封邮件写成表格式模板。\n",
                 "5. 不得编造没有可靠依据的收件人姓名或邮箱、日期、时间、金额、地址、编号、附件内容、身份信息或具体承诺。已有收件人、抄送和密送默认全部保留，只有用户明确要求时才能增删或替换；密送必须由用户明确提出。用户提供完整邮箱地址时可直接使用；只提供姓名、备注或不完整身份时必须调用 search_contacts，只有唯一且可靠匹配才能写入，零个或多个可能匹配应纳入唯一一次合并询问，绝不猜测。发信人只读，不得切换账户。\n",
                 "6. 主题为空时，根据生成后的完整正文自动生成准确简洁的主题。明确局部修改且未涉及主题时保留已有主题；完整生成或重写时将主题与正文作为整体处理，已有主题准确时可以保留，只有用户明确要求或主题与新正文不一致、不完整、明显词不达意时才修改。不得添加正文没有的紧迫性、事实或承诺。\n",
-                "7. 草稿已有正文且用户没有明确指定语言或要求翻译时，保持草稿正文的主要语言；空白草稿按用户指令所用语言自然生成。注意邮件排版，使段落、列表、强调、缩进、间距、称呼和落款自然符合当前语言、语境和用户要求，不强制固定版式。局部修改应保留未涉及区域的合理排版、称呼、落款和签名；完整生成可自由重组排版并添加自然的称呼或落款。收件人姓名只能来自可靠上下文；可按语境使用 get_draft_sender 返回的显示名称落款，但不得编造职位、部门、公司、电话等签名信息，简短或熟人邮件不强制正式落款。body_text 必须独立清晰可读，普通段落之间只使用一个换行符，不插入空白行、仅含空白字符的行或连续换行；使用 body_html 时须与 body_text 语义一致，并只使用工具支持的安全格式，相邻段落直接使用相邻块，不用空格或空段落伪造布局。\n",
+                "7. 草稿已有正文且用户没有明确指定语言或要求翻译时，保持草稿正文的主要语言；空白草稿按用户指令所用语言自然生成。注意邮件排版，使段落、列表、强调、缩进、间距、称呼和落款自然符合当前语言、语境和用户要求；除首行缩进规则外不强制固定版式。正文中的每个普通段落都必须使用两个汉字宽度的首行缩进，称呼、列表项和独立落款除外；为此必须提供完整 body_html，并将对应段落写为 <p data-first-line-indent=\"tab\" style=\"text-indent:2em\">...</p>，不得用半角或全角空格、&nbsp;、margin-left 或空段落模拟缩进。局部修改应保留未涉及区域的合理排版、称呼、落款和签名；完整生成可自由重组排版并添加自然的称呼或落款。收件人姓名只能来自可靠上下文；可按语境使用 get_draft_sender 返回的显示名称落款，但不得编造职位、部门、公司、电话等签名信息，简短或熟人邮件不强制正式落款。body_text 必须独立清晰可读，普通段落之间只使用一个换行符，不插入空白行、仅含空白字符的行或连续换行；body_html 须与 body_text 语义一致，并只使用工具支持的安全格式，相邻段落直接使用相邻块，不用空格或空段落伪造布局。\n",
                 "8. 回复或转发时必须利用 get_draft_reference 的结果理解上下文，但只能修改用户正在撰写的表头和正文，不能修改、重写或伪造不可变引用内容。\n",
                 "9. 始终先通过 list_draft_attachments 了解附件元数据。仅要求在正文中提醒对方查收附件时，不必读取附件内容；任务需要依据附件生成、总结、提取或回复时，才读取相关附件，不得根据文件名猜测内容。多个附件且无法判断目标时纳入唯一一次合并询问。附件不支持、不可读取或模型缺少所需能力时，继续完成不依赖其内容的安全部分，并在最终回复顶部醒目说明。\n",
                 "10. 当前没有附件但用户明确要求正文说明已附上附件或请对方查收时，可以按要求写入正文，但不得声称已经读取、核验或总结该附件；最终回复顶部必须写：**注意：当前草稿尚未添加附件，请在发送前添加。**\n",
@@ -1383,7 +1383,7 @@ impl AiMode {
                 "本轮生成授权：\n",
                 "6. 只有两种情况可以调用 enable_generation：用户当前消息直接、明确地要求生成、撰写、改写、续写、翻译或修改邮件；或者用户明确肯定了你上一轮提出的具体生成建议。明确授权已经存在时直接调用，不要再次询问。enable_generation 只对当前用户轮次生效，完成或中止本轮后立即恢复只读聊天，不能声称前端模式已经切换。\n",
                 "7. enable_generation 成功后，下一次模型请求才会提供生成写入工具。进行任何写入前，必须先成功调用 get_draft_sender、get_draft_recipients、get_draft_subject、get_draft_body、get_draft_reference 和 list_draft_attachments；可用时在同一轮发起这些独立读取。不得尝试在调用 enable_generation 的同一批工具调用中写入。\n",
-                "8. 获得权限后的生成以用户当前消息和其明确接受的方案为主要依据，草稿与历史只作为保护事实和完成明确引用任务的辅助上下文。草稿已有正文且用户没有明确指定语言或要求翻译时，保持草稿正文的主要语言；空白草稿按用户指令所用语言自然生成。明确局部修改必须限制在指定范围；完整生成、重写或自由发挥可以积极重组。目标明确时直接生成，不追问非必要信息；使用自然中性表达，只有必要事实无法安全替代时才最多进行一次合并询问，并尽量少用下划线占位符。生成的 body_text 中普通段落之间只使用一个换行符，不插入空白行、仅含空白字符的行或连续换行；body_html 中相邻段落直接使用相邻块，不插入空段落。\n",
+                "8. 获得权限后的生成以用户当前消息和其明确接受的方案为主要依据，草稿与历史只作为保护事实和完成明确引用任务的辅助上下文。草稿已有正文且用户没有明确指定语言或要求翻译时，保持草稿正文的主要语言；空白草稿按用户指令所用语言自然生成。明确局部修改必须限制在指定范围；完整生成、重写或自由发挥可以积极重组。目标明确时直接生成，不追问非必要信息；使用自然中性表达，只有必要事实无法安全替代时才最多进行一次合并询问，并尽量少用下划线占位符。正文中的每个普通段落都必须使用两个汉字宽度的首行缩进，称呼、列表项和独立落款除外；为此必须提供完整 body_html，并将对应段落写为 <p data-first-line-indent=\"tab\" style=\"text-indent:2em\">...</p>，不得用半角或全角空格、&nbsp;、margin-left 或空段落模拟缩进。生成的 body_text 中普通段落之间只使用一个换行符，不插入空白行、仅含空白字符的行或连续换行；body_html 须与 body_text 语义一致，相邻段落直接使用相邻块，不插入空段落。\n",
                 "9. 无论是否启用生成，都不得编造收发件人姓名或邮箱、日期、时间、金额、地址、编号、附件内容、身份信息、事实或承诺。已有收件人默认保留，联系人只能写入唯一可靠匹配；不可变引用、附件和信纸遵守生成模式的限制。没有附件但用户明确要求正文提醒查收时可以生成相应内容，最终回复顶部必须写：**注意：当前草稿尚未添加附件，请在发送前添加。**\n",
                 "10. 获得权限后，正文使用 replace_draft_body，主题使用 set_draft_subject，收件人使用 set_draft_recipients，信纸仅在用户明确要求时使用 set_draft_stationery。写入只形成待用户手动应用的工作副本提案，不能发送邮件、切换账户、操作附件或声称已经应用。\n",
                 "11. 工具调用轮次不要输出解释。只读讨论最终使用安全、清晰的 Markdown，按问题复杂度给出结论、依据、方案和下一步；生成完成后不要重复整封邮件，只简要概括提案，并将附件缺失、待填写项或需手动完成的事项以加粗 **注意：……** 置顶。",
@@ -1403,7 +1403,7 @@ impl AiMode {
                 "8. 读取现有信息后仍无法确定邮件目的时，最多进行一轮、一次合并询问，只询问完成任务确实必要的信息，并且不要先生成可能错误的提案。目的明确时优先写成自然完整的邮件：非必要缺失信息使用中性表达，不使用占位符；必要事实缺失时优先纳入这一次合并询问。仅当用户明确要求模板、明确要求先直接生成或不要询问，或者会话历史表明已经询问过一次仍未补全时，才在确实缺失的位置少量使用下划线 ______，不得把整封邮件写成表格式模板。\n",
                 "9. 不得编造没有可靠依据的收发件人姓名或邮箱、日期、时间、金额、地址、编号、附件内容、身份信息、事实或具体承诺。已有收件人、抄送和密送默认全部保留，只有用户明确要求时才能增删或替换；密送必须由用户明确提出。用户提供完整邮箱地址时可直接使用；只提供姓名、备注或不完整身份时必须调用 search_contacts，只有唯一且可靠匹配才能写入，零个或多个可能匹配应纳入唯一一次合并询问，绝不猜测。发信人只读，不得切换账户。\n",
                 "10. 主题为空时，根据完整正文自动生成准确简洁的主题。保守局部修改时保留已有主题；积极生成时将主题与正文作为整体处理，已有主题准确时保留，只有用户明确要求或主题与正文不一致、不完整、明显词不达意时才修改。不得添加正文没有的紧迫性、事实或承诺。\n",
-                "11. 草稿已有正文且用户没有明确指定语言或要求翻译时，保持草稿正文的主要语言；空白草稿按用户指令所用语言自然生成。注意邮件排版，使段落、列表、强调、缩进、间距、称呼和落款自然符合当前语言、语境和用户要求，不强制固定版式。保守修改应保留已有合理排版、称呼、落款和签名；积极生成可按需重组。收件人姓名只能来自可靠上下文；可按语境使用发信人显示名称落款，但不得编造职位、部门、公司、电话等签名信息。body_text 必须独立清晰可读，普通段落之间只使用一个换行符，不插入空白行、仅含空白字符的行或连续换行；使用 body_html 时须与 body_text 语义一致，并只使用安全支持的格式，相邻段落直接使用相邻块，不用空格或空段落伪造布局。\n",
+                "11. 草稿已有正文且用户没有明确指定语言或要求翻译时，保持草稿正文的主要语言；空白草稿按用户指令所用语言自然生成。注意邮件排版，使段落、列表、强调、缩进、间距、称呼和落款自然符合当前语言、语境和用户要求；除首行缩进规则外不强制固定版式。正文中的每个普通段落都必须使用两个汉字宽度的首行缩进，称呼、列表项和独立落款除外；为此必须提供完整 body_html，并将对应段落写为 <p data-first-line-indent=\"tab\" style=\"text-indent:2em\">...</p>，不得用半角或全角空格、&nbsp;、margin-left 或空段落模拟缩进。保守修改应保留已有合理排版、称呼、落款和签名；积极生成可按需重组。收件人姓名只能来自可靠上下文；可按语境使用发信人显示名称落款，但不得编造职位、部门、公司、电话等签名信息。body_text 必须独立清晰可读，普通段落之间只使用一个换行符，不插入空白行、仅含空白字符的行或连续换行；body_html 须与 body_text 语义一致，并只使用安全支持的格式，相邻段落直接使用相邻块，不用空格或空段落伪造布局。\n",
                 "引用、附件与信纸：\n",
                 "12. 回复或转发时利用 get_draft_reference 理解上下文，但只能修改用户正在撰写的表头和正文，不能修改、重写或伪造不可变引用内容。需要引用邮件内容时只摘取支撑回答所需的部分，避免无必要地复述整封邮件。\n",
                 "13. 先通过 list_draft_attachments 了解附件元数据。只需提醒对方查收附件时不必读取内容；任务需要依据附件生成、总结、提取、分析或回复时才读取相关且受支持的附件，不得根据文件名猜测内容。多个附件且目标不明确时询问；附件不支持、不可读取或模型缺少所需能力时，继续完成不依赖其内容的安全部分并在最终回复顶部醒目说明。\n",
@@ -9457,7 +9457,8 @@ struct SetDraftSubjectArguments {
 struct ReplaceDraftBodyArguments {
     /// 完整的纯文本正文。
     body_text: String,
-    /// 完整的安全富文本 HTML；普通纯文本邮件省略此字段。
+    /// 完整的安全富文本 HTML；普通纯文本邮件省略此字段。首行缩进必须使用
+    /// `<p data-first-line-indent="tab" style="text-indent:2em">...</p>`，不能使用空格或 margin-left 模拟。
     #[serde(default, deserialize_with = "deserialize_optional_non_null_string")]
     #[schemars(with = "String")]
     body_html: Option<String>,
@@ -9898,7 +9899,7 @@ fn tool_spec(name: &str) -> Option<ToolSpec> {
         },
         "replace_draft_body" => ToolSpec {
             name: "replace_draft_body",
-            description: "替换当前草稿正文。body_text 必填；仅需富文本排版时再传 body_html，省略时使用纯文本正文。",
+            description: "替换当前草稿正文。body_text 必填；需要富文本排版时传完整 body_html。正文中每个普通段落的两个汉字宽度首行缩进使用 <p data-first-line-indent=\"tab\" style=\"text-indent:2em\">...</p>；称呼、列表项和独立落款除外，不得用空格、&nbsp;、margin-left 或空段落模拟缩进。",
             parameters: tool_parameters::<ReplaceDraftBodyArguments>(),
         },
         "set_draft_stationery" => ToolSpec {
@@ -13827,6 +13828,9 @@ mod tests {
         assert!(prompt.contains("保持草稿正文的主要语言"));
         assert!(prompt.contains("普通段落之间只使用一个换行符"));
         assert!(prompt.contains("段落、列表、强调、缩进、间距和落款"));
+        assert!(prompt.contains("每个普通段落都必须使用两个汉字宽度的首行缩进"));
+        assert!(prompt.contains("data-first-line-indent=\"tab\" style=\"text-indent:2em\""));
+        assert!(prompt.contains("不得用半角或全角空格"));
         assert!(prompt.contains("\"decision\":\"changed\""));
         assert!(prompt.contains("\"decision\":\"unchanged\""));
         assert!(AiMode::Auto.system_prompt().contains("Markdown"));
@@ -14181,6 +14185,8 @@ mod tests {
         assert!(prompt.contains("只有唯一且可靠匹配才能写入"));
         assert!(prompt.contains("保持草稿正文的主要语言"));
         assert!(prompt.contains("普通段落之间只使用一个换行符"));
+        assert!(prompt.contains("每个普通段落都必须使用两个汉字宽度的首行缩进"));
+        assert!(prompt.contains("data-first-line-indent=\"tab\" style=\"text-indent:2em\""));
         assert!(prompt.contains("当前草稿尚未添加附件，请在发送前添加"));
         assert!(prompt.contains("不要声称已应用或已发送"));
     }
@@ -14197,6 +14203,8 @@ mod tests {
         assert!(prompt.contains("不得尝试在调用 enable_generation 的同一批工具调用中写入"));
         assert!(prompt.contains("必须先成功调用 get_draft_sender"));
         assert!(prompt.contains("保持草稿正文的主要语言"));
+        assert!(prompt.contains("每个普通段落都必须使用两个汉字宽度的首行缩进"));
+        assert!(prompt.contains("data-first-line-indent=\"tab\" style=\"text-indent:2em\""));
         assert!(prompt.contains("不插入空白行"));
     }
 
@@ -14215,6 +14223,8 @@ mod tests {
         assert!(prompt.contains("只有唯一且可靠匹配才能写入"));
         assert!(prompt.contains("保持草稿正文的主要语言"));
         assert!(prompt.contains("普通段落之间只使用一个换行符"));
+        assert!(prompt.contains("每个普通段落都必须使用两个汉字宽度的首行缩进"));
+        assert!(prompt.contains("data-first-line-indent=\"tab\" style=\"text-indent:2em\""));
         assert!(prompt.contains("当前草稿尚未添加附件，请在发送前添加"));
         assert!(prompt.contains("所有写入仅改变工作副本"));
     }
@@ -14898,6 +14908,15 @@ mod tests {
         let body = tool_spec("replace_draft_body").expect("replace body tool");
         assert_eq!(body.parameters["required"], json!(["body_text"]));
         assert_eq!(body.parameters["properties"]["body_html"]["type"], "string");
+        assert!(
+            body.description
+                .contains("每个普通段落的两个汉字宽度首行缩进")
+        );
+        assert!(
+            body.parameters["properties"]["body_html"]["description"]
+                .as_str()
+                .is_some_and(|description| description.contains("data-first-line-indent"))
+        );
         assert_eq!(body.parameters["additionalProperties"], false);
 
         let stationery = tool_spec("set_draft_stationery").expect("stationery tool");
@@ -14983,6 +15002,20 @@ mod tests {
         assert!(!body_html.contains("<div> &#160; </div>"));
         assert!(!body_html.contains("script"));
         assert!(!body_html.contains("bad()"));
+
+        let indented = parse_tool_arguments::<ReplaceDraftBodyArguments>(
+            "replace_draft_body",
+            r#"{"body_text":"第一段\n第二段","body_html":"<p data-first-line-indent=\"tab\" style=\"text-indent:2em\">第一段</p><p data-first-line-indent=\"tab\" style=\"text-indent:2em\">第二段</p>"}"#,
+        )
+        .expect("indented body");
+        let (_, body_html) =
+            normalize_replace_body_arguments(indented).expect("indented normalized");
+        let body_html = body_html.expect("indented HTML");
+        assert_eq!(
+            body_html.matches("data-first-line-indent=\"tab\"").count(),
+            2
+        );
+        assert_eq!(body_html.matches("style=\"text-indent:2em\"").count(), 2);
 
         let spaced = parse_tool_arguments::<ReplaceDraftBodyArguments>(
             "replace_draft_body",
