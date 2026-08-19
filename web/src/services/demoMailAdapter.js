@@ -2108,6 +2108,10 @@ function createDemoActions(
       return true;
     },
 
+    previewNotificationSound(sound) {
+      return sound;
+    },
+
     listAccountPresets() {
       return structuredClone(state.accountPresets);
     },

@@ -781,7 +781,9 @@ existing visual system normally changes this document rather than `DESIGN.md`.
   settings remain authoritative over system presentation.
 - Sound enablement and the sound preset are shared by both delivery methods.
   Mine Mail owns playback for its card; Windows owns playback and suppression
-  for a Windows notification.
+  for a Windows notification. An adjacent icon-only preview action plays the
+  currently selected preset while notification sound is enabled, without
+  changing the saved selection.
 - A notification batch displays its bounded unread count, and clicking a card
   while Mine Mail is running or in the tray opens the cached message in its
   owning account. A Windows notification left after an explicit application

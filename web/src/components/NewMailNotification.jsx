@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { X } from "@phosphor-icons/react";
 import { mailApi } from "../services/mailApi.js";
+import { playWebNotificationSound } from "../utils/notificationSound.js";
 import { ProfileAvatar } from "./ProfileAvatar.jsx";
 import { appearancePalettes } from "../appearanceThemes.js";
 
@@ -62,53 +63,6 @@ function applySavedTheme() {
   root.style.setProperty("--custom-accent", palette.main);
   root.style.setProperty("--custom-accent-soft", palette.soft);
   root.style.setProperty("--custom-accent-deep", palette.deep);
-}
-
-function playWebSound(preset) {
-  if (!preset) return;
-  const AudioContext = window.AudioContext || window.webkitAudioContext;
-  if (!AudioContext) return;
-  const patterns = {
-    default: [
-      [740, 0, 0.14],
-    ],
-    mail: [
-      [660, 0, 0.13],
-      [880, 0.14, 0.18],
-    ],
-    im: [
-      [784, 0, 0.1],
-      [1047, 0.11, 0.12],
-    ],
-    reminder: [
-      [523, 0, 0.14],
-      [659, 0.16, 0.14],
-      [784, 0.32, 0.2],
-    ],
-  };
-  const context = new AudioContext();
-  const startedAt = context.currentTime + 0.02;
-  for (const [frequency, offset, duration] of patterns[preset] || patterns.mail) {
-    const oscillator = context.createOscillator();
-    const gain = context.createGain();
-    oscillator.type = "sine";
-    oscillator.frequency.value = frequency;
-    gain.gain.setValueAtTime(0.0001, startedAt + offset);
-    gain.gain.exponentialRampToValueAtTime(0.13, startedAt + offset + 0.018);
-    gain.gain.exponentialRampToValueAtTime(
-      0.0001,
-      startedAt + offset + duration,
-    );
-    oscillator.connect(gain).connect(context.destination);
-    oscillator.start(startedAt + offset);
-    oscillator.stop(startedAt + offset + duration);
-  }
-  const totalDuration = Math.max(
-    ...((patterns[preset] || patterns.mail).map(
-      ([, offset, duration]) => offset + duration,
-    )),
-  );
-  window.setTimeout(() => void context.close(), (totalDuration + 0.2) * 1000);
 }
 
 export function NewMailNotification() {
@@ -247,7 +201,7 @@ export function NewMailNotification() {
       resetDismissRetriesFor(item);
       notificationRef.current = item;
       setNotification(item);
-      playWebSound(item.webSound);
+      playWebNotificationSound(item.webSound);
       scheduleDismiss(item);
     },
     [resetDismissRetriesFor, scheduleDismiss],

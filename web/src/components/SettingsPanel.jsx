@@ -17,6 +17,7 @@ import {
   Question,
   Robot,
   SlidersHorizontal,
+  SpeakerHigh,
   StopCircle,
   Trash,
   UserCircle,
@@ -46,6 +47,7 @@ import { ThemedSelect } from "./ThemedSelect.jsx";
 import { TooltipTarget } from "./Tooltip.jsx";
 import { useSlidingSelection } from "../hooks/useSlidingSelection.js";
 import { userFacingErrorMessage } from "../utils/userFacingError.js";
+import { playWebNotificationSound } from "../utils/notificationSound.js";
 
 const remoteImageOptions = [
   { value: "automatic", label: "自动加载" },
@@ -340,6 +342,7 @@ export function SettingsPanel({
   appUpdateController = null,
   storageClient = appStorageApi,
   agentClient = mailApi,
+  notificationClient = mailApi,
 }) {
   const ownedAppUpdateController = useAppUpdate(updateClient, {
     enabled: !appUpdateController,
@@ -394,6 +397,8 @@ export function SettingsPanel({
   const [isRemoteImageHelpOpen, setIsRemoteImageHelpOpen] = useState(false);
   const [isMcpHelpOpen, setIsMcpHelpOpen] = useState(false);
   const [isMcpEnablePending, setIsMcpEnablePending] = useState(false);
+  const [isSoundPreviewing, setIsSoundPreviewing] = useState(false);
+  const [soundPreviewError, setSoundPreviewError] = useState(null);
   const scrollRef = useRef(null);
   const settingsNavRef = useRef(null);
   const accountMenuRef = useRef(null);
@@ -582,6 +587,24 @@ export function SettingsPanel({
     const next = typeof updater === "function" ? updater(value) : updater;
     setValue(next);
     void onSave(next);
+  };
+
+  const previewNotificationSound = async () => {
+    if (isSoundPreviewing) return;
+    setIsSoundPreviewing(true);
+    setSoundPreviewError(null);
+    try {
+      const webSound = await notificationClient.previewNotificationSound(
+        value.notificationSound,
+      );
+      playWebNotificationSound(webSound);
+    } catch (error) {
+      setSoundPreviewError(
+        errorMessage(error, "无法试听提示音，请检查系统声音设置后重试。"),
+      );
+    } finally {
+      setIsSoundPreviewing(false);
+    }
   };
 
   const openAccountOverview = () => {
@@ -1361,7 +1384,9 @@ export function SettingsPanel({
                 <div className="settings-preference-row">
                   <span>
                     <strong>通知声音</strong>
-                    <small>新邮件通知出现时播放所选系统提示音。</small>
+                    <small data-tone={soundPreviewError ? "danger" : undefined}>
+                      {soundPreviewError || "新邮件通知出现时播放所选系统提示音。"}
+                    </small>
                   </span>
                   <span className="settings-notification-sound-control">
                     <input
@@ -1382,13 +1407,31 @@ export function SettingsPanel({
                       value={value.notificationSound}
                       options={notificationSoundOptions}
                       disabled={!value.notificationsEnabled || !value.notificationSoundEnabled}
-                      onValueChange={(notificationSound) =>
+                      onValueChange={(notificationSound) => {
+                        setSoundPreviewError(null);
                         updateSettings((current) => ({
                           ...current,
                           notificationSound,
-                        }))
-                      }
+                        }));
+                      }}
                     />
+                    <IconButton
+                      className="settings-notification-sound-preview"
+                      label={`试听${
+                        notificationSoundOptions.find(
+                          (option) => option.value === value.notificationSound,
+                        )?.label || "当前提示音"
+                      }`}
+                      aria-busy={isSoundPreviewing}
+                      disabled={
+                        !value.notificationsEnabled ||
+                        !value.notificationSoundEnabled ||
+                        isSoundPreviewing
+                      }
+                      onClick={() => void previewNotificationSound()}
+                    >
+                      <SpeakerHigh size={18} weight="fill" />
+                    </IconButton>
                   </span>
                 </div>
 

@@ -958,7 +958,8 @@ describe("mailApi desktop IPC contract", () => {
         webSound: null,
       })
       .mockResolvedValueOnce(true)
-      .mockResolvedValueOnce(true);
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(null);
     const { mailApi } = await import("./mailApi.js");
 
     const notification = await mailApi.getNewMailNotification();
@@ -968,6 +969,7 @@ describe("mailApi desktop IPC contract", () => {
     expect(notification).not.toHaveProperty("messageId");
     await mailApi.dismissNewMailNotification(7);
     await mailApi.openNewMailNotification(7);
+    await mailApi.previewNotificationSound("reminder");
 
     expect(ipc.invoke).toHaveBeenNthCalledWith(
       1,
@@ -987,6 +989,11 @@ describe("mailApi desktop IPC contract", () => {
       {
         notificationId: 7,
       },
+    );
+    expect(ipc.invoke).toHaveBeenNthCalledWith(
+      4,
+      "preview_notification_sound",
+      { sound: "reminder" },
     );
   });
 

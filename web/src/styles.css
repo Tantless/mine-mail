@@ -7609,6 +7609,10 @@ html[data-surface="new-mail-notification"] #root {
   line-height: 1.5;
 }
 
+.settings-preference-row small[data-tone="danger"] {
+  color: var(--color-danger);
+}
+
 .settings-preference-row__title {
   display: flex !important;
   align-items: center;

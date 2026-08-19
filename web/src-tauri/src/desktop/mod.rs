@@ -45,7 +45,7 @@ pub(crate) use appearance::{
 };
 pub(crate) use settings::{
     DeleteProfileAvatarRequest, DesktopSettingsDto, DesktopSettingsUpdate, MCP_ENDPOINT,
-    ProfileAvatarDto, SaveProfileAvatarRequest,
+    NotificationSound, ProfileAvatarDto, SaveProfileAvatarRequest,
 };
 use settings::{
     DesktopSettingsStore, NotificationBaseline, NotificationDelivery, ProfileAvatarOwnerType,
@@ -4026,6 +4026,13 @@ fn play_native_notification_sound(sound: settings::NotificationSound) {
 
 #[cfg(not(target_os = "windows"))]
 fn play_native_notification_sound(_sound: settings::NotificationSound) {}
+
+pub(crate) fn preview_notification_sound(
+    sound: settings::NotificationSound,
+) -> Option<settings::NotificationSound> {
+    play_native_notification_sound(sound);
+    web_sound(sound)
+}
 
 fn main_window_is_active(app: &AppHandle) -> bool {
     let Some(window) = app.get_webview_window("main") else {

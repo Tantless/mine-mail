@@ -1519,6 +1519,13 @@ export const mailApi = {
     return callDemo("openNewMailNotification", notificationId);
   },
 
+  async previewNotificationSound(sound) {
+    if (isTauri) {
+      return desktopInvoke("preview_notification_sound", { sound });
+    }
+    return callDemo("previewNotificationSound", sound);
+  },
+
   async listAccountPresets() {
     if (isTauri) return desktopInvoke("list_account_presets");
     return callDemo("listAccountPresets");

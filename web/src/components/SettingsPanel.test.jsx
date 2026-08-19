@@ -285,6 +285,63 @@ describe("SettingsPanel account flow", () => {
     );
   });
 
+  it("previews the currently selected notification sound without changing it", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn();
+    const notificationClient = {
+      previewNotificationSound: vi.fn().mockResolvedValue(null),
+    };
+    render(
+      <SettingsPanel
+        {...panelProps({ notificationClient, onSave })}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "功能设定" }));
+    await user.click(screen.getByRole("button", { name: "试听邮件提示音" }));
+    expect(notificationClient.previewNotificationSound).toHaveBeenCalledWith(
+      "mail",
+    );
+    expect(onSave).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("combobox", { name: "通知声音类型" }));
+    await user.click(screen.getByRole("option", { name: "轻柔提示" }));
+    await user.click(screen.getByRole("button", { name: "试听轻柔提示" }));
+
+    expect(notificationClient.previewNotificationSound).toHaveBeenLastCalledWith(
+      "im",
+    );
+    expect(onSave).toHaveBeenCalledTimes(1);
+  });
+
+  it("disables sound preview with notification sound and reports preview failures", async () => {
+    const user = userEvent.setup();
+    const notificationClient = {
+      previewNotificationSound: vi.fn().mockRejectedValue(new Error("failed")),
+    };
+    const { rerender } = render(
+      <SettingsPanel
+        {...panelProps({ notificationClient })}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "功能设定" }));
+    await user.click(screen.getByRole("button", { name: "试听邮件提示音" }));
+    expect(await screen.findByText(/无法试听提示音/)).toBeTruthy();
+
+    rerender(
+      <SettingsPanel
+        {...panelProps({
+          notificationClient,
+          settings: { ...settings, notificationSoundEnabled: false },
+        })}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "试听邮件提示音" }).disabled).toBe(
+      true,
+    );
+  });
+
   it("requires one confirmation before enabling MCP and retains the default child permissions", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn();

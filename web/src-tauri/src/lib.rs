@@ -51,7 +51,7 @@ use contacts::{ContactDirectoryDto, ContactRuntime};
 use desktop::{
     AppearanceSettingsDto, DeleteCustomThemeRequest, DeleteProfileAvatarRequest, DesktopRuntime,
     DesktopSettingsDto, DesktopSettingsUpdate, ImportCustomThemeRequest, NewMailNotificationDto,
-    ProfileAvatarDto, SaveProfileAvatarRequest, SelectAppearanceThemeRequest,
+    NotificationSound, ProfileAvatarDto, SaveProfileAvatarRequest, SelectAppearanceThemeRequest,
     UpdateCustomThemeRequest,
 };
 use diagnostics::{ErrorKind as DiagnosticErrorKind, Fields as DiagnosticFields};
@@ -2457,6 +2457,17 @@ fn open_new_mail_notification(app: AppHandle, notification_id: u64) -> CommandRe
 }
 
 #[tauri::command]
+fn preview_notification_sound(
+    sound: NotificationSound,
+) -> CommandResult<Option<NotificationSound>> {
+    diagnostics::command(
+        "preview_notification_sound",
+        DiagnosticFields::default(),
+        || Ok(desktop::preview_notification_sound(sound)),
+    )
+}
+
+#[tauri::command]
 fn list_profile_avatars(
     runtime: State<'_, DesktopRuntime>,
 ) -> CommandResult<Vec<ProfileAvatarDto>> {
@@ -3368,6 +3379,7 @@ pub fn run() {
             get_new_mail_notification,
             dismiss_new_mail_notification,
             open_new_mail_notification,
+            preview_notification_sound,
             list_profile_avatars,
             save_profile_avatar,
             delete_profile_avatar,
