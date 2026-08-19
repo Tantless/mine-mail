@@ -2,6 +2,7 @@ import { useId, useMemo, useRef } from "react";
 import { Check, Minus, X } from "@phosphor-icons/react";
 import { IconButton } from "./IconButton.jsx";
 import { useConfirmDialogFocus } from "./ConfirmDialogPrimitives.jsx";
+import { limitText, textInputLimits } from "../utils/textLimits.js";
 
 const MAX_DIFF_CELLS = 1_500_000;
 
@@ -181,8 +182,17 @@ function DiffEditor({ annotations, inputRef = null, label, side, onChange }) {
         aria-label={label}
         spellCheck="false"
         value={text}
+        maxLength={textInputLimits.composeBody}
         onChange={(event) =>
-          onChange(projectOptimizationAnnotations(annotations, event.target.value))
+          onChange(
+            projectOptimizationAnnotations(
+              annotations,
+              limitText(
+                event.target.value,
+                textInputLimits.composeBody,
+              ),
+            ),
+          )
         }
         onScroll={(event) => {
           if (!highlightRef.current) return;
@@ -277,7 +287,15 @@ export function ComposeOptimizationReviewDialog({
                   id={`compose-optimize-left-subject-${generatedId}`}
                   aria-label="编辑左侧主题"
                   value={leftSubject}
-                  onChange={(event) => onChangeLeftSubject(event.target.value)}
+                  maxLength={textInputLimits.composeSubject}
+                  onChange={(event) =>
+                    onChangeLeftSubject(
+                      limitText(
+                        event.target.value,
+                        textInputLimits.composeSubject,
+                      ),
+                    )
+                  }
                 />
               </div>
               <div className="compose-optimize-review-field compose-optimize-review-field--body">
@@ -315,7 +333,15 @@ export function ComposeOptimizationReviewDialog({
                   id={`compose-optimize-right-subject-${generatedId}`}
                   aria-label="编辑右侧主题"
                   value={rightSubject}
-                  onChange={(event) => onChangeRightSubject(event.target.value)}
+                  maxLength={textInputLimits.composeSubject}
+                  onChange={(event) =>
+                    onChangeRightSubject(
+                      limitText(
+                        event.target.value,
+                        textInputLimits.composeSubject,
+                      ),
+                    )
+                  }
                 />
               </div>
               <div className="compose-optimize-review-field compose-optimize-review-field--body">

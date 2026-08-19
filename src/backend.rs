@@ -59,7 +59,9 @@ use crate::{
     },
     models::{
         AttachmentDisposition, AttachmentMeta, AttachmentSaveErrorKind, AttachmentSaveResult,
-        AttachmentSaveStatus, DraftAttachmentMeta, DraftAttachmentMutationKind,
+        AttachmentSaveStatus, COMPOSE_BODY_HTML_MAX_BYTES, COMPOSE_BODY_MAX_CHARACTERS,
+        COMPOSE_RECIPIENT_MAX_CHARACTERS, COMPOSE_RECIPIENT_MAX_COUNT,
+        COMPOSE_SUBJECT_MAX_CHARACTERS, DraftAttachmentMeta, DraftAttachmentMutationKind,
         DraftAttachmentMutationOutcome, DraftDto, DraftSyncReport, ForwardContext,
         ForwardPreparationError, ForwardPreparationErrorKind, ForwardPreparationOutcome,
         ForwardQuotedRenderMode, ForwardWarning, MailboxCapability, MailboxCapabilityStatus,
@@ -6227,7 +6229,7 @@ impl MailBackend {
     /// reconciliation algorithm.
     pub fn upsert_draft(&self, draft_id: Option<&str>, request: ComposeRequest) -> Result<Draft> {
         let request = normalize_owned_compose_html(request);
-        validate_draft_recipients(&request)?;
+        validate_compose_request(&request)?;
         match draft_id {
             None => return self.insert_local_draft(&request, "local"),
             Some(id) => {
@@ -6302,7 +6304,7 @@ impl MailBackend {
         request: ComposeRequest,
     ) -> Result<DraftSaveOutcome> {
         let request = normalize_owned_compose_html(request);
-        validate_draft_recipients(&request)?;
+        validate_compose_request(&request)?;
         match (draft_id, expected_local_version) {
             (None, None) => {
                 let draft = self.insert_local_draft(&request, "local")?;
@@ -8068,13 +8070,44 @@ fn classify_draft_reconciliation(
     }
 }
 
-fn validate_draft_recipients(request: &ComposeRequest) -> Result<()> {
-    if request
-        .all_recipients()
-        .any(|address| address.trim().is_empty())
-    {
+fn validate_compose_request(request: &ComposeRequest) -> Result<()> {
+    let recipients = request.all_recipients().collect::<Vec<_>>();
+    if recipients.len() > COMPOSE_RECIPIENT_MAX_COUNT {
+        return Err(MailError::Validation(
+            "draft recipient count exceeds the supported limit".to_owned(),
+        ));
+    }
+    if recipients.iter().any(|address| address.trim().is_empty()) {
         return Err(MailError::Validation(
             "draft recipient addresses cannot be blank".to_owned(),
+        ));
+    }
+    if recipients
+        .iter()
+        .any(|address| address.chars().count() > COMPOSE_RECIPIENT_MAX_CHARACTERS)
+    {
+        return Err(MailError::Validation(
+            "draft recipient address exceeds the supported length".to_owned(),
+        ));
+    }
+    if request.subject.chars().count() > COMPOSE_SUBJECT_MAX_CHARACTERS {
+        return Err(MailError::Validation(
+            "draft subject exceeds the supported length".to_owned(),
+        ));
+    }
+    if request.body_text.chars().count() > COMPOSE_BODY_MAX_CHARACTERS {
+        return Err(MailError::Validation(
+            "draft body exceeds the supported length".to_owned(),
+        ));
+    }
+    if request
+        .format
+        .body_html
+        .as_ref()
+        .is_some_and(|html| html.len() > COMPOSE_BODY_HTML_MAX_BYTES)
+    {
+        return Err(MailError::Validation(
+            "draft HTML body exceeds the supported length".to_owned(),
         ));
     }
     Ok(())
@@ -8109,7 +8142,7 @@ mod tests {
         mailbox_snapshot_requires_confirmation, mailbox_snapshots_confirm_same_membership,
         newest_uids_by_internal_date, next_missing_history_bound, normalized_message_page_size,
         remote_attachment_listing, remote_candidates_equivalent, remote_draft_candidate,
-        selected_remote_body_paths, should_continue_empty_history_scan,
+        selected_remote_body_paths, should_continue_empty_history_scan, validate_compose_request,
         validate_delivery_unknown_attempt, validate_manual_retry,
     };
     use crate::{
@@ -8147,6 +8180,43 @@ mod tests {
             format: Default::default(),
             reply_context: None,
         }
+    }
+
+    #[test]
+    fn compose_limits_accept_the_boundary_and_reject_oversized_authored_text() {
+        let boundary = compose(&"主".repeat(200), &"文".repeat(10_000));
+        validate_compose_request(&boundary).expect("boundary compose request");
+
+        let oversized_subject = compose(&"主".repeat(201), "正文");
+        assert!(matches!(
+            validate_compose_request(&oversized_subject),
+            Err(MailError::Validation(message)) if message.contains("subject")
+        ));
+
+        let oversized_body = compose("主题", &"文".repeat(10_001));
+        assert!(matches!(
+            validate_compose_request(&oversized_body),
+            Err(MailError::Validation(message)) if message.contains("body")
+        ));
+    }
+
+    #[test]
+    fn compose_limits_reject_oversized_recipient_addresses_and_lists() {
+        let mut oversized_address = compose("主题", "正文");
+        oversized_address.to = vec![format!("{}@example.com", "a".repeat(243))];
+        assert!(matches!(
+            validate_compose_request(&oversized_address),
+            Err(MailError::Validation(message)) if message.contains("address")
+        ));
+
+        let mut oversized_list = compose("主题", "正文");
+        oversized_list.to = (0..101)
+            .map(|index| format!("recipient-{index}@example.com"))
+            .collect();
+        assert!(matches!(
+            validate_compose_request(&oversized_list),
+            Err(MailError::Validation(message)) if message.contains("count")
+        ));
     }
 
     #[test]

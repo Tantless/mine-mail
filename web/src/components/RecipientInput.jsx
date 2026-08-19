@@ -11,6 +11,11 @@ import {
 import { createPortal } from "react-dom";
 import { normalizeAvatarEmail, ProfileAvatar } from "./ProfileAvatar.jsx";
 import { splitAddresses } from "../utils/formatters.js";
+import {
+  limitText,
+  textCharacterCount,
+  textInputLimits,
+} from "../utils/textLimits.js";
 
 const defaultSuggestionLimit = 5;
 const popupMargin = 8;
@@ -28,6 +33,9 @@ function contactLabel(contact) {
 
 export function isCompleteRecipientEmail(value) {
   const email = value.trim();
+  if (textCharacterCount(email) > textInputLimits.recipientAddress) {
+    return false;
+  }
   if (!emailPattern.test(email)) return false;
   // Reject empty dot-separated segments: "a..b@c.d", ".a@c.d", "a.@c.d".
   const [local, domain] = email.split("@");
@@ -305,7 +313,10 @@ export function RecipientInput({
   };
 
   const handleInputChange = (event) => {
-    const nextQuery = event.target.value;
+    const nextQuery = limitText(
+      event.target.value,
+      textInputLimits.recipientAddress,
+    );
     openSuggestions();
     setExpanded(false);
     if (/[;,，；\n]$/.test(nextQuery)) {
@@ -513,6 +524,7 @@ export function RecipientInput({
           autoFocus={autoFocus}
           disabled={disabled}
           value={query}
+          maxLength={textInputLimits.recipientAddress}
           placeholder={normalizedRecipients.length ? "" : placeholder}
           aria-label={label}
           role="combobox"
@@ -549,7 +561,12 @@ export function RecipientInput({
             const valid = values.filter(isCompleteRecipientEmail);
             const invalid = values.filter((value) => !isCompleteRecipientEmail(value));
             if (valid.length) addRecipients(valid);
-            setQuery(invalid.join(", "));
+            setQuery(
+              limitText(
+                invalid.join(", "),
+                textInputLimits.recipientAddress,
+              ),
+            );
           }}
         />
       </div>

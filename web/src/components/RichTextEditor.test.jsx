@@ -1,6 +1,7 @@
 import {
   act,
   cleanup,
+  fireEvent,
   render,
   screen,
   waitFor,
@@ -785,6 +786,68 @@ it("keeps long grid-paper drafts editable without per-character decorations", as
   expect(
     editor.closest(".compose-editor-shell")?.dataset.stationery,
   ).toBe("grid");
+});
+
+it("caps the authored body at 10,000 characters and recommends an attachment", () => {
+  const existing = "长".repeat(9999);
+  const onEditorReady = vi.fn();
+  const view = render(
+    <RichTextEditor
+      bodyText={existing}
+      format={emptyFormat}
+      stationery="none"
+      onChange={vi.fn()}
+      onEditorReady={onEditorReady}
+    />,
+  );
+  const engine = onEditorReady.mock.calls.at(-1)[0];
+  engine.commands.setTextSelection(engine.state.doc.content.size - 1);
+
+  act(() => sendTextInput(engine, "继续"));
+
+  expect(Array.from(engine.getText())).toHaveLength(10000);
+  expect(engine.getText()).toBe(`${existing}继`);
+  expect(screen.getByText("10,000 / 10,000 字")).toBeTruthy();
+  expect(
+    screen.getByText("已达到正文上限，更多内容建议改用附件。").hidden,
+  ).toBe(false);
+
+  view.rerender(
+    <RichTextEditor
+      bodyText={existing}
+      format={emptyFormat}
+      stationery="none"
+      onChange={vi.fn()}
+      onEditorReady={onEditorReady}
+    />,
+  );
+  expect(screen.getByText("10,000 / 10,000 字")).toBeTruthy();
+});
+
+it("keeps the fitting prefix when pasted text crosses the body limit", () => {
+  const existing = "长".repeat(9999);
+  const onEditorReady = vi.fn();
+  render(
+    <RichTextEditor
+      bodyText={existing}
+      format={emptyFormat}
+      stationery="none"
+      onChange={vi.fn()}
+      onEditorReady={onEditorReady}
+    />,
+  );
+  const editorElement = screen.getByRole("textbox", { name: "邮件正文" });
+  const engine = onEditorReady.mock.calls.at(-1)[0];
+  engine.commands.setTextSelection(engine.state.doc.content.size - 1);
+
+  fireEvent.paste(editorElement, {
+    clipboardData: {
+      getData: (type) => (type === "text/plain" ? "继续" : ""),
+    },
+  });
+
+  expect(engine.getText()).toBe(`${existing}继`);
+  expect(screen.getByText("10,000 / 10,000 字")).toBeTruthy();
 });
 
 it("uses Tab for first-line indent and inherits it across new paragraphs", () => {

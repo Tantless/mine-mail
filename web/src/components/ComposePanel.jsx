@@ -33,6 +33,7 @@ import {
 import { HtmlMessageBody } from "./HtmlMessageBody.jsx";
 import { NativeHtmlMessageBody } from "./NativeHtmlMessageBody.jsx";
 import { RecipientInput } from "./RecipientInput.jsx";
+import { limitText, textInputLimits } from "../utils/textLimits.js";
 
 const RichTextEditor = lazy(() =>
   import("./RichTextEditor.jsx").then(({ RichTextEditor }) => ({
@@ -1373,8 +1374,15 @@ export function ComposePanel({
                     autoComplete="off"
                     disabled={controlsDisabled}
                     value={value.subject}
+                    maxLength={textInputLimits.composeSubject}
                     onChange={(event) =>
-                      onChange((current) => ({ ...current, subject: event.target.value }))
+                      onChange((current) => ({
+                        ...current,
+                        subject: limitText(
+                          event.target.value,
+                          textInputLimits.composeSubject,
+                        ),
+                      }))
                     }
                     onKeyDown={(event) => {
                       if (

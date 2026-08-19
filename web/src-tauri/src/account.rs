@@ -38,6 +38,9 @@ const ACCOUNT_STORE_VERSION: u8 = 2;
 const ACCOUNT_METADATA_VERSION: u8 = 1;
 const MAX_ACCOUNTS: usize = 3;
 const ACCOUNT_REMARK_MAX_CHARACTERS: usize = 40;
+const ACCOUNT_EMAIL_MAX_CHARACTERS: usize = 254;
+const ACCOUNT_SECRET_MAX_BYTES: usize = 16 * 1024;
+const MAIL_SERVER_HOST_MAX_CHARACTERS: usize = 253;
 const KEYRING_SERVICE: &str = "com.minemail.desktop";
 const LEGACY_KEYRING_USERNAME: &str = "primary";
 const KEYRING_USERNAME_PREFIX: &str = "account-";
@@ -115,6 +118,12 @@ struct AccountMetadata {
 
 impl AccountMetadata {
     fn preset(provider: AccountProvider, email: String) -> Result<Self, String> {
+        let email = email.trim();
+        if email.chars().count() > ACCOUNT_EMAIL_MAX_CHARACTERS {
+            return Err(format!(
+                "请检查输入：邮箱地址最多可输入 {ACCOUNT_EMAIL_MAX_CHARACTERS} 个字符。"
+            ));
+        }
         let (imap, smtp, smtp_security) = match provider {
             AccountProvider::NetEase163 => (
                 server("imap.163.com", 993),
@@ -145,7 +154,7 @@ impl AccountMetadata {
             account_id: String::new(),
             provider,
             authentication: AccountAuthentication::Password,
-            email: email.trim().to_owned(),
+            email: email.to_owned(),
             remark: None,
             imap,
             smtp,
@@ -167,6 +176,11 @@ impl AccountMetadata {
     fn from_input(input: &ConfigureAccountRequest) -> Result<Self, String> {
         if input.provider == AccountProvider::Outlook {
             return Err(OUTLOOK_NOTICE.to_owned());
+        }
+        if input.email.trim().chars().count() > ACCOUNT_EMAIL_MAX_CHARACTERS {
+            return Err(format!(
+                "请检查输入：邮箱地址最多可输入 {ACCOUNT_EMAIL_MAX_CHARACTERS} 个字符。"
+            ));
         }
         if input.provider == AccountProvider::NetEase163
             && !input
@@ -341,6 +355,9 @@ impl ConfigureAccountRequest {
         let password = Zeroizing::new(std::mem::take(&mut self.secret).trim().to_owned());
         if password.trim().is_empty() {
             return Err("An authorization password or app password is required.".to_owned());
+        }
+        if password.len() > ACCOUNT_SECRET_MAX_BYTES {
+            return Err("请检查输入：授权信息过长。".to_owned());
         }
         Ok(password)
     }
@@ -2429,10 +2446,14 @@ fn account_identity_hash(metadata: &AccountMetadata) -> String {
 fn required_text(value: Option<&str>, field: &str) -> Result<String, String> {
     let value = value.unwrap_or_default().trim();
     if value.is_empty() {
-        Err(format!("请检查输入：{field}不能为空。"))
-    } else {
-        Ok(value.to_owned())
+        return Err(format!("请检查输入：{field}不能为空。"));
     }
+    if value.chars().count() > MAIL_SERVER_HOST_MAX_CHARACTERS {
+        return Err(format!(
+            "请检查输入：{field}最多可输入 {MAIL_SERVER_HOST_MAX_CHARACTERS} 个字符。"
+        ));
+    }
+    Ok(value.to_owned())
 }
 
 fn normalize_account_remark(value: &str) -> Result<Option<String>, String> {
@@ -3117,12 +3138,12 @@ mod tests {
         AccountAuthentication, AccountMetadata, AccountProvider, AccountRuntime, AccountStore,
         BackendState, ConfigureAccountRequest, GoogleAuthorization, GoogleOAuthError,
         GoogleTokenRevocation, LEGACY_KEYRING_USERNAME, MAX_ACCOUNTS, OAuthTokenBundle,
-        StoredAccounts, account_database_path, account_presets, connection_report_result,
-        describe_google_token_error, google_client_id, google_refresh_failure,
-        google_revocation_response, keyring_username, legacy_identity_keyring_username,
-        legacy_keyring_username_for_account, normalize_account_remark, open_local_backend,
-        remove_managed_attachment_data_if_requested, remove_sqlite_cache_files,
-        sqlite_sidecar_path, uses_legacy_identity_account_id,
+        SmtpSecurityInput, StoredAccounts, account_database_path, account_presets,
+        connection_report_result, describe_google_token_error, google_client_id,
+        google_refresh_failure, google_revocation_response, keyring_username,
+        legacy_identity_keyring_username, legacy_keyring_username_for_account,
+        normalize_account_remark, open_local_backend, remove_managed_attachment_data_if_requested,
+        remove_sqlite_cache_files, sqlite_sidecar_path, uses_legacy_identity_account_id,
     };
     #[cfg(target_os = "linux")]
     use super::{normalize_linux_proxy_uri, select_linux_system_proxy};
@@ -3457,6 +3478,53 @@ mod tests {
 
         let oauth = AccountMetadata::google("demo@gmail.com".to_owned()).expect("Google OAuth");
         assert_eq!(oauth.authentication, AccountAuthentication::GoogleOAuth);
+    }
+
+    #[test]
+    fn account_setup_rejects_oversized_text_at_the_rust_boundary() {
+        let oversized_email = ConfigureAccountRequest {
+            provider: AccountProvider::Gmail,
+            email: format!("{}@gmail.com", "a".repeat(245)),
+            secret: "unused".to_owned(),
+            imap_host: None,
+            imap_port: None,
+            smtp_host: None,
+            smtp_port: None,
+            smtp_security: None,
+        };
+        assert!(
+            AccountMetadata::from_input(&oversized_email)
+                .expect_err("oversized email")
+                .contains("254")
+        );
+
+        let oversized_host = ConfigureAccountRequest {
+            provider: AccountProvider::Custom,
+            email: "demo@example.com".to_owned(),
+            secret: "unused".to_owned(),
+            imap_host: Some("h".repeat(254)),
+            imap_port: Some(993),
+            smtp_host: Some("smtp.example.com".to_owned()),
+            smtp_port: Some(465),
+            smtp_security: Some(SmtpSecurityInput::ImplicitTls),
+        };
+        assert!(
+            AccountMetadata::from_input(&oversized_host)
+                .expect_err("oversized host")
+                .contains("253")
+        );
+
+        let mut oversized_secret = ConfigureAccountRequest {
+            provider: AccountProvider::Gmail,
+            email: "demo@gmail.com".to_owned(),
+            secret: "s".repeat(16 * 1024 + 1),
+            imap_host: None,
+            imap_port: None,
+            smtp_host: None,
+            smtp_port: None,
+            smtp_security: None,
+        };
+        assert!(oversized_secret.take_password().is_err());
     }
 
     #[test]

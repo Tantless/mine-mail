@@ -35,6 +35,7 @@ import {
   optimizationAnnotationText,
 } from "./ComposeOptimizationReviewDialog.jsx";
 import { mailApi } from "../services/mailApi.js";
+import { limitText, textInputLimits } from "../utils/textLimits.js";
 
 const ComposeAiMarkdown = lazy(() => import("./ComposeAiMarkdown.jsx"));
 
@@ -426,9 +427,15 @@ export function ComposeOptimizeControl({
             autoFocus
             rows={3}
             value={instruction}
+            maxLength={textInputLimits.aiInstruction}
             placeholder="例如：更简洁、更正式，保留原有信息"
             onChange={(event) => {
-              setInstruction(event.target.value);
+              setInstruction(
+                limitText(
+                  event.target.value,
+                  textInputLimits.aiInstruction,
+                ),
+              );
               setNoticeMessage("");
             }}
             onKeyDown={(event) => {
@@ -721,9 +728,17 @@ function SessionList({
                 ref={searchInputRef}
                 type="search"
                 value={searchQuery}
+                maxLength={textInputLimits.aiSessionSearch}
                 placeholder="搜索最近会话"
                 aria-label="搜索最近会话"
-                onChange={(event) => setSearchQuery(event.target.value)}
+                onChange={(event) =>
+                  setSearchQuery(
+                    limitText(
+                      event.target.value,
+                      textInputLimits.aiSessionSearch,
+                    ),
+                  )
+                }
               />
             </label>
 
@@ -1668,6 +1683,7 @@ export function ComposeAiAssistant({
           aria-label="向 AI 助理发送消息"
           rows={3}
           value={input}
+          maxLength={textInputLimits.aiMessage}
           disabled={
             disabled ||
             isLoadingSessions ||
@@ -1675,7 +1691,11 @@ export function ComposeAiAssistant({
             !aiDraft
           }
           placeholder={agentModePlaceholders[mode]}
-          onChange={(event) => setInput(event.target.value)}
+          onChange={(event) =>
+            setInput(
+              limitText(event.target.value, textInputLimits.aiMessage),
+            )
+          }
           onKeyDown={(event) => {
             if (event.key === "Enter" && !event.shiftKey && !isSubmitting) {
               event.preventDefault();

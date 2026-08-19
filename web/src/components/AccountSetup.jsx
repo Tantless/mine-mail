@@ -9,6 +9,7 @@ import {
 import { IconButton } from "./IconButton.jsx";
 import { ThemedSelect } from "./ThemedSelect.jsx";
 import { userFacingErrorMessage } from "../utils/userFacingError.js";
+import { limitText, textInputLimits } from "../utils/textLimits.js";
 
 const fallbackPresets = [
   { id: "163", label: "163 邮箱", secret_label: "客户端授权密码" },
@@ -310,6 +311,11 @@ export function AccountSetupForm({
                 spellCheck={false}
                 autoComplete="off"
                 value={email}
+                maxLength={
+                  providerEmailDomain
+                    ? textInputLimits.accountEmail - providerEmailDomain.length
+                    : textInputLimits.accountEmail
+                }
                 aria-invalid={validationError?.field === "email" || undefined}
                 aria-describedby={[
                   providerEmailDomain ? emailDomainDescriptionId : null,
@@ -321,14 +327,13 @@ export function AccountSetupForm({
                   .filter(Boolean)
                   .join(" ") || undefined}
                 onChange={(event) => {
-                  setEmail(
-                    providerEmailDomain
-                      ? editableEmailValue(
-                          event.target.value,
-                          provider,
-                        )
-                      : event.target.value,
-                  );
+                  const maximum = providerEmailDomain
+                    ? textInputLimits.accountEmail - providerEmailDomain.length
+                    : textInputLimits.accountEmail;
+                  const nextValue = providerEmailDomain
+                    ? editableEmailValue(event.target.value, provider)
+                    : event.target.value;
+                  setEmail(limitText(nextValue, maximum));
                   setValidationError(null);
                 }}
                 placeholder={
@@ -363,6 +368,7 @@ export function AccountSetupForm({
                       : undefined
                   }
                   autoComplete="off"
+                  maxLength={textInputLimits.accountSecret}
                   onInput={() => setValidationError(null)}
                   placeholder="请输入授权密码"
                 />
@@ -392,6 +398,7 @@ export function AccountSetupForm({
                     ref={imapHostRef}
                     autoComplete="off"
                     value={custom.imapHost}
+                    maxLength={textInputLimits.mailServerHost}
                     aria-invalid={validationError?.field === "imapHost" || undefined}
                     aria-describedby={
                       validationError?.field === "imapHost" &&
@@ -400,7 +407,13 @@ export function AccountSetupForm({
                         : undefined
                     }
                     onChange={(event) => {
-                      setCustom((current) => ({ ...current, imapHost: event.target.value }));
+                      setCustom((current) => ({
+                        ...current,
+                        imapHost: limitText(
+                          event.target.value,
+                          textInputLimits.mailServerHost,
+                        ),
+                      }));
                       setValidationError(null);
                     }}
                     placeholder="imap.example.com"
@@ -438,6 +451,7 @@ export function AccountSetupForm({
                     ref={smtpHostRef}
                     autoComplete="off"
                     value={custom.smtpHost}
+                    maxLength={textInputLimits.mailServerHost}
                     aria-invalid={validationError?.field === "smtpHost" || undefined}
                     aria-describedby={
                       validationError?.field === "smtpHost" &&
@@ -446,7 +460,13 @@ export function AccountSetupForm({
                         : undefined
                     }
                     onChange={(event) => {
-                      setCustom((current) => ({ ...current, smtpHost: event.target.value }));
+                      setCustom((current) => ({
+                        ...current,
+                        smtpHost: limitText(
+                          event.target.value,
+                          textInputLimits.mailServerHost,
+                        ),
+                      }));
                       setValidationError(null);
                     }}
                     placeholder="smtp.example.com"

@@ -331,6 +331,13 @@ existing visual system normally changes this document rather than `DESIGN.md`.
 - Formatting, stationery, recipients, subject, body, and managed attachments all
   belong to the same exact draft version. Rust sanitizes authored rich text again
   before persistence or MIME construction; plain text remains the fallback.
+- Authored compose input is bounded before persistence: each recipient address is
+  at most 254 characters, a draft has at most 100 total To/Cc/Bcc recipients, the
+  subject is at most 200 characters, and the authored plain-text body is at most
+  10,000 characters. React prevents further input at those boundaries and Rust
+  validates them again. The body editor always shows its count; at the limit it
+  recommends moving additional long-form content into an attachment. An older
+  oversized local body remains visible and may be reduced, but cannot grow.
 - Compose supports the fonts and formatting exposed by the current toolbar,
   semantic ordered lists, links, and the current fixed first-line indent.
 - A draft may use no paper, lined paper, or grid paper. Edit-only paper stays a

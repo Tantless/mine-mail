@@ -8,8 +8,10 @@ use std::{
 
 use keyring::Entry;
 use mine_mail::{
-    ComposeRequest, DraftAttachmentMeta, ForwardContext, MailBackend, ReplyContext,
-    StationeryTheme, normalize_contact_email, sanitize_compose_html,
+    COMPOSE_BODY_HTML_MAX_BYTES, COMPOSE_BODY_MAX_CHARACTERS, COMPOSE_RECIPIENT_MAX_CHARACTERS,
+    COMPOSE_RECIPIENT_MAX_COUNT, COMPOSE_SUBJECT_MAX_CHARACTERS, ComposeRequest,
+    DraftAttachmentMeta, ForwardContext, MailBackend, ReplyContext, StationeryTheme,
+    normalize_contact_email, sanitize_compose_html,
 };
 use reqwest::{Client, RequestBuilder, Url};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -38,10 +40,6 @@ const MAX_MODEL_NAME_BYTES: usize = 256;
 const MAX_MODEL_LIST_ITEMS: usize = 1_000;
 const MAX_PROVIDER_INSTANCE_NAME_BYTES: usize = 96;
 const MAX_INSTRUCTION_BYTES: usize = 16 * 1024;
-const MAX_BODY_TEXT_BYTES: usize = 512 * 1024;
-const MAX_BODY_HTML_BYTES: usize = 512 * 1024;
-const MAX_SUBJECT_CHARACTERS: usize = 998;
-const MAX_RECIPIENTS: usize = 100;
 const MAX_TOOL_ARGUMENT_BYTES: usize = 64 * 1024;
 const MAX_TOOL_ROUNDS: usize = 8;
 const MAX_SERIAL_TOOL_ROUNDS: usize = 16;
@@ -10280,7 +10278,7 @@ fn set_recipients(
     let to = normalized_address_array(arguments.to, "to")?;
     let cc = normalized_address_array(arguments.cc, "cc")?;
     let bcc = normalized_address_array(arguments.bcc, "bcc")?;
-    if to.len() + cc.len() + bcc.len() > MAX_RECIPIENTS {
+    if to.len() + cc.len() + bcc.len() > COMPOSE_RECIPIENT_MAX_COUNT {
         return Err(ToolFailure::validation("收件人数量过多。", None));
     }
     if to
@@ -10317,8 +10315,16 @@ fn normalized_address_array(
     values
         .into_iter()
         .map(|address| {
-            normalize_contact_email(&address)
-                .map_err(|_| ToolFailure::validation(format!("{key} 中包含无效邮箱。"), Some(key)))
+            let normalized = normalize_contact_email(&address).map_err(|_| {
+                ToolFailure::validation(format!("{key} 中包含无效邮箱。"), Some(key))
+            })?;
+            if normalized.chars().count() > COMPOSE_RECIPIENT_MAX_CHARACTERS {
+                return Err(ToolFailure::validation(
+                    format!("{key} 中的邮箱地址过长。"),
+                    Some(key),
+                ));
+            }
+            Ok(normalized)
         })
         .collect()
 }
@@ -10328,7 +10334,9 @@ fn set_subject(
     working: &mut WorkingDraft,
 ) -> Result<Value, ToolFailure> {
     let subject = arguments.subject.trim();
-    if subject.chars().count() > MAX_SUBJECT_CHARACTERS || subject.chars().any(char::is_control) {
+    if subject.chars().count() > COMPOSE_SUBJECT_MAX_CHARACTERS
+        || subject.chars().any(char::is_control)
+    {
         return Err(ToolFailure::validation(
             "邮件主题无效或过长。",
             Some("subject"),
@@ -10363,14 +10371,14 @@ fn normalize_replace_body_arguments(
     arguments: ReplaceDraftBodyArguments,
 ) -> Result<(String, Option<String>), ToolFailure> {
     let body_text = arguments.body_text;
-    if body_text.len() > MAX_BODY_TEXT_BYTES {
+    if body_text.chars().count() > COMPOSE_BODY_MAX_CHARACTERS {
         return Err(ToolFailure::validation("邮件正文过长。", Some("body_text")));
     }
     let body_text = normalize_ai_body_text_spacing(body_text);
     let body_html = match arguments.body_html {
         None => None,
         Some(html) => {
-            if html.len() > MAX_BODY_HTML_BYTES {
+            if html.len() > COMPOSE_BODY_HTML_MAX_BYTES {
                 return Err(ToolFailure::validation(
                     "富文本正文过长。",
                     Some("body_html"),
@@ -10747,7 +10755,7 @@ fn validate_translation_request(request: &AiTranslationRequest) -> Result<(), St
         if !ids.insert(part.id.as_str()) {
             return Err("邮件翻译内容标识重复。".to_owned());
         }
-        if part.content.len() > MAX_BODY_HTML_BYTES {
+        if part.content.len() > COMPOSE_BODY_HTML_MAX_BYTES {
             return Err("邮件正文过长，无法交给 AI 翻译。".to_owned());
         }
         total_bytes = total_bytes.saturating_add(part.content.len());
@@ -11184,16 +11192,19 @@ fn validate_turn_request(request: &AiTurnRequest) -> Result<(), String> {
     if let Some(draft_id) = request.draft.draft_id.as_deref() {
         validate_opaque_id(draft_id, "草稿")?;
     }
-    if request.draft.compose.body_text.len() > MAX_BODY_TEXT_BYTES
+    if request.draft.compose.body_text.chars().count() > COMPOSE_BODY_MAX_CHARACTERS
         || request
             .draft
             .compose
             .format
             .body_html
             .as_ref()
-            .is_some_and(|html| html.len() > MAX_BODY_HTML_BYTES)
+            .is_some_and(|html| html.len() > COMPOSE_BODY_HTML_MAX_BYTES)
     {
         return Err("当前草稿正文过长，无法交给 AI 处理。".to_owned());
+    }
+    if request.draft.compose.subject.chars().count() > COMPOSE_SUBJECT_MAX_CHARACTERS {
+        return Err("当前草稿主题过长，无法交给 AI 处理。".to_owned());
     }
     Ok(())
 }

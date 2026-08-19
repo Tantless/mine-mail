@@ -15,6 +15,7 @@ import {
 } from "@phosphor-icons/react";
 import { mailApi } from "../services/mailApi.js";
 import { userFacingErrorMessage } from "../utils/userFacingError.js";
+import { limitText, textInputLimits } from "../utils/textLimits.js";
 import { ConsequentialConfirmDialog } from "./ConsequentialConfirmDialog.jsx";
 import { useConfirmDialogFocus } from "./ConfirmDialogPrimitives.jsx";
 import { IconButton } from "./IconButton.jsx";
@@ -733,9 +734,14 @@ function AgentSettingsContent({
         <MagnifyingGlass size={16} aria-hidden="true" />
         <input
           value={presetSearch}
+          maxLength={textInputLimits.providerSearch}
           autoFocus
           placeholder="搜索渠道"
-          onChange={(event) => setPresetSearch(event.target.value)}
+          onChange={(event) =>
+            setPresetSearch(
+              limitText(event.target.value, textInputLimits.providerSearch),
+            )
+          }
         />
       </label>
       <div className="agent-provider-preset-grid" role="list" aria-label="可添加渠道">
@@ -797,10 +803,17 @@ function AgentSettingsContent({
             <span className="settings-input-shell settings-input-shell--text">
               <input
                 value={form.name}
+                maxLength={textInputLimits.providerName}
                 disabled={busy}
                 placeholder="例如：工作用 OpenAI"
                 onChange={(event) =>
-                  setForm((current) => ({ ...current, name: event.target.value }))
+                  setForm((current) => ({
+                    ...current,
+                    name: limitText(
+                      event.target.value,
+                      textInputLimits.providerName,
+                    ),
+                  }))
                 }
               />
             </span>
@@ -847,6 +860,7 @@ function AgentSettingsContent({
             <span className="settings-input-shell settings-input-shell--text">
               <input
                 value={form.baseUrl}
+                maxLength={textInputLimits.providerBaseUrl}
                 disabled={busy}
                 autoCapitalize="none"
                 autoCorrect="off"
@@ -855,7 +869,10 @@ function AgentSettingsContent({
                 onChange={(event) =>
                   setForm((current) => ({
                     ...current,
-                    baseUrl: event.target.value,
+                    baseUrl: limitText(
+                      event.target.value,
+                      textInputLimits.providerBaseUrl,
+                    ),
                     baseUrlCustomized: true,
                   }))
                 }
@@ -868,6 +885,7 @@ function AgentSettingsContent({
             <span className="settings-input-shell settings-input-shell--text">
               <input
                 type="password"
+                maxLength={textInputLimits.providerApiKey}
                 value={
                   form.apiKey
                   || (!form.useEnvironmentKey
@@ -897,7 +915,13 @@ function AgentSettingsContent({
                 }}
                 onChange={(event) => {
                   setEditingStoredApiKey(true);
-                  setForm((current) => ({ ...current, apiKey: event.target.value }));
+                  setForm((current) => ({
+                    ...current,
+                    apiKey: limitText(
+                      event.target.value,
+                      textInputLimits.providerApiKey,
+                    ),
+                  }));
                 }}
               />
             </span>
@@ -946,13 +970,20 @@ function AgentSettingsContent({
                 id="agent-provider-model-name"
                 aria-label="首选模型"
                 value={form.modelName}
+                maxLength={textInputLimits.providerModelName}
                 disabled={busy}
                 autoCapitalize="none"
                 autoCorrect="off"
                 spellCheck="false"
                 placeholder="测试连接后可自动选择"
                 onChange={(event) => setForm((current) => {
-                  const next = { ...current, modelName: event.target.value };
+                  const next = {
+                    ...current,
+                    modelName: limitText(
+                      event.target.value,
+                      textInputLimits.providerModelName,
+                    ),
+                  };
                   if (!current.baseUrlCustomized && current.protocolId === "auto") {
                     const nextRouteId = recommendedProtocolId(selectedPreset, next);
                     const nextRoute = selectedPreset.protocols?.find(

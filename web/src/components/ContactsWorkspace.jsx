@@ -21,6 +21,7 @@ import {
 } from "react";
 import { formatFullDate, formatMailTime } from "../utils/formatters.js";
 import { userFacingErrorMessage } from "../utils/userFacingError.js";
+import { limitText, textInputLimits } from "../utils/textLimits.js";
 import { useSlidingSelection } from "../hooks/useSlidingSelection.js";
 import { EditableProfileAvatar, ProfileAvatar } from "./ProfileAvatar.jsx";
 import { TooltipTarget } from "./Tooltip.jsx";
@@ -833,8 +834,16 @@ export const ContactsWorkspace = memo(function ContactsWorkspace({
               <MagnifyingGlass size={18} aria-hidden="true" />
               <input
                 value={query}
+                maxLength={textInputLimits.contactSearch}
                 autoComplete="off"
-                onChange={(event) => onSearchChange(event.target.value)}
+                onChange={(event) =>
+                  onSearchChange(
+                    limitText(
+                      event.target.value,
+                      textInputLimits.contactSearch,
+                    ),
+                  )
+                }
                 placeholder="搜索名称或邮箱"
                 aria-label="搜索联系人"
               />

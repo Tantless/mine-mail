@@ -24,8 +24,10 @@ pub use config::{AccountConfig, AuthenticationKind, ServerConfig, SmtpSecurity};
 pub use error::{MailError, Result};
 pub use models::{
     AttachmentDisposition, AttachmentMeta, AttachmentSaveErrorKind, AttachmentSaveResult,
-    AttachmentSaveStatus, ComposeFormat, ComposeRequest, ConnectionFailure, ConnectionFailureKind,
-    ConnectionProtocol, ConnectionReport, ContactActivity, ContactMessage, ContactMessageDirection,
+    AttachmentSaveStatus, COMPOSE_BODY_HTML_MAX_BYTES, COMPOSE_BODY_MAX_CHARACTERS,
+    COMPOSE_RECIPIENT_MAX_CHARACTERS, COMPOSE_RECIPIENT_MAX_COUNT, COMPOSE_SUBJECT_MAX_CHARACTERS,
+    ComposeFormat, ComposeRequest, ConnectionFailure, ConnectionFailureKind, ConnectionProtocol,
+    ConnectionReport, ContactActivity, ContactMessage, ContactMessageDirection,
     DeliveryUnknownDecision, Draft, DraftAttachmentMeta, DraftAttachmentMutationKind,
     DraftAttachmentMutationOutcome, DraftDeleteKind, DraftDto, DraftSaveKind, DraftSaveOutcome,
     DraftSyncReport, ForwardContext, ForwardPreparationError, ForwardPreparationErrorKind,

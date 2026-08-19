@@ -18,6 +18,10 @@ import StarterKit from "@tiptap/starter-kit";
 import { BulletList, OrderedList } from "@tiptap/extension-list";
 import { TextAlign } from "@tiptap/extension-text-align";
 import { TextStyleKit } from "@tiptap/extension-text-style";
+import {
+  Fragment as ProseMirrorFragment,
+  Slice,
+} from "@tiptap/pm/model";
 import { Plugin, PluginKey } from "@tiptap/pm/state";
 import { canJoin, findWrapping } from "@tiptap/pm/transform";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
@@ -33,6 +37,11 @@ import {
 } from "react";
 import { IconButton } from "./IconButton.jsx";
 import { ThemedSelect } from "./ThemedSelect.jsx";
+import {
+  limitText,
+  textCharacterCount,
+  textInputLimits,
+} from "../utils/textLimits.js";
 import "./RichTextEditor.css";
 
 const blockTags = new Set(["BLOCKQUOTE", "DIV", "LI", "P"]);
@@ -216,6 +225,7 @@ const paragraphIndentStyle = "2em";
 const legacyParagraphIndentStyle = "4em";
 const composeEditorSnapshotDelayMs = 500;
 const composeGridCellTokensKey = new PluginKey("composeGridCellTokens");
+const composeCharacterLimitKey = new PluginKey("composeCharacterLimit");
 const composeGridTokenDecorationLimit = 2000;
 
 export function groupGridTextTokens(text) {
@@ -374,6 +384,100 @@ function editorIsUsable(editor) {
     return false;
   }
 }
+
+function documentCharacterCount(documentNode) {
+  return textCharacterCount(plainTextFromDocument(documentNode.toJSON()));
+}
+
+function selectedCharacterCount(state, from, to) {
+  return textCharacterCount(state.doc.textBetween(from, to, "\n", "\n"));
+}
+
+function availableCharacterCount(state, from, to) {
+  return (
+    textInputLimits.composeBody -
+    documentCharacterCount(state.doc) +
+    selectedCharacterCount(state, from, to)
+  );
+}
+
+function plainTextSlice(state, text) {
+  const marks = state.selection.$from.marks();
+  const paragraphs = text
+    .replace(/\r\n?/g, "\n")
+    .split(/\n+/)
+    .map((line) =>
+      state.schema.nodes.paragraph.create(
+        null,
+        line ? state.schema.text(line, marks) : null,
+      ),
+    );
+  return Slice.maxOpen(ProseMirrorFragment.fromArray(paragraphs), true);
+}
+
+const ComposeCharacterLimit = Extension.create({
+  name: "composeCharacterLimit",
+  priority: 1200,
+  addProseMirrorPlugins() {
+    return [
+      new Plugin({
+        key: composeCharacterLimitKey,
+        filterTransaction: (transaction, state) => {
+          if (!transaction.docChanged) return true;
+          const currentCount = documentCharacterCount(state.doc);
+          const nextCount = documentCharacterCount(transaction.doc);
+          return (
+            nextCount <= textInputLimits.composeBody ||
+            (currentCount > textInputLimits.composeBody &&
+              nextCount <= currentCount)
+          );
+        },
+        props: {
+          handleTextInput: (view, from, to, text) => {
+            const remaining = availableCharacterCount(
+              view.state,
+              from,
+              to,
+            );
+            if (textCharacterCount(text) <= remaining) return false;
+            if (remaining <= 0) return true;
+            view.dispatch(
+              view.state.tr
+                .insertText(limitText(text, remaining), from, to)
+                .scrollIntoView(),
+            );
+            return true;
+          },
+          handlePaste: (view, event) => {
+            const pastedText = event.clipboardData?.getData("text/plain") || "";
+            if (!pastedText) return false;
+            const { from, to } = view.state.selection;
+            const remaining = availableCharacterCount(
+              view.state,
+              from,
+              to,
+            );
+            if (textCharacterCount(pastedText) <= remaining) return false;
+            event.preventDefault();
+            if (remaining <= 0) return true;
+            const transaction = view.state.tr
+              .replaceSelection(
+                plainTextSlice(
+                  view.state,
+                  limitText(pastedText, remaining),
+                ),
+              )
+              .scrollIntoView()
+              .setMeta("paste", true)
+              .setMeta("uiEvent", "paste");
+            view.dispatch(transaction);
+            return true;
+          },
+        },
+      }),
+    ];
+  },
+});
 
 function markPreservingListRule({
   find,
@@ -753,6 +857,7 @@ export function createComposeEditorExtensions({
     }),
     ComposeListInputRules,
     ComposeParagraphIndent,
+    ComposeCharacterLimit,
     ComposeGridCellTokens.configure({ isEnabled: isGridEnabled }),
   ];
 }
@@ -1117,7 +1222,27 @@ function RichTextEditorCore({
   const [linkValue, setLinkValue] = useState("");
   const [linkError, setLinkError] = useState(null);
   const editorShellRef = useRef(null);
+  const characterLimitRef = useRef(null);
+  const characterLimitHintRef = useRef(null);
   const lastEmittedHtmlRef = useRef(null);
+  const updateCharacterLimit = useCallback((currentEditor) => {
+    if (!currentEditor?.state?.doc) return;
+    const count = documentCharacterCount(currentEditor.state.doc);
+    const atLimit = count >= textInputLimits.composeBody;
+    if (characterLimitRef.current) {
+      characterLimitRef.current.textContent = `${count.toLocaleString("zh-CN")} / ${textInputLimits.composeBody.toLocaleString("zh-CN")} 字`;
+      characterLimitRef.current.dataset.limitReached = atLimit
+        ? "true"
+        : "false";
+    }
+    if (characterLimitHintRef.current) {
+      characterLimitHintRef.current.hidden = !atLimit;
+      characterLimitHintRef.current.textContent =
+        count > textInputLimits.composeBody
+          ? "正文已超出上限，请精简内容或改用附件。"
+          : "已达到正文上限，更多内容建议改用附件。";
+    }
+  }, []);
 
   const incomingHtml = useMemo(
     () =>
@@ -1177,6 +1302,7 @@ function RichTextEditorCore({
         return;
       }
       editorChangedSinceSnapshotRef.current = true;
+      updateCharacterLimit(currentEditor);
       onDirtyRef.current?.(!currentEditor.isEmpty);
       if (snapshotTimerRef.current !== null) {
         window.clearTimeout(snapshotTimerRef.current);
@@ -1223,6 +1349,10 @@ function RichTextEditorCore({
 
   flushSnapshotRef.current = flushSnapshot;
 
+  useLayoutEffect(() => {
+    if (editorIsUsable(editor)) updateCharacterLimit(editor);
+  });
+
   const currentToolbarState = useEditorState({
     editor,
     selector: ({ editor: currentEditor }) =>
@@ -1266,6 +1396,7 @@ function RichTextEditorCore({
 
   useEffect(() => {
     if (!editorIsUsable(editor)) return undefined;
+    updateCharacterLimit(editor);
     onSnapshotProviderChangeRef.current?.(flushSnapshot);
     return () => {
       if (snapshotTimerRef.current !== null) {
@@ -1274,7 +1405,7 @@ function RichTextEditorCore({
       }
       onSnapshotProviderChangeRef.current?.(null);
     };
-  }, [editor, flushSnapshot]);
+  }, [editor, flushSnapshot, updateCharacterLimit]);
 
   useEffect(() => {
     if (!editorIsUsable(editor)) return;
@@ -1291,8 +1422,9 @@ function RichTextEditorCore({
     }
     acceptEditorUpdatesRef.current = false;
     editor.commands.setContent(incomingEditorHtml, { emitUpdate: false });
+    updateCharacterLimit(editor);
     acceptEditorUpdatesRef.current = true;
-  }, [editor, incomingEditorHtml, incomingHtml]);
+  }, [editor, incomingEditorHtml, incomingHtml, updateCharacterLimit]);
 
   useEffect(() => {
     if (!showLinkEditor) return;
@@ -1529,8 +1661,11 @@ function RichTextEditorCore({
                 ref={linkInputRef}
                 aria-label="链接地址"
                 value={linkValue}
+                maxLength={textInputLimits.linkUrl}
                 onChange={(event) => {
-                  setLinkValue(event.target.value);
+                  setLinkValue(
+                    limitText(event.target.value, textInputLimits.linkUrl),
+                  );
                   setLinkError(null);
                 }}
                 onKeyDown={(event) => {
@@ -1596,6 +1731,18 @@ function RichTextEditorCore({
           editor={editor}
           className="compose-rich-editor vertical-scroll-surface"
         />
+        <div className="compose-editor-character-limit" aria-live="polite">
+          <span
+            ref={characterLimitRef}
+            data-limit-reached="false"
+          >
+            {textCharacterCount(bodyText).toLocaleString("zh-CN")} /{" "}
+            {textInputLimits.composeBody.toLocaleString("zh-CN")} 字
+          </span>
+          <small ref={characterLimitHintRef} hidden>
+            已达到正文上限，更多内容建议改用附件。
+          </small>
+        </div>
       </div>
     </>
   );

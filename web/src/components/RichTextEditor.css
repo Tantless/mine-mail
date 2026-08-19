@@ -31,6 +31,37 @@
   pointer-events: none;
 }
 
+.compose-editor-character-limit {
+  position: absolute;
+  right: 10px;
+  bottom: 7px;
+  z-index: 2;
+  display: flex;
+  max-width: calc(100% - 20px);
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: 7px;
+  padding: 2px 6px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--compose-paper-surface) 88%, transparent);
+  color: var(--color-text-muted);
+  font-size: 10px;
+  line-height: 1.4;
+  pointer-events: none;
+}
+
+.compose-editor-character-limit span[data-limit-reached="true"],
+.compose-editor-character-limit small {
+  color: var(--color-warning-text, var(--color-danger));
+}
+
+.compose-editor-character-limit small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .compose-editor-recovery {
   display: grid;
   align-content: center;

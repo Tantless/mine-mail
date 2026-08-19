@@ -20,6 +20,7 @@ import {
 } from "../utils/formatters.js";
 import { messageNavigationKey } from "../utils/messageNavigation.js";
 import { userFacingErrorMessage } from "../utils/userFacingError.js";
+import { limitText, textInputLimits } from "../utils/textLimits.js";
 import { useSlidingSelection } from "../hooks/useSlidingSelection.js";
 
 const folderConfigurations = {
@@ -445,8 +446,13 @@ export function MailList({
             <MagnifyingGlass size={18} aria-hidden="true" />
             <input
               value={query}
+              maxLength={textInputLimits.mailSearch}
               autoComplete="off"
-              onChange={(event) => onQueryChange(event.target.value)}
+              onChange={(event) =>
+                onQueryChange(
+                  limitText(event.target.value, textInputLimits.mailSearch),
+                )
+              }
               placeholder="搜索已同步邮件"
               aria-label="搜索邮件"
               aria-description="范围：搜索已同步邮件"

@@ -406,6 +406,12 @@ pub struct ComposeRequest {
     pub reply_context: Option<ReplyContext>,
 }
 
+pub const COMPOSE_SUBJECT_MAX_CHARACTERS: usize = 200;
+pub const COMPOSE_BODY_MAX_CHARACTERS: usize = 10_000;
+pub const COMPOSE_BODY_HTML_MAX_BYTES: usize = 512 * 1024;
+pub const COMPOSE_RECIPIENT_MAX_CHARACTERS: usize = 254;
+pub const COMPOSE_RECIPIENT_MAX_COUNT: usize = 100;
+
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StationeryTheme {
