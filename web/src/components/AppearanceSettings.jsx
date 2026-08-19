@@ -13,6 +13,7 @@ import {
   appearancePalettes,
   builtinAppearanceThemes,
 } from "../appearanceThemes.js";
+import { themeScheduleIssue } from "../themeSchedule.js";
 import {
   ConfirmDialogStatus,
   useConfirmDialogFocus,
@@ -221,6 +222,7 @@ export function AppearanceSettings({
   const [busyAction, setBusyAction] = useState(null);
   const [error, setError] = useState(null);
   const [notice, setNotice] = useState(null);
+  const [scheduleIssue, setScheduleIssue] = useState(null);
   const [menuId, setMenuId] = useState(null);
   const [replaceId, setReplaceId] = useState(null);
   const [renameId, setRenameId] = useState(null);
@@ -276,6 +278,29 @@ export function AppearanceSettings({
     } finally {
       setBusyAction(null);
     }
+  };
+
+  // The schedule is validated before it reaches the save path: an unordered
+  // or malformed combination is refused with an inline hint instead of being
+  // persisted and then rolled back on a server-side rejection.
+  const handleThemeScheduleChange = (patch) => {
+    if (patch.themeScheduleEnabled !== undefined) {
+      setScheduleIssue(null);
+      onThemeScheduleChange?.(patch);
+      return;
+    }
+    const next = {
+      dayStart: patch.themeScheduleDayStart ?? themeScheduleDayStart,
+      duskStart: patch.themeScheduleDuskStart ?? themeScheduleDuskStart,
+      nightStart: patch.themeScheduleNightStart ?? themeScheduleNightStart,
+    };
+    const issue = themeScheduleIssue(next);
+    if (issue) {
+      setScheduleIssue(issue);
+      return;
+    }
+    setScheduleIssue(null);
+    onThemeScheduleChange?.(patch);
   };
 
   const importFile = async (file, presetId = null) => {
@@ -576,7 +601,7 @@ export function AppearanceSettings({
             checked={themeScheduleEnabled}
             disabled={Boolean(busyAction)}
             onChange={(event) =>
-              onThemeScheduleChange?.({ themeScheduleEnabled: event.target.checked })
+              handleThemeScheduleChange({ themeScheduleEnabled: event.target.checked })
             }
           />
         </header>
@@ -587,7 +612,7 @@ export function AppearanceSettings({
               value={themeScheduleDayStart}
               disabled={Boolean(busyAction)}
               onValueChange={(themeScheduleDayStart) =>
-                onThemeScheduleChange?.({ themeScheduleDayStart })
+                handleThemeScheduleChange({ themeScheduleDayStart })
               }
             />
             <ScheduleTimeRow
@@ -595,7 +620,7 @@ export function AppearanceSettings({
               value={themeScheduleDuskStart}
               disabled={Boolean(busyAction)}
               onValueChange={(themeScheduleDuskStart) =>
-                onThemeScheduleChange?.({ themeScheduleDuskStart })
+                handleThemeScheduleChange({ themeScheduleDuskStart })
               }
             />
             <ScheduleTimeRow
@@ -603,10 +628,20 @@ export function AppearanceSettings({
               value={themeScheduleNightStart}
               disabled={Boolean(busyAction)}
               onValueChange={(themeScheduleNightStart) =>
-                onThemeScheduleChange?.({ themeScheduleNightStart })
+                handleThemeScheduleChange({ themeScheduleNightStart })
               }
             />
           </div>
+        ) : null}
+        {scheduleIssue ? (
+          <p className="appearance-schedule__error" role="alert" aria-live="assertive">
+            {scheduleIssue}时间需按日间、黄昏、夜间依次排列。
+          </p>
+        ) : null}
+        {themeScheduleEnabled ? (
+          <p className="appearance-schedule__hint">
+            时间按日间、黄昏、夜间依次排列，夜间持续到次日日间开始。
+          </p>
         ) : null}
       </section>
 

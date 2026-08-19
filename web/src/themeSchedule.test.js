@@ -5,6 +5,7 @@ import {
   nextScheduledBoundaryMs,
   normalizeThemeSchedule,
   resolveScheduledThemeId,
+  themeScheduleIssue,
 } from "./themeSchedule.js";
 
 const defaultSchedule = { ...defaultThemeSchedule };
@@ -77,5 +78,23 @@ describe("theme schedule pure helpers", () => {
 
   it("returns null when the schedule is invalid", () => {
     expect(nextScheduledBoundaryMs({ dayStart: "x", duskStart: "18:00", nightStart: "21:00" }, at(12))).toBeNull();
+  });
+
+  it("explains unordered or malformed schedules in Chinese", () => {
+    expect(
+      themeScheduleIssue({ dayStart: "06:00", duskStart: "18:00", nightStart: "21:00" }),
+    ).toBeNull();
+    expect(
+      themeScheduleIssue({ dayStart: "17:00", duskStart: "18:00", nightStart: "21:00" }),
+    ).toBeNull();
+    expect(
+      themeScheduleIssue({ dayStart: "21:00", duskStart: "18:00", nightStart: "06:00" }),
+    ).toMatch(/日间开始时间需要早于黄昏开始时间/);
+    expect(
+      themeScheduleIssue({ dayStart: "06:00", duskStart: "22:00", nightStart: "21:00" }),
+    ).toMatch(/黄昏开始时间需要早于夜间开始时间/);
+    expect(
+      themeScheduleIssue({ dayStart: "06:00", duskStart: "bad", nightStart: "21:00" }),
+    ).toMatch(/HH:MM/);
   });
 });

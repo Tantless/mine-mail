@@ -8685,6 +8685,24 @@ html[data-surface="new-mail-notification"] #root {
   font-weight: 700;
 }
 
+.appearance-schedule__error {
+  margin: 4px 2px 0;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--color-danger) 30%, var(--color-border));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--color-panel) 92%, var(--color-danger) 8%);
+  color: var(--color-danger);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.appearance-schedule__hint {
+  margin: 8px 2px 0;
+  color: var(--color-text-muted);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
 .appearance-theme-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(130px, 1fr));

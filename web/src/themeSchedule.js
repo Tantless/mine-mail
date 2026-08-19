@@ -28,6 +28,22 @@ function scheduleStartsValid(schedule) {
   return day < dusk && dusk < night;
 }
 
+// Returns a friendly Chinese explanation of why the schedule cannot be
+// applied, or null when every boundary is valid and strictly ordered. The UI
+// refuses invalid schedules before they reach the save path, so callers never
+// have to round-trip an error from the persistence layer.
+export function themeScheduleIssue(schedule) {
+  const day = minutesSinceMidnight(schedule?.dayStart);
+  const dusk = minutesSinceMidnight(schedule?.duskStart);
+  const night = minutesSinceMidnight(schedule?.nightStart);
+  if (day === null || dusk === null || night === null) {
+    return "时间格式不正确，请使用 HH:MM（例如 06:00）。";
+  }
+  if (day >= dusk) return "日间开始时间需要早于黄昏开始时间。";
+  if (dusk >= night) return "黄昏开始时间需要早于夜间开始时间。";
+  return null;
+}
+
 export function normalizeThemeSchedule(schedule, fallback = defaultThemeSchedule) {
   const candidate = {
     dayStart: minutesSinceMidnight(schedule?.dayStart) === null

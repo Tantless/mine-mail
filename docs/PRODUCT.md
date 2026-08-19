@@ -827,8 +827,10 @@ existing visual system normally changes this document rather than `DESIGN.md`.
   when the switch is turned on, and again whenever a boundary passes; a manual
   theme selection stays in effect until the next boundary, and custom themes are
   never overridden automatically. Times persist in Rust-owned local state and are
-  validated as ordered HH:MM values, so an invalid or unordered schedule is
-  rejected on save rather than applied.
+  validated as ordered HH:MM values; the appearance panel refuses an unordered or
+  malformed combination before it reaches the save path and explains the required
+  day-then-dusk-then-night order inline, and Rust also rejects such a schedule on
+  save as a defense in depth, so an invalid schedule is never applied.
 - Custom background import accepts PNG, JPEG, and WebP only. Rust rejects sources
   above 20 MB or roughly 50 megapixels, applies embedded orientation, strips
   metadata by re-encoding, limits the long edge to 5120 pixels, creates a bounded

@@ -248,4 +248,57 @@ describe("AppearanceSettings", () => {
     expect(screen.queryByRole("combobox", { name: /开始小时/ })).toBeNull();
     expect(screen.queryByRole("combobox", { name: /开始分钟/ })).toBeNull();
   });
+
+  it("rejects an unordered schedule with an inline hint and no save", async () => {
+    const user = userEvent.setup();
+    const onThemeScheduleChange = vi.fn();
+    render(
+      <AppearanceSettings
+        {...props({
+          themeScheduleEnabled: true,
+          themeScheduleDayStart: "06:00",
+          themeScheduleDuskStart: "18:00",
+          themeScheduleNightStart: "21:00",
+          onThemeScheduleChange,
+        })}
+      />,
+    );
+
+    await user.click(screen.getByRole("combobox", { name: "黄昏开始小时" }));
+    await user.click(await screen.findByRole("option", { name: "05" }));
+
+    expect(onThemeScheduleChange).not.toHaveBeenCalled();
+    expect(
+      screen.getByRole("alert").textContent,
+    ).toContain("日间开始时间需要早于黄昏开始时间");
+  });
+
+  it("clears the schedule issue once the times are ordered again", async () => {
+    const user = userEvent.setup();
+    const onThemeScheduleChange = vi.fn();
+    render(
+      <AppearanceSettings
+        {...props({
+          themeScheduleEnabled: true,
+          themeScheduleDayStart: "06:00",
+          themeScheduleDuskStart: "18:00",
+          themeScheduleNightStart: "21:00",
+          onThemeScheduleChange,
+        })}
+      />,
+    );
+
+    await user.click(screen.getByRole("combobox", { name: "黄昏开始小时" }));
+    await user.click(await screen.findByRole("option", { name: "05" }));
+    expect(
+      screen.getByRole("alert").textContent,
+    ).toContain("日间开始时间需要早于黄昏开始时间");
+
+    await user.click(screen.getByRole("combobox", { name: "日间开始小时" }));
+    await user.click(await screen.findByRole("option", { name: "04" }));
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(onThemeScheduleChange).toHaveBeenLastCalledWith({
+      themeScheduleDayStart: "04:00",
+    });
+  });
 });
