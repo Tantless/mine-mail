@@ -88,15 +88,8 @@ jobs:
 
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
-        run: |
-          # Hosted images include unrelated third-party apt sources. Tauri's
-          # build dependencies all come from Ubuntu, so keep their outages from
-          # blocking this job while preserving failures from Ubuntu itself.
-          sudo apt-get update \
-            -o Dir::Etc::sourcelist="sources.list" \
-            -o Dir::Etc::sourceparts="-" \
-            -o Acquire::Retries=3
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xdg-utils
+        timeout-minutes: 5
+        run: bash .github/scripts/install-tauri-linux-dependencies.sh
 
       - name: Install Rust 1.97
         uses: dtolnay/rust-toolchain@1.97.0
