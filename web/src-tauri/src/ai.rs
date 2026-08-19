@@ -1897,6 +1897,16 @@ impl AiRuntime {
             store
                 .set_default_provider_instance(&instance.id)
                 .map_err(ai_store_error)?;
+        } else if store
+            .set_default_provider_instance_if_only_configured(&instance.id)
+            .map_err(ai_store_error)?
+        {
+            diagnostics::info(
+                "ai_default_provider_changed",
+                DiagnosticFields::default()
+                    .operation("ai_provider_instance")
+                    .outcome("auto_selected"),
+            );
         }
         request.api_key.zeroize();
         diagnostics::info(
@@ -2294,6 +2304,17 @@ impl AiRuntime {
         store
             .update_provider_instance_test_state(id, "available", Some(latency_ms))
             .map_err(ai_store_error)?;
+        if store
+            .set_default_provider_instance_if_only_configured(id)
+            .map_err(ai_store_error)?
+        {
+            diagnostics::info(
+                "ai_default_provider_changed",
+                DiagnosticFields::default()
+                    .operation("ai_provider_instance")
+                    .outcome("auto_selected"),
+            );
+        }
         diagnostics::info(
             "ai_provider_instance_test_completed",
             DiagnosticFields::default()
@@ -12676,6 +12697,26 @@ impl AiStore {
         Ok(true)
     }
 
+    fn set_default_provider_instance_if_only_configured(
+        &self,
+        candidate_id: &str,
+    ) -> rusqlite::Result<bool> {
+        let providers = self.load_provider_instances()?;
+        if providers.iter().any(|provider| provider.is_default) {
+            return Ok(false);
+        }
+        let mut configured = providers
+            .iter()
+            .filter(|provider| !provider.model_name.trim().is_empty());
+        let Some(candidate) = configured.next() else {
+            return Ok(false);
+        };
+        if candidate.id != candidate_id || configured.next().is_some() {
+            return Ok(false);
+        }
+        self.set_default_provider_instance(candidate_id)
+    }
+
     fn load_provider_instance_models(&self) -> rusqlite::Result<HashMap<String, Vec<String>>> {
         let connection = self.connection()?;
         let mut statement = connection
@@ -16002,6 +16043,84 @@ mod tests {
         assert_eq!(instances[0].model_name, "deepseek-chat");
         assert!(instances[0].is_default);
         assert_eq!(instances[0].legacy_credential_provider_id.as_deref(), None,);
+    }
+
+    #[test]
+    fn ai_store_selects_only_configured_provider_without_replacing_a_default() {
+        let directory = tempdir().expect("tempdir");
+        let store = AiStore::open(directory.path().join("ai.sqlite3")).expect("store");
+        let mut first = StoredAiProviderInstance {
+            id: "11111111-1111-4111-8111-111111111111".to_owned(),
+            provider_id: "custom".to_owned(),
+            name: "第一条线路".to_owned(),
+            protocol_id: "openai_chat_completions".to_owned(),
+            base_url: "https://first.example.com/v1".to_owned(),
+            model_name: String::new(),
+            use_environment_key: true,
+            sort_order: 0,
+            is_default: false,
+            status: "untested".to_owned(),
+            latency_ms: None,
+            checked_at_ms: None,
+            manual_context_window_tokens: Some(128_000),
+            legacy_credential_provider_id: None,
+        };
+        store
+            .save_provider_instance(&first, false)
+            .expect("save incomplete provider");
+        assert!(
+            !store
+                .set_default_provider_instance_if_only_configured(&first.id)
+                .expect("keep incomplete provider non-default")
+        );
+
+        first.model_name = "first-model".to_owned();
+        store
+            .save_provider_instance(&first, false)
+            .expect("save configured provider");
+        assert!(
+            store
+                .set_default_provider_instance_if_only_configured(&first.id)
+                .expect("select only configured provider")
+        );
+        assert_eq!(
+            store
+                .load_default_provider_instance()
+                .expect("load default provider")
+                .map(|provider| provider.id),
+            Some(first.id.clone())
+        );
+        assert_eq!(
+            store
+                .load_config()
+                .expect("load config")
+                .map(|config| config.model_name),
+            Some("first-model".to_owned())
+        );
+
+        let second = StoredAiProviderInstance {
+            id: "22222222-2222-4222-8222-222222222222".to_owned(),
+            model_name: "second-model".to_owned(),
+            name: "第二条线路".to_owned(),
+            base_url: "https://second.example.com/v1".to_owned(),
+            sort_order: 1,
+            ..first.clone()
+        };
+        store
+            .save_provider_instance(&second, false)
+            .expect("save second provider");
+        assert!(
+            !store
+                .set_default_provider_instance_if_only_configured(&second.id)
+                .expect("preserve existing default")
+        );
+        assert_eq!(
+            store
+                .load_default_provider_instance()
+                .expect("load preserved default")
+                .map(|provider| provider.id),
+            Some(first.id)
+        );
     }
 
     #[test]

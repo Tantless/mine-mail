@@ -465,10 +465,13 @@ existing visual system normally changes this document rather than `DESIGN.md`.
 - Exactly zero or one Provider instance is the default route. The default binds
   one exact instance, protocol, and preferred model, powers reader translation
   and standalone compose optimization, and initializes a newly opened compose
-  assistant. Choosing another model in compose overrides only that compose
-  assistant. Deleting the default clears it rather than silently choosing a
-  replacement. The legacy active Provider becomes one ordered instance and its
-  selected model becomes the default during migration.
+  assistant. When saving or successfully discovering a model leaves exactly one
+  configured Provider eligible for default use and no default exists, that
+  Provider becomes the default automatically. Choosing another model in compose
+  overrides only that compose assistant. Deleting the default clears it rather
+  than silently choosing a replacement; automatic selection is not run as a
+  deletion fallback. The legacy active Provider becomes one ordered instance and
+  its selected model becomes the default during migration.
 - The same configured Provider powers reader translation. **AI 翻译语言** is a
   persisted reading preference, defaults to Simplified Chinese, and offers
   common languages under their native display names. It supplies the initial

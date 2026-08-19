@@ -176,6 +176,18 @@ function demoModelContext(provider, modelName) {
     : { contextWindowTokens: 128000, contextWindowSource: "default", contextWindowConfidence: 1 };
 }
 
+function autoSelectOnlyConfiguredDemoProvider(state, candidateId) {
+  if (state.aiProviderRegistry.defaultProviderInstanceId) return;
+  const configured = state.aiProviderRegistry.providers.filter(
+    (provider) => Boolean(provider.modelName?.trim()),
+  );
+  if (configured.length !== 1 || configured[0].id !== candidateId) return;
+  state.aiProviderRegistry.defaultProviderInstanceId = candidateId;
+  state.aiProviderRegistry.providers = state.aiProviderRegistry.providers.map(
+    (provider) => ({ ...provider, isDefault: provider.id === candidateId }),
+  );
+}
+
 function createDemoState() {
   return {
     messages: structuredClone(demoMessages),
@@ -780,6 +792,7 @@ function createDemoActions(
         ),
         provider,
       ].sort((left, right) => left.sortOrder - right.sortOrder);
+      autoSelectOnlyConfiguredDemoProvider(state, id);
       return structuredClone(state.aiProviderRegistry);
     },
 
@@ -848,7 +861,11 @@ function createDemoActions(
       state.aiProviderRegistry.providers = state.aiProviderRegistry.providers.map(
         (candidate) => candidate.id === providerInstanceId ? next : candidate,
       );
-      return { provider: structuredClone(next), modelCount: models.length };
+      autoSelectOnlyConfiguredDemoProvider(state, providerInstanceId);
+      const saved = state.aiProviderRegistry.providers.find(
+        (candidate) => candidate.id === providerInstanceId,
+      );
+      return { provider: structuredClone(saved), modelCount: models.length };
     },
 
     testAiProviderCapabilities(providerInstanceId) {
