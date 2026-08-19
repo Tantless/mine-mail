@@ -82,14 +82,18 @@ describe("native HTML message body", () => {
   it("loads remote images automatically by default", () => {
     const { container } = render(
       <NativeHtmlMessageBody
-        html={'<img alt="remote" src="https://images.example/avatar.png">'}
+        html={
+          '<img alt="remote" data-mine-mail-projected-small="true" src="https://images.example/avatar.png">'
+        }
         hasRemoteImages
       />,
     );
 
-    expect(container.querySelector("img").getAttribute("src")).toBe(
+    const image = container.querySelector("img");
+    expect(image.getAttribute("src")).toBe(
       "https://images.example/avatar.png",
     );
+    expect(image.dataset.mineMailProjectedSmall).toBe("true");
     expect(screen.queryByRole("button", { name: "加载远程图片" })).toBeNull();
   });
 

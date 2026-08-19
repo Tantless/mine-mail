@@ -22,6 +22,11 @@ const MAX_TEXT_DOMINANT_HTML_BYTES: usize = 12 * 1024;
 const MAX_TEXT_DOMINANT_DEPTH: usize = 16;
 const MAX_TEXT_DOMINANT_CHARS: usize = 1_600;
 const MIN_STYLED_TEXT_DOMINANT_CHARS: usize = 80;
+const MAX_PROJECTED_NOTIFICATION_TABLES: usize = 32;
+const MAX_PROJECTED_NOTIFICATION_SOURCE_DEPTH: usize = 48;
+const MAX_PROJECTED_NOTIFICATION_IMAGES: usize = 20;
+const MAX_PROJECTED_NOTIFICATION_LARGE_IMAGES: usize = 2;
+const MAX_PROJECTED_NOTIFICATION_IMAGE_EDGE: f32 = 48.0;
 /// Maximum base64 payload accepted for an inline `data:` image URL. Bound
 /// keeps a hostile message from injecting a multi-megabyte data URL into the
 /// rendered document or WebView memory.
@@ -244,6 +249,17 @@ struct HtmlAnalysis {
     has_background_attribute: bool,
 }
 
+#[derive(Debug, Default, PartialEq, Eq)]
+struct ProjectionSourceAnalysis {
+    tables: usize,
+    presentation_tables: usize,
+    captions: usize,
+    images: usize,
+    large_or_unsized_images: usize,
+    max_nonempty_cells_per_row: usize,
+    small_image_flags: Vec<bool>,
+}
+
 pub(crate) fn sanitize_mail_html(source: &str) -> SanitizedMailHtml {
     // Ammonia sanitizes an HTML fragment. Full XHTML email documents can
     // cause a head/title node to be re-parented as plain text before the tag
@@ -277,6 +293,7 @@ pub(crate) fn sanitize_mail_html(source: &str) -> SanitizedMailHtml {
         ])
         .add_tag_attributes("a", &["name"])
         .add_tag_attributes("font", &["color", "face", "size"])
+        .add_tag_attributes("table", &["role"])
         .url_schemes(HashSet::from(["data", "http", "https", "mailto"]))
         .url_relative(UrlRelative::Deny)
         .link_rel(Some("noopener noreferrer"))
@@ -329,6 +346,17 @@ pub(crate) fn sanitize_mail_html(source: &str) -> SanitizedMailHtml {
     ]
     .iter()
     .any(|tag| contains_start_tag(&source_lower, tag));
+    let projected_native_candidate = (!has_mine_mail_stationery && !has_hard_source_tag)
+        .then(|| {
+            project_presentation_notification(
+                &fragment,
+                &native_candidate,
+                &analysis,
+                structural_bytes,
+                visible_text_chars,
+            )
+        })
+        .flatten();
 
     let style_dependent_layout = analysis.style_blocks > 0
         && (analysis.has_styling_hooks
@@ -393,6 +421,8 @@ pub(crate) fn sanitize_mail_html(source: &str) -> SanitizedMailHtml {
         MailHtmlStructure::Isolated
     } else if is_plain_equivalent {
         MailHtmlStructure::PlainEquivalent
+    } else if projected_native_candidate.is_some() {
+        MailHtmlStructure::Native
     } else if has_hard_source_tag
         || (table_requires_isolation && !text_dominant_template)
         || (layout_requires_isolation && !text_dominant_template)
@@ -407,7 +437,8 @@ pub(crate) fn sanitize_mail_html(source: &str) -> SanitizedMailHtml {
     } else {
         MailHtmlStructure::PlainEquivalent
     };
-    let native_fragment = (structure == MailHtmlStructure::Native).then_some(native_candidate);
+    let native_fragment = (structure == MailHtmlStructure::Native)
+        .then(|| projected_native_candidate.unwrap_or(native_candidate));
 
     SanitizedMailHtml {
         fragment,
@@ -464,6 +495,17 @@ fn strip_title_elements(source: &str) -> Cow<'_, str> {
 }
 
 fn sanitize_native_mail_html(source: &str) -> String {
+    sanitize_native_mail_html_with_projection_marker(source, false)
+}
+
+fn sanitize_native_mail_html_with_projection_marker(
+    source: &str,
+    allow_projection_marker: bool,
+) -> String {
+    let mut image_attributes = HashSet::from(["src", "alt"]);
+    if allow_projection_marker {
+        image_attributes.insert("data-mine-mail-projected-small");
+    }
     let mut builder = Builder::default();
     builder
         .tags(HashSet::from([
@@ -520,7 +562,7 @@ fn sanitize_native_mail_html(source: &str) -> String {
             ("a", HashSet::from(["href", "name"])),
             ("div", HashSet::from(["align", "style"])),
             ("font", HashSet::from(["face", "size"])),
-            ("img", HashSet::from(["src", "alt"])),
+            ("img", image_attributes),
             ("ol", HashSet::from(["start", "reversed"])),
             ("li", HashSet::from(["value"])),
             ("p", HashSet::from(["align", "style"])),
@@ -539,7 +581,7 @@ fn sanitize_native_mail_html(source: &str) -> String {
         .url_relative(UrlRelative::Deny)
         .link_rel(Some("noopener noreferrer"))
         .strip_comments(true)
-        .attribute_filter(|element, attribute, value| {
+        .attribute_filter(move |element, attribute, value| {
             if attribute == "align" {
                 return normalize_native_alignment(value).map(Cow::Borrowed);
             }
@@ -558,12 +600,375 @@ fn sanitize_native_mail_html(source: &str) -> String {
             {
                 return None;
             }
+            if (element, attribute) == ("img", "data-mine-mail-projected-small")
+                && (!allow_projection_marker || value != "true")
+            {
+                return None;
+            }
             if (element, attribute) == ("a", "href") && is_data_url(value) {
                 return None;
             }
             Some(value.into())
         });
     builder.clean(source).to_string()
+}
+
+fn project_presentation_notification(
+    sanitized_fragment: &str,
+    native_candidate: &str,
+    analysis: &HtmlAnalysis,
+    structural_bytes: usize,
+    visible_text_chars: usize,
+) -> Option<String> {
+    // Some transactional notifications use many nested presentation tables for
+    // compatibility even though their useful body is short semantic content.
+    // Keep this exception narrow so data tables and layout-dependent mail retain
+    // the isolated document that preserves their structure.
+    if analysis.tables < 2
+        || analysis.tables > MAX_PROJECTED_NOTIFICATION_TABLES
+        || analysis.max_table_depth < 3
+        || analysis.max_depth > MAX_PROJECTED_NOTIFICATION_SOURCE_DEPTH
+        || !analysis.has_meaningful_semantics
+        || analysis.style_blocks > 0
+        || analysis.has_background_attribute
+        || analysis.merged_table_cells > 0
+        || structural_bytes > MAX_NATIVE_HTML_BYTES
+        || visible_text_chars == 0
+        || visible_text_chars > MAX_TEXT_DOMINANT_CHARS
+    {
+        return None;
+    }
+
+    let source = analyze_projection_source(sanitized_fragment);
+    if source.tables != analysis.tables
+        || source.presentation_tables == 0
+        || source.presentation_tables.saturating_mul(2) <= source.tables
+        || source.captions > 0
+        || source.images > MAX_PROJECTED_NOTIFICATION_IMAGES
+        || source.large_or_unsized_images > MAX_PROJECTED_NOTIFICATION_LARGE_IMAGES
+        || source.max_nonempty_cells_per_row > 2
+    {
+        return None;
+    }
+
+    let projected = build_native_semantic_projection(native_candidate, &source.small_image_flags);
+    let projected = sanitize_native_mail_html_with_projection_marker(&projected, true);
+    let projected_analysis = analyze_html(&projected);
+    let projected_bytes = projected
+        .len()
+        .saturating_sub(projected_analysis.inline_image_bytes);
+    // Projection is accepted only if every reader-visible value survives in the
+    // same order. Any parser or sanitizer disagreement falls back to isolation.
+    if projected_analysis.tables > 0
+        || projected_analysis.style_blocks > 0
+        || projected_analysis.has_blocking_layout
+        || projected_analysis.has_sizing_layout
+        || projected_analysis.max_depth > MAX_NATIVE_DEPTH
+        || projected_analysis.images > MAX_PROJECTED_NOTIFICATION_IMAGES
+        || projected_bytes > MAX_TEXT_DOMINANT_HTML_BYTES
+        || visible_text_signature(&projected) != visible_text_signature(native_candidate)
+        || link_signature(&projected) != link_signature(native_candidate)
+        || image_signature(&projected) != image_signature(native_candidate)
+    {
+        return None;
+    }
+    Some(projected)
+}
+
+fn analyze_projection_source(source: &str) -> ProjectionSourceAnalysis {
+    let document = Html::parse_fragment(source);
+    let table_selector = Selector::parse("table").expect("valid table selector");
+    let caption_selector = Selector::parse("table > caption").expect("valid caption selector");
+    let row_selector = Selector::parse("tr").expect("valid row selector");
+    let image_selector = Selector::parse("img").expect("valid image selector");
+    let tables = document.select(&table_selector).count();
+    let presentation_tables = document
+        .select(&table_selector)
+        .filter(|table| {
+            table
+                .value()
+                .attr("role")
+                .is_some_and(|role| role.eq_ignore_ascii_case("presentation"))
+        })
+        .count();
+    let captions = document.select(&caption_selector).count();
+    let max_nonempty_cells_per_row = document
+        .select(&row_selector)
+        .map(|row| {
+            row.children()
+                .filter_map(ElementRef::wrap)
+                .filter(|cell| matches!(cell.value().name(), "td" | "th"))
+                .filter(|cell| {
+                    cell.text().any(|text| !text.trim().is_empty())
+                        || cell.select(&image_selector).next().is_some()
+                })
+                .count()
+        })
+        .max()
+        .unwrap_or_default();
+    let small_image_flags = document
+        .select(&image_selector)
+        .map(|image| {
+            let width = image
+                .value()
+                .attr("width")
+                .and_then(parse_projection_image_dimension);
+            let height = image
+                .value()
+                .attr("height")
+                .and_then(parse_projection_image_dimension);
+            width.is_some_and(|value| value <= MAX_PROJECTED_NOTIFICATION_IMAGE_EDGE)
+                && height.is_some_and(|value| value <= MAX_PROJECTED_NOTIFICATION_IMAGE_EDGE)
+        })
+        .collect::<Vec<_>>();
+    let images = small_image_flags.len();
+    let large_or_unsized_images = small_image_flags.iter().filter(|small| !**small).count();
+    ProjectionSourceAnalysis {
+        tables,
+        presentation_tables,
+        captions,
+        images,
+        large_or_unsized_images,
+        max_nonempty_cells_per_row,
+        small_image_flags,
+    }
+}
+
+fn parse_projection_image_dimension(value: &str) -> Option<f32> {
+    let value = value.trim().to_ascii_lowercase();
+    let value = value.strip_suffix("px").unwrap_or(&value);
+    let parsed = value.parse::<f32>().ok()?;
+    parsed.is_finite().then_some(parsed)
+}
+
+fn build_native_semantic_projection(source: &str, small_images: &[bool]) -> String {
+    let document = Html::parse_fragment(source);
+    let root = document.root_element();
+    let mut output = String::with_capacity(source.len().min(MAX_TEXT_DOMINANT_HTML_BYTES));
+    let mut image_index = 0usize;
+    for child in root.children() {
+        project_native_node(child, &mut output, small_images, &mut image_index);
+    }
+    while output.ends_with("<br>") {
+        output.truncate(output.len() - "<br>".len());
+    }
+    output
+}
+
+fn project_native_node(
+    node: ego_tree::NodeRef<'_, scraper::Node>,
+    output: &mut String,
+    small_images: &[bool],
+    image_index: &mut usize,
+) {
+    if let Some(text) = node.value().as_text() {
+        push_escaped_html_text(output, text);
+        return;
+    }
+    let Some(element) = ElementRef::wrap(node) else {
+        for child in node.children() {
+            project_native_node(child, output, small_images, image_index);
+        }
+        return;
+    };
+    let name = element.value().name();
+    match name {
+        "table" | "thead" | "tbody" | "tfoot" | "col" | "colgroup" => {
+            for child in node.children() {
+                project_native_node(child, output, small_images, image_index);
+            }
+        }
+        "tr" | "td" | "th" => {
+            for child in node.children() {
+                project_native_node(child, output, small_images, image_index);
+            }
+            push_projection_block_boundary(output);
+        }
+        "div" => {
+            let keep = projected_element_has_attributes(&element, name);
+            if keep {
+                push_projected_start_tag(output, &element, name, false);
+            }
+            for child in node.children() {
+                project_native_node(child, output, small_images, image_index);
+            }
+            if keep {
+                output.push_str("</div>");
+            } else {
+                push_projection_block_boundary(output);
+            }
+        }
+        "span" => {
+            let keep = projected_element_has_attributes(&element, name);
+            if keep {
+                push_projected_start_tag(output, &element, name, false);
+            }
+            for child in node.children() {
+                project_native_node(child, output, small_images, image_index);
+            }
+            if keep {
+                output.push_str("</span>");
+            }
+        }
+        "img" => {
+            let small = small_images.get(*image_index).copied().unwrap_or(false);
+            *image_index += 1;
+            push_projected_start_tag(output, &element, name, small);
+        }
+        "br" | "hr" | "wbr" => push_projected_start_tag(output, &element, name, false),
+        "a" | "abbr" | "b" | "blockquote" | "cite" | "code" | "del" | "em" | "font" | "h1"
+        | "h2" | "h3" | "h4" | "h5" | "h6" | "i" | "kbd" | "li" | "mark" | "ol" | "p" | "pre"
+        | "q" | "s" | "samp" | "small" | "strong" | "sub" | "sup" | "time" | "u" | "ul" | "var" => {
+            push_projected_start_tag(output, &element, name, false);
+            for child in node.children() {
+                project_native_node(child, output, small_images, image_index);
+            }
+            output.push_str("</");
+            output.push_str(name);
+            output.push('>');
+        }
+        _ => {
+            for child in node.children() {
+                project_native_node(child, output, small_images, image_index);
+            }
+        }
+    }
+}
+
+fn projected_element_has_attributes(element: &ElementRef<'_>, name: &str) -> bool {
+    element
+        .value()
+        .attrs()
+        .any(|(attribute, _)| projected_attribute_allowed(name, attribute))
+}
+
+fn push_projected_start_tag(
+    output: &mut String,
+    element: &ElementRef<'_>,
+    name: &str,
+    projected_small_image: bool,
+) {
+    output.push('<');
+    output.push_str(name);
+    for (attribute, value) in element.value().attrs() {
+        if !projected_attribute_allowed(name, attribute) {
+            continue;
+        }
+        output.push(' ');
+        output.push_str(attribute);
+        output.push_str("=\"");
+        push_escaped_html_attribute(output, value);
+        output.push('"');
+    }
+    if name == "img" && projected_small_image {
+        output.push_str(" data-mine-mail-projected-small=\"true\"");
+    }
+    output.push('>');
+}
+
+fn projected_attribute_allowed(element: &str, attribute: &str) -> bool {
+    matches!(attribute, "dir" | "lang" | "title")
+        || matches!(
+            (element, attribute),
+            ("a", "href" | "name" | "rel")
+                | ("div" | "p" | "span", "align" | "style")
+                | ("font", "face" | "size")
+                | ("img", "src" | "alt" | "data-mine-mail-projected-small")
+                | ("ol", "start" | "reversed")
+                | ("li", "value")
+        )
+}
+
+fn push_projection_block_boundary(output: &mut String) {
+    let trimmed = output.trim_end();
+    if trimmed.is_empty()
+        || trimmed.ends_with("<br>")
+        || [
+            "</blockquote>",
+            "</div>",
+            "</h1>",
+            "</h2>",
+            "</h3>",
+            "</h4>",
+            "</h5>",
+            "</h6>",
+            "</li>",
+            "</ol>",
+            "</p>",
+            "</pre>",
+            "</ul>",
+            "<hr>",
+        ]
+        .iter()
+        .any(|ending| trimmed.ends_with(ending))
+    {
+        return;
+    }
+    output.push_str("<br>");
+}
+
+fn push_escaped_html_text(output: &mut String, value: &str) {
+    for character in value.chars() {
+        match character {
+            '&' => output.push_str("&amp;"),
+            '<' => output.push_str("&lt;"),
+            '>' => output.push_str("&gt;"),
+            _ => output.push(character),
+        }
+    }
+}
+
+fn push_escaped_html_attribute(output: &mut String, value: &str) {
+    for character in value.chars() {
+        match character {
+            '&' => output.push_str("&amp;"),
+            '<' => output.push_str("&lt;"),
+            '>' => output.push_str("&gt;"),
+            '"' => output.push_str("&quot;"),
+            _ => output.push(character),
+        }
+    }
+}
+
+fn visible_text_signature(fragment: &str) -> String {
+    Html::parse_fragment(fragment)
+        .root_element()
+        .text()
+        .flat_map(str::chars)
+        .filter(|character| !character.is_whitespace())
+        .collect()
+}
+
+fn link_signature(fragment: &str) -> Vec<(String, String, String)> {
+    let document = Html::parse_fragment(fragment);
+    let selector = Selector::parse("a").expect("valid link selector");
+    document
+        .select(&selector)
+        .map(|link| {
+            (
+                link.value().attr("href").unwrap_or_default().to_owned(),
+                link.value().attr("name").unwrap_or_default().to_owned(),
+                link.text()
+                    .flat_map(str::chars)
+                    .filter(|character| !character.is_whitespace())
+                    .collect(),
+            )
+        })
+        .collect()
+}
+
+fn image_signature(fragment: &str) -> Vec<(String, String)> {
+    let document = Html::parse_fragment(fragment);
+    let selector = Selector::parse("img").expect("valid image selector");
+    document
+        .select(&selector)
+        .map(|image| {
+            (
+                image.value().attr("src").unwrap_or_default().to_owned(),
+                image.value().attr("alt").unwrap_or_default().to_owned(),
+            )
+        })
+        .collect()
 }
 
 fn normalize_native_alignment(value: &str) -> Option<&'static str> {
@@ -1894,6 +2299,19 @@ mod tests {
         segment_mail_body_with_metadata_chain,
     };
 
+    fn wrap_in_presentation_tables(content: &str, depth: usize) -> String {
+        let mut source = String::new();
+        for _ in 0..depth {
+            source
+                .push_str(r#"<table role="presentation" width="640"><tbody><tr><td align="left">"#);
+        }
+        source.push_str(content);
+        for _ in 0..depth {
+            source.push_str("</td></tr></tbody></table>");
+        }
+        source
+    }
+
     #[test]
     fn keeps_complex_email_layout_but_removes_active_content_and_dangerous_urls() {
         let result = sanitize_mail_html(
@@ -1922,7 +2340,7 @@ mod tests {
         let result = sanitize_mail_html(
             r#"<div class="signature"><strong style="color:red">Myo</strong>
                <a href="https://paa.moe" onclick="alert(1)">myo@paa.moe</a>
-               <img alt="avatar" width="240" style="width:240px" src="data:image/png;base64,AQID">
+               <img alt="avatar" width="240" style="width:240px" data-mine-mail-projected-small="true" src="data:image/png;base64,AQID">
                <img alt="unsafe" src="data:image/svg+xml;base64,PHN2Zz48L3N2Zz4="></div>"#,
         );
 
@@ -1937,6 +2355,7 @@ mod tests {
         assert!(!native.contains("width="));
         assert!(!native.contains("onclick"));
         assert!(!native.contains("image/svg+xml"));
+        assert!(!native.contains("data-mine-mail-projected-small"));
     }
 
     #[test]
@@ -2208,6 +2627,119 @@ mod tests {
         assert!(!native.contains("<style"));
         assert!(!native.contains("class="));
         assert!(!native.contains("background-color"));
+    }
+
+    #[test]
+    fn deeply_nested_presentation_notification_projects_to_native_semantics() {
+        let source = wrap_in_presentation_tables(
+            r#"<p><strong>Example Member</strong> left a comment.</p>
+               <p>Short notification content with a
+                 <a href="https://forum.example.test/thread/42">discussion link</a>.
+               </p>
+               <img alt=":one:" width="20" height="20" src="https://images.example/one.png">
+               <img alt=":two:" width="20px" height="20px" src="https://images.example/two.png">
+               <img alt="avatar" width="48" height="48" src="https://images.example/avatar.png">
+               <p><small>Reply by email or open the discussion.</small></p>"#,
+            8,
+        );
+
+        let result = sanitize_mail_html(&source);
+
+        assert_eq!(result.structure, MailHtmlStructure::Native);
+        assert!(result.has_remote_images);
+        let native = result
+            .native_fragment
+            .expect("projected native notification");
+        assert!(!native.contains("<table"));
+        assert!(!native.contains("role="));
+        assert!(!native.contains("width="));
+        assert!(native.contains("<strong>Example Member</strong>"));
+        assert!(native.contains("discussion link"));
+        assert!(native.contains("href=\"https://forum.example.test/thread/42\""));
+        assert_eq!(native.matches("<img").count(), 3);
+        assert_eq!(
+            native
+                .matches("data-mine-mail-projected-small=\"true\"")
+                .count(),
+            3,
+        );
+        for expected in [
+            "https://images.example/one.png",
+            "https://images.example/two.png",
+            "https://images.example/avatar.png",
+        ] {
+            assert!(native.contains(expected));
+        }
+    }
+
+    #[test]
+    fn presentation_projection_keeps_data_like_or_image_heavy_mail_isolated() {
+        let three_columns = wrap_in_presentation_tables(
+            r#"<table role="presentation"><tbody><tr>
+                 <td><strong>Name</strong></td><td>Quantity</td><td>Price</td>
+               </tr></tbody></table>"#,
+            3,
+        );
+        let captioned = wrap_in_presentation_tables(
+            r#"<table role="presentation"><caption>Quarterly totals</caption>
+               <tbody><tr><td><strong>Revenue</strong></td><td>42</td></tr></tbody></table>"#,
+            3,
+        );
+        let merged = wrap_in_presentation_tables(
+            r#"<table role="presentation"><tbody><tr>
+                 <td colspan="2"><strong>Combined result</strong></td>
+               </tr></tbody></table>"#,
+            3,
+        );
+        let image_heavy = wrap_in_presentation_tables(
+            r#"<p><strong>Image digest</strong></p>
+               <img alt="one" src="https://images.example/one.png">
+               <img alt="two" src="https://images.example/two.png">
+               <img alt="three" src="https://images.example/three.png">"#,
+            3,
+        );
+        let oversized = wrap_in_presentation_tables(
+            &format!(
+                r#"<div class="{}"><strong>Oversized wrapper</strong></div>"#,
+                "x".repeat(40 * 1024),
+            ),
+            3,
+        );
+        let excessively_deep = wrap_in_presentation_tables(
+            r#"<p><strong>Excessively deep wrapper tree</strong></p>"#,
+            49,
+        );
+
+        for source in [
+            three_columns,
+            captioned,
+            merged,
+            image_heavy,
+            oversized,
+            excessively_deep,
+        ] {
+            let result = sanitize_mail_html(&source);
+            assert_eq!(
+                result.structure,
+                MailHtmlStructure::Isolated,
+                "data-like or image-heavy presentation tables must retain isolation: {source}",
+            );
+            assert!(result.native_fragment.is_none());
+        }
+    }
+
+    #[test]
+    fn shallow_presentation_tables_do_not_enter_the_projection_path() {
+        let source = wrap_in_presentation_tables(
+            r#"<p><strong>Two shallow wrappers</strong></p>
+               <a href="https://example.test">Open</a>"#,
+            2,
+        );
+
+        let result = sanitize_mail_html(&source);
+
+        assert_eq!(result.structure, MailHtmlStructure::Isolated);
+        assert!(result.native_fragment.is_none());
     }
 
     #[test]

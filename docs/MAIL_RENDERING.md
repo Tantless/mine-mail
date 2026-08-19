@@ -53,6 +53,12 @@ removing sender layout and styling.
   have no other isolation trigger.
 - Compact, text-dominant notification/profile templates may use this mode when
   their ornamental styling is unnecessary for understanding.
+- Deep presentation-table wrappers in a compact text notification may be
+  projected into a shallow native semantic tree only when the sanitized source
+  strongly identifies those tables as presentation, contains no data-table or
+  layout dependency, and preserves the exact ordered visible text, safe links,
+  and images after projection. A failed eligibility or integrity check keeps the
+  original sanitized document isolated.
 - Preserve the compose contract's bounded font face/size, text alignment, and
   first-line indentation after validating and narrowing their values.
 - Strip every other sender style, class/id hook, sizing/layout attribute, unsafe

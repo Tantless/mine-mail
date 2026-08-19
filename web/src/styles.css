@@ -3775,6 +3775,17 @@ html[data-surface="new-mail-notification"] #root {
   object-fit: cover;
 }
 
+.native-html-message__content img[data-mine-mail-projected-small="true"] {
+  display: inline-block;
+  width: auto;
+  max-width: 48px;
+  max-height: 48px;
+  margin: 0.2em 0.35em 0.2em 0;
+  border-radius: 6px;
+  object-fit: contain;
+  vertical-align: middle;
+}
+
 .native-html-message__content img[alt^=":"][alt$=":"] {
   display: inline-block;
   width: 1.15em;

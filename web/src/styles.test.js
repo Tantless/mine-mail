@@ -101,6 +101,19 @@ describe("isolated mail document surface", () => {
   });
 });
 
+describe("projected native mail images", () => {
+  it("keeps bounded template icons compact after presentation tables are removed", () => {
+    const projectedImage = declarationsFor(
+      '\\.native-html-message__content img\\[data-mine-mail-projected-small="true"\\]',
+    );
+
+    expect(projectedImage).toMatch(/display:\s*inline-block/);
+    expect(projectedImage).toMatch(/max-width:\s*48px/);
+    expect(projectedImage).toMatch(/max-height:\s*48px/);
+    expect(projectedImage).toMatch(/object-fit:\s*contain/);
+  });
+});
+
 describe("compose AI conversation header", () => {
   it("reserves space between the back action and the session title", () => {
     expect(
