@@ -412,7 +412,7 @@ export function AppearanceSettings({
           {paletteOpen ? (
             <div id="appearance-palette-panel" className="appearance-config__panel appearance-config__panel--palette">
               <p>
-                色盘统一控制背景、面板、文字、边框、交互色和状态色。关闭极简模式后，选择内置主题会恢复它的原色，你仍可在这里改用其他色盘。
+                色盘统一控制背景、面板、文字、边框、交互色和状态色。图片模式下，主题背景会恢复它保存的色盘；为自定义背景改色后，该选择会随背景记住。
               </p>
               {[
                 { scheme: "light", label: "明亮界面" },
@@ -456,7 +456,7 @@ export function AppearanceSettings({
             <small>
               {minimalModeEnabled
                 ? "极简模式下保留选择与设置，但不会显示背景图片。"
-                : "内置主题默认使用各自原色；也可以把自己的图片保存为预设。"}
+                : "内置主题使用各自原色；自定义背景会恢复上次选择的色盘。"}
             </small>
           </span>
         </header>

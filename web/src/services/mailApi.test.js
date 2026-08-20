@@ -1163,9 +1163,8 @@ describe("mailApi desktop IPC contract", () => {
     expect(loaded.paletteId).toBe("teal-dark");
     expect(loaded.minimalModeEnabled).toBe(false);
     expect(loaded.customPresets[0]).toEqual(
-      expect.objectContaining({ name: "海岸" }),
+      expect.objectContaining({ name: "海岸", paletteId: "teal-dark" }),
     );
-    expect(loaded.customPresets[0]).not.toHaveProperty("paletteId");
     expect(JSON.stringify(loaded)).not.toContain("asset_file_name");
     await mailApi.selectAppearanceTheme({ kind: "custom", id: "preset-1" });
     await mailApi.updateAppearancePreferences({

@@ -1,5 +1,6 @@
 use std::{
     collections::HashSet,
+    f32::consts::TAU,
     fs,
     io::Cursor,
     path::{Path, PathBuf},
@@ -30,6 +31,20 @@ const BUILTIN_PALETTE_IDS: [&str; 4] = ["daylight", "night", "dusk", "forest"];
 const PALETTE_FAMILY_IDS: [&str; 12] = [
     "green", "teal", "cyan", "sky", "blue", "indigo", "violet", "purple", "magenta", "rose",
     "orange", "yellow",
+];
+const PALETTE_HUES: [(&str, f32); 12] = [
+    ("green", 142.0),
+    ("teal", 170.0),
+    ("cyan", 196.0),
+    ("sky", 224.0),
+    ("blue", 252.0),
+    ("indigo", 276.0),
+    ("violet", 296.0),
+    ("purple", 316.0),
+    ("magenta", 336.0),
+    ("rose", 6.0),
+    ("orange", 52.0),
+    ("yellow", 94.0),
 ];
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
@@ -94,6 +109,7 @@ pub(crate) struct AppearanceSelectionDto {
 pub(crate) struct CustomThemePresetDto {
     pub id: String,
     pub name: String,
+    pub palette_id: String,
     pub focal_x: f32,
     pub focal_y: f32,
     pub thumbnail_data_url: String,
@@ -171,6 +187,7 @@ struct StoredAppearancePreferences {
 struct ProcessedBackground {
     image_bytes: Vec<u8>,
     thumbnail_bytes: Vec<u8>,
+    palette_id: String,
 }
 
 impl AppearanceStore {
@@ -250,7 +267,7 @@ impl AppearanceStore {
             .map_err(|_| "Appearance presets could not be loaded.".to_owned())?;
         let mut statement = connection
             .prepare(
-                "SELECT id, name, focal_x, focal_y,
+                "SELECT id, name, palette_id, focal_x, focal_y,
                         thumbnail_bytes
                  FROM custom_theme_presets
                  ORDER BY created_at ASC, rowid ASC",
@@ -261,9 +278,10 @@ impl AppearanceStore {
                 Ok(CustomThemePresetDto {
                     id: row.get(0)?,
                     name: row.get(1)?,
-                    focal_x: row.get(2)?,
-                    focal_y: row.get(3)?,
-                    thumbnail_data_url: image_data_url("image/jpeg", &row.get::<_, Vec<u8>>(4)?),
+                    palette_id: row.get(2)?,
+                    focal_x: row.get(3)?,
+                    focal_y: row.get(4)?,
+                    thumbnail_data_url: image_data_url("image/jpeg", &row.get::<_, Vec<u8>>(5)?),
                 })
             })
             .map_err(|_| "Appearance presets could not be loaded.".to_owned())?;
@@ -294,34 +312,72 @@ impl AppearanceStore {
         &self,
         request: UpdateAppearancePreferencesRequest,
     ) -> Result<AppearanceSettingsDto, String> {
-        let palette_id = if request.palette_id.is_none()
+        let preferences = self.load_preferences()?;
+        let selection = self.load_selection()?;
+        let explicit_palette = request.palette_id;
+        let minimal_mode_enabled = request
+            .minimal_mode_enabled
+            .unwrap_or(preferences.minimal_mode_enabled);
+        let palette_id = if explicit_palette.is_none()
             && request.minimal_mode_enabled == Some(false)
-            && self.load_preferences()?.minimal_mode_enabled
+            && preferences.minimal_mode_enabled
         {
-            let selection = self.load_selection()?;
-            (selection.active_kind == AppearanceThemeKind::Builtin)
-                .then(|| builtin_palette_id(&selection.active_id).to_owned())
+            Some(self.theme_palette_id(selection.active_kind, &selection.active_id)?)
         } else {
-            request.palette_id
+            explicit_palette.clone()
         };
         if let Some(palette_id) = palette_id.as_deref() {
             validate_palette_id(palette_id)?;
         }
-        self.connection()
-            .and_then(|connection| {
-                let changed = connection.execute(
-                    "UPDATE appearance_preferences SET
+        let custom_palette = if explicit_palette.is_some()
+            && !minimal_mode_enabled
+            && selection.active_kind == AppearanceThemeKind::Custom
+        {
+            palette_id
+                .as_ref()
+                .map(|palette_id| (selection.active_id.clone(), palette_id.clone()))
+        } else {
+            None
+        };
+        let mut connection = self
+            .connection()
+            .map_err(|_| "Appearance preferences could not be saved.".to_owned())?;
+        let transaction = connection
+            .transaction()
+            .map_err(|_| "Appearance preferences could not be saved.".to_owned())?;
+        let changed = transaction
+            .execute(
+                "UPDATE appearance_preferences SET
                          palette_id = COALESCE(?1, palette_id),
                          minimal_mode_enabled = COALESCE(?2, minimal_mode_enabled),
                          updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
                      WHERE id = 1",
-                    params![palette_id, request.minimal_mode_enabled],
-                )?;
-                if changed == 0 {
-                    return Err(rusqlite::Error::QueryReturnedNoRows);
-                }
-                Ok(())
-            })
+                params![palette_id, request.minimal_mode_enabled],
+            )
+            .map_err(|_| "Appearance preferences could not be saved.".to_owned())?;
+        if changed == 0 {
+            return Err("Appearance preferences could not be saved.".to_owned());
+        }
+        if let Some((preset_id, palette_id)) = custom_palette {
+            let mode = palette_mode(&palette_id)
+                .ok_or_else(|| "The selected color palette is invalid.".to_owned())?;
+            let changed = transaction
+                .execute(
+                    "UPDATE custom_theme_presets SET
+                         palette_id = ?2,
+                         mode = 'auto',
+                         auto_mode = ?3,
+                         updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                     WHERE id = ?1",
+                    params![preset_id, palette_id, mode.as_storage_value()],
+                )
+                .map_err(|_| "Appearance preferences could not be saved.".to_owned())?;
+            if changed == 0 {
+                return Err("Appearance preferences could not be saved.".to_owned());
+            }
+        }
+        transaction
+            .commit()
             .map_err(|_| "Appearance preferences could not be saved.".to_owned())?;
         self.load()
     }
@@ -335,10 +391,8 @@ impl AppearanceStore {
             return Err("The selected appearance preset is unavailable.".to_owned());
         }
         let current = self.load_selection()?;
-        let theme_palette_id = if request.kind == AppearanceThemeKind::Builtin
-            && !self.load_preferences()?.minimal_mode_enabled
-        {
-            Some(builtin_palette_id(&request.id))
+        let theme_palette_id = if !self.load_preferences()?.minimal_mode_enabled {
+            Some(self.theme_palette_id(request.kind, &request.id)?)
         } else {
             None
         };
@@ -350,7 +404,7 @@ impl AppearanceStore {
                 })?;
             }
             if let Some(palette_id) = theme_palette_id {
-                self.save_palette_id(palette_id)?;
+                self.save_palette_id(&palette_id)?;
             }
             return self.load();
         }
@@ -363,7 +417,7 @@ impl AppearanceStore {
         };
         self.save_selection(&selection)?;
         if let Some(palette_id) = theme_palette_id {
-            self.save_palette_id(palette_id)?;
+            self.save_palette_id(&palette_id)?;
         }
         self.load()
     }
@@ -383,6 +437,27 @@ impl AppearanceStore {
             .map_err(|_| "Appearance preferences could not be saved.".to_owned())
     }
 
+    fn theme_palette_id(
+        &self,
+        kind: AppearanceThemeKind,
+        theme_id: &str,
+    ) -> Result<String, String> {
+        if kind == AppearanceThemeKind::Builtin {
+            return Ok(builtin_palette_id(theme_id).to_owned());
+        }
+        self.connection()
+            .map_err(|_| "Appearance preferences could not be loaded.".to_owned())?
+            .query_row(
+                "SELECT palette_id FROM custom_theme_presets WHERE id = ?1",
+                [theme_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|_| "Appearance preferences could not be loaded.".to_owned())?
+            .filter(|palette_id| validate_palette_id(palette_id).is_ok())
+            .ok_or_else(|| "The selected appearance preset is unavailable.".to_owned())
+    }
+
     pub(super) fn import_custom(
         &self,
         request: ImportCustomThemeRequest,
@@ -396,9 +471,9 @@ impl AppearanceStore {
             None => self.next_default_name()?,
         };
         self.write_asset(&asset_file_name, &processed.image_bytes)?;
-        let palette_id = self.load_preferences()?.palette_id;
+        let palette_id = processed.palette_id.clone();
         let palette_mode = palette_mode(&palette_id)
-            .ok_or_else(|| "The selected color palette is invalid.".to_owned())?;
+            .ok_or_else(|| "The analyzed color palette is invalid.".to_owned())?;
 
         let connection = self
             .connection()
@@ -434,6 +509,9 @@ impl AppearanceStore {
             let _ = connection.execute("DELETE FROM custom_theme_presets WHERE id = ?1", [&id]);
             let _ = fs::remove_file(self.asset_directory.join(&asset_file_name));
             return Err(error);
+        }
+        if !self.load_preferences()?.minimal_mode_enabled {
+            self.save_palette_id(&palette_id)?;
         }
         self.load()
     }
@@ -526,6 +604,11 @@ impl AppearanceStore {
                     }
                     _ => (AppearanceThemeKind::Builtin, "daylight".to_owned()),
                 };
+            let palette_id = if !self.load_preferences()?.minimal_mode_enabled {
+                Some(self.theme_palette_id(active_kind, &active_id)?)
+            } else {
+                None
+            };
             self.save_selection(&StoredSelection {
                 initialized: true,
                 active_kind,
@@ -533,6 +616,9 @@ impl AppearanceStore {
                 previous_kind: Some(AppearanceThemeKind::Builtin),
                 previous_id: Some("daylight".to_owned()),
             })?;
+            if let Some(palette_id) = palette_id {
+                self.save_palette_id(&palette_id)?;
+            }
         }
         let _ = fs::remove_file(self.asset_directory.join(asset_file_name));
         self.load()
@@ -812,11 +898,13 @@ fn process_background(bytes: &[u8]) -> Result<ProcessedBackground, String> {
     let mut image = DynamicImage::from_decoder(decoder)
         .map_err(|_| "The background image could not be decoded.".to_owned())?;
     image.apply_orientation(orientation);
+    let palette_id = analyze_palette(&image);
     let image = resize_long_edge(image, MAX_LONG_EDGE);
     let thumbnail = image.thumbnail(THUMBNAIL_WIDTH, THUMBNAIL_HEIGHT);
     Ok(ProcessedBackground {
         image_bytes: encode_jpeg(&image, 88)?,
         thumbnail_bytes: encode_jpeg(&thumbnail, 80)?,
+        palette_id,
     })
 }
 
@@ -856,6 +944,90 @@ fn encode_jpeg(image: &DynamicImage, quality: u8) -> Result<Vec<u8>, String> {
         .write_with_encoder(JpegEncoder::new_with_quality(&mut bytes, quality))
         .map_err(|_| "The background image could not be normalized.".to_owned())?;
     Ok(bytes)
+}
+
+fn analyze_palette(image: &DynamicImage) -> String {
+    let sample = image.thumbnail(96, 96).to_rgb8();
+    let (width, height) = sample.dimensions();
+    let mut hue_x = 0.0_f32;
+    let mut hue_y = 0.0_f32;
+    let mut chroma_weight = 0.0_f32;
+    let mut lightness = 0.0_f32;
+    let mut lightness_weight = 0.0_f32;
+    for (x, _y, pixel) in sample.enumerate_pixels() {
+        let edge_weight = if x.saturating_mul(100) < width.saturating_mul(38) {
+            1.8
+        } else {
+            1.0
+        };
+        let [red, green, blue] = pixel.0;
+        let (l, a, b) = srgb_to_oklab(red, green, blue);
+        lightness += l * edge_weight;
+        lightness_weight += edge_weight;
+        let chroma = (a * a + b * b).sqrt();
+        if chroma < 0.035 {
+            continue;
+        }
+        let angle = b.atan2(a);
+        let weight = chroma * edge_weight;
+        hue_x += angle.cos() * weight;
+        hue_y += angle.sin() * weight;
+        chroma_weight += weight;
+    }
+    let average_lightness = if lightness_weight > 0.0 {
+        lightness / lightness_weight
+    } else {
+        0.7
+    };
+    let scheme = if average_lightness < 0.6 {
+        "dark"
+    } else {
+        "light"
+    };
+    if chroma_weight < (width.saturating_mul(height) as f32 * 0.0025) {
+        return format!("sky-{scheme}");
+    }
+    let hue = hue_y.atan2(hue_x).rem_euclid(TAU).to_degrees();
+    let palette = PALETTE_HUES
+        .iter()
+        .min_by(|(_, left), (_, right)| {
+            hue_distance(hue, *left)
+                .partial_cmp(&hue_distance(hue, *right))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|(id, _)| *id)
+        .unwrap_or("sky");
+    format!("{palette}-{scheme}")
+}
+
+fn srgb_to_oklab(red: u8, green: u8, blue: u8) -> (f32, f32, f32) {
+    fn linear(value: u8) -> f32 {
+        let value = f32::from(value) / 255.0;
+        if value <= 0.04045 {
+            value / 12.92
+        } else {
+            ((value + 0.055) / 1.055).powf(2.4)
+        }
+    }
+    let red = linear(red);
+    let green = linear(green);
+    let blue = linear(blue);
+    let l = 0.412_221_46 * red + 0.536_332_55 * green + 0.051_445_995 * blue;
+    let m = 0.211_903_5 * red + 0.680_699_5 * green + 0.107_396_96 * blue;
+    let s = 0.088_302_46 * red + 0.281_718_85 * green + 0.629_978_7 * blue;
+    let l = l.cbrt();
+    let m = m.cbrt();
+    let s = s.cbrt();
+    (
+        0.210_454_26 * l + 0.793_617_8 * m - 0.004_072_047 * s,
+        1.977_998_5 * l - 2.428_592_2 * m + 0.450_593_7 * s,
+        0.025_904_037 * l + 0.782_771_77 * m - 0.808_675_77 * s,
+    )
+}
+
+fn hue_distance(left: f32, right: f32) -> f32 {
+    let distance = (left - right).abs().rem_euclid(360.0);
+    distance.min(360.0 - distance)
 }
 
 fn palette_mode(id: &str) -> Option<AppearanceMode> {
@@ -1175,6 +1347,112 @@ mod tests {
     }
 
     #[test]
+    fn image_analysis_selects_an_initial_complete_palette() {
+        let bright = process_background(&jpeg(320, 180, [35, 190, 150]))
+            .expect("bright analyzed background");
+        assert_eq!(bright.palette_id, "teal-light");
+
+        let dark =
+            process_background(&jpeg(320, 180, [24, 42, 82])).expect("dark analyzed background");
+        assert!(dark.palette_id.ends_with("-dark"));
+    }
+
+    #[test]
+    fn custom_background_restores_the_users_palette_only_in_image_mode() {
+        let directory = tempdir().expect("temporary directory");
+        let store = AppearanceStore::open(directory.path().join("desktop.sqlite3"), false)
+            .expect("appearance store");
+        let created = store
+            .import_custom(ImportCustomThemeRequest {
+                name: None,
+                image_data_url: jpeg_data_url(320, 180, [35, 190, 150]),
+            })
+            .expect("analyzed custom theme");
+        let id = created.active_theme.id.clone();
+        assert_eq!(created.palette_id, "daylight");
+        assert_eq!(created.custom_presets[0].palette_id, "teal-light");
+
+        let image_mode = store
+            .update_preferences(UpdateAppearancePreferencesRequest {
+                palette_id: None,
+                minimal_mode_enabled: Some(false),
+            })
+            .expect("enable image mode");
+        assert_eq!(image_mode.palette_id, "teal-light");
+
+        let chosen = store
+            .update_preferences(UpdateAppearancePreferencesRequest {
+                palette_id: Some("rose-dark".to_owned()),
+                minimal_mode_enabled: None,
+            })
+            .expect("choose custom palette");
+        assert_eq!(chosen.palette_id, "rose-dark");
+        assert_eq!(chosen.custom_presets[0].palette_id, "rose-dark");
+
+        let replaced = store
+            .update_custom(UpdateCustomThemeRequest {
+                id: id.clone(),
+                name: None,
+                focal_x: None,
+                focal_y: None,
+                image_data_url: Some(jpeg_data_url(320, 180, [230, 190, 45])),
+            })
+            .expect("replace custom background");
+        assert_eq!(replaced.custom_presets[0].palette_id, "rose-dark");
+
+        store
+            .select(SelectAppearanceThemeRequest {
+                kind: AppearanceThemeKind::Builtin,
+                id: "forest".to_owned(),
+            })
+            .expect("select built-in theme");
+        let restored = store
+            .select(SelectAppearanceThemeRequest {
+                kind: AppearanceThemeKind::Custom,
+                id: id.clone(),
+            })
+            .expect("restore custom theme");
+        assert_eq!(restored.palette_id, "rose-dark");
+
+        store
+            .update_preferences(UpdateAppearancePreferencesRequest {
+                palette_id: None,
+                minimal_mode_enabled: Some(true),
+            })
+            .expect("enable minimal mode");
+        let minimal_palette = store
+            .update_preferences(UpdateAppearancePreferencesRequest {
+                palette_id: Some("yellow-light".to_owned()),
+                minimal_mode_enabled: None,
+            })
+            .expect("choose minimal palette");
+        assert_eq!(minimal_palette.palette_id, "yellow-light");
+        assert_eq!(minimal_palette.custom_presets[0].palette_id, "rose-dark");
+
+        store
+            .select(SelectAppearanceThemeRequest {
+                kind: AppearanceThemeKind::Builtin,
+                id: "night".to_owned(),
+            })
+            .expect("dormant built-in selection");
+        let dormant_custom = store
+            .select(SelectAppearanceThemeRequest {
+                kind: AppearanceThemeKind::Custom,
+                id,
+            })
+            .expect("dormant custom selection");
+        assert_eq!(dormant_custom.palette_id, "yellow-light");
+
+        let restored_image_mode = store
+            .update_preferences(UpdateAppearancePreferencesRequest {
+                palette_id: None,
+                minimal_mode_enabled: Some(false),
+            })
+            .expect("restore image mode");
+        assert_eq!(restored_image_mode.palette_id, "rose-dark");
+    }
+
+    #[test]
     fn legacy_palette_and_mode_are_migrated_to_one_complete_palette_id() {
         let directory = tempdir().expect("temporary directory");
         let database = directory.path().join("desktop.sqlite3");
@@ -1198,6 +1476,8 @@ mod tests {
             .expect("legacy appearance row");
 
         let reopened = AppearanceStore::open(&database, true).expect("reopened appearance store");
+        let loaded = reopened.load().expect("migrated appearance");
+        assert_eq!(loaded.custom_presets[0].palette_id, "teal-dark");
         let stored_modes = reopened
             .connection()
             .expect("appearance connection")

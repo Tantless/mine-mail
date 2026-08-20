@@ -625,9 +625,17 @@ function normalizeAppearance(appearance = {}) {
       id: String(activeTheme.id || "daylight"),
     },
     customPresets: customPresets.map((preset) => {
+      const presetLegacyMode =
+        preset.effectiveMode ??
+        preset.effective_mode ??
+        (preset.mode === "dark" ? "dark" : "light");
       return {
         id: String(preset.id || ""),
         name: String(preset.name || "自定义主题"),
+        paletteId: normalizeAppearancePaletteId(
+          preset.paletteId ?? preset.palette_id,
+          presetLegacyMode,
+        ),
         focalX: Number(preset.focalX ?? preset.focal_x ?? 0.5),
         focalY: Number(preset.focalY ?? preset.focal_y ?? 0.5),
         thumbnailDataUrl:

@@ -7,6 +7,20 @@ const demoAccountId = "demo-primary";
 const demoAiProviderId = "11111111-1111-4111-8111-111111111111";
 const demoPageRoles = new Set(["inbox", "sent", "archive", "trash"]);
 const demoStarredPageRoles = new Set(["inbox", "sent", "archive"]);
+const demoPaletteHues = Object.freeze([
+  ["green", 142],
+  ["teal", 170],
+  ["cyan", 196],
+  ["sky", 224],
+  ["blue", 252],
+  ["indigo", 276],
+  ["violet", 296],
+  ["purple", 316],
+  ["magenta", 336],
+  ["rose", 6],
+  ["orange", 52],
+  ["yellow", 94],
+]);
 const demoSyncRoles = new Set([
   "inbox",
   "sent",
@@ -15,6 +29,92 @@ const demoSyncRoles = new Set([
   "trash",
 ]);
 const creatableDemoRoles = new Set(["trash"]);
+
+function srgbByteToLinear(value) {
+  const channel = value / 255;
+  return channel <= 0.04045
+    ? channel / 12.92
+    : ((channel + 0.055) / 1.055) ** 2.4;
+}
+
+function srgbBytesToOklab(red, green, blue) {
+  const r = srgbByteToLinear(red);
+  const g = srgbByteToLinear(green);
+  const b = srgbByteToLinear(blue);
+  const l = Math.cbrt(0.41222146 * r + 0.53633255 * g + 0.051445995 * b);
+  const m = Math.cbrt(0.2119035 * r + 0.6806995 * g + 0.10739696 * b);
+  const s = Math.cbrt(0.08830246 * r + 0.28171885 * g + 0.6299787 * b);
+  return [
+    0.21045426 * l + 0.7936178 * m - 0.004072047 * s,
+    1.9779985 * l - 2.4285922 * m + 0.4505937 * s,
+    0.025904037 * l + 0.78277177 * m - 0.80867577 * s,
+  ];
+}
+
+function hueDistance(left, right) {
+  const distance = Math.abs(left - right) % 360;
+  return Math.min(distance, 360 - distance);
+}
+
+async function analyzeDemoPalette(imageDataUrl, fallback) {
+  if (typeof document === "undefined" || typeof Image === "undefined") {
+    return fallback;
+  }
+  try {
+    const image = await new Promise((resolve, reject) => {
+      const element = new Image();
+      element.onload = () => resolve(element);
+      element.onerror = reject;
+      element.src = imageDataUrl;
+    });
+    const scale = Math.min(1, 96 / Math.max(image.naturalWidth, image.naturalHeight));
+    const width = Math.max(1, Math.round(image.naturalWidth * scale));
+    const height = Math.max(1, Math.round(image.naturalHeight * scale));
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext("2d", { willReadFrequently: true });
+    if (!context) return fallback;
+    context.drawImage(image, 0, 0, width, height);
+    const pixels = context.getImageData(0, 0, width, height).data;
+    let hueX = 0;
+    let hueY = 0;
+    let chromaWeight = 0;
+    let lightness = 0;
+    let lightnessWeight = 0;
+    for (let y = 0; y < height; y += 1) {
+      for (let x = 0; x < width; x += 1) {
+        const index = (y * width + x) * 4;
+        const edgeWeight = x * 100 < width * 38 ? 1.8 : 1;
+        const [l, a, b] = srgbBytesToOklab(
+          pixels[index],
+          pixels[index + 1],
+          pixels[index + 2],
+        );
+        lightness += l * edgeWeight;
+        lightnessWeight += edgeWeight;
+        const chroma = Math.hypot(a, b);
+        if (chroma < 0.035) continue;
+        const angle = Math.atan2(b, a);
+        const weight = chroma * edgeWeight;
+        hueX += Math.cos(angle) * weight;
+        hueY += Math.sin(angle) * weight;
+        chromaWeight += weight;
+      }
+    }
+    const scheme = lightness / lightnessWeight < 0.6 ? "dark" : "light";
+    if (chromaWeight < width * height * 0.0025) return `sky-${scheme}`;
+    const hue = ((Math.atan2(hueY, hueX) * 180) / Math.PI + 360) % 360;
+    const family = demoPaletteHues.reduce((closest, candidate) =>
+      hueDistance(hue, candidate[1]) < hueDistance(hue, closest[1])
+        ? candidate
+        : closest,
+    )[0];
+    return `${family}-${scheme}`;
+  } catch {
+    return fallback;
+  }
+}
 const demoProtocolLabels = Object.freeze({
   openai_responses: "OpenAI Responses",
   openai_chat_completions: "OpenAI Chat Completions",
@@ -2034,8 +2134,8 @@ function createDemoActions(
       state.appearance = {
         ...state.appearance,
         selectionInitialized: true,
-        ...(request.kind === "builtin" && !state.appearance.minimalModeEnabled
-          ? { paletteId: request.id }
+        ...(!state.appearance.minimalModeEnabled
+          ? { paletteId: request.kind === "custom" ? preset.paletteId : request.id }
           : {}),
         previousTheme: unchanged
           ? state.appearance.previousTheme
@@ -2048,16 +2148,33 @@ function createDemoActions(
     },
 
     updateAppearancePreferences(request) {
+      const nextMinimalMode =
+        request.minimalModeEnabled == null
+          ? state.appearance.minimalModeEnabled
+          : Boolean(request.minimalModeEnabled);
       const enablingImageMode =
         request.minimalModeEnabled === false &&
-        state.appearance.minimalModeEnabled &&
-        state.appearance.activeTheme.kind === "builtin";
+        state.appearance.minimalModeEnabled;
+      const activePreset = state.appearance.customPresets.find(
+        (preset) => preset.id === state.appearance.activeTheme.id,
+      );
+      const requestedPalette =
+        request.paletteId == null
+          ? null
+          : normalizeAppearancePaletteId(request.paletteId);
+      if (requestedPalette && !nextMinimalMode && activePreset) {
+        activePreset.paletteId = requestedPalette;
+      }
+      const restoredPalette =
+        state.appearance.activeTheme.kind === "custom"
+          ? activePreset?.paletteId
+          : state.appearance.activeTheme.id;
       state.appearance = {
         ...state.appearance,
-        ...(request.paletteId != null
-          ? { paletteId: normalizeAppearancePaletteId(request.paletteId) }
-          : enablingImageMode
-            ? { paletteId: state.appearance.activeTheme.id }
+        ...(requestedPalette
+          ? { paletteId: requestedPalette }
+          : enablingImageMode && restoredPalette
+            ? { paletteId: restoredPalette }
             : {}),
         ...(request.minimalModeEnabled != null
           ? { minimalModeEnabled: Boolean(request.minimalModeEnabled) }
@@ -2066,16 +2183,21 @@ function createDemoActions(
       return structuredClone(state.appearance);
     },
 
-    importCustomTheme(request) {
+    async importCustomTheme(request) {
       const id = crypto.randomUUID();
       const names = new Set(
         state.appearance.customPresets.map((preset) => preset.name),
       );
       let nextNumber = 1;
       while (names.has(`自定义主题 ${nextNumber}`)) nextNumber += 1;
+      const paletteId = await analyzeDemoPalette(
+        request.imageDataUrl,
+        state.appearance.paletteId,
+      );
       const preset = {
         id,
         name: request.name?.trim() || `自定义主题 ${nextNumber}`,
+        paletteId,
         focalX: 0.5,
         focalY: 0.5,
         thumbnailDataUrl: request.imageDataUrl,
@@ -2088,6 +2210,9 @@ function createDemoActions(
       state.appearance.activeTheme = { kind: "custom", id };
       state.appearance.activeBackgroundDataUrl = request.imageDataUrl;
       state.appearance.selectionInitialized = true;
+      if (!state.appearance.minimalModeEnabled) {
+        state.appearance.paletteId = paletteId;
+      }
       return structuredClone(state.appearance);
     },
 
@@ -2132,6 +2257,10 @@ function createDemoActions(
         state.appearance.activeTheme = structuredClone(fallback);
         state.appearance.activeBackgroundDataUrl =
           fallback.kind === "custom" ? previousPreset.imageDataUrl : null;
+        if (!state.appearance.minimalModeEnabled) {
+          state.appearance.paletteId =
+            fallback.kind === "custom" ? previousPreset.paletteId : fallback.id;
+        }
       }
       return structuredClone(state.appearance);
     },

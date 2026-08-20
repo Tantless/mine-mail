@@ -828,8 +828,8 @@ existing visual system normally changes this document rather than `DESIGN.md`.
 - Settings is an embedded workspace. Preferences save immediately and there is no
   global Save/Cancel footer.
 - Appearance is device-global rather than account-scoped. Its settings separate
-  **极简模式**, **调色盘**, and **主题背景**. The palette is independent of the
-  selected background and is the sole source of app-owned canvas, panel, text,
+  **极简模式**, **调色盘**, and **主题背景**. The palette has its own control and
+  is the sole source of app-owned canvas, panel, text,
   interaction, correspondence, visualization, and status colors. The palette
   tray includes the four original Daylight, Night, Dusk, and Forest palettes in
   addition to twelve bright and twelve dark general-purpose choices; there is no
@@ -849,11 +849,15 @@ existing visual system normally changes this document rather than `DESIGN.md`.
   normalized focal points, and delete them. In image mode, selecting a built-in
   theme restores its original complete palette; the user may then override it
   from the independent palette control. Turning image mode on while a built-in
-  theme is selected likewise restores that theme's original palette. Custom
-  backgrounds retain the current palette. **设置焦点** belongs to the active custom
+  theme is selected likewise restores that theme's original palette. Each custom
+  background remembers its last user-selected palette; selecting it in image mode,
+  or turning image mode on while it is selected, restores that palette. Changing
+  the palette while a custom background is active in image mode updates the
+  remembered choice. **设置焦点** belongs to the active custom
   background within the **主题背景** group, not to the independent palette. The
   global palette, minimal-mode flag, current background selection, and each custom
-  preset's background settings persist in Rust-owned local state.
+  preset's selected palette and background settings persist in Rust-owned local
+  state.
 - The device-global **主页诗歌** appearance preference defaults on. Turning it off
   suppresses the rotating quotation and its animation whenever no message is
   open, including the disconnected-account workspace, without changing the
@@ -874,7 +878,10 @@ existing visual system normally changes this document rather than `DESIGN.md`.
 - Custom background import accepts PNG, JPEG, and WebP only. Rust rejects sources
   above 20 MB or roughly 50 megapixels, applies embedded orientation, strips
   metadata by re-encoding, limits the long edge to 5120 pixels, creates a bounded
-  thumbnail, and stores only a managed copy under local user assets. React never
+  thumbnail, analyzes the image hue and lightness to choose the preset's initial
+  palette, and stores only a managed copy under local user assets. The analysis is
+  only an import default: replacing the image or later selecting another palette
+  never overwrites the user's remembered palette choice. React never
   receives the original or managed complete path. Images below 1600 × 900 are
   accepted with a quality warning. SVG, animated images, and remote URLs are not
   accepted.
