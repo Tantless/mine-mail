@@ -421,6 +421,15 @@ export function SettingsPanel({
 
   const accounts = connectedAccounts(accountStatus);
   const maxAccounts = accountStatus?.maxAccounts || 3;
+  const cacheCleanupSupported =
+    storageClient.isSupported && storageClient.isCacheCleanupSupported !== false;
+  const cacheCleanupDescription = !storageClient.isSupported
+    ? "浏览器预览不执行界面缓存清理。"
+    : !cacheCleanupSupported
+      ? "开发环境请停止并重新运行 Tauri 开发命令，以安全释放界面缓存。"
+      : Number(storageStatus?.reclaimableWebviewBytes || 0) > 0
+        ? `可释放约 ${formatStorageBytes(storageStatus.reclaimableWebviewBytes)}，清理时将重启 Mine Mail。`
+        : "当前没有可释放的界面缓存。";
   const activeAccount =
     accounts.find(
       (account) =>
@@ -1821,11 +1830,7 @@ export function SettingsPanel({
                   </span>
                   <span className="settings-storage-cleanup__copy">
                     <strong>界面缓存</strong>
-                    <small>
-                      {Number(storageStatus?.reclaimableWebviewBytes || 0) > 0
-                        ? `可释放约 ${formatStorageBytes(storageStatus.reclaimableWebviewBytes)}，清理时将重启 Mine Mail。`
-                        : "当前没有可释放的界面缓存。"}
-                    </small>
+                    <small>{cacheCleanupDescription}</small>
                   </span>
                   <button
                     ref={cacheCleanupReturnFocusRef}
@@ -1836,7 +1841,7 @@ export function SettingsPanel({
                       setIsCacheCleanupDialogOpen(true);
                     }}
                     disabled={
-                      !storageClient.isSupported ||
+                      !cacheCleanupSupported ||
                       storageState === "loading" ||
                       cacheCleanupState === "preparing" ||
                       Number(storageStatus?.reclaimableWebviewBytes || 0) <= 0

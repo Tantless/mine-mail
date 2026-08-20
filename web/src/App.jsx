@@ -1,4 +1,5 @@
 import {
+  Component,
   lazy,
   Suspense,
   useCallback,
@@ -216,6 +217,38 @@ function SecondaryWorkspaceLoading({ label }) {
       {label}
     </main>
   );
+}
+
+export class SecondaryWorkspaceErrorBoundary extends Component {
+  state = { failed: false };
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  render() {
+    if (!this.state.failed) return this.props.children;
+    return (
+      <main
+        className="secondary-workspace-loading secondary-workspace-loading--error"
+        role="alert"
+      >
+        <span className="secondary-workspace-loading__message">
+          <strong>{this.props.label}暂时无法打开</strong>
+          <small>
+            请返回邮件界面并重启 Mine Mail 后重试，本地邮件和草稿不会受影响。
+          </small>
+          <button
+            type="button"
+            className="secondary-button"
+            onClick={this.props.onClose}
+          >
+            返回邮件界面
+          </button>
+        </span>
+      </main>
+    );
+  }
 }
 
 function emptyMailboxPageState(overrides = {}) {
@@ -8322,48 +8355,58 @@ export function App() {
         ) : null}
 
         {isSettingsOpen ? (
-          <Suspense
-            fallback={<SecondaryWorkspaceLoading label="正在打开设置…" />}
+          <SecondaryWorkspaceErrorBoundary
+            label="设置"
+            onClose={() => {
+              setIsSettingsOpen(false);
+              setSettingsFocusTarget(null);
+            }}
           >
-            <SettingsPanel
-              settings={settings}
-              saveStatus={settingsSaveStatus}
-              onClose={() => {
-                setIsSettingsOpen(false);
-                setSettingsFocusTarget(null);
-              }}
-              onSave={handleSaveSettings}
-              accountPresets={accountPresets}
-              accountStatus={accountStatus}
-              accountSubmitStatus={accountSubmitStatus}
-              accountError={accountError}
-              accountErrorProvider={accountErrorProvider}
-              onConfigureAccount={handleConfigureAccount}
-              onConnectGoogle={handleConnectGoogle}
-              onAccountProviderChange={handleAccountProviderChange}
-              onSwitchAccount={(accountId) => void handleSwitchAccount(accountId)}
-              onSaveAccountRemark={handleSaveAccountRemark}
-              onRemoveAccount={(connectedAccount, options) =>
-                void handleRemoveAccount(connectedAccount, options)
-              }
-              onOpenExternalLink={(url) => void handleOpenExternalLink(url)}
-              accountAvatarFor={(email) => profileAvatarFor("account", email)}
-              onSetAccountAvatar={(email, file) =>
-                handleSaveProfileAvatar("account", email, file)
-              }
-              onRemoveAccountAvatar={(email) =>
-                handleDeleteProfileAvatar("account", email)
-              }
-              focusTarget={settingsFocusTarget}
-              appearance={appearance}
-              onSelectAppearance={handleSelectAppearance}
-              onUpdateAppearancePreferences={handleUpdateAppearancePreferences}
-              onImportCustomTheme={handleImportCustomTheme}
-              onUpdateCustomTheme={handleUpdateCustomTheme}
-              onDeleteCustomTheme={handleDeleteCustomTheme}
-              appUpdateController={appUpdate}
-            />
-          </Suspense>
+            <Suspense
+              fallback={<SecondaryWorkspaceLoading label="正在打开设置…" />}
+            >
+              <SettingsPanel
+                settings={settings}
+                saveStatus={settingsSaveStatus}
+                onClose={() => {
+                  setIsSettingsOpen(false);
+                  setSettingsFocusTarget(null);
+                }}
+                onSave={handleSaveSettings}
+                accountPresets={accountPresets}
+                accountStatus={accountStatus}
+                accountSubmitStatus={accountSubmitStatus}
+                accountError={accountError}
+                accountErrorProvider={accountErrorProvider}
+                onConfigureAccount={handleConfigureAccount}
+                onConnectGoogle={handleConnectGoogle}
+                onAccountProviderChange={handleAccountProviderChange}
+                onSwitchAccount={(accountId) =>
+                  void handleSwitchAccount(accountId)
+                }
+                onSaveAccountRemark={handleSaveAccountRemark}
+                onRemoveAccount={(connectedAccount, options) =>
+                  void handleRemoveAccount(connectedAccount, options)
+                }
+                onOpenExternalLink={(url) => void handleOpenExternalLink(url)}
+                accountAvatarFor={(email) => profileAvatarFor("account", email)}
+                onSetAccountAvatar={(email, file) =>
+                  handleSaveProfileAvatar("account", email, file)
+                }
+                onRemoveAccountAvatar={(email) =>
+                  handleDeleteProfileAvatar("account", email)
+                }
+                focusTarget={settingsFocusTarget}
+                appearance={appearance}
+                onSelectAppearance={handleSelectAppearance}
+                onUpdateAppearancePreferences={handleUpdateAppearancePreferences}
+                onImportCustomTheme={handleImportCustomTheme}
+                onUpdateCustomTheme={handleUpdateCustomTheme}
+                onDeleteCustomTheme={handleDeleteCustomTheme}
+                appUpdateController={appUpdate}
+              />
+            </Suspense>
+          </SecondaryWorkspaceErrorBoundary>
         ) : needsAccountWorkspace ? (
           <AccountEmptyWorkspace
             needsRepair={accountBackendUnavailable}

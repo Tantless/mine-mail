@@ -8486,6 +8486,28 @@ html[data-surface="new-mail-notification"] #root {
   box-shadow: inset 0 1px 0 var(--surface-highlight), var(--panel-shadow);
 }
 
+.secondary-workspace-loading__message {
+  display: grid;
+  max-width: 340px;
+  justify-items: center;
+  gap: 8px;
+  padding: 24px;
+  text-align: center;
+}
+
+.secondary-workspace-loading__message strong {
+  color: var(--color-text);
+  font-size: 14px;
+}
+
+.secondary-workspace-loading__message small {
+  line-height: 1.65;
+}
+
+.secondary-workspace-loading__message .secondary-button {
+  margin-top: 4px;
+}
+
 .settings-workspace {
   position: relative;
   isolation: isolate;

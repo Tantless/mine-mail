@@ -1285,6 +1285,36 @@ describe("SettingsPanel account flow", () => {
     expect(screen.getByRole("dialog", { name: "释放界面缓存" })).toBeTruthy();
   });
 
+  it("does not relaunch a Tauri development session for cache cleanup", async () => {
+    const storageClient = {
+      isSupported: true,
+      isCacheCleanupSupported: false,
+      getStatus: vi.fn().mockResolvedValue({
+        dataPath: "D:\\Mine Mail\\Data",
+        locationKind: "install_directory",
+        available: true,
+        totalBytes: 536_870_912,
+        reclaimableWebviewBytes: 402_653_184,
+        categories: [],
+        migrationNotice: null,
+        cacheCleanupNotice: null,
+      }),
+      prepareWebviewCacheCleanup: vi.fn(),
+      relaunch: vi.fn(),
+    };
+    const user = userEvent.setup();
+    render(<SettingsPanel {...panelProps({ storageClient })} />);
+
+    await user.click(screen.getByRole("button", { name: "关于 Mine Mail" }));
+
+    expect(
+      await screen.findByText(/开发环境请停止并重新运行 Tauri 开发命令/),
+    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: "释放缓存" }).disabled).toBe(true);
+    expect(storageClient.prepareWebviewCacheCleanup).not.toHaveBeenCalled();
+    expect(storageClient.relaunch).not.toHaveBeenCalled();
+  });
+
   it("cancels a queued storage migration when relaunch fails", async () => {
     const storageClient = {
       isSupported: true,

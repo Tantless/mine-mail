@@ -1,7 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { App, mergeRefreshedMailboxItems } from "./App.jsx";
+import {
+  App,
+  mergeRefreshedMailboxItems,
+  SecondaryWorkspaceErrorBoundary,
+} from "./App.jsx";
 import { bundledAppVersion } from "./services/appUpdate.js";
 import { mailApi } from "./services/mailApi.js";
 import { useProseMirrorTestGeometry } from "./test/proseMirrorTestGeometry.js";
@@ -173,6 +177,31 @@ describe("Mine Mail MVP", () => {
     expect(screen.queryByText("本地缓存已就绪")).toBeNull();
     expect(document.querySelector(".account-card__status")).toBeNull();
     expect(document.querySelector(".list-status")).toBeNull();
+  });
+
+  it("keeps a recovery surface mounted when the settings workspace fails to load", async () => {
+    const onClose = vi.fn();
+    const user = userEvent.setup();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const BrokenSettings = () => {
+      throw new Error("settings bundle unavailable");
+    };
+
+    render(
+      <SecondaryWorkspaceErrorBoundary label="设置" onClose={onClose}>
+        <BrokenSettings />
+      </SecondaryWorkspaceErrorBoundary>,
+    );
+
+    const recovery = screen.getByRole("alert");
+    expect(within(recovery).getByText("设置暂时无法打开")).toBeTruthy();
+    expect(
+      within(recovery).getByText(/本地邮件和草稿不会受影响/),
+    ).toBeTruthy();
+    await user.click(
+      within(recovery).getByRole("button", { name: "返回邮件界面" }),
+    );
+    expect(onClose).toHaveBeenCalledOnce();
   });
 
   it("opens the settings account form from a sidebar add-account slot", async () => {

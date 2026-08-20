@@ -918,6 +918,10 @@ existing visual system normally changes this document rather than `DESIGN.md`.
   graphics, shader, and component caches from the active and legacy Mine Mail
   WebView profiles. It preserves accounts, mail, drafts, Outbox data, user
   assets, credentials, cookies, Local Storage, and IndexedDB.
+- If the Settings workspace bundle cannot load, the mail shell and cached local
+  state remain mounted. The workspace explains that Settings is unavailable and
+  offers a return to the mail workspace instead of leaving a blank application
+  window.
 - **更改位置** uses the platform folder picker. The selected directory must be
   empty, writable, absolute, local, and separate from the current data tree.
 - **迁移本地数据** with **迁移并重启** schedules a restart migration. Mine Mail

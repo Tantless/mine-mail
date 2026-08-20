@@ -4,6 +4,8 @@ use std::{
     io::{self, Write},
     path::{Component, Path, PathBuf},
     sync::{Arc, Mutex},
+    thread,
+    time::Duration,
 };
 
 #[cfg(target_os = "windows")]
@@ -42,6 +44,8 @@ const WEBVIEW_CACHE_DIRECTORY_NAMES: &[&str] = &[
     "extensions_crx_cache",
     "AutofillAiModelCache",
 ];
+const WEBVIEW_CACHE_CLEANUP_RETRY_ATTEMPTS: usize = 20;
+const WEBVIEW_CACHE_CLEANUP_RETRY_DELAY: Duration = Duration::from_millis(100);
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct StorageLocator {
@@ -818,25 +822,62 @@ fn cleanup_webview_caches(
     bootstrap_dir: &Path,
 ) -> io::Result<WebviewCacheCleanupExecution> {
     let targets = collect_reclaimable_webview_cache_directories(data_root, bootstrap_dir)?;
-    let mut execution = WebviewCacheCleanupExecution {
-        removed_bytes: 0,
-        failed_directories: 0,
-    };
+    let mut pending = Vec::with_capacity(targets.len());
+    let mut failed_directories = 0;
     for target in targets {
-        let bytes = match entry_size(&target) {
-            Ok(bytes) => bytes,
-            Err(_) => {
-                execution.failed_directories += 1;
-                continue;
-            }
-        };
-        match fs::remove_dir_all(&target) {
-            Ok(()) => execution.removed_bytes = execution.removed_bytes.saturating_add(bytes),
+        match entry_size(&target) {
+            Ok(bytes) => pending.push((target, bytes)),
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(_) => execution.failed_directories += 1,
+            Err(_) => failed_directories += 1,
         }
     }
-    Ok(execution)
+
+    Ok(cleanup_webview_cache_targets(
+        pending,
+        failed_directories,
+        |target| fs::remove_dir_all(target),
+        |duration| thread::sleep(duration),
+    ))
+}
+
+fn cleanup_webview_cache_targets<Remove, Wait>(
+    mut pending: Vec<(PathBuf, u64)>,
+    initial_failed_directories: usize,
+    mut remove: Remove,
+    mut wait: Wait,
+) -> WebviewCacheCleanupExecution
+where
+    Remove: FnMut(&Path) -> io::Result<()>,
+    Wait: FnMut(Duration),
+{
+    let mut execution = WebviewCacheCleanupExecution {
+        removed_bytes: 0,
+        failed_directories: initial_failed_directories,
+    };
+
+    for attempt in 0..WEBVIEW_CACHE_CLEANUP_RETRY_ATTEMPTS {
+        let mut still_pending = Vec::with_capacity(pending.len());
+        for (target, bytes) in pending {
+            match remove(&target) {
+                Ok(()) => execution.removed_bytes = execution.removed_bytes.saturating_add(bytes),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    execution.removed_bytes = execution.removed_bytes.saturating_add(bytes)
+                }
+                Err(_) => still_pending.push((target, bytes)),
+            }
+        }
+        pending = still_pending;
+
+        if pending.is_empty() {
+            break;
+        }
+        if attempt + 1 < WEBVIEW_CACHE_CLEANUP_RETRY_ATTEMPTS {
+            wait(WEBVIEW_CACHE_CLEANUP_RETRY_DELAY);
+        }
+    }
+
+    execution.failed_directories = execution.failed_directories.saturating_add(pending.len());
+    execution
 }
 
 fn collect_reclaimable_webview_cache_directories(
@@ -1993,6 +2034,62 @@ mod tests {
                 .is_file()
         );
         assert!(active_profile.join("IndexedDB/mail.bin").is_file());
+    }
+
+    #[test]
+    fn webview_cache_cleanup_retries_transient_lock_failures() {
+        let directory = tempdir().expect("temporary directory");
+        let cache = directory.path().join("Cache");
+        fs::create_dir_all(&cache).expect("cache directory");
+        fs::write(cache.join("item.bin"), b"cache").expect("cache item");
+        let mut attempts = 0;
+        let mut waits = 0;
+
+        let execution = cleanup_webview_cache_targets(
+            vec![(cache.clone(), 5)],
+            0,
+            |target| {
+                attempts += 1;
+                if attempts == 1 {
+                    Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "cache is still locked",
+                    ))
+                } else {
+                    fs::remove_dir_all(target)
+                }
+            },
+            |_| waits += 1,
+        );
+
+        assert_eq!(attempts, 2);
+        assert_eq!(waits, 1);
+        assert_eq!(execution.failed_directories, 0);
+        assert_eq!(execution.removed_bytes, 5);
+        assert!(!cache.exists());
+    }
+
+    #[test]
+    fn webview_cache_cleanup_reports_persistently_locked_directories() {
+        let mut attempts = 0;
+        let mut waits = 0;
+        let execution = cleanup_webview_cache_targets(
+            vec![(PathBuf::from("locked-cache"), 9)],
+            0,
+            |_| {
+                attempts += 1;
+                Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "cache remains locked",
+                ))
+            },
+            |_| waits += 1,
+        );
+
+        assert_eq!(attempts, WEBVIEW_CACHE_CLEANUP_RETRY_ATTEMPTS);
+        assert_eq!(waits, WEBVIEW_CACHE_CLEANUP_RETRY_ATTEMPTS - 1);
+        assert_eq!(execution.failed_directories, 1);
+        assert_eq!(execution.removed_bytes, 0);
     }
 
     #[test]

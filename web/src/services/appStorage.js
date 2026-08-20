@@ -4,6 +4,7 @@ import { relaunch } from "@tauri-apps/plugin-process";
 
 const isTauriRuntime =
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+const supportsAutomaticCacheCleanup = isTauriRuntime && !import.meta.env.DEV;
 
 const demoStatus = {
   dataPath: "浏览器预览不使用本地数据目录",
@@ -25,6 +26,7 @@ const demoStatus = {
 
 export const appStorageApi = {
   isSupported: isTauriRuntime,
+  isCacheCleanupSupported: supportsAutomaticCacheCleanup,
 
   async getStatus() {
     if (!isTauriRuntime) return structuredClone(demoStatus);
@@ -57,6 +59,11 @@ export const appStorageApi = {
   async prepareWebviewCacheCleanup() {
     if (!isTauriRuntime) {
       throw new Error("浏览器预览不执行界面缓存清理。");
+    }
+    if (!supportsAutomaticCacheCleanup) {
+      throw new Error(
+        "开发环境无法自动重启并释放界面缓存，请停止并重新运行 Tauri 开发命令。",
+      );
     }
     return invoke("prepare_webview_cache_cleanup");
   },
