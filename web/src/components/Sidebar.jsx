@@ -9,7 +9,6 @@ import {
   GearSix,
   Plus,
   Tray,
-  Palette,
   PaperPlaneTilt,
   PencilSimple,
   SpinnerGap,
@@ -133,7 +132,6 @@ export function Sidebar({
   onAccountSwitch,
   onAddAccount,
   onOpenSettings,
-  onOpenAppearance,
   mailboxCapabilities = null,
   onMailboxCapabilityRetry = null,
   isDrawerOpen = false,
@@ -396,26 +394,16 @@ export function Sidebar({
             })}
           </div>
 
-          <div className="theme-control">
-            <button
-              type="button"
-              className="sidebar-action"
-              onClick={onOpenAppearance}
-            >
-              <Palette size={19} />
-              <span>主题外观</span>
-            </button>
-            <button
-              type="button"
-              className="sidebar-action"
-              data-selected={isSettingsOpen}
-              aria-current={isSettingsOpen ? "page" : undefined}
-              onClick={onOpenSettings}
-            >
-              <GearSix size={19} />
-              <span>设置</span>
-            </button>
-          </div>
+          <button
+            type="button"
+            className="sidebar-action"
+            data-selected={isSettingsOpen}
+            aria-current={isSettingsOpen ? "page" : undefined}
+            onClick={onOpenSettings}
+          >
+            <GearSix size={19} />
+            <span>设置</span>
+          </button>
         </div>
       </div>
     </aside>

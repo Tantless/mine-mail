@@ -140,10 +140,11 @@ describe("SettingsPanel account flow", () => {
     }
   });
 
-  it("opens the appearance category directly from the sidebar shortcut", () => {
-    render(
-      <SettingsPanel {...panelProps({ focusTarget: "appearance" })} />,
-    );
+  it("opens the appearance category from settings navigation", async () => {
+    const user = userEvent.setup();
+    render(<SettingsPanel {...panelProps()} />);
+
+    await user.click(screen.getByRole("button", { name: "外观" }));
 
     expect(screen.getByRole("heading", { name: "外观" })).toBeTruthy();
     expect(
@@ -157,12 +158,9 @@ describe("SettingsPanel account flow", () => {
   it("saves the homepage poetry preference from the appearance category", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn();
-    render(
-      <SettingsPanel
-        {...panelProps({ focusTarget: "appearance", onSave })}
-      />,
-    );
+    render(<SettingsPanel {...panelProps({ onSave })} />);
 
+    await user.click(screen.getByRole("button", { name: "外观" }));
     await user.click(screen.getByRole("checkbox", { name: "展示主页诗歌" }));
 
     expect(onSave).toHaveBeenCalledWith(

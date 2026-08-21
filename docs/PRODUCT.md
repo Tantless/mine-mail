@@ -827,6 +827,8 @@ existing visual system normally changes this document rather than `DESIGN.md`.
 
 - Settings is an embedded workspace. Preferences save immediately and there is no
   global Save/Cancel footer.
+- The persistent sidebar exposes one **设置** action. Appearance is selected from
+  the Settings category rail and does not have a second shell-level shortcut.
 - Appearance is device-global rather than account-scoped. Its settings separate
   **极简模式**, **调色盘**, and **主题背景**. The palette has its own control and
   is the sole source of app-owned canvas, panel, text,
