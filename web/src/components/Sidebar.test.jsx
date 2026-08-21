@@ -45,7 +45,6 @@ function renderSidebar(accountCount, overrides = {}) {
     onAccountSwitch,
     onAddAccount,
     onOpenSettings: vi.fn(),
-    onOpenAppearance: vi.fn(),
   };
   const renderResult = render(<Sidebar {...baseProps} {...overrides} />);
   const rerenderSidebar = (nextOverrides = {}) =>
@@ -250,6 +249,7 @@ describe("Sidebar account switcher", () => {
     expect(footer).toBeTruthy();
     expect(within(accountSwitcher).getByText("添加账户")).toBeTruthy();
     expect(footer.contains(screen.getByRole("button", { name: "设置" }))).toBe(true);
+    expect(screen.queryByRole("button", { name: "主题外观" })).toBeNull();
     expect(footer.contains(screen.getByRole("button", { name: "写信" }))).toBe(false);
   });
 
@@ -278,16 +278,6 @@ describe("Sidebar account switcher", () => {
     expect(
       screen.getByRole("group", { name: "已登录邮箱账户" }),
     ).toBeTruthy();
-  });
-
-  it("opens the appearance settings from the theme shortcut", async () => {
-    const user = userEvent.setup();
-    const onOpenAppearance = vi.fn();
-    renderSidebar(1, { onOpenAppearance });
-
-    await user.click(screen.getByRole("button", { name: "主题外观" }));
-
-    expect(onOpenAppearance).toHaveBeenCalledOnce();
   });
 
   it.each([

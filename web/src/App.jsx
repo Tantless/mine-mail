@@ -8330,12 +8330,6 @@ export function App() {
             setSettingsFocusTarget(null);
             setIsSettingsOpen(true);
           }}
-          onOpenAppearance={() => {
-            invalidatePreparedFolderMotion();
-            setSettingsSaveStatus("idle");
-            setSettingsFocusTarget("appearance");
-            setIsSettingsOpen(true);
-          }}
           mailboxCapabilities={mailboxCapabilities}
           onMailboxCapabilityRetry={(role) =>
             void handleMailboxCapabilityRetry(role)

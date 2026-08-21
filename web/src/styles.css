@@ -2012,10 +2012,6 @@ html[data-surface="new-mail-notification"] #root {
   transition-duration: 75ms;
 }
 
-.theme-control {
-  position: relative;
-}
-
 .mail-list-panel,
 .reader-panel {
   position: relative;

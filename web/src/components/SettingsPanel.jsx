@@ -368,9 +368,7 @@ export function SettingsPanel({
     typeof focusTarget === "string" &&
     focusTarget.startsWith("account-repair");
   const [value, setValue] = useState(settings);
-  const [activeSection, setActiveSection] = useState(
-    focusTarget === "appearance" ? "appearance" : "account",
-  );
+  const [activeSection, setActiveSection] = useState("account");
   const [accountFlow, setAccountFlow] = useState(
     addAccountRequested || repairAccountRequested ? "providers" : "overview",
   );
@@ -452,11 +450,6 @@ export function SettingsPanel({
       (provider) => provider.id !== "outlook" && !provider.disabled,
     );
   }, [accountPresets]);
-
-  useEffect(() => {
-    if (focusTarget !== "appearance") return;
-    setActiveSection("appearance");
-  }, [focusTarget]);
 
   useEffect(() => {
     setValue(settings);
