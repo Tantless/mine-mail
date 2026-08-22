@@ -56,10 +56,12 @@ const remoteImageOptions = [
 ];
 
 const notificationSoundOptions = [
-  { value: "mail", label: "邮件提示音" },
-  { value: "default", label: "系统默认" },
-  { value: "im", label: "轻柔提示" },
-  { value: "reminder", label: "提醒提示" },
+  { value: "minimal", label: "简约提示" },
+  { value: "melody", label: "旋律提示" },
+  { value: "gentle", label: "轻柔提示" },
+  { value: "double_chime", label: "双铃提示" },
+  { value: "waterdrop", label: "水滴提示" },
+  { value: "bubble", label: "气泡提示" },
 ];
 
 const notificationDeliveryOptions = [
@@ -600,7 +602,7 @@ export function SettingsPanel({
       const webSound = await notificationClient.previewNotificationSound(
         value.notificationSound,
       );
-      playWebNotificationSound(webSound);
+      await playWebNotificationSound(webSound);
     } catch (error) {
       setSoundPreviewError(
         errorMessage(error, "无法试听提示音，请检查系统声音设置后重试。"),
@@ -1388,7 +1390,7 @@ export function SettingsPanel({
                   <span>
                     <strong>通知声音</strong>
                     <small data-tone={soundPreviewError ? "danger" : undefined}>
-                      {soundPreviewError || "新邮件通知出现时播放所选系统提示音。"}
+                      {soundPreviewError || "新邮件通知出现时播放所选提示音。"}
                     </small>
                   </span>
                   <span className="settings-notification-sound-control">

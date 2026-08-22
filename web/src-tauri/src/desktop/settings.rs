@@ -114,40 +114,44 @@ impl NotificationDelivery {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum NotificationSound {
-    Default,
     #[default]
-    Mail,
-    Im,
-    Reminder,
+    Minimal,
+    Melody,
+    Gentle,
+    DoubleChime,
+    Waterdrop,
+    Bubble,
 }
 
 impl NotificationSound {
     fn as_storage_value(self) -> &'static str {
         match self {
-            Self::Default => "default",
-            Self::Mail => "mail",
-            Self::Im => "im",
-            Self::Reminder => "reminder",
+            Self::Minimal => "minimal",
+            Self::Melody => "melody",
+            Self::Gentle => "gentle",
+            Self::DoubleChime => "double_chime",
+            Self::Waterdrop => "waterdrop",
+            Self::Bubble => "bubble",
         }
     }
 
     fn from_storage_value(value: &str) -> Self {
         match value {
-            "default" => Self::Default,
-            "mail" => Self::Mail,
-            "im" => Self::Im,
-            "reminder" => Self::Reminder,
-            _ => Self::Mail,
+            "melody" | "reminder" => Self::Melody,
+            "gentle" | "im" => Self::Gentle,
+            "double_chime" => Self::DoubleChime,
+            "waterdrop" => Self::Waterdrop,
+            "bubble" => Self::Bubble,
+            "minimal" | "default" | "mail" => Self::Minimal,
+            _ => Self::Minimal,
         }
     }
 
-    #[cfg(target_os = "windows")]
-    pub(super) fn system_resource_name(self) -> &'static str {
+    fn legacy_storage_value(self) -> &'static str {
         match self {
-            Self::Default => "Notification.Default",
-            Self::Mail => "Notification.Mail",
-            Self::Im => "Notification.IM",
-            Self::Reminder => "Notification.Reminder",
+            Self::Minimal => "mail",
+            Self::Melody => "reminder",
+            Self::Gentle | Self::DoubleChime | Self::Waterdrop | Self::Bubble => "im",
         }
     }
 }
@@ -188,7 +192,7 @@ impl Default for StoredDesktopSettings {
             notifications_enabled: true,
             notification_delivery: NotificationDelivery::MineMail,
             notification_sound_enabled: true,
-            notification_sound: NotificationSound::Mail,
+            notification_sound: NotificationSound::Minimal,
             remote_image_mode: RemoteImageMode::Automatic,
             ai_assistant_default_open: true,
             idle_poetry_enabled: true,
@@ -278,6 +282,10 @@ impl DesktopSettingsStore {
                      CHECK (notification_sound_enabled IN (0, 1)),
                  notification_sound TEXT NOT NULL DEFAULT 'mail'
                      CHECK (notification_sound IN ('default', 'mail', 'im', 'reminder')),
+                 notification_sound_v2 TEXT NOT NULL DEFAULT 'minimal'
+                     CHECK (notification_sound_v2 IN (
+                         'minimal', 'melody', 'gentle', 'double_chime', 'waterdrop', 'bubble'
+                     )),
                  notification_baseline_initialized INTEGER NOT NULL
                      CHECK (notification_baseline_initialized IN (0, 1)),
                  notification_baseline_uid INTEGER NOT NULL DEFAULT 0,
@@ -499,6 +507,28 @@ impl DesktopSettingsStore {
                 [],
             )?;
         }
+        if !existing_columns
+            .iter()
+            .any(|column| column == "notification_sound_v2")
+        {
+            connection.execute(
+                "ALTER TABLE desktop_settings
+                 ADD COLUMN notification_sound_v2 TEXT NOT NULL DEFAULT 'minimal'
+                     CHECK (notification_sound_v2 IN (
+                         'minimal', 'melody', 'gentle', 'double_chime', 'waterdrop', 'bubble'
+                     ))",
+                [],
+            )?;
+            connection.execute(
+                "UPDATE desktop_settings
+                 SET notification_sound_v2 = CASE notification_sound
+                     WHEN 'reminder' THEN 'melody'
+                     WHEN 'im' THEN 'gentle'
+                     ELSE 'minimal'
+                 END",
+                [],
+            )?;
+        }
         Ok(store)
     }
 
@@ -508,7 +538,7 @@ impl DesktopSettingsStore {
                     notifications_enabled, notification_delivery,
                     notification_baseline_initialized, notification_baseline_uid,
                     remote_image_mode, notification_sound_enabled,
-                    notification_sound, ai_assistant_default_open,
+                    notification_sound_v2, ai_assistant_default_open,
                     idle_poetry_enabled, mcp_enabled, mcp_information_enabled,
                     mcp_send_enabled, theme_schedule_enabled,
                     theme_schedule_day_start, theme_schedule_dusk_start,
@@ -559,15 +589,16 @@ impl DesktopSettingsStore {
                  foreground_notifications_enabled = ?3,
                  notification_sound_enabled = ?8,
                  notification_sound = ?9,
-                 ai_assistant_default_open = ?10,
-                 idle_poetry_enabled = ?11,
-                 mcp_enabled = ?12,
-                 mcp_information_enabled = ?13,
-                 mcp_send_enabled = ?14,
-                 theme_schedule_enabled = ?15,
-                 theme_schedule_day_start = ?16,
-                 theme_schedule_dusk_start = ?17,
-                 theme_schedule_night_start = ?18,
+                 notification_sound_v2 = ?10,
+                 ai_assistant_default_open = ?11,
+                 idle_poetry_enabled = ?12,
+                 mcp_enabled = ?13,
+                 mcp_information_enabled = ?14,
+                 mcp_send_enabled = ?15,
+                 theme_schedule_enabled = ?16,
+                 theme_schedule_day_start = ?17,
+                 theme_schedule_dusk_start = ?18,
+                 theme_schedule_night_start = ?19,
                  updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
              WHERE id = 1",
             params![
@@ -579,6 +610,7 @@ impl DesktopSettingsStore {
                 settings.notification_baseline_uid,
                 settings.remote_image_mode.as_storage_value(),
                 settings.notification_sound_enabled,
+                settings.notification_sound.legacy_storage_value(),
                 settings.notification_sound.as_storage_value(),
                 settings.ai_assistant_default_open,
                 settings.idle_poetry_enabled,
@@ -885,12 +917,7 @@ mod tests {
             NotificationDelivery::MineMail
         );
         assert!(defaults.notification_sound_enabled);
-        assert_eq!(defaults.notification_sound, NotificationSound::Mail);
-        #[cfg(target_os = "windows")]
-        assert_eq!(
-            defaults.notification_sound.system_resource_name(),
-            "Notification.Mail"
-        );
+        assert_eq!(defaults.notification_sound, NotificationSound::Minimal);
         assert_eq!(defaults.poll_interval_minutes, 5);
         assert_eq!(defaults.remote_image_mode, RemoteImageMode::Automatic);
         assert!(defaults.ai_assistant_default_open);
@@ -910,7 +937,7 @@ mod tests {
             notifications_enabled: false,
             notification_delivery: NotificationDelivery::Windows,
             notification_sound_enabled: false,
-            notification_sound: NotificationSound::Reminder,
+            notification_sound: NotificationSound::Bubble,
             remote_image_mode: RemoteImageMode::Blocked,
             ai_assistant_default_open: false,
             idle_poetry_enabled: false,
@@ -960,7 +987,7 @@ mod tests {
             NotificationDelivery::MineMail
         );
         assert!(migrated.notification_sound_enabled);
-        assert_eq!(migrated.notification_sound, NotificationSound::Mail);
+        assert_eq!(migrated.notification_sound, NotificationSound::Minimal);
         assert!(migrated.ai_assistant_default_open);
         assert!(migrated.idle_poetry_enabled);
         assert!(!migrated.mcp_enabled);
@@ -970,6 +997,36 @@ mod tests {
         assert_eq!(migrated.theme_schedule_day_start, 360);
         assert_eq!(migrated.theme_schedule_dusk_start, 1_080);
         assert_eq!(migrated.theme_schedule_night_start, 1_260);
+    }
+
+    #[test]
+    fn legacy_notification_sound_values_migrate_to_new_presets() {
+        let directory = tempdir().expect("temporary directory");
+        let path = directory.path().join("desktop.sqlite3");
+        let connection = Connection::open(&path).expect("legacy settings database");
+        connection
+            .execute_batch(
+                "CREATE TABLE desktop_settings (
+                     id INTEGER PRIMARY KEY NOT NULL CHECK (id = 1),
+                     background_enabled INTEGER NOT NULL CHECK (background_enabled IN (0, 1)),
+                     poll_interval_minutes INTEGER NOT NULL,
+                     notifications_enabled INTEGER NOT NULL CHECK (notifications_enabled IN (0, 1)),
+                     notification_sound TEXT NOT NULL DEFAULT 'mail'
+                         CHECK (notification_sound IN ('default', 'mail', 'im', 'reminder')),
+                     notification_baseline_initialized INTEGER NOT NULL,
+                     notification_baseline_uid INTEGER NOT NULL DEFAULT 0,
+                     updated_at TEXT NOT NULL DEFAULT ''
+                 );
+                 INSERT INTO desktop_settings VALUES (1, 1, 5, 1, 'im', 0, 0, '');",
+            )
+            .expect("legacy notification schema");
+        drop(connection);
+
+        let store = DesktopSettingsStore::open(&path).expect("migrated settings store");
+        assert_eq!(
+            store.load().expect("migrated settings").notification_sound,
+            NotificationSound::Gentle,
+        );
     }
 
     #[test]

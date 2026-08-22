@@ -18,7 +18,7 @@ const settings = {
   notificationDelivery: "mine_mail",
   windowsNotificationsAvailable: false,
   notificationSoundEnabled: true,
-  notificationSound: "mail",
+  notificationSound: "minimal",
   remoteImageMode: "automatic",
   aiAssistantDefaultOpen: true,
   idlePoetryEnabled: true,
@@ -296,18 +296,28 @@ describe("SettingsPanel account flow", () => {
     );
 
     await user.click(screen.getByRole("button", { name: "功能设定" }));
-    await user.click(screen.getByRole("button", { name: "试听邮件提示音" }));
+    await user.click(screen.getByRole("button", { name: "试听简约提示" }));
     expect(notificationClient.previewNotificationSound).toHaveBeenCalledWith(
-      "mail",
+      "minimal",
     );
     expect(onSave).not.toHaveBeenCalled();
 
     await user.click(screen.getByRole("combobox", { name: "通知声音类型" }));
+    for (const label of [
+      "简约提示",
+      "旋律提示",
+      "轻柔提示",
+      "双铃提示",
+      "水滴提示",
+      "气泡提示",
+    ]) {
+      expect(screen.getByRole("option", { name: label })).toBeTruthy();
+    }
     await user.click(screen.getByRole("option", { name: "轻柔提示" }));
     await user.click(screen.getByRole("button", { name: "试听轻柔提示" }));
 
     expect(notificationClient.previewNotificationSound).toHaveBeenLastCalledWith(
-      "im",
+      "gentle",
     );
     expect(onSave).toHaveBeenCalledTimes(1);
   });
@@ -324,7 +334,7 @@ describe("SettingsPanel account flow", () => {
     );
 
     await user.click(screen.getByRole("button", { name: "功能设定" }));
-    await user.click(screen.getByRole("button", { name: "试听邮件提示音" }));
+    await user.click(screen.getByRole("button", { name: "试听简约提示" }));
     expect(await screen.findByText(/无法试听提示音/)).toBeTruthy();
 
     rerender(
@@ -335,7 +345,7 @@ describe("SettingsPanel account flow", () => {
         })}
       />,
     );
-    expect(screen.getByRole("button", { name: "试听邮件提示音" }).disabled).toBe(
+    expect(screen.getByRole("button", { name: "试听简约提示" }).disabled).toBe(
       true,
     );
   });

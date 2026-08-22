@@ -935,7 +935,9 @@ describe("Mine Mail MVP", () => {
     await screen.findAllByText("欢迎来到 Mine Mail");
 
     await user.click(screen.getByRole("button", { name: "设置" }));
-    expect(screen.getByRole("navigation", { name: "设置菜单" })).toBeTruthy();
+    expect(
+      await screen.findByRole("navigation", { name: "设置菜单" }),
+    ).toBeTruthy();
     expect(screen.getByRole("heading", { name: "账户与同步" })).toBeTruthy();
     await user.click(screen.getByRole("combobox", { name: "完整校准间隔" }));
     await user.click(screen.getByRole("option", { name: "3 分钟" }));
@@ -948,7 +950,7 @@ describe("Mine Mail MVP", () => {
     await user.click(screen.getByRole("checkbox", { name: /桌面通知/ }));
     await user.click(screen.getByRole("checkbox", { name: /桌面通知/ }));
     await user.click(screen.getByRole("combobox", { name: "通知声音类型" }));
-    await user.click(screen.getByRole("option", { name: "提醒提示" }));
+    await user.click(screen.getByRole("option", { name: "气泡提示" }));
     await user.click(screen.getByRole("combobox", { name: "远程图片加载方式" }));
     await user.click(screen.getByRole("option", { name: "每次询问" }));
     await user.click(screen.getByRole("checkbox", { name: /开机启动/ }));
@@ -965,7 +967,7 @@ describe("Mine Mail MVP", () => {
         notificationDelivery: "mine_mail",
         windowsNotificationsAvailable: false,
         notificationSoundEnabled: true,
-        notificationSound: "reminder",
+        notificationSound: "bubble",
         remoteImageMode: "ask",
         aiAssistantDefaultOpen: true,
         idlePoetryEnabled: true,

@@ -372,7 +372,7 @@ describe("Mine Mail desktop state bridge", () => {
       notificationDelivery: "mine_mail",
       windowsNotificationsAvailable: true,
       notificationSoundEnabled: true,
-      notificationSound: "mail",
+      notificationSound: "minimal",
       remoteImageMode: "automatic",
     });
     desktop.mailApi.getAppearanceSettings.mockResolvedValue({

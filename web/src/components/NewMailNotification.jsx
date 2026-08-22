@@ -195,7 +195,7 @@ export function NewMailNotification() {
       resetDismissRetriesFor(item);
       notificationRef.current = item;
       setNotification(item);
-      playWebNotificationSound(item.webSound);
+      void playWebNotificationSound(item.webSound).catch(() => {});
       scheduleDismiss(item);
     },
     [resetDismissRetriesFor, scheduleDismiss],

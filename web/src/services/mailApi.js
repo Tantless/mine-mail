@@ -182,6 +182,22 @@ function normalizeScheduleTime(value, fallback) {
   return fallback;
 }
 
+const notificationSoundAliases = {
+  default: "minimal",
+  mail: "minimal",
+  im: "gentle",
+  reminder: "melody",
+};
+
+const notificationSounds = new Set([
+  "minimal",
+  "melody",
+  "gentle",
+  "double_chime",
+  "waterdrop",
+  "bubble",
+]);
+
 function normalizeSettings(settings = {}) {
   const interval = Number(
     settings.pollingIntervalMinutes ??
@@ -191,8 +207,10 @@ function normalizeSettings(settings = {}) {
   );
   const remoteImageMode =
     settings.remoteImageMode ?? settings.remote_image_mode ?? "automatic";
+  const storedNotificationSound =
+    settings.notificationSound ?? settings.notification_sound ?? "minimal";
   const notificationSound =
-    settings.notificationSound ?? settings.notification_sound ?? "mail";
+    notificationSoundAliases[storedNotificationSound] ?? storedNotificationSound;
   const notificationDelivery =
     settings.notificationDelivery ?? settings.notification_delivery ?? "mine_mail";
   return {
@@ -216,11 +234,9 @@ function normalizeSettings(settings = {}) {
       settings.notification_sound_enabled ??
       true,
     ),
-    notificationSound: ["default", "mail", "im", "reminder"].includes(
-      notificationSound,
-    )
+    notificationSound: notificationSounds.has(notificationSound)
       ? notificationSound
-      : "mail",
+      : "minimal",
     remoteImageMode: ["automatic", "ask", "blocked"].includes(remoteImageMode)
       ? remoteImageMode
       : "automatic",

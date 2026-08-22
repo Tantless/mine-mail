@@ -830,7 +830,7 @@ describe("mailApi desktop IPC contract", () => {
       notificationDelivery: "windows",
       windowsNotificationsAvailable: true,
       notificationSoundEnabled: true,
-      notificationSound: "im",
+      notificationSound: "gentle",
       remoteImageMode: "ask",
       aiAssistantDefaultOpen: true,
       idlePoetryEnabled: true,
@@ -851,7 +851,7 @@ describe("mailApi desktop IPC contract", () => {
       notificationDelivery: "mine_mail",
       windowsNotificationsAvailable: true,
       notificationSoundEnabled: false,
-      notificationSound: "reminder",
+      notificationSound: "bubble",
       remoteImageMode: "blocked",
       aiAssistantDefaultOpen: false,
       idlePoetryEnabled: false,
@@ -880,7 +880,7 @@ describe("mailApi desktop IPC contract", () => {
         notifications_enabled: false,
         notification_delivery: "mine_mail",
         notification_sound_enabled: false,
-        notification_sound: "reminder",
+        notification_sound: "bubble",
         remote_image_mode: "blocked",
         ai_assistant_default_open: false,
         idle_poetry_enabled: false,
@@ -969,7 +969,7 @@ describe("mailApi desktop IPC contract", () => {
     expect(notification).not.toHaveProperty("messageId");
     await mailApi.dismissNewMailNotification(7);
     await mailApi.openNewMailNotification(7);
-    await mailApi.previewNotificationSound("reminder");
+    await mailApi.previewNotificationSound("bubble");
 
     expect(ipc.invoke).toHaveBeenNthCalledWith(
       1,
@@ -993,7 +993,7 @@ describe("mailApi desktop IPC contract", () => {
     expect(ipc.invoke).toHaveBeenNthCalledWith(
       4,
       "preview_notification_sound",
-      { sound: "reminder" },
+      { sound: "bubble" },
     );
   });
 

@@ -75,7 +75,7 @@ const defaultSettings = {
   notificationDelivery: "mine_mail",
   windowsNotificationsAvailable: false,
   notificationSoundEnabled: true,
-  notificationSound: "mail",
+  notificationSound: "minimal",
   remoteImageMode: "automatic",
   aiAssistantDefaultOpen: true,
   idlePoetryEnabled: true,

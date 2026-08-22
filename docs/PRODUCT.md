@@ -789,11 +789,14 @@ existing visual system normally changes this document rather than `DESIGN.md`.
   open or in the tray. It does not use a Mine Mail cloud mailbox proxy or a
   Windows push service. Windows notification, lock-screen, and do-not-disturb
   settings remain authoritative over system presentation.
-- Sound enablement and the sound preset are shared by both delivery methods.
-  Mine Mail owns playback for its card; Windows owns playback and suppression
-  for a Windows notification. An adjacent icon-only preview action plays the
-  currently selected preset while notification sound is enabled, without
-  changing the saved selection.
+- One sound switch controls both delivery methods. Mine Mail notification cards
+  use one of six bundled presets: **简约提示**, **旋律提示**, **轻柔提示**,
+  **双铃提示**, **水滴提示**, and **气泡提示**. New installations default to
+  **简约提示**; existing sound selections migrate to the closest bundled preset.
+- The selected bundled preset applies to the Mine Mail card and its adjacent
+  icon-only preview action. Windows notifications use the Windows mail sound,
+  with Windows remaining authoritative over playback and suppression. Previewing
+  a preset never changes the saved selection.
 - A notification batch displays its bounded unread count, and clicking a card
   while Mine Mail is running or in the tray opens the cached message in its
   owning account. A Windows notification left after an explicit application

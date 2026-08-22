@@ -60,7 +60,7 @@ gio = "0.18.4"
 
 [target.'cfg(windows)'.dependencies]
 tauri-winrt-notification = "0.8.1"
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Media_Audio", "Win32_Storage_FileSystem"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
 
 # Tauri's Windows dependency graph can otherwise produce multi-gigabyte debug
 # symbol and incremental caches, which is disproportionate for this thin shell.

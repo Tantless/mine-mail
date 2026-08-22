@@ -3788,11 +3788,9 @@ fn show_mine_mail_new_mail_notification(
     settings: StoredDesktopSettings,
 ) {
     let runtime = app.state::<DesktopRuntime>();
-    let web_sound = if settings.notification_sound_enabled {
-        web_sound(settings.notification_sound)
-    } else {
-        None
-    };
+    let web_sound = settings
+        .notification_sound_enabled
+        .then_some(settings.notification_sound);
     let Ok(notification) = runtime.publish_new_mail_notification(
         sender,
         sender_email,
@@ -3820,10 +3818,6 @@ fn show_mine_mail_new_mail_notification(
         "new_mail_notification",
         None,
     );
-
-    if settings.notification_sound_enabled {
-        play_native_notification_sound(settings.notification_sound);
-    }
 
     if let Some(window) = app.get_webview_window(NEW_MAIL_NOTIFICATION_WINDOW) {
         diagnostics::limited_recovery(
@@ -3878,15 +3872,7 @@ fn show_windows_new_mail_notification(
 
             let activation_app = app.clone();
             let activation_target = target.clone();
-            let sound =
-                settings
-                    .notification_sound_enabled
-                    .then_some(match settings.notification_sound {
-                        settings::NotificationSound::Default => Sound::Default,
-                        settings::NotificationSound::Mail => Sound::Mail,
-                        settings::NotificationSound::Im => Sound::IM,
-                        settings::NotificationSound::Reminder => Sound::Reminder,
-                    });
+            let sound = settings.notification_sound_enabled.then_some(Sound::Mail);
             let mut toast = Toast::new(&app.config().identifier)
                 .title(&content.title)
                 .text1(&content.subject)
@@ -4006,44 +3992,10 @@ fn align_notification_axis(work_area_start: i32, work_area_length: u32, window_l
         .clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
 }
 
-#[cfg(target_os = "windows")]
-fn web_sound(_sound: settings::NotificationSound) -> Option<settings::NotificationSound> {
-    None
-}
-
-#[cfg(not(target_os = "windows"))]
-fn web_sound(sound: settings::NotificationSound) -> Option<settings::NotificationSound> {
-    Some(sound)
-}
-
-#[cfg(target_os = "windows")]
-fn play_native_notification_sound(sound: settings::NotificationSound) {
-    use windows_sys::Win32::Media::Audio::{PlaySoundW, SND_ALIAS, SND_ASYNC, SND_NODEFAULT};
-
-    let alias: Vec<u16> = sound
-        .system_resource_name()
-        .encode_utf16()
-        .chain(std::iter::once(0))
-        .collect();
-    // SAFETY: `alias` is a NUL-terminated UTF-16 string that remains alive for
-    // the duration of the call. SND_ASYNC makes winmm retain its own copy.
-    unsafe {
-        PlaySoundW(
-            alias.as_ptr(),
-            std::ptr::null_mut(),
-            SND_ALIAS | SND_ASYNC | SND_NODEFAULT,
-        );
-    }
-}
-
-#[cfg(not(target_os = "windows"))]
-fn play_native_notification_sound(_sound: settings::NotificationSound) {}
-
 pub(crate) fn preview_notification_sound(
     sound: settings::NotificationSound,
 ) -> Option<settings::NotificationSound> {
-    play_native_notification_sound(sound);
-    web_sound(sound)
+    Some(sound)
 }
 
 fn main_window_is_active(app: &AppHandle) -> bool {
@@ -5551,7 +5503,7 @@ mod tests {
                 "opaque-message-1".to_owned(),
                 "account-test".to_owned(),
                 1,
-                Some(NotificationSound::Mail),
+                Some(NotificationSound::Minimal),
             )
             .expect("publish notification");
         let display_json =
